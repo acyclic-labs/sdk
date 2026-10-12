@@ -65,7 +65,7 @@ async fn replace(
             &format!("{name}.json"),
             owner.policy.maximum_payload_bytes,
             &IdempotencyKey::new(format!("fixture-replacement-{name}")).unwrap(),
-        )
+         None, None)
         .await
         .unwrap()
 }
@@ -94,7 +94,7 @@ async fn alter_command(
     .unwrap();
     let mut plan: TaskEffectPlan = serde_json::from_slice(
         &filesystem
-            .read_content(&command.payload, &read, owner.policy.maximum_payload_bytes)
+            .read_content(&command.payload, &read, owner.policy.maximum_payload_bytes, None)
             .await
             .unwrap(),
     )

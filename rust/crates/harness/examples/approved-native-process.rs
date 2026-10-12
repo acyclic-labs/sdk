@@ -305,7 +305,7 @@ where
             "input.txt",
             128,
             &IdempotencyKey::new("example-source")?,
-        )
+         None, None)
         .await?;
     let runtime = runtime(
         stream.clone(),

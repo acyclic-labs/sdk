@@ -447,7 +447,7 @@ async fn pi_root_provider_lost_output_ack_ignores_a_replaced_mutable_output_path
     let (_, write) = pi_input_grants(&fixture.owner).unwrap();
     let substituted = fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, original.0.path(),
         &serde_json::to_vec(&changed.0).unwrap(), "application/json", "result.json",
-        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("different-output-operation").unwrap()).await.unwrap();
+        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("different-output-operation").unwrap(), None, None).await.unwrap();
     assert_ne!(original.0, substituted);
     let reopened = fixture.reopen_provider().await;
     let before = fixture.startup.receipt();
@@ -712,7 +712,7 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let (_, write) = pi_input_grants(&fixture.owner).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, operator.path(), b"{\"changed\":true}",
         "application/json", "scope.json", fixture.owner.policy().maximum_payload_bytes,
-        &IdempotencyKey::new("different-operator-path-upload").unwrap()).await.unwrap();
+        &IdempotencyKey::new("different-operator-path-upload").unwrap(), None, None).await.unwrap();
     let retry = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
     assert_eq!(retry.0, operator);
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
@@ -791,7 +791,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
     let (_, write) = pi_input_grants(&fixture.owner).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, file.path(),
         b"{\"later\":\"mutable head\"}", "application/json", "native-mail.json",
-        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("native-mail-later-head").unwrap())
+        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("native-mail-later-head").unwrap(), None, None)
         .await.unwrap();
     let (original, original_custody) = observe_pi_input(
         &fixture.owner, &fixture.filesystem, operation, "native-mail", &work).await.unwrap().unwrap();

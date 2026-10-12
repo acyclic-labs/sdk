@@ -205,7 +205,7 @@ where
             require_file_read(&self.scope, reference, io)?;
             self.host.read_pinned_io(reference, maximum_bytes, Some(io)).await
         } else {
-            self.host.read_content(reference, &self.read_grant(reference)?, maximum_bytes).await
+            self.host.read_content(reference, &self.read_grant(reference)?, maximum_bytes, None).await
         }
     }
 

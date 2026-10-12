@@ -162,9 +162,12 @@ impl Fixture {
             sha256: hex::encode(Sha256::digest(source_json.as_bytes())), entries_json: source_json };
         let bytes = format!("{}\n{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":cwd}), source_entries[0]);
         source.validate_session("child", &cwd, bytes.as_bytes(), 16, 65_536, &work)?;
-        files.put_content_with_native_work(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
-            "application/x-ndjson", "Pi child session", 65_536,
-            &IdempotencyKey::new("pi-native-child-session")?, &work).await?;
+        {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+            files.put_content(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
+                "application/x-ndjson", "Pi child session", 65_536,
+                &IdempotencyKey::new("pi-native-child-session")?, None, Some(&io)).await?;
+        }
         let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
         let workspace = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?;

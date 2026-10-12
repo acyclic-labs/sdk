@@ -1930,10 +1930,10 @@ mod task_origin_tests {
         };
         let volume = VolumeRef::new(
             provider,
-            "child",
+            "child".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([71; 16])),
-        )?;
+         &mut None)?;
         let origin = ResourceCreationOrigin {
             owner: parent.clone(),
             parent_task: TaskId::from_bytes([72; 16]),

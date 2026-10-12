@@ -216,7 +216,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "current.txt",
             1_024,
             &IdempotencyKey::new("root-message")?,
-        )
+         None, None)
         .await?;
     let root_attachment = host
         .put_content(
@@ -228,7 +228,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("root-attachment")?,
-        )
+         None, None)
         .await?;
     let root_manifest_bytes = serde_json::to_vec(&vec![Attachment {
         file: root_attachment.clone(),
@@ -245,7 +245,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "manifest.json",
             1_024,
             &IdempotencyKey::new("root-manifest")?,
-        )
+         None, None)
         .await?;
     let mut previous_attachment = root_attachment.clone();
     aggregate
@@ -286,7 +286,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "project.txt",
             1_024,
             &IdempotencyKey::new("root-project-reference")?,
-        )
+         None, None)
         .await?;
     project_head = host.resolve(&project_head.workspace).await?;
     let shared_writer = issuer.issue("shared-writer", &Capabilities::new([shared.capability(VolumeOperation::Write)?]), None, None, &mut None).expect("scope proof");
@@ -306,7 +306,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "shared.txt",
             1_024,
             &IdempotencyKey::new("root-shared-reference")?,
-        )
+         None, None)
         .await?;
     aggregate
         .execute(command(
@@ -749,7 +749,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &previous_file,
             )?;
             assert_eq!(
-                host.read_content(&previous_file, &exact, 1_024)
+                host.read_content(&previous_file, &exact, 1_024, None)
                     .await?
                     .as_ref(),
                 b"root"
@@ -932,7 +932,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "secret.txt",
                 1_024,
                 &IdempotencyKey::new("rogue-scratch")?,
-            )
+             None, None)
             .await?;
             let mut rogue_seed = seed.clone();
             rogue_seed.child = rogue_authority;
@@ -1033,7 +1033,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     "fenced.txt",
                     1_024,
                     &IdempotencyKey::new("fenced-private-write")?,
-                )
+                 None, None)
                 .await
                 .is_err(),
                 "private writes cannot race fork publication"
@@ -1339,7 +1339,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "current.txt",
                 1_024,
                 &IdempotencyKey::new(format!("message-{level}"))?,
-            )
+             None, None)
             .await?;
         let attachment_bytes = format!("evidence at depth {level}");
         let child_attachment = host
@@ -1352,7 +1352,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "evidence.bin",
                 1_024,
                 &IdempotencyKey::new(format!("attachment-{level}"))?,
-            )
+             None, None)
             .await?;
         let child_read = ContentGrant::verify(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1361,12 +1361,12 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             VolumeOperation::Read,
         )?;
         assert_eq!(
-            host.read_content(&child_attachment, &child_read, 1_024)
+            host.read_content(&child_attachment, &child_read, 1_024, None)
                 .await?,
             attachment_bytes.as_bytes()
         );
         assert!(
-            host.read_content(&previous_file, &child_read, 1_024)
+            host.read_content(&previous_file, &child_read, 1_024, None)
                 .await
                 .is_err()
         );
@@ -1386,7 +1386,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     "manifest.json",
                     1_024,
                     &IdempotencyKey::new(format!("manifest-{level}"))?,
-                )
+                 None, None)
                 .await?;
             ReferencedAttachments::Manifest {
                 manifest,
@@ -1463,7 +1463,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "final.png",
             1_024,
             &IdempotencyKey::new("deep-final-image")?,
-        )
+         None, None)
         .await?;
     let manifest = host
         .put_attachment_manifest(
@@ -1925,7 +1925,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             "resolved-merge.txt",
             1_024,
             &IdempotencyKey::new("wide-resolved-notice")?,
-        )
+         None, None)
         .await?;
     let receipt = controller.merge_receipt(
         &inspected,

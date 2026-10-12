@@ -1,38 +1,20 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    /// Reads a pinned version after exact-volume access verification.
+    /// Reads a pinned version using optional preparation accounting.
     pub async fn read_content(
-        &self,
-        reference: &FileRef,
-        grant: &ContentGrant,
-        maximum_bytes: u64,
+        &self, reference: &FileRef, grant: &ContentGrant, maximum_bytes: u64,
+        io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         reference.validate(&mut None)?;
-        grant.require_file_read(reference, None)?;
-        let bytes = self.read_pinned(reference, maximum_bytes).await?;
-        let generation = self.file_generation(reference)?;
-        let workspace = workspace_ref(self.provider.clone(), &reference.volume().storage_name(&mut None)?)?;
-        self.retain_generation(&workspace, &generation).await?;
-        Ok(bytes)
-    }
-
-    /// Reads and retains the exact immutable file under cumulative work limits.
-    pub async fn read_content_measured(
-        &self, reference: &FileRef, grant: &ContentGrant, maximum_bytes: u64,
-        budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error> {
-        let io = fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = async {
-            grant.require_file_read(reference, Some(&io))?;
-            reference.validate(&mut None)?;
-            self.read_pinned_io(reference, maximum_bytes, Some(&io)).await
-        }.await;
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+        grant.require_file_read(reference, io)?;
+        let bytes = self.read_pinned_io(reference, maximum_bytes, io).await?;
+        if io.is_none() {
+            let generation = self.file_generation(reference)?;
+            let workspace = workspace_ref(self.provider.clone(), &reference.volume().storage_name(&mut None)?)?;
+            self.retain_generation(&workspace, &generation).await?;
         }
+        Ok(bytes)
     }
 
     /// Discovers a granted private directory at the owner's current head, or continues at the immutable generation returned by a prior page.

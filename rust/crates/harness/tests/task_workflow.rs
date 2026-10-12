@@ -1986,7 +1986,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         host.create_volume(&private).await?;
         let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
         host.put_content(&project, &write, "shared.txt", b"base", "text/plain", "shared.txt", 128,
-            &IdempotencyKey::new("base")?).await?;
+            &IdempotencyKey::new("base")?, None, None).await?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let base = host.resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?).await?;
         let fork = controller.fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?).await?;
@@ -2050,7 +2050,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         if retry == 0 {
             let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
             host.put_content(&project, &write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
-                &IdempotencyKey::new("concurrent")?).await?;
+                &IdempotencyKey::new("concurrent")?, None, None).await?;
         }
         assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/concurrent.txt", 128).await?.as_ref(), b"user edit");
         assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/shared.txt", 128).await?.as_ref(), b"custom resolution");

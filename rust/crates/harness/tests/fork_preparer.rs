@@ -169,7 +169,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "request.txt",
             1_024,
             &IdempotencyKey::new("parent-message")?,
-        )
+         None, None)
         .await?;
     let attachment = host
         .put_content(
@@ -181,7 +181,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("parent-attachment")?,
-        )
+         None, None)
         .await?;
     let manifest_bytes = serde_json::to_vec(&vec![Attachment {
         file: attachment.clone(),
@@ -198,7 +198,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "manifest.json",
             1_024,
             &IdempotencyKey::new("parent-manifest")?,
-        )
+         None, None)
         .await?;
     aggregate
         .execute(Command {

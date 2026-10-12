@@ -1433,7 +1433,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             "chart.png",
             4_096,
             &IdempotencyKey::new("chart-upload")?,
-        )
+         None, None)
         .await?;
     let foreign_issuer = AuthorityIssuer::new(
         "foreign-owner",
@@ -1463,7 +1463,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             "secret.txt",
             4_096,
             &IdempotencyKey::new("foreign-upload")?,
-        )
+         None, None)
         .await?;
     let stream = Arc::new(MemoryStream::default());
     let journal =

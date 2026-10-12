@@ -2,9 +2,30 @@ use super::*;
 
 /// Provider-side proof for a parent-published project merge receipt.
 pub struct FilesystemProjectMergeVerifier<A, O> {
-    pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
+    host: Arc<FilesystemHost<A, O>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) native_binding: Option<NativeFilesystemVerificationBinding>,
+    _allocation: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl<A, O> FilesystemProjectMergeVerifier<A, O> {
+    /// Binds the provider and optionally authenticates and funds its shared allocation.
+    pub fn new(host: Arc<FilesystemHost<A, O>>,
+        original: Option<(&AuthorityVerifier, &Scope, &PreparationIo)>,
+    ) -> Result<Arc<Self>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let allocation = original.map(|(verifier, scope, io)| {
+            crate::executor::with_history_io(Some(io), |work| {
+                host.provider.validate(work)?;
+                verifier.verify(scope, work)
+            })?;
+            let work = io.original_native_work().ok_or_else(|| io.invalid("merge verifier requires original native work"))?;
+            work.claim(std::mem::size_of::<Self>() as u64, 1, WorkCounters::UNCHARGED).map_err(Error::from)
+        }).transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        if original.is_some() { return Err(Error::Unsupported("native merge verification is unavailable".into())); }
+        Ok(Arc::new(Self { host,
+            #[cfg(not(target_arch = "wasm32"))] _allocation: allocation }))
+    }
 }
 
 impl UploadRecord for JoinCommitWitness {
@@ -16,44 +37,6 @@ impl UploadRecord for JoinCommitWitness {
 impl fork_preparer_io::PreparationRecord for JoinCommitWitness {
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<serde_json::Value>().max(std::mem::size_of::<Self>()) as u64
-    }
-}
-
-impl<A, O> FilesystemProjectMergeVerifier<A, O> {
-    /// Binds verification to one exact Filesystem provider identity.
-    #[must_use]
-    pub fn new(host: Arc<FilesystemHost<A, O>>) -> Self {
-        Self {
-            host,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_binding: None,
-        }
-    }
-
-    /// Binds the original parent publication MAC and current grants.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
-        host: Arc<FilesystemHost<A, O>>, verifier: &AuthorityVerifier,
-        scope: &Scope, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
-        let binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
-        Ok(Self { host, native_binding: Some(binding) })
-    }
-
-
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Shares the verifier after admitting its allocation on the original resource.
-    pub fn into_native_shared(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
-        let binding = self.native_binding.as_mut().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "merge verifier has no native authority" })?;
-        binding.authenticate(work)?;
-        let mut header = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(Error::from)?;
-        binding.custody.absorb(&mut header)
-            .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
-        Ok(Arc::new(self))
     }
 }
 

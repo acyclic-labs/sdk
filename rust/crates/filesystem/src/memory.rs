@@ -620,305 +620,214 @@ impl Default for MemoryAuthorityStore {
 }
 
 impl crate::async_storage::AsyncAuthorityStore for MemoryAuthorityStore {
-    async fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<CreateAuthorityOutcome> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let mut accounting = AuthorityAccounting::ordinary(budget, None);
-        let value = self.create_accounted(authority_id, genesis_epoch, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
+    async fn fork_workspace<G: crate::AuthorityGuard>(&self, fork: crate::WorkspaceForkCommit, permit: crate::PublicationPermit,
+        work: &mut crate::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<crate::WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
+        crate::async_storage::workspace_fork(self, fork, permit, work, guard).await
     }
-    async fn head(&self, authority_id: AuthorityId, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<Head> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let mut accounting = AuthorityAccounting::ordinary(budget, None);
-        let value = self.head_accounted(authority_id, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
+
+    async fn publication_reservation(&self, authority: AuthorityId, operation: OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<Option<crate::PublicationReservation>, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut accounting = if let Some(original) = work.original {
+            AuthorityAccounting::native(original, work.cancellation)?
+        } else { AuthorityAccounting::ordinary(work.remaining()?, Some(work.cancellation)) };
+        #[cfg(target_arch = "wasm32")]
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, Some(work.cancellation));
+        let result = self.publication_reservation_accounted(authority, operation, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map_err(|(error, _)| error)
     }
-    async fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<AppendOutcome> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let request = crate::storage::GuardedAppend {
-            authority_id, epoch, expected, commit,
-            permit: crate::storage::PublicationPermit::Unrestricted,
-        };
-        let mut accounting = AuthorityAccounting::ordinary(budget, None);
-        let plan = self.plan_append(&request, &mut accounting)?;
-        let value = self.publish_append(&request, plan, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
+    async fn reserve_publication(&self, authority: AuthorityId, expected: Head, operation: OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::ReservationOutcome, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut accounting = if let Some(original) = work.original {
+            AuthorityAccounting::native(original, work.cancellation)?
+        } else { AuthorityAccounting::ordinary(work.remaining()?, Some(work.cancellation)) };
+        #[cfg(target_arch = "wasm32")]
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, Some(work.cancellation));
+        let result = self.reserve_publication_accounted(authority, expected, operation, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map_err(|(error, _)| error)
     }
-    async fn replay(
-        &self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<Vec<DurableCommit>> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let mut accounting = AuthorityAccounting::ordinary(budget, None);
-        let (value, _allocation) = self.replay_accounted(authority_id, after, limit, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
+    async fn release_publication(&self, reservation: crate::PublicationReservation, work: &mut crate::AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut accounting = if let Some(original) = work.original {
+            AuthorityAccounting::native(original, work.cancellation)?
+        } else { AuthorityAccounting::ordinary(work.remaining()?, Some(work.cancellation)) };
+        #[cfg(target_arch = "wasm32")]
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, Some(work.cancellation));
+        let result = self.release_publication_accounted(reservation, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map_err(|(error, _)| error)
     }
-    async fn fence(
-        &self, authority_id: AuthorityId, expected: Head, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<crate::storage::FenceOutcome> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let mut accounting = AuthorityAccounting::ordinary(budget, None);
-        let value = self.fence_accounted(authority_id, expected, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
-    }
-    async fn find_operation(
-        &self, authority_id: AuthorityId, operation_id: OperationId, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<Option<DurableCommit>> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let mut accounting = AuthorityAccounting::ordinary(budget, None);
-        let value = self.find_operation_accounted(authority_id, operation_id, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
-    }
-    async fn publication_reservation(
-        &self, authority: AuthorityId, operation: OperationId, budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> AuthorityResult<Option<crate::PublicationReservation>> {
-        let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
-        let value = self.publication_reservation_accounted(authority, operation, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
-    }
-    async fn reserve_publication(
-        &self, authority: AuthorityId, expected: Head, operation: OperationId, budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> AuthorityResult<crate::ReservationOutcome> {
-        let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
-        let value = self.reserve_publication_accounted(authority, expected, operation, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
-    }
-    async fn release_publication(
-        &self, reservation: crate::PublicationReservation, budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> AuthorityResult<()> {
-        let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
-        let value = self.release_publication_accounted(reservation, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn publication_reservation_with_native_work(
-        &self, authority: AuthorityId, operation: OperationId,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::PublicationReservation>, AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
-        self.publication_reservation_accounted(authority, operation, &mut accounting)
-            .map_err(|(error, _)| error)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn reserve_publication_with_native_work(
-        &self, authority: AuthorityId, expected: Head, operation: OperationId,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<crate::PublicationReservation, AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
-        match self.reserve_publication_accounted(authority, expected, operation, &mut accounting)
-            .map_err(|(error, _)| error)? {
-            crate::ReservationOutcome::Reserved(proof) | crate::ReservationOutcome::AlreadyReserved(proof) => Ok(proof),
-            crate::ReservationOutcome::Conflict { .. } =>
-                Err(AuthorityStoreError::RejectedStatic("publication reservation head or gate changed")),
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn release_publication_with_native_work(
-        &self, reservation: crate::PublicationReservation,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<(), AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
-        self.release_publication_accounted(reservation, &mut accounting).map_err(|(error, _)| error)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn commit_workspace_fork_guarded_with_native_work<'a, E, F, Fut>(
-        &self, fork: crate::WorkspaceForkCommit, permit: crate::PublicationPermit,
-        original: &'a crate::NativeMaterializationWork, cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> Result<crate::WorkspaceForkOutcome, E>
-    where E: From<crate::FsError> + Send + 'static,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static {
-        crate::async_storage::commit_workspace_fork_in_steps_guarded_with_native_work(
-            self, fork, permit, original, cancellation, guard,
-        ).await
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn create_authority_guarded_with_native_work<'a, E, F, Fut>(
-        &self, authority: AuthorityId, epoch: Epoch,
-        original: &'a crate::NativeMaterializationWork, cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> Result<CreateAuthorityOutcome, E>
-    where E: From<crate::FsError> + Send + 'static,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static {
-        let mut accounting = AuthorityAccounting::native(original, cancellation).map_err(crate::FsError::from)?;
-        loop {
-            let plan = self.plan_create(authority, &mut accounting).map_err(|(error, _)| crate::FsError::from(error))?;
-            accounting.check().map_err(|(error, _)| crate::FsError::from(error))?;
-            guard(original).await?;
-            accounting.check().map_err(|(error, _)| crate::FsError::from(error))?;
-            if let Some(value) = self.publish_create(authority, epoch, plan, &mut accounting)
-                .map_err(|(error, _)| crate::FsError::from(error))? {
-                return Ok(value);
+    async fn create_authority<G: crate::AuthorityGuard>(&self, authority: AuthorityId, epoch: Epoch,
+        work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>)
+        -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original {
+            let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
+            if guard.is_none() { return self.create_accounted(authority, epoch, &mut accounting).map_err(|(error, _)| error.into()); }
+            loop {
+                let plan = self.plan_create(authority, &mut accounting).map_err(|(error, _)| error)?;
+                accounting.check().map_err(|(error, _)| error)?;
+                crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+                accounting.check().map_err(|(error, _)| error)?;
+                if let Some(value) = self.publish_create(authority, epoch, plan, &mut accounting).map_err(|(error, _)| error)? {
+                    return Ok(value);
+                }
             }
         }
+        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+        work.check()?;
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, None);
+        let result = self.create_accounted(authority, epoch, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        let value = result.map_err(|(error, _)| error)?;
+        if matches!(value, CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
+        Ok(value)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn create_authority_with_first_record_guarded_with_native_work<'a, E, F, Fut>(
-        &self, authority: AuthorityId, commit: ProposedCommit,
-        original: &'a crate::NativeMaterializationWork, cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> Result<bool, E>
-    where E: From<crate::FsError> + Send + 'static,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static {
-        let mut accounting = AuthorityAccounting::native(original, cancellation).map_err(crate::FsError::from)?;
-        loop {
-            let plan = self.plan_first_record(authority, &commit, &mut accounting)
-                .map_err(|(error, _)| crate::FsError::from(error))?;
-            accounting.check().map_err(|(error, _)| crate::FsError::from(error))?;
-            guard(original).await?;
-            accounting.check().map_err(|(error, _)| crate::FsError::from(error))?;
-            if let Some(value) = self.publish_first_record(authority, &commit, plan, &mut accounting)
-                .map_err(|(error, _)| crate::FsError::from(error))? {
-                return Ok(value);
+
+    async fn create_first_record<G: crate::AuthorityGuard>(&self, authority: AuthorityId, commit: ProposedCommit,
+        work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>)
+        -> Result<bool, crate::AuthorityError<G::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original {
+            let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
+            if guard.is_none() { return self.first_record_accounted(authority, commit, &mut accounting).map_err(|(error, _)| error.into()); }
+            loop {
+                let plan = self.plan_first_record(authority, &commit, &mut accounting).map_err(|(error, _)| error)?;
+                accounting.check().map_err(|(error, _)| error)?;
+                crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+                accounting.check().map_err(|(error, _)| error)?;
+                if let Some(value) = self.publish_first_record(authority, &commit, plan, &mut accounting).map_err(|(error, _)| error)? {
+                    return Ok(value);
+                }
             }
         }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn create_authority_with_native_work(
-        &self, authority: AuthorityId, epoch: Epoch,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<CreateAuthorityOutcome, AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
-        self.create_accounted(authority, epoch, &mut accounting).map_err(|(error, _)| error)
-    }
-    async fn create_authority_with_first_record(
-        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> AuthorityResult<bool> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
-        let value = self.first_record_accounted(authority, commit, &mut accounting)?;
-        Ok(crate::OperationReceipt { value, work: accounting.spent() })
-    }
-    async fn create_authority_with_first_record_guarded<F, Fut>(
-        &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
-        cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> crate::facade::FsResult<bool>
-    where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::facade::FsResult<()>> + Send,
-    {
-        let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
-        loop {
-            let plan = self.plan_first_record(authority, &commit, &mut accounting)
-                .map_err(authority_fs_failure)?;
-            if !matches!(&plan, MemoryFirstRecordPlan::Resolved(false)) {
-                let live = accounting.ordinary_parts().0.live_bytes();
-                let mut remaining = accounting.spent().remaining(budget)
-                    .map_err(|error| authority_fs_failure(accounting.work_failure(error)))?;
-                remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(live)
-                    .ok_or_else(|| authority_fs_failure(accounting.failure(crate::WorkError::Overflow.into())))?;
-                let receipt = guard(remaining).await.map_err(|mut failure| {
-                    failure.work.peak_allocation_bytes = live
-                        .checked_add(failure.work.peak_allocation_bytes).unwrap_or(u64::MAX);
-                    failure.map_with_prior_work(accounting.spent(), std::convert::identity)
-                })?;
-                let mut spent = receipt.work;
-                spent.peak_allocation_bytes = live.checked_add(spent.peak_allocation_bytes)
-                    .ok_or_else(|| authority_fs_failure(accounting.failure(crate::WorkError::Overflow.into())))?;
-                accounting.record(spent).map_err(authority_fs_failure)?;
-                accounting.spent().verify(budget)
-                    .map_err(|error| authority_fs_failure(accounting.failure(error.into())))?;
-            }
-            if let Some(value) = self.publish_first_record(authority, &commit, plan, &mut accounting)
-                .map_err(authority_fs_failure)? {
-                return Ok(crate::facade::FsReceipt { value, work: accounting.spent() });
-            }
+        let budget = work.remaining()?;
+        let mut accounting = AuthorityAccounting::ordinary(budget, Some(work.cancellation));
+        if guard.is_none() {
+            let result = self.first_record_accounted(authority, commit, &mut accounting);
+            let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+            work.record(delta)?;
+            return result.map_err(|(error, _)| error.into());
         }
+        let result = async {
+            loop {
+                let plan = self.plan_first_record(authority, &commit, &mut accounting).map_err(|(error, _)| error)?;
+                if !matches!(&plan, MemoryFirstRecordPlan::Resolved(false)) {
+                    let live = accounting.ordinary_parts().0.live_bytes();
+                    let mut remaining = accounting.spent().remaining(budget).map_err(AuthorityStoreError::from)?;
+                    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(live)
+                        .ok_or(AuthorityStoreError::from(crate::WorkError::Overflow))?;
+                    let mut child = crate::AuthorityWork::new(remaining, work.cancellation);
+                    let result = crate::async_storage::seal(guard.as_deref_mut(), &mut child).await;
+                    let mut spent = child.spent();
+                    spent.peak_allocation_bytes = if result.is_err() {
+                        live.saturating_add(spent.peak_allocation_bytes)
+                    } else {
+                        live.checked_add(spent.peak_allocation_bytes)
+                            .ok_or(AuthorityStoreError::from(crate::WorkError::Overflow))?
+                    };
+                    accounting.record(spent).map_err(|(error, _)| error)?;
+                    result?;
+                    accounting.spent().verify(budget).map_err(AuthorityStoreError::from)?;
+                }
+                if let Some(value) = self.publish_first_record(authority, &commit, plan, &mut accounting).map_err(|(error, _)| error)? {
+                    return Ok(value);
+                }
+            }
+        }.await;
+        work.record(accounting.spent())?;
+        result
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn create_authority_with_first_record_with_native_work(
-        &self, authority: AuthorityId, commit: ProposedCommit,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<bool, AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
-        self.first_record_accounted(authority, commit, &mut accounting).map_err(|(error, _)| error)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn compare_and_append_guarded_with_native_work(
-        &self, request: crate::storage::GuardedAppend, original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(AppendOutcome, crate::NativeAllocation), AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
-        let plan = self.plan_append(&request, &mut accounting).map_err(|(error, _)| error)?;
-        let value = self.publish_append(&request, plan, &mut accounting).map_err(|(error, _)| error)?;
-        let allocation = original.claim(0, 0, WorkCounters::UNCHARGED)?;
-        Ok((value, allocation))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn compare_and_append_guarded_with_native_owner<F, Fut, E>(
-        &self, request: crate::storage::GuardedAppend, original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> Result<(AppendOutcome, crate::NativeAllocation), E>
-    where
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<AuthorityStoreError> + Send + 'static,
-    {
-        let mut accounting = AuthorityAccounting::native(original, cancellation).map_err(E::from)?;
-        let plan = self.plan_append(&request, &mut accounting).map_err(|(error, _)| E::from(error))?;
-        guard(original).await?;
-        let value = self.publish_append(&request, plan, &mut accounting)
-            .map_err(|(error, _)| E::from(error))?;
-        let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)
-            .map_err(|error| E::from(AuthorityStoreError::from(error)))?;
-        Ok((value, allocation))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn head_with_native_work(
-        &self, authority_id: AuthorityId,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Head, AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
-        let head = self.head_accounted(authority_id, &mut accounting).map_err(|(error, _)| error)?;
-        drop(work.claim(0, 0, WorkCounters::UNCHARGED)?);
-        Ok(head)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn replay_with_native_work(
-        &self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(Vec<DurableCommit>, crate::materializer::NativeAllocation), AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
-        let (page, allocation) = self.replay_accounted(authority_id, after, limit, &mut accounting)
-            .map_err(|(error, _)| error)?;
-        match allocation {
-            KernelOwnedAllocation::NativeOriginal(allocation) => Ok((page, allocation)),
-            KernelOwnedAllocation::Standalone => unreachable!("native replay allocation"),
+
+    async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend,
+        work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>)
+        -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original {
+            let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
+            let plan = self.plan_append(&request, &mut accounting).map_err(|(error, _)| error)?;
+            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+            let value = self.publish_append(&request, plan, &mut accounting).map_err(|(error, _)| error)?;
+            let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(AuthorityStoreError::from)?;
+            return Ok((value, Some(allocation)));
         }
+        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+        work.check()?;
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, None);
+        let result = self.plan_append(&request, &mut accounting)
+            .and_then(|plan| self.publish_append(&request, plan, &mut accounting));
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map(|value| (value, None)).map_err(|(error, _)| error.into())
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn fence_with_native_work(
-        &self, authority_id: AuthorityId, expected: Head,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::storage::FenceOutcome, AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
-        let outcome = self.fence_accounted(authority_id, expected, &mut accounting).map_err(|(error, _)| error)?;
-        drop(work.claim(0, 0, WorkCounters::UNCHARGED)?);
-        Ok(outcome)
+
+    async fn head(&self, authority: AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<Head, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original {
+            let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
+            let value = self.head_accounted(authority, &mut accounting).map_err(|(error, _)| error)?;
+            let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+            drop(allocation);
+            return Ok(value);
+        }
+        work.check()?;
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, None);
+        let result = self.head_accounted(authority, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map_err(|(error, _)| error)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn find_operation_with_native_work(
-        &self, authority_id: AuthorityId, operation_id: OperationId,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(Option<DurableCommit>, crate::materializer::NativeAllocation), AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
-        let value = self.find_operation_accounted(authority_id, operation_id, &mut accounting)
-            .map_err(|(error, _)| error)?;
-        let allocation = work.claim(0, 0, WorkCounters::UNCHARGED)?;
-        Ok((value, allocation))
+    async fn replay(&self, authority: AuthorityId, after: Sequence, limit: ReplayLimit, work: &mut crate::AuthorityWork<'_>) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original {
+            let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
+            let (page, allocation) = self.replay_accounted(authority, after, limit, &mut accounting)
+                .map_err(|(error, _)| error)?;
+            let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else { unreachable!("native replay allocation"); };
+            return Ok((page, Some(allocation)));
+        }
+        work.check()?;
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, None);
+        let result = self.replay_accounted(authority, after, limit, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map_err(|(error, _)| error).map(|(value, _allocation)| (value, None))
+    }
+    async fn fence(&self, authority: AuthorityId, expected: Head, work: &mut crate::AuthorityWork<'_>) -> Result<crate::FenceOutcome, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original {
+            let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
+            let value = self.fence_accounted(authority, expected, &mut accounting).map_err(|(error, _)| error)?;
+            let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+            drop(allocation);
+            return Ok(value);
+        }
+        work.check()?;
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, None);
+        let result = self.fence_accounted(authority, expected, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map_err(|(error, _)| error)
+    }
+    async fn find_operation(&self, authority: AuthorityId, operation: OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original {
+            let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
+            let value = self.find_operation_accounted(authority, operation, &mut accounting).map_err(|(error, _)| error)?;
+            let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+            return Ok((value, Some(allocation)));
+        }
+        work.check()?;
+        let mut accounting = AuthorityAccounting::ordinary(work.remaining()?, None);
+        let result = self.find_operation_accounted(authority, operation, &mut accounting);
+        let delta = match &result { Ok(_) => accounting.spent(), Err((_, delta)) => *delta };
+        work.record(delta)?;
+        result.map_err(|(error, _)| error).map(|value| (value, None))
     }
 }
 

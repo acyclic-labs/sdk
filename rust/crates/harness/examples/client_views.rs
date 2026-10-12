@@ -770,7 +770,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             "test.txt",
             64,
             &IdempotencyKey::new("source")?,
-        )
+         None, None)
         .await?;
     let workspace = workspace_ref(provider.clone(), &volume.storage_name()?)?;
     let before = host.resolve(&workspace).await?.generation;
@@ -808,7 +808,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
     ));
     assert_eq!(host.resolve(&workspace).await?.generation, before);
     assert_eq!(
-        host.read_content(&source, &read, 64).await?.as_ref(),
+        host.read_content(&source, &read, 64, None).await?.as_ref(),
         b"one two"
     );
     client
@@ -848,7 +848,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         Provenance::Authoritative(_)
     ));
     assert_eq!(
-        host.read_content(&edited, &read, 64).await?.as_ref(),
+        host.read_content(&edited, &read, 64, None).await?.as_ref(),
         b"one three"
     );
     let stale = client
@@ -872,7 +872,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             "test.txt",
             64,
             &IdempotencyKey::new("user")?,
-        )
+         None, None)
         .await?;
     let head = host.resolve(&workspace).await?.generation;
     let host = FilesystemHost::new(filesystem, provider)?;
@@ -924,7 +924,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
     );
     assert_eq!(host.resolve(&workspace).await?.generation, head);
     assert_eq!(
-        host.read_content(&user, &read, 64).await?.as_ref(),
+        host.read_content(&user, &read, 64, None).await?.as_ref(),
         b"user edit"
     );
     Ok(())

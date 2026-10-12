@@ -114,7 +114,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .await?
         .with_content_verifier(reader.clone())
         .with_fork_verifier(forks)
-        .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(host.clone())));
+        .with_merge_verifier(FilesystemProjectMergeVerifier::new(host.clone(), None)?);
         aggregate
             .execute(Command {
                 operation_id: OperationId::from_bytes([3; 16]),
@@ -139,7 +139,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 "request.txt",
                 1_024,
                 &IdempotencyKey::new("message")?,
-            )
+             None, None)
             .await?;
         let attachment_file = host
             .put_content(
@@ -151,7 +151,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 "image.png",
                 1_024,
                 &IdempotencyKey::new("attachment")?,
-            )
+             None, None)
             .await?;
         aggregate
             .execute(Command {
@@ -282,7 +282,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 "merge.txt",
                 1_024,
                 &IdempotencyKey::new("merge-notice")?,
-            )
+             None, None)
             .await?;
         let notice = ConversationMessage {
             id: Uuid::from_bytes([8; 16]),
@@ -431,7 +431,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         ReferencedAttachments::Inline { items } if items.len() == 1 && items.first().is_some_and(|item| item.file == attachment_file)));
     let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &private, VolumeOperation::Read)?;
     assert_eq!(
-        host.read_content(&attachment_file, &read, 1_024)
+        host.read_content(&attachment_file, &read, 1_024, None)
             .await?
             .as_ref(),
         &[137, 80, 78, 71]
@@ -446,7 +446,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     )?;
     assert!(
         !host
-            .read_content(&inherited_file, &child_read, 64 * 1_024)
+            .read_content(&inherited_file, &child_read, 64 * 1_024, None)
             .await?
             .is_empty()
     );
@@ -455,7 +455,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .is_err()
     );
     assert!(
-        host.read_content(&attachment_file, &child_read, 1_024)
+        host.read_content(&attachment_file, &child_read, 1_024, None)
             .await
             .is_err()
     );
@@ -472,7 +472,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         &attachment_file,
     )?;
     assert_eq!(
-        host.read_content(&attachment_file, &inherited_reference_read, 1_024)
+        host.read_content(&attachment_file, &inherited_reference_read, 1_024, None)
             .await?
             .as_ref(),
         &[137, 80, 78, 71]
@@ -494,7 +494,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     assert!(delegated.capabilities().contains(&attachment_capability));
     let exact_read = ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &attachment_file)?;
     assert_eq!(
-        host.read_content(&attachment_file, &exact_read, 1_024)
+        host.read_content(&attachment_file, &exact_read, 1_024, None)
             .await?
             .as_ref(),
         &[137, 80, 78, 71]

@@ -28,8 +28,8 @@
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         let forged_issuer = AuthorityIssuer::new("native-verifier-test", [5; 32],
             Authority { kind: AggregateKind::Conversation, id: "parent".into() });
-        assert!(FilesystemProjectMergeVerifier::new_with_native_work(
-            host, &forged_issuer.verifier(&mut None).expect("verifier copy"), &scope, &work).is_err());
+        assert!(FilesystemProjectMergeVerifier::new(
+            host, Some((&forged_issuer.verifier(&mut None).expect("verifier copy"), &scope, &PreparationIo::from_native_work(&work)?))).is_err());
         drop(verifier);
         Ok(())
     }
@@ -74,7 +74,7 @@
         assert_eq!(
             host.read(&reference, Some(&updated), "/hello.txt", 16)
                 .await?,
-            Bytes::from_static(b"hello")
+            Bytes::from_static(b"hello").into()
         );
         assert!(matches!(
             host.apply(
@@ -101,10 +101,10 @@
         let owner = AgentId::from_bytes([3; 16]);
         let volume = VolumeRef::new(
             provider,
-            "agent-private-a",
+            "agent-private-a".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new(
             "test",
@@ -131,7 +131,7 @@
                 "first.txt",
                 16,
                 &IdempotencyKey::new("stage-first")?,
-            )
+             None, None)
             .await?;
         let second = host
             .put_content(
@@ -143,7 +143,7 @@
                 "first.txt",
                 16,
                 &IdempotencyKey::new("stage-second")?,
-            )
+             None, None)
             .await?;
         assert_eq!(
             host.put_content(
@@ -155,7 +155,7 @@
                 "first.txt",
                 16,
                 &IdempotencyKey::new("stage-first")?
-            )
+            , None, None)
             .await?,
             first
         );
@@ -178,19 +178,19 @@
                     display_name,
                     16,
                     &IdempotencyKey::new("stage-first")?
-                )
+                , None, None)
                 .await
                 .is_err()
             );
         }
         assert_ne!(first.version(), second.version());
         assert_eq!(
-            host.read_content(&first, &read, 16).await?,
-            Bytes::from_static(b"one")
+            host.read_content(&first, &read, 16, None).await?,
+            Bytes::from_static(b"one").into()
         );
         assert_eq!(
-            host.read_content(&second, &read, 16).await?,
-            Bytes::from_static(b"two")
+            host.read_content(&second, &read, 16, None).await?,
+            Bytes::from_static(b"two").into()
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -211,7 +211,7 @@
             assert_eq!(bytes.as_ref(), b"two");
             drop(bytes);
             let tampered = FileRef::new(first.volume().clone(), first.path(), first.version(),
-                second.descriptor().clone(), first.display_name())?;
+                second.descriptor().clone(), first.display_name(), &mut None)?;
             assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
             let denied_scope = issuer.issue("no-files", &Capabilities::default(), Some(owner), None, &mut None).expect("scope proof");
             let denied = FilesystemForkVerifier::new_with_native_work(
@@ -245,8 +245,8 @@
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(
@@ -256,16 +256,16 @@
                 kind: PrivateDirectoryEntryKind::File,
             }]
         );
-        let (portable_ref, portable_bytes) = erased
+        let (portable_ref, portable_bytes, _portable_hold) = erased
             .read_private_path(
                 &volume,
                 "messages",
                 "messages/first.txt",
-                Some(&listed_generation),
-            )
+                Some(&listed_generation), 16, None,
+            )?
             .await?;
         assert_eq!(portable_ref, second);
-        assert_eq!(portable_bytes, b"two");
+        assert_eq!(portable_bytes.as_ref(), b"two");
         let (pinned, delegated_bytes) = delegated_reader
             .read_private_path(
                 &volume,
@@ -275,7 +275,7 @@
             )
             .await?;
         assert_eq!(pinned, second);
-        assert_eq!(delegated_bytes, b"two");
+        assert_eq!(delegated_bytes.as_ref(), b"two");
         host.put_content(
             &volume,
             &write,
@@ -285,7 +285,7 @@
             "later.txt",
             16,
             &IdempotencyKey::new("stage-later")?,
-        )
+         None, None)
         .await?;
         let (old_generation, old_page) = delegated_reader
             .list_private_directory(
@@ -294,8 +294,8 @@
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(old_generation, listed_generation);
         assert_eq!(old_page.entries, page.entries);
@@ -312,7 +312,7 @@
             )
             .await?;
         assert_eq!(old_ref, second);
-        assert_eq!(old_bytes, b"two");
+        assert_eq!(old_bytes.as_ref(), b"two");
         assert!(
             delegated_reader
                 .list_private_directory(&volume, "messages", "elsewhere", None, None, 10)
@@ -322,7 +322,7 @@
         let delegated =
             ContentGrant::verify_directory_read(&verifier, &delegated_scope, &volume, "messages", &mut None)?;
         let (discovered, bytes) = host
-            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16)
+            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)?
             .await?;
         assert_eq!(bytes.as_ref(), b"two");
         assert_ne!(discovered.version(), second.version());
@@ -338,7 +338,7 @@
                 "forged.json",
                 16,
                 &IdempotencyKey::new("internal-write")?
-            )
+            , None, None)
             .await
             .is_err()
         );
@@ -352,7 +352,7 @@
                 "empty.txt",
                 16,
                 &IdempotencyKey::new("stage-empty")?,
-            )
+             None, None)
             .await?;
         assert!(matches!(
             delegated_reader
@@ -365,15 +365,15 @@
                 .await,
             Err(Error::NotFound(_))
         ));
-        assert!(host.read_content(&empty, &read, 16).await?.is_empty());
+        assert!(host.read_content(&empty, &read, 16, None).await?.is_empty());
         let wrong_digest = FileRef::new(
             volume.clone(),
             first.path(),
             first.version(),
-            FileDescriptor::new([0; 32], 3, "text/plain")?,
+            FileDescriptor::new([0; 32], 3, "text/plain".into())?,
             first.display_name(),
-        )?;
-        assert!(host.read_content(&wrong_digest, &read, 16).await.is_err());
+         &mut None)?;
+        assert!(host.read_content(&wrong_digest, &read, 16, None).await.is_err());
         assert!(
             host.put_content(
                 &volume,
@@ -384,17 +384,17 @@
                 "escape",
                 16,
                 &IdempotencyKey::new("invalid-path")?,
-            )
+             None, None)
             .await
             .is_err()
         );
-        assert!(host.read_content(&first, &write, 16).await.is_err());
+        assert!(host.read_content(&first, &write, 16, None).await.is_err());
         let other = VolumeRef::new(
             volume.provider().clone(),
-            "agent-private-b",
+            "agent-private-b".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([5; 16])),
-        )?;
+         &mut None)?;
         assert!(ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, u64::MAX, &mut None).is_err());
         Ok(())
     }
@@ -414,10 +414,10 @@
         let agent = AgentId::from_bytes([7; 16]);
         let volume = VolumeRef::new(
             provider,
-            "scratch",
+            "scratch".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let authority = Authority {
             kind: AggregateKind::Conversation,
@@ -444,7 +444,7 @@
                 "input.txt",
                 32,
                 &IdempotencyKey::new("input-upload")?,
-            )
+             None, None)
             .await?;
         let manifest = host
             .put_attachment_manifest(
@@ -488,11 +488,11 @@
         let mut missing = message.clone();
         missing.content = FileRef::new(
             volume,
-            "messages/missing.txt",
-            file.version(),
+            "messages/missing.txt".into(),
+            file.version().into(),
             file.descriptor().clone(),
-            "missing.txt",
-        )?;
+            "missing.txt".into(),
+         &mut None)?;
         let command = |id: u8, value: ConversationMessage| -> Result<Command> {
             Ok(Command {
                 operation_id: OperationId::from_bytes([id; 16]),
@@ -511,11 +511,11 @@
         missing_attachment.attachments = vec![Attachment {
             file: FileRef::new(
                 file.volume().clone(),
-                "attachments/missing.bin",
-                file.version(),
+                "attachments/missing.bin".into(),
+                file.version().into(),
                 file.descriptor().clone(),
-                "missing.bin",
-            )?,
+                "missing.bin".into(),
+             &mut None)?,
             label: None,
         }]
         .into();
@@ -586,5 +586,3 @@
         assert!(read.require(file.volume(), VolumeOperation::Read, None).is_ok());
         Ok(())
     }
-
-

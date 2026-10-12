@@ -80,82 +80,67 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
     ) -> Result<ParentMergePlan<A, O>>
     where F: FnMut() -> Fut, Fut: Future<Output = Result<()>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(custody) = &self.native_custody {
-            let work = custody.work();
-            let io = self.require_with_native_work(capability::PROJECT_MERGE, VolumeOperation::Write, work)?;
-            source.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        let native_io = self.native_custody.as_ref().map(|custody| {
+            let io = self.require_with_native_work(capability::PROJECT_MERGE, VolumeOperation::Write, custody.work())?;
+            source.validate(&mut Some(&mut io.history_io()))?;
             if source.provider() != &self.host.provider
-                || (!selected && !io.contains_capability(self.scope.capabilities(), source, "volume:read:")?)
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "project import source is not currently readable by this parent" });
+                || (!selected && !io.contains_capability(self.scope.capabilities(), source, "volume:read:")?) {
+                return Err(fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Unauthorized,
+                    "project import source is not currently readable by this parent"));
             }
-            guard().await?;
-            let source_ref = fork_preparer_io::content_workspace(&self.host.provider, source, Some(&io))?;
-            let target_ref = fork_preparer_io::content_workspace(&self.host.provider, &self.project, Some(&io))?;
-            let source_workspace = fork_preparer_io::open(self.host, &source_ref, &io).await?;
-            guard().await?;
-            let target_workspace = fork_preparer_io::open(self.host, &target_ref, &io).await?;
-            guard().await?;
-            let source_generation = fork_preparer_io::generation(self.host, &source_workspace, generation, &io).await?;
-            guard().await?;
-            let target_generation = if let Some(target) = selected_target {
-                fork_preparer_io::generation(self.host, &target_workspace, target, &io).await?
-            } else {
-                target_workspace.head(work, work.cancellation()).await.map_err(|error| (error, None))
-                    .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
-            };
-            guard().await?;
-            let plan = source_workspace.join_into(&target_workspace)
-                .plan_at(&source_generation, &target_generation, work, work.cancellation()).await
-                .map_err(|source| Error::NativeWorkspace { source, custody: None })?;
-            work.remaining()?;
-            guard().await?;
-            let child_project = source.copy(&mut Some(&mut io.history_io()))?;
-            let parent_project = self.project.copy(&mut Some(&mut io.history_io()))?;
-            let mut observer = io.history_io();
-            let parent_scope = self.scope.copy(&mut Some(&mut observer))?;
-            drop(observer);
-            drop(source_ref);
-            drop(target_ref);
-            let scope_owned = parent_scope.logical_owned_bytes()?;
-            let retained = child_project.logical_owned_bytes()?
-                .checked_add(parent_project.logical_owned_bytes()?)
-                .and_then(|bytes| bytes.checked_add(scope_owned))
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "native merge plan ownership overflows" })?;
-            let custody = io.into_native_custody(retained)?;
-            return Ok(ParentMergePlan { plan, child_project, parent_project, parent_scope,
-                native_custody: Some(custody) });
-        }
-        self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
-        if !selected {
-            ContentGrant::verify(&self.verifier, &self.scope, source, VolumeOperation::Read, u64::MAX, &mut None)?;
-        }
-        guard().await?;
-        source.validate(&mut None)?;
-        self.host.validate_provider(source.provider())?;
-        let source_workspace = self.host.open(&workspace_ref(
-            self.host.provider.clone(), &source.storage_name(&mut None)?)?).await?;
-        guard().await?;
-        let target_workspace = self.host.open(&workspace_ref(
-            self.host.provider.clone(), &self.project.storage_name(&mut None)?)?).await?;
-        guard().await?;
-        let source_generation = self.host.generation(&source_workspace, generation).await?;
-        guard().await?;
-        let target_generation = if let Some(target) = selected_target {
-            self.host.generation(&target_workspace, target).await?
-        } else {
-            target_workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?
+            Ok(io)
+        }).transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let native_io: Option<PreparationIo> = None;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = native_io.is_some();
+        let io = match native_io {
+            Some(io) => io,
+            None => {
+                self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
+                if !selected { ContentGrant::verify(&self.verifier, &self.scope, source, VolumeOperation::Read, u64::MAX, &mut None)?; }
+                source.validate(&mut None)?;
+                self.host.validate_provider(source.provider())?;
+                PreparationIo::for_unmeasured(&cancellation)?
+            }
         };
         guard().await?;
-        let plan = source_workspace.join_into(&target_workspace)
-            .plan_at(&source_generation, &target_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
+        let source_ref = fork_preparer_io::content_workspace(&self.host.provider, source, Some(&io))?;
+        let target_ref = fork_preparer_io::content_workspace(&self.host.provider, &self.project, Some(&io))?;
+        let source_workspace = fork_preparer_io::open(self.host, &source_ref, &io).await?;
         guard().await?;
-        Ok(ParentMergePlan { plan, child_project: source.clone(),
-            parent_project: self.project.clone(), parent_scope: self.scope.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None })
+        let target_workspace = fork_preparer_io::open(self.host, &target_ref, &io).await?;
+        guard().await?;
+        let source_generation = fork_preparer_io::generation(self.host, &source_workspace, generation, &io).await?;
+        guard().await?;
+        let target_generation = if let Some(target) = selected_target {
+            fork_preparer_io::generation(self.host, &target_workspace, target, &io).await?
+        } else {
+            fork_preparer_io::filesystem_call!(&io, original,
+                async { target_workspace.head(original, io.cancellation()).await.map_err(|error| (error, None)) },
+                target_workspace.head(io.remaining()?, io.cancellation()))?
+        };
+        guard().await?;
+        let join = source_workspace.join_into(&target_workspace);
+        let plan = fork_preparer_io::filesystem_call!(&io, original,
+            async { join.plan_at(&source_generation, &target_generation, original, io.cancellation()).await.map_err(|error| (error, None)) },
+            join.plan_at(&source_generation, &target_generation, io.remaining()?, io.cancellation()))?;
+        io.remaining()?;
+        guard().await?;
+        let (child_project, parent_project, parent_scope) = crate::executor::with_history_io(Some(&io), |work|
+            Ok((source.copy(work)?, self.project.copy(work)?, self.scope.copy(work)?)))?;
+        drop(source_ref); drop(target_ref);
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_custody = if native {
+            let scope_owned = parent_scope.logical_owned_bytes()?;
+            let retained = child_project.logical_owned_bytes()?.checked_add(parent_project.logical_owned_bytes()?)
+                .and_then(|bytes| bytes.checked_add(scope_owned))
+                .ok_or_else(|| io.invalid("native merge plan ownership overflows"))?;
+            Some(io.into_native_custody(retained)?)
+        } else { None };
+        Ok(ParentMergePlan { plan, child_project, parent_project, parent_scope,
+            #[cfg(not(target_arch = "wasm32"))] native_custody })
     }
 
     #[cfg(not(target_arch = "wasm32"))]

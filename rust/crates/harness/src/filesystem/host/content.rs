@@ -1,101 +1,24 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    /// Stages an immutable version of one volume file before conversation admission.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "public upload names every identity, descriptor field, bound, and retry key explicitly"
-    )]
+    /// Stages a pinned file, optionally checking a generation and charging preparation IO.
+    #[allow(clippy::too_many_arguments, reason = "complete staged file identity")]
     pub async fn put_content(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-        maximum_bytes: u64,
-        idempotency_key: &IdempotencyKey,
+        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str, bytes: &[u8],
+        media_type: &str, display_name: &str, maximum_bytes: u64, key: &IdempotencyKey,
+        expected_generation: Option<&GenerationRef>, io: Option<&PreparationIo>,
     ) -> Result<FileRef> where A: 'static, O: 'static {
-        self.put_content_impl(volume,
-        grant,
-        path,
-        bytes,
-        media_type,
-        display_name,
-        maximum_bytes,
-        idempotency_key,
-        None,
-        None,
-        None, None, None)
-        .await
+        if expected_generation.is_some() { crate::tool::edit::validate_edit_bound(maximum_bytes)?; }
+        self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
+            maximum_bytes, key, None, expected_generation, io, None, None).await
     }
 
-    /// Publishes through the same upload engine with finite cumulative work.
-    #[allow(clippy::too_many_arguments, reason = "complete upload identity and finite work contract")]
-    pub async fn put_content_measured(
-        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str, bytes: &[u8],
-        media_type: &str, display_name: &str, maximum_bytes: u64,
-        idempotency_key: &IdempotencyKey, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error> where A: 'static, O: 'static {
-        let io = fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
-            maximum_bytes, idempotency_key, None, None, Some(&io), None, None).await;
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
-
-    /// Publishes under the caller's exact original key on its native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "original upload identity and native ledger")]
-    pub async fn put_content_with_native_work(
-        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str, bytes: &[u8],
-        media_type: &str, display_name: &str, maximum_bytes: u64,
-        key: &IdempotencyKey, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> where A: 'static, O: 'static {
-        let io = PreparationIo::from_native_work(work)?;
-        let file = self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
-            maximum_bytes, key, None, None, Some(&io), None, None).await?;
-        let retained = file.logical_owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok((file, custody))
-    }
-
-    /// Recovers only an original immutable upload generation and its metadata.
-    #[allow(clippy::too_many_arguments, reason = "original upload reconciliation binds authority, identity and bounds")]
-    pub async fn content_for_operation_measured(
+    /// Recovers the original upload generation and authenticated metadata.
+    pub async fn content_for_operation(
         &self, volume: &VolumeRef, grant: &ContentGrant, key: &IdempotencyKey,
-        path: &str, maximum_bytes: u64, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error> {
-        let io = fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = self.content_for_operation_impl(volume, grant, key, Some(path), maximum_bytes, Some(&io)).await;
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
-
-    /// Recovers the caller's original operation generation, path and metadata; absence is authenticated original-operation absence, never mutable head state.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "original retry identity and native ledger")]
-    pub async fn content_for_operation_with_native_work(
-        &self, volume: &VolumeRef, grant: &ContentGrant, key: &IdempotencyKey,
-        path: &str, maximum_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<(FileRef, acyclic_fs::NativeAllocation)>> {
-        let io = PreparationIo::from_native_work(work)?;
-        let Some(file) = self.content_for_operation_impl(
-            volume, grant, key, Some(path), maximum_bytes, Some(&io)).await? else {
-                return Ok(None);
-            };
-        let retained = file.logical_owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok(Some((file, custody)))
+        path: &str, maximum_bytes: u64, io: Option<&PreparationIo>,
+    ) -> Result<Option<FileRef>> {
+        self.content_for_operation_impl(volume, grant, key, Some(path), maximum_bytes, io).await
     }
 
     pub(crate) async fn original_internal_content_for_operation_with_io(
@@ -208,38 +131,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(Some(reference))
     }
 
-    /// Publishes content only at an explicitly pinned workspace generation.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "generation-checked publication names the same complete contract as uploads"
-    )]
-    pub async fn put_content_at(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-        maximum_bytes: u64,
-        idempotency_key: &IdempotencyKey,
-        expected_generation: &GenerationRef,
-    ) -> Result<FileRef> where A: 'static, O: 'static {
-        crate::tool::edit::validate_edit_bound(maximum_bytes)?;
-        self.put_content_impl(volume,
-        grant,
-        path,
-        bytes,
-        media_type,
-        display_name,
-        maximum_bytes,
-        idempotency_key,
-        None,
-        Some(expected_generation),
-        None, None, None)
-        .await
-    }
-
     /// Trusted journal staging retains the same atomic metadata and retry checks as public uploads, but may write only its assigned subtree.
     #[allow(
         clippy::too_many_arguments,
@@ -310,7 +201,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "attachments.json",
                 maximum_bytes,
                 idempotency_key,
-            )
+             None, None)
             .await?;
         Ok(ReferencedAttachments::Manifest {
             manifest,

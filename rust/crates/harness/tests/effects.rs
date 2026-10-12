@@ -100,7 +100,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         ("effects/result-schema.json", br#"{"type":"object","required":["receipt"]}"#.as_slice(), "application/schema+json", "result-schema.json", "schema-upload"),
         ("effects/invalid-schema.json", br#"{"type":17}"#.as_slice(), "application/schema+json", "invalid-schema.json", "invalid-schema-upload"),
     ] {
-        files.push(host.put_content(&volume, &write, path, bytes, mime, name, 4_096, &IdempotencyKey::new(key)?).await?);
+        files.push(host.put_content(&volume, &write, path, bytes, mime, name, 4_096, &IdempotencyKey::new(key)?, None, None).await?);
     }
     let [request, result, schema, invalid_schema]: [FileRef; 4] = files.try_into().unwrap();
     let verifier = Arc::new(FilesystemContentVerifier::new(

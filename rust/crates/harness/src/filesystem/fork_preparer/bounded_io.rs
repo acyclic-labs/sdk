@@ -272,7 +272,8 @@ impl PreparationIo {
         Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
-    pub(crate) fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
+    /// Starts finite preparation accounting with the caller's cancellation token.
+    pub fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
         if !budget.has_finite_allowances() {
             return Err(Error::Invalid("measured content requires finite work allowances".into()));
         }
@@ -335,7 +336,8 @@ impl PreparationIo {
 
     /// Move already admitted ownership; never retain it a second time.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+    /// Transfers retained output storage to its caller.
+    pub fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
         match self {
             PreparationIo::Native { custody, .. } => custody.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1094,7 +1096,7 @@ macro_rules! filesystem_call {
         result
     }};
 }
-pub(super) use filesystem_call;
+pub(in crate::filesystem) use filesystem_call;
 
 pub(super) fn digest(bytes: &[u8], io: Option<&PreparationIo>) -> Result<blake3::Hash> {
     let work = WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
@@ -1630,10 +1632,10 @@ mod tests {
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("ordinary-owner-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
-        let volume = VolumeRef::new(provider, "owned", VolumeClass::Project,
-            VolumeOwner::Project("ordinary-owner-control".into()))?;
+        let volume = VolumeRef::new(provider, "owned".into(), VolumeClass::Project,
+            VolumeOwner::Project("ordinary-owner-control".into()), &mut None)?;
         let initial = host.create_volume(&volume).await?;
-        let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
+        let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec().into() }];
         let cancellation = CancellationToken::new();
         let denied_io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation)?;
         let denied = publish_generation(
@@ -1663,8 +1665,8 @@ mod tests {
     async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
-        let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
-            VolumeOwner::Project("source-read-control".into()));
+        let project = |name: &str| VolumeRef::new(provider.clone(), name.into(), VolumeClass::Project,
+            VolumeOwner::Project("source-read-control".into()), &mut None);
         let source = project("selected")?;
         let caller = project("caller")?;
         let child = project("child")?;
@@ -1672,10 +1674,10 @@ mod tests {
         let initial = host.create_volume(&source).await?;
         let caller_head = host.create_volume(&caller).await?;
         let selected_generation = host.apply(&initial.workspace, Some(&initial.generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"selected".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"selected".to_vec().into() }],
             &IdempotencyKey::new("selected-generation")?).await?;
         let wrong_generation = host.apply(&caller_head.workspace, Some(&caller_head.generation),
-            &[WorkspaceMutation::PutFile { path: "/other.txt".into(), bytes: b"other-source".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/other.txt".into(), bytes: b"other-source".to_vec().into() }],
             &IdempotencyKey::new("other-source-generation")?).await?;
         let issuer = AuthorityIssuer::new("source-read-control", [41; 32], Authority {
             kind: AggregateKind::Conversation, id: "caller".into(),
@@ -1689,7 +1691,7 @@ mod tests {
             None, &IdempotencyKey::new("denied-source-read")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]
             None).await, Err(Error::Unauthorized(_))));
-        let denied_ref = workspace_ref(provider.clone(), &denied_child.storage_name(&mut None)?)?;
+        let denied_ref = crate::filesystem::workspace_ref(provider.clone(), &denied_child.storage_name(&mut None)?)?;
         assert!(host.resolve(&denied_ref).await.is_err());
         assert!(fork(&host, &source, &selected_read, &wrong_generation, &denied_child,
             None, &IdempotencyKey::new("wrong-generation")?, None, None,
@@ -1697,7 +1699,7 @@ mod tests {
             None).await.is_err());
         assert!(host.resolve(&denied_ref).await.is_err());
         let later_generation = host.apply(&initial.workspace, Some(&selected_generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec().into() }],
             &IdempotencyKey::new("later-generation")?).await?;
         let forked = fork(&host, &source, &selected_read, &selected_generation, &child,
             None, &IdempotencyKey::new("pinned-selected-fork")?, None, None,
@@ -1705,7 +1707,7 @@ mod tests {
             None).await?;
         assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?.as_ref(), b"selected");
         host.apply(&forked.workspace, Some(&forked.generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec().into() }],
             &IdempotencyKey::new("isolated-child-edit")?).await?;
         assert_eq!(host.resolve(&initial.workspace).await?.generation, later_generation);
         assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?.as_ref(), b"later");

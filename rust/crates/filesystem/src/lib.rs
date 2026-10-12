@@ -160,10 +160,12 @@ pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObject
 pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
+#[cfg(not(target_arch = "wasm32"))]
+pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
-    AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
+    AsyncAuthorityStore, AuthorityWork, AuthorityGuard, AuthorityError, AuthorityAllocation, AsyncObjectStore, GenerationFork, GenerationForkSource,
     PublicationScope, WorkspaceForkCommit,
-    WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
+    WorkspaceForkOutcome,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
@@ -295,7 +297,7 @@ pub use native_capture::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
     NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
-    exchange_native_entries, prepare_native_exchange, prepare_native_exchange_with_recovery,
+    exchange_native_entries, prepare_native_exchange,
     publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
