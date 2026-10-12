@@ -240,7 +240,10 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
         if let Some(gate) = gate {
             request.mutations.push(CommitMutation::Append {
                 path: stream_path(id, "/publication-gate")?,
-                records: vec![acyclic_stream::OwnedBytes::copy_from_slice(gate)],
+                records: vec![
+                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
+                    acyclic_stream::OwnedBytes::copy_from_slice(gate),
+                ],
             });
         }
         stream.commit(request).await?;
@@ -540,7 +543,10 @@ impl StreamProvider for ReleaseSpy {
                         5 => append.tail += 1,
                         6 => append.records[0].sequence += 1,
                         7 => append.records[0].commit_id = CommitId::from_bytes([0xff; 32]),
-                        8 => append.records[0].value = OwnedBytes::from_static(b"not-free"),
+                        8 => {
+                            append.records[0].value =
+                                acyclic_stream::OwnedBytes::from_static(b"not-free")
+                        }
                         9 => append.records.push(append.records[0].clone()),
                         10 => observation.request_digest = [0; 32],
                         _ => {}

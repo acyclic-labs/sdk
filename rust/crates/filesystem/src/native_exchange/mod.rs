@@ -69,6 +69,7 @@ pub enum NativeExchangeError {
     Io(#[from] std::io::Error),
 }
 mod tree;
+#[cfg(test)]
 use tree::*;
 pub use tree::{prepare_native_exchange, publish_native_exchange, recover_native_exchange};
 mod entry;

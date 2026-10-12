@@ -70,7 +70,9 @@ impl Fixture {
         )?)
     }
     fn exchange(&self, budget: WorkBudget, token: &CancellationToken) -> TestResult {
-        self.entries(budget, token, exchange_native_entries)
+        self.entries(budget, token, |left, name, right, right_name, work| {
+            exchange_native_entries(left, name, right, right_name, work)
+        })
     }
     #[cfg(windows)]
     fn recover(&self) -> TestResult {
