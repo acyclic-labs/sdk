@@ -40,7 +40,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 )
             })?;
             let (_, references) = crate::filesystem::summary_fork::split_references(&summary, io)?;
-            add_summary_readers(request, &mut grants, references.values(), io)?;
+            add_summary_readers(request, &mut grants, &references, io)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
@@ -73,27 +73,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             task.verify_creation_with_native_work(work)?.await?;
         }
         let controller = self.controller(io.filter(|io| io.original_native_work().is_some()))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native {
-            let (grants, custody) = controller
-                .inherited_reference_grants_with_native_work(
-                    &self.parent,
-                    request.child_agent,
-                    &request.attached_agents,
-                    request.preparation.inherited_through_sequence,
-                    maximum_messages,
-                    request.preparation.maximum_inherited_bytes,
-                    request.preparation.maximum_inherited_references as usize,
-                    self.resolver.as_ref(),
-                    self.history.as_ref(),
-                    work,
-                )
-                .await?;
-            io.expect("native projection IO")
-                .absorb_native_custody(custody)?;
-            return Ok(grants);
-        }
-        controller
+        let (grants, custody) = controller
             .inherited_reference_grants(
                 &self.parent,
                 request.child_agent,
@@ -105,7 +85,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 self.resolver.as_ref(),
                 self.history.as_ref(),
             )
-            .await
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = custody {
+            io.expect("native projection IO")
+                .absorb_native_custody(custody)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = custody;
+        Ok(grants)
     }
 
     /// Builds the exact created identities and their allocation journal proofs.
@@ -199,78 +187,50 @@ pub(in crate::filesystem) fn require_reference_donor(
     ))
 }
 
-pub(super) fn add_summary_readers<'a>(
+pub(super) fn add_summary_readers(
     request: &ForkRequest,
     grants: &mut Vec<ReferenceGrant>,
-    files: impl ExactSizeIterator<Item = &'a crate::conversation::FileRef> + Clone,
+    files: &std::collections::BTreeMap<[u8; 32], crate::conversation::FileRef>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let reject = |reason| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, reason);
     let maximum = request.preparation.maximum_inherited_references as usize;
+    if grants.len() > maximum {
+        return Err(reject("summary reader grants exceed capture allowance"));
+    }
     let candidates = files
         .len()
         .checked_mul(request.attached_agents.len() + 1)
         .and_then(|count| count.checked_add(grants.len()))
         .ok_or_else(|| reject("summary reader projection overflows"))?;
     bounded_io::reserve(grants, candidates.min(maximum), io)?;
-    let mut selected = BTreeSet::new();
-    for grant in &*grants {
-        reference_selection(&mut selected, &grant.file, grant.reader, io)?;
-    }
-    if selected.len() > maximum {
-        return Err(reject("summary reader grants exceed capture allowance"));
-    }
     for reader in
         std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
     {
-        for file in files.clone() {
-            if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader)
-                && reference_selection(&mut selected, file, reader, io)?
-            {
-                if selected.len() > maximum {
-                    return Err(reject("summary reader grants exceed capture allowance"));
-                }
-                grants.push(ReferenceGrant {
-                    file: crate::executor::with_history_io(io, |work| file.copy(work))?,
-                    reader,
-                    attachment_manifest: None,
-                });
+        for file in files.values() {
+            if file.volume().owner() == &crate::conversation::VolumeOwner::Agent(reader) {
+                continue;
             }
+            let mut present = false;
+            for grant in &*grants {
+                bounded_io::item(io, 0)?;
+                if grant.reader == reader && grant.file == *file {
+                    present = true;
+                    break;
+                }
+            }
+            if present {
+                continue;
+            }
+            if grants.len() == maximum {
+                return Err(reject("summary reader grants exceed capture allowance"));
+            }
+            grants.push(ReferenceGrant {
+                file: crate::executor::with_history_io(io, |work| file.copy(work))?,
+                reader,
+                attachment_manifest: None,
+            });
         }
-    }
-    if let Some(io) = io {
-        let bytes = selected.iter().try_fold(0_u64, |bytes, (key, _)| {
-            bytes
-                .checked_add(key.capacity() as u64)
-                .and_then(|bytes| {
-                    bytes.checked_add(std::mem::size_of::<(String, crate::AgentId)>() as u64)
-                })
-                .ok_or_else(|| reject("summary reader ownership overflows"))
-        })?;
-        drop(selected);
-        io.release(bytes)?;
     }
     Ok(())
-}
-
-pub(super) fn reference_selection(
-    selected: &mut BTreeSet<(String, crate::AgentId)>,
-    file: &crate::conversation::FileRef,
-    reader: crate::AgentId,
-    io: Option<&PreparationIo>,
-) -> Result<bool> {
-    let key = bounded_io::reference_key(file, io)?;
-    let bytes = key.capacity() as u64;
-    let selection = (key, reader);
-    if selected.contains(&selection) {
-        drop(selection);
-        if let Some(io) = io {
-            io.release(bytes)?;
-        }
-        return Ok(false);
-    }
-    if let Some(io) = io {
-        io.retain_owned(std::mem::size_of::<(String, crate::AgentId)>() as u64)?;
-    }
-    Ok(selected.insert(selection))
 }

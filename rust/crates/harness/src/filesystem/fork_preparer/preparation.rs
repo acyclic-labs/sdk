@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.journal_limit(MAX_REQUEST_BYTES),
             self.io.as_ref(),
         )?);
-        for (volume, role) in creation_volumes(&request) {
+        for (volume, _) in creation_volumes(&request) {
             self.verify_task_lease(false).await?;
             self.preparer
                 .host
@@ -67,7 +67,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         volume: crate::executor::with_history_io(self.io.as_ref(), |work| {
                             volume.copy(work)
                         })?,
-                        role,
                     },
                     self.journal_limit(MAX_REQUEST_BYTES),
                     self.io.as_ref(),
@@ -210,7 +209,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 Vec::new()
             };
             let inherited = controller
-                .materialize_inherited_conversation_continued(
+                .materialize_inherited_conversation(
                     &self.preparer.parent,
                     &private,
                     &private_observation.generation,
@@ -283,7 +282,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             add_summary_readers(
                 &request,
                 &mut reference_grants,
-                summary_references.values(),
+                &summary_references,
                 self.io.as_ref(),
             )?;
             let (capture, generation) = controller

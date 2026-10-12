@@ -220,7 +220,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let digest = *bounded_io::digest(&encoded, self.io.as_ref())?.as_bytes();
         drop(encoded);
         drop(encoded_hold);
-        for (volume, role) in creation_volumes(request) {
+        for (volume, _) in creation_volumes(request) {
             let journal = allocation_ref(&self.preparer.host.provider, volume, self.io.as_ref())?;
             let retained = read_record::<A, O, AllocationClaim>(
                 &self.preparer.host,
@@ -242,7 +242,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 || retained.parent != request.parent
                 || retained.child != request.child
                 || &retained.volume != volume
-                || retained.role != role
                 || !same_task_origin(retained.task_origin.as_ref(), Some(preparation.origin()))
             {
                 return Err(bounded_io::failure(

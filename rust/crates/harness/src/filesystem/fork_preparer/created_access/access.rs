@@ -9,8 +9,8 @@ pub(super) enum CreatedFilesystemAccess<A, O> {
         generation: GenerationRef,
         prepared_generation: GenerationRef,
         creation_operation: acyclic_fs::OperationId,
-        reader: FilesystemContentVerifier<A, O>,
-        writer: FilesystemContentPublisher<A, O>,
+        reader: Arc<FilesystemContentVerifier<A, O>>,
+        writer: Arc<FilesystemContentPublisher<A, O>>,
     },
     Reference {
         allocation: Arc<Self>,
@@ -20,8 +20,8 @@ pub(super) enum CreatedFilesystemAccess<A, O> {
     Root {
         allocation: Arc<FilesystemRootBootstrapAllocation<A, O>>,
         _custody: acyclic_fs::NativeAllocation,
-        reader: FilesystemContentVerifier<A, O>,
-        writer: Option<FilesystemContentPublisher<A, O>>,
+        reader: Arc<FilesystemContentVerifier<A, O>>,
+        writer: Option<Arc<FilesystemContentPublisher<A, O>>>,
     },
 }
 

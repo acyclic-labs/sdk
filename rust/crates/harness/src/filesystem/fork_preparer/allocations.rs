@@ -1,7 +1,6 @@
 //! Protected child allocation claims and seed publication.
 use super::*;
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(PartialEq)]
 pub(super) enum ForkAllocationRole {
     Scratch,
     Project,
@@ -64,7 +63,6 @@ pub(crate) struct AllocationClaim {
     pub(super) parent: Authority,
     pub(super) child: Authority,
     pub(super) volume: VolumeRef,
-    pub(super) role: ForkAllocationRole,
 }
 
 impl bounded_io::UploadRecord for [u8; 32] {
@@ -222,7 +220,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "fork allocation belongs to another Filesystem provider".into(),
             ));
         }
-        for (volume, role) in seed_creation_volumes(seed)? {
+        for (volume, _) in seed_creation_volumes(seed)? {
             self.claim_fork_allocation(
                 AllocationClaim {
                     operation_id: seed.operation_id,
@@ -231,7 +229,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     parent: seed.parent.clone(),
                     child: seed.child.clone(),
                     volume: volume.clone(),
-                    role,
                 },
                 MAX_REQUEST_BYTES,
                 None,
@@ -302,9 +299,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "fork claim source or resources differ from their immutable request",
                 ));
             }
-            let role = creation_volumes(&fork.0)
-                .find_map(|(selected, role)| (selected == volume).then_some(role))
-                .ok_or_else(|| reject("fork claim volume is outside the witnessed request"))?;
+            if !creation_volumes(&fork.0).any(|(selected, _)| selected == volume) {
+                return Err(reject("fork claim volume is outside the witnessed request"));
+            }
             for (resource, (selected, _)) in request.resources.iter().zip(creation_volumes(&fork.0))
             {
                 if selected.provider() != &self.provider {
@@ -359,7 +356,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 || claim.parent != fork.0.parent
                 || claim.child != fork.0.child
                 || claim.volume != *volume
-                || claim.role != role
                 || claim.preparation_digest != preparation_digest
                 || origin.request_digest != request_digest
                 || origin.preparation_task != witness.task()
@@ -402,10 +398,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             || claim.parent != seed.parent
             || claim.child != seed.child
             || claim.volume != *volume
-            || seed_creation_volumes(seed)?
-                .find(|(selected, _)| *selected == volume)
-                .map(|(_, role)| role)
-                != Some(claim.role)
+            || !seed_creation_volumes(seed)?.any(|(selected, _)| selected == volume)
         {
             return Err(Error::Conflict(
                 "fork child volume belongs to another preparation".into(),
@@ -454,7 +447,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
         }
         let binding = seed_digest(seed, MAX_REPORT_BYTES, io)?;
-        for (volume, role) in seed_creation_volumes(seed)? {
+        for (volume, _) in seed_creation_volumes(seed)? {
             let journal = allocation_ref(&self.provider, volume, io)?;
             let claim = read_record::<A, O, AllocationClaim>(
                 self,
@@ -475,7 +468,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 || claim.parent != seed.parent
                 || claim.child != seed.child
                 || claim.volume != *volume
-                || claim.role != role
             {
                 return Err(bounded_io::failure(
                     io,
@@ -636,7 +628,6 @@ pub(super) fn same_allocation_claim(
         || retained.parent != requested.parent
         || retained.child != requested.child
         || retained.volume != requested.volume
-        || retained.role != requested.role
     {
         return false;
     }

@@ -59,7 +59,6 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
                 .as_mut()
                 .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
         )?;
-        drop(observer);
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = io
             .map(|io| {

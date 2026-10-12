@@ -15,7 +15,6 @@ mod sdk;
 mod tests;
 pub(in crate::filesystem) use metadata::*;
 use quota::finish_decode;
-#[cfg(not(target_arch = "wasm32"))]
 use quota::finish_encoding;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use quota::native_decoded;
@@ -31,14 +30,21 @@ pub(in crate::filesystem) use sdk::{
 
 /// Work and retained ownership for one preparation attempt.
 pub enum PreparationIo {
+    /// Standalone work and byte allowances.
     Owned {
+        /// Limits for this attempt.
         budget: WorkBudget,
+        /// Spent work and live owned bytes.
         work: Mutex<(WorkCounters, u64)>,
+        /// Cancellation for this attempt.
         cancellation: CancellationToken,
     },
     #[cfg(not(target_arch = "wasm32"))]
+    /// The original invocation's accounting context.
     Native {
+        /// Original work and execution lease.
         work: acyclic_fs::NativeMaterializationWork,
+        /// Retained metadata on the same ledger.
         custody: Mutex<acyclic_fs::NativeAllocation>,
     },
 }
@@ -54,10 +60,8 @@ impl PreparationIo {
             cancellation,
         )
     }
-    pub(crate) fn from_budget(
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self> {
+    /// Starts finite preparation accounting with the caller's cancellation token.
+    pub fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
         if !budget.has_finite_allowances() {
             return Err(Error::Invalid(
                 "measured content requires finite work allowances".into(),
@@ -142,7 +146,8 @@ impl PreparationIo {
             })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+    /// Transfers retained output storage to its caller.
+    pub fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
         let Self::Native { custody, .. } = self else {
             return Err(self.invalid("native custody requires the original native ledger"));
         };

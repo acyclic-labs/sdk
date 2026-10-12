@@ -34,14 +34,15 @@ async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix
     let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
     let volume = VolumeRef::new(
         provider,
-        "owned",
+        "owned".into(),
         VolumeClass::Project,
         VolumeOwner::Project("ordinary-owner-control".into()),
+        &mut None,
     )?;
     let initial = host.create_volume(&volume).await?;
     let mutations = [WorkspaceMutation::PutFile {
         path: "/file".into(),
-        bytes: b"owned".to_vec(),
+        bytes: b"owned".to_vec().into(),
     }];
     let cancellation = CancellationToken::new();
     let denied_io = PreparationIo::from_budget(
@@ -108,7 +109,7 @@ async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix
     assert_eq!(
         host.read(
             &initial.workspace,
-            Some(&host.generation_ref(&accepted)?),
+            Some(&host.generation_ref_id(accepted.id())?),
             "/file",
             32
         )
@@ -131,9 +132,10 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
     let project = |name: &str| {
         VolumeRef::new(
             provider.clone(),
-            name,
+            name.into(),
             VolumeClass::Project,
             VolumeOwner::Project("source-read-control".into()),
+            &mut None,
         )
     };
     let source = project("selected")?;
@@ -148,7 +150,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             Some(&initial.generation),
             &[WorkspaceMutation::PutFile {
                 path: "/value.txt".into(),
-                bytes: b"selected".to_vec(),
+                bytes: b"selected".to_vec().into(),
             }],
             &IdempotencyKey::new("selected-generation")?,
         )
@@ -159,7 +161,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             Some(&caller_head.generation),
             &[WorkspaceMutation::PutFile {
                 path: "/other.txt".into(),
-                bytes: b"other-source".to_vec(),
+                bytes: b"other-source".to_vec().into(),
             }],
             &IdempotencyKey::new("other-source-generation")?,
         )
@@ -243,7 +245,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             Some(&selected_generation),
             &[WorkspaceMutation::PutFile {
                 path: "/value.txt".into(),
-                bytes: b"later".to_vec(),
+                bytes: b"later".to_vec().into(),
             }],
             &IdempotencyKey::new("later-generation")?,
         )
@@ -278,7 +280,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         Some(&forked.generation),
         &[WorkspaceMutation::PutFile {
             path: "/value.txt".into(),
-            bytes: b"child".to_vec(),
+            bytes: b"child".to_vec().into(),
         }],
         &IdempotencyKey::new("isolated-child-edit")?,
     )

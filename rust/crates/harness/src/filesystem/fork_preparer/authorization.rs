@@ -187,7 +187,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         drop(observer);
-        drop(history);
         if let Some(task) = task {
             let io = io.ok_or_else(|| {
                 reject(

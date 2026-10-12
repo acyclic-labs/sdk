@@ -1,7 +1,8 @@
 //! Scoped ownership of decoded values and temporary buffers.
 use super::*;
 
-pub(crate) struct DecodeReservation<'a> {
+/// Retained storage released when a content or decode result is dropped.
+pub struct DecodeReservation<'a> {
     pub(super) io: &'a PreparationIo,
     pub(super) bytes: u64,
 }
@@ -103,12 +104,12 @@ pub(super) fn finish_decode<'a, T>(
     Ok((value, held))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn finish_encoding<T>(
     mut diagnostics: DecodeReservation<'_>,
     result: Result<T>,
 ) -> Result<T> {
     match result {
+        #[cfg(not(target_arch = "wasm32"))]
         Err(Error::NativeEncode {
             code,
             source,

@@ -124,14 +124,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     "Root Scratch differs from its original actor",
                 ));
             }
-            owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
+            owner.require_volume_grant(
+                volume,
+                VolumeOperation::Read,
+                &mut Some(&mut io.history_io()),
+            )?;
             let writable =
                 io.contains_capability(&context.original_root().grants, volume, "volume:write:")?;
             let publication_lease = if writable {
-                owner.require_volume_grant_with_native_work(
+                owner.require_volume_grant(
                     volume,
                     VolumeOperation::Write,
-                    work,
+                    &mut Some(&mut io.history_io()),
                 )?;
                 Some(
                     owner

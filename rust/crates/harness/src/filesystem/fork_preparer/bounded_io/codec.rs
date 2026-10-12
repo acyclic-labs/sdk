@@ -164,12 +164,12 @@ impl PreparationIo {
         finish_decode(self, result, admission)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_json<T: Serialize>(
         &self,
         value: &T,
         maximum: u64,
     ) -> Result<serde_json::Value> {
+        #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_none() {
             return Err(self.invalid("native JSON graph conversion requires original work"));
         }
@@ -243,19 +243,27 @@ impl PreparationIo {
         Ok(retain_decoded(decoded))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_decode_preparation<T: PreparationRecord>(
         &self,
         value: &serde_json::Value,
         code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'_>)> {
-        self.value_decode_with_schema::<T>(
-            value,
-            code,
-            T::json_value_schema(),
-            T::diagnostic_label_bytes(),
-            |shape| T::decode_owned_allowance(shape, 0, shape.input_bytes(), Some(code)),
-        )
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = self.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            let _bytes = self.guard_bytes(&bytes)?;
+            self.decode(std::marker::PhantomData::<T>, &bytes, code)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.value_decode_with_schema::<T>(
+                value,
+                code,
+                T::json_value_schema(),
+                T::diagnostic_label_bytes(),
+                |shape| T::decode_owned_allowance(shape, 0, shape.input_bytes(), Some(code)),
+            )
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

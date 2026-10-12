@@ -332,9 +332,10 @@ async fn root_bootstrap_wrong_creator_birth_selection_and_graph_never_install_ac
     );
     let foreign_scratch = VolumeRef::new(
         fixture.filesystem_provider.clone(),
-        "foreign-original-root-private",
+        "foreign-original-root-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([184; 16])),
+        &mut None,
     )?;
     let denied = creator.protect_root_bootstrap_with_native_work(
         &owner,
@@ -401,18 +402,21 @@ async fn root_bootstrap_wrong_creator_birth_selection_and_graph_never_install_ac
             3 => {
                 request.volume = VolumeRef::new(
                     fixture.filesystem_provider.clone(),
-                    "foreign-root-project",
+                    "foreign-root-project".into(),
                     VolumeClass::Project,
                     VolumeOwner::Project("created-project".into()),
+                    &mut None,
                 )?
             }
             _ => request.role = RootBootstrapContentRole::Scratch,
         }
-        let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
-        assert!(match denied {
-            Ok(future) => future.await.is_err(),
-            Err(_) => true,
-        });
+        {
+            let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
+            assert!(match denied {
+                Ok(future) => future.await.is_err(),
+                Err(_) => true,
+            });
+        }
 
         drop(request);
         drop(request_custody);
@@ -484,11 +488,13 @@ async fn physical_root_birth_alone_and_superseded_protected_record_cannot_authen
         cancellation: work.cancellation(),
         created_project_authenticated: false,
     };
-    let denied = bare.verify_with_native_work(context(), &selection, &work);
-    assert!(match denied {
-        Ok(future) => future.await.is_err(),
-        Err(_) => true,
-    });
+    {
+        let denied = bare.verify_with_native_work(context(), &selection, &work);
+        assert!(match denied {
+            Ok(future) => future.await.is_err(),
+            Err(_) => true,
+        });
+    }
 
     let bound_owner = bind_genuine_original_root(&fixture, &work).await?;
     let token = creator
@@ -518,11 +524,13 @@ async fn physical_root_birth_alone_and_superseded_protected_record_cannot_authen
         )?,
         native_snapshot: None,
     };
-    let denied = policy.verify_with_native_work(context(), &initial_selection, &work);
-    assert!(match denied {
-        Ok(future) => future.await.is_err(),
-        Err(_) => true,
-    });
+    {
+        let denied = policy.verify_with_native_work(context(), &initial_selection, &work);
+        assert!(match denied {
+            Ok(future) => future.await.is_err(),
+            Err(_) => true,
+        });
+    }
 
     let journal_io = PreparationIo::for_unmeasured(work.cancellation())?;
     let journal = allocation_ref(&creator.host.provider, &birth.volume, Some(&journal_io))?;
@@ -534,7 +542,7 @@ async fn physical_root_birth_alone_and_superseded_protected_record_cannot_authen
             Some(&generation),
             &[crate::filesystem::WorkspaceMutation::PutFile {
                 path: "/root-bootstrap.json".into(),
-                bytes: b"superseded protected bootstrap".to_vec(),
+                bytes: b"superseded protected bootstrap".to_vec().into(),
             }],
             &IdempotencyKey::new("supersede-genuine-original-root-bootstrap")?,
         )
