@@ -341,7 +341,7 @@ pub(super) fn materialization_parent(
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let held = crate::native_host::HostRoot::open(parent, &mut &*work)?;
-    held.open_dir_held(Path::new(""), &mut &*work)
+    { #[cfg(unix)] { held.open_dir_held(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| held.open_dir_held(path, work)) } }
 }
 
 pub(super) fn materialization_open_options(
