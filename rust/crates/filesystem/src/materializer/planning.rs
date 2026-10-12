@@ -182,7 +182,7 @@ fn host_stat(
 ) -> Result<Option<crate::native_host::HostStat>, NativeTreeMaterializationError> {
     let path = Path::new(path);
     let parent =
-        match root.open_dir_held(path.parent().unwrap_or_else(|| Path::new("")), &mut &*work) {
+        match { #[cfg(unix)] { root.open_dir_held(path.parent().unwrap_or_else(|| Path::new("")), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(path.parent().unwrap_or_else(|| Path::new("")), &mut &*work, |path, work| root.open_dir_held(path, work)) } } {
             Ok(parent) => parent,
             Err(NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
@@ -191,7 +191,7 @@ fn host_stat(
             }
             Err(error) => return Err(error),
         };
-    match root.stat(path, &mut &*work) {
+    match { #[cfg(unix)] { root.stat(path, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(path, &mut &*work, |path, work| root.stat(path, work)) } } {
         Ok(stat) => Ok(Some(stat)),
         Err(NativeTreeMaterializationError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>

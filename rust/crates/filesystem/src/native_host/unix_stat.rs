@@ -6,7 +6,9 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
 ) -> Result<NativeRootIdentity, W::Error> {
     #[cfg(unix)]
     {
-        let stat = stat_unix_fd_at(libc::AT_FDCWD, path.as_os_str(), false, work)?;
+        let stat = unix_name(path.as_os_str(), work, |name, work| {
+            stat_at(libc::AT_FDCWD, name, work)
+        })?;
         if !stat.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotADirectory,
@@ -81,34 +83,24 @@ pub(super) fn open_unix<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-pub(super) fn open_unix_at<W: NativeHostWork>(
-    directory: &Dir,
-    name: &OsStr,
-    flags: i32,
-    work: &mut W,
-) -> Result<cap_std::fs::File, W::Error> {
-    unix_name(name, work, |name, work| {
-        open_unix(directory.as_raw_fd(), name, flags, work).map(cap_std::fs::File::from_std)
-    })
-}
-
-#[cfg(unix)]
 pub(crate) fn stat_leaf<W: NativeHostWork>(
     directory: &Dir,
     name: &OsStr,
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
     require_leaf(Path::new(name))?;
-    stat_unix_fd_at(directory.as_raw_fd(), name, false, work)
+    unix_name(name, work, |name, work| {
+        stat_at(directory.as_raw_fd(), name, work)
+    })
 }
 
 #[cfg(unix)]
-pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
+pub(super) fn stat_at<W: NativeHostWork>(
     fd: i32,
-    name: &OsStr,
-    empty_path: bool,
+    name: &std::ffi::CStr,
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
+    let empty_path = name.is_empty() && fd != libc::AT_FDCWD;
     #[cfg(target_os = "linux")]
     let directory = if fd == libc::AT_FDCWD {
         rustix::fs::CWD
@@ -123,61 +115,59 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
         } else {
             rustix::fs::AtFlags::empty()
         };
-    unix_name(name, work, |name, work| {
-        #[cfg(target_os = "linux")]
-        loop {
-            work.started_io(READ)?;
-            match rustix::fs::statx(
-                directory,
-                name,
-                flags,
-                rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
-            ) {
-                Ok(stat) => return Ok(HostStat::from_statx(stat)?),
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
-                Err(error) => return Err(io::Error::from(error).into()),
-            }
+    #[cfg(target_os = "linux")]
+    loop {
+        work.started_io(READ)?;
+        match rustix::fs::statx(
+            directory,
+            name,
+            flags,
+            rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
+        ) {
+            Ok(stat) => return Ok(HostStat::from_statx(stat)?),
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
+            Err(error) => return Err(io::Error::from(error).into()),
         }
-        loop {
-            work.started_io(READ)?;
-            #[cfg(target_os = "linux")]
-            let result = if empty_path {
-                rustix::fs::fstat(directory)
-            } else {
-                rustix::fs::statat(directory, name, flags)
-            };
-            #[cfg(target_os = "macos")]
-            let result = {
-                let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                let result = unsafe {
-                    if empty_path {
-                        libc::fstat(fd, stat.as_mut_ptr())
-                    } else {
-                        libc::fstatat(
-                            fd,
-                            name.as_ptr(),
-                            stat.as_mut_ptr(),
-                            libc::AT_SYMLINK_NOFOLLOW,
-                        )
-                    }
-                };
-                if result == 0 {
-                    Ok(unsafe { stat.assume_init() })
+    }
+    loop {
+        work.started_io(READ)?;
+        #[cfg(target_os = "linux")]
+        let result = if empty_path {
+            rustix::fs::fstat(directory)
+        } else {
+            rustix::fs::statat(directory, name, flags)
+        };
+        #[cfg(target_os = "macos")]
+        let result = {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            let result = unsafe {
+                if empty_path {
+                    libc::fstat(fd, stat.as_mut_ptr())
                 } else {
-                    Err(io::Error::last_os_error())
+                    libc::fstatat(
+                        fd,
+                        name.as_ptr(),
+                        stat.as_mut_ptr(),
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
                 }
             };
-            match result {
-                Ok(stat) => return Ok(HostStat::from_stat(stat)?),
-                #[cfg(target_os = "linux")]
-                Err(rustix::io::Errno::INTR) => {}
-                #[cfg(target_os = "macos")]
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(io::Error::from(error).into()),
+            if result == 0 {
+                Ok(unsafe { stat.assume_init() })
+            } else {
+                Err(io::Error::last_os_error())
             }
+        };
+        match result {
+            Ok(stat) => return Ok(HostStat::from_stat(stat)?),
+            #[cfg(target_os = "linux")]
+            Err(rustix::io::Errno::INTR) => {}
+            #[cfg(target_os = "macos")]
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(io::Error::from(error).into()),
         }
-    })
+    }
 }
 
 #[cfg(unix)]

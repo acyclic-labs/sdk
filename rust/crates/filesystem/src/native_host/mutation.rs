@@ -3,14 +3,29 @@ use super::*;
 impl HostRoot {
     pub(crate) fn create_file<W: SourceDemandReadWork>(
         &self,
-        path: &Path,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
+        #[cfg(windows)] options: nt::NTCREATEFILE_CREATE_OPTIONS,
         work: &mut W,
     ) -> Result<File, DemandError> {
         #[cfg(windows)]
         {
-            with_wide_path(path, work, |path, work| {
-                self.create_windows_file_wide(path, false, false, work)
-            })
+            let (parent, leaf) = wide_parent_leaf(path)?;
+            let access = fs::FILE_GENERIC_READ
+                | fs::FILE_GENERIC_WRITE
+                | if options.0 & nt::FILE_DELETE_ON_CLOSE.0 != 0 {
+                    fs::DELETE
+                } else {
+                    fs::FILE_ACCESS_RIGHTS(0)
+                };
+            open_windows_at(
+                &self.open_dir_held(parent, work)?,
+                leaf,
+                access,
+                nt::FILE_CREATE,
+                nt::FILE_NON_DIRECTORY_FILE | options,
+                work,
+            )
         }
         #[cfg(unix)]
         {
@@ -30,12 +45,22 @@ impl HostRoot {
     }
     pub(crate) fn create_dir<W: SourceDemandReadWork>(
         &self,
-        path: &Path,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<(), DemandError> {
         #[cfg(windows)]
         {
-            with_wide_path(path, work, |path, work| self.create_dir_wide(path, work))
+            let (parent, leaf) = wide_parent_leaf(path)?;
+            open_windows_at(
+                &self.open_dir_held(parent, work)?,
+                leaf,
+                fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE,
+                nt::FILE_CREATE,
+                nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                work,
+            )?;
+            Ok(())
         }
         #[cfg(unix)]
         {
@@ -46,13 +71,24 @@ impl HostRoot {
     }
     pub(crate) fn create_dir_all_held<W: SourceDemandReadWork>(
         &self,
-        path: &Path,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<HostRoot, DemandError> {
         #[cfg(windows)]
         {
-            with_wide_path(path, work, |path, work| {
-                self.create_dir_all_held_wide(path, work)
+            let mut directory = clone_directory(&self.directory, work)?;
+            if !path.is_empty() {
+                for name in path.split(|u| *u == 92) {
+                    work.charge(ITEM)?;
+                    directory =
+                        Dir::from_std_file(create_windows_directory(&directory, name, work)?);
+                }
+            }
+            let identity = directory_identity(&directory, work)?;
+            Ok(Self {
+                directory,
+                identity,
             })
         }
         #[cfg(unix)]
@@ -78,27 +114,6 @@ impl HostRoot {
                 unix_mutation(work, || unsafe {
                     libc::symlinkat(target.as_ptr(), parent.as_raw_fd(), leaf.as_ptr())
                 })
-            })
-        })
-    }
-    #[cfg(unix)]
-    pub(crate) fn set_permissions_without_open<W: SourceDemandReadWork>(
-        &self,
-        path: &Path,
-        mode: u32,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        let mode =
-            libc::mode_t::try_from(mode & 0o7777).map_err(|_| DemandError::InvalidRequest)?;
-        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
-            // SAFETY: held parent and terminated name outlive the nofollow operation.
-            unix_mutation(work, || unsafe {
-                libc::fchmodat(
-                    parent.as_raw_fd(),
-                    leaf.as_ptr(),
-                    mode,
-                    libc::AT_SYMLINK_NOFOLLOW,
-                )
             })
         })
     }
@@ -165,27 +180,17 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     #[cfg(target_os = "linux")]
     let base = {
         let prefix = b"/proc/self/fd/";
-        let mut number = parent.as_raw_fd() as u32;
-        let encoded = u64::from(if number == 0 { 1 } else { number.ilog10() + 1 });
+        let fd = parent.as_raw_fd() as u32;
         work.charge(WorkCounters {
-            bytes_encoded: encoded,
+            bytes_encoded: u64::from(fd.checked_ilog10().unwrap_or(0) + 1),
             ..WorkCounters::UNCHARGED
         })?;
-        let mut digits = [0_u8; 10];
-        let mut start = digits.len();
-        loop {
-            start -= 1;
-            digits[start] = b'0' + (number % 10) as u8;
-            number /= 10;
-            if number == 0 {
-                break;
-            }
-        }
-        let length = digits.len() - start;
-        work.charge(copy_work((prefix.len() + length) as u64))?;
+        let number = rustix::path::DecInt::new(fd);
+        let digits = number.as_bytes();
+        work.charge(copy_work((prefix.len() + digits.len()) as u64))?;
         path[..prefix.len()].copy_from_slice(prefix);
-        path[prefix.len()..prefix.len() + length].copy_from_slice(&digits[start..]);
-        prefix.len() + length
+        path[prefix.len()..prefix.len() + digits.len()].copy_from_slice(digits);
+        prefix.len() + digits.len()
     };
     #[cfg(target_os = "macos")]
     let base = {
@@ -244,13 +249,7 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     unix_mutation(work, || unsafe { libc::listen(socket.as_raw_fd(), 128) })?;
     #[cfg(target_os = "macos")]
     {
-        use std::os::unix::ffi::OsStrExt as _;
-        let through_descriptor = stat_unix_fd_at(
-            parent.as_raw_fd(),
-            OsStr::from_bytes(leaf.to_bytes()),
-            false,
-            work,
-        )?;
+        let through_descriptor = stat_at(parent.as_raw_fd(), leaf, work)?;
         let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
         work.started_io(READ)?;
         if unsafe { libc::lstat(path.as_ptr().cast(), observed.as_mut_ptr()) } != 0 {
@@ -276,11 +275,14 @@ pub(super) fn require_leaf(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
-pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
+pub(crate) fn rename_held<W: NativeHostWork>(
     from: &Dir,
-    from_name: &Path,
+    #[cfg(unix)] from_name: &Path,
+    #[cfg(windows)] from_name: &[u16],
     to: &Dir,
-    to_name: &Path,
+    #[cfg(unix)] to_name: &Path,
+    #[cfg(windows)] to_name: &[u16],
+    mode: acyclic_native_runtime::RenameMode,
     expected: Option<NativeRootIdentity>,
     work: &mut W,
 ) -> Result<(), W::Error> {
@@ -288,25 +290,34 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
     if expected.is_some() {
         return Err(W::invalid_request());
     }
-    require_leaf(from_name)?;
-    require_leaf(to_name)?;
+    #[cfg(unix)]
+    {
+        require_leaf(from_name)?;
+        require_leaf(to_name)?;
+    }
     #[cfg(unix)]
     {
         unix_name(from_name.as_os_str(), work, |from_name, work| {
             unix_name(to_name.as_os_str(), work, |to_name, work| {
-                work.attempt_io(WRITE, || {
-                    rename_unix_names_once(from, from_name, to, to_name, false)
-                })
+                loop {
+                    match work.attempt_io(WRITE, || {
+                        rename_unix_names_once(from, from_name, to, to_name, mode)
+                    }) {
+                        Err(error)
+                            if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) =>
+                        {
+                            ()
+                        }
+                        result => break result,
+                    }
+                }
             })
         })
     }
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt as _;
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        };
-        use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+        use fs::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+        use nt::{FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT};
         let access = DELETE
             | SYNCHRONIZE
             | if expected.is_some() {
@@ -314,10 +325,11 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
             } else {
                 Default::default()
             };
-        let file = open_windows_held(
+        let file = open_windows_at(
             from,
             from_name,
             access,
+            nt::FILE_OPEN,
             FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             work,
         )?;
@@ -326,32 +338,14 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
                 return Err(io::Error::other("rename source identity changed").into());
             }
         }
-        let units = wide_units(to_name.as_os_str(), work)?;
-        let encoded = WorkCounters {
-            bytes_encoded: (units as u64)
-                .checked_mul(2)
-                .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::UNCHARGED
-        };
-        work.admit(encoded)?;
-        let (buffer, allocation, length) =
-            windows_name_packet(to, to_name.as_os_str().encode_wide(), units, false, work)?;
-        let result = (|| {
-            work.record(encoded)?;
-            work.attempt_io(WRITE, || {
-                // SAFETY: the packet builder initialized and bounded this exact byte range.
-                windows_set_information(
-                    &file,
-                    unsafe {
-                        std::slice::from_raw_parts((&buffer).as_ptr().cast::<u8>(), length as usize)
-                    },
-                    windows::Wdk::Storage::FileSystem::FileRenameInformation,
-                )
-            })
-        })();
-        drop(buffer);
-        work.release(allocation)?;
-        result
+        set_windows_name(
+            &file,
+            to,
+            to_name,
+            mode == acyclic_native_runtime::RenameMode::Replace,
+            nt::FileRenameInformation,
+            work,
+        )
     }
 }
 
@@ -365,42 +359,18 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
     }
     #[cfg(windows)]
     {
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT,
-        };
-        use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
-        let file = open_windows_held(
+        use fs::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+        use nt::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
+        let file = open_windows_at(
             directory,
-            Path::new("."),
+            &[46],
             FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            nt::FILE_OPEN,
             FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
             work,
         )?;
         sync_file_held(&file, work)
     }
-}
-
-#[cfg(windows)]
-pub(super) fn open_windows_held<W: NativeHostWork>(
-    directory: &Dir,
-    path: &Path,
-    access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
-    options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
-    work: &mut W,
-) -> Result<File, W::Error> {
-    if path != Path::new(".") {
-        require_leaf(path)?;
-    }
-    with_wide_path(path, work, |path, work| {
-        open_windows_wide_at(directory, path, access, options, work)?
-            .map(cap_std::fs::File::into_std)
-            .ok_or_else(|| {
-                status_error(windows::Win32::Foundation::NTSTATUS(
-                    0xC000_050B_u32.cast_signed(),
-                ))
-                .into()
-            })
-    })
 }
 
 pub(crate) fn sync_file_held<W: NativeHostWork>(
@@ -421,5 +391,71 @@ pub(crate) fn sync_file_held<W: NativeHostWork>(
             Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
             result => return result,
         }
+    }
+}
+
+#[cfg(windows)]
+impl HostRoot {
+    pub(crate) fn hard_link<W: SourceDemandReadWork>(
+        &self,
+        source: &[u16],
+        destination: &[u16],
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        let (parent, leaf) = wide_parent_leaf(source)?;
+        let file = open_windows_at(
+            &self.open_dir_held(parent, work)?,
+            leaf,
+            fs::DELETE | fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+            nt::FILE_OPEN,
+            nt::FILE_SYNCHRONOUS_IO_NONALERT,
+            work,
+        )?;
+        let (parent, leaf) = wide_parent_leaf(destination)?;
+        set_windows_name(
+            &file,
+            &self.open_dir_held(parent, work)?,
+            leaf,
+            false,
+            nt::FileLinkInformation,
+            work,
+        )
+    }
+
+    pub(crate) fn symlink_file<W: SourceDemandReadWork>(
+        &self,
+        target: &[u16],
+        destination: &[u16],
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.check()?;
+        if target.is_empty()
+            || target[0] == 92
+                && !target.starts_with(&[92, 92])
+                && !target.starts_with(&[92, 63, 63, 92])
+            || target.len() >= 2 && target[1] == 58 && (target.len() < 3 || target[2] != 92)
+        {
+            return Err(DemandError::InvalidRequest);
+        }
+        for unit in target {
+            work.charge(ITEM)?;
+            if *unit == 0 {
+                return Err(DemandError::InvalidRequest);
+            }
+        }
+        let (parent, leaf) = wide_parent_leaf(destination)?;
+        windows_leaf_name(leaf, work)?;
+        let parent = self.open_dir_held(parent, work)?;
+        let (target, target_allocation) = decode_windows_name(target, work)?;
+        let result = (|| {
+            let (leaf, allocation) = decode_windows_name(leaf, work)?;
+            let result = work.attempt_io(WRITE, || parent.symlink_file(&target, &leaf));
+            drop(leaf);
+            work.release(allocation)?;
+            result
+        })();
+        drop(target);
+        work.release(target_allocation)?;
+        result
     }
 }

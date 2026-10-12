@@ -1562,7 +1562,7 @@ fn capture_stat(
     }
     #[cfg(windows)]
     {
-        root.stat_wide(path, &mut meter.source())
+        root.stat(path, &mut meter.source())
     }
 }
 
@@ -1587,7 +1587,7 @@ fn collect_host_walk_measured(
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
         let (mut reader, reader_allocation) = root
-            .read_dir_stats_wide(&host_parent, &mut meter.source())
+            .read_dir_stats(&host_parent, &mut meter.source())
             .map_err(capture_demand_error)?;
         loop {
             #[cfg(unix)]
@@ -3639,11 +3639,11 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         cancellation.check()?;
         #[cfg(unix)]
         let file = source_root
-            .open_file_positional(host_path, &mut meter.source())
+            .open_file(host_path, &mut meter.source())
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
         let file = source_root
-            .open_file_wide(host_path, windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), &mut meter.source())
+            .open_file(host_path, windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), &mut meter.source())
             .map_err(capture_demand_error)?;
         let file = file.into_std();
         let metadata = source_root
@@ -3879,7 +3879,7 @@ mod host_file_race_tests {
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
-        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let opened = { #[cfg(unix)] { root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("current"), &mut crate::native_host::ordinary_work(), |path, work| root.open_file(path, ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work)) } }.map_err(crate::native_host::ordinary_error)?;
         assert!(matches!(
             ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
             Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
@@ -3895,11 +3895,7 @@ mod host_file_race_tests {
         let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root
-            .open_file(
-                Path::new("current"),
-                &mut crate::native_host::ordinary_work(),
-            )
+        let opened = { #[cfg(unix)] { root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("current"), &mut crate::native_host::ordinary_work(), |path, work| root.open_file(path, ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work)) } }
             .map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::write(&current, b"changed body")?;
@@ -3921,11 +3917,7 @@ mod host_file_race_tests {
         let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root
-            .open_file(
-                Path::new("current"),
-                &mut crate::native_host::ordinary_work(),
-            )
+        let opened = { #[cfg(unix)] { root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("current"), &mut crate::native_host::ordinary_work(), |path, work| root.open_file(path, ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work)) } }
             .map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
@@ -4492,8 +4484,7 @@ mod windows_sparse_tests {
     ) -> std::io::Result<Vec<(u64, u64)>> {
         let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-        let file = root
-            .open_file_positional(Path::new(name), &mut crate::native_host::ordinary_work())
+        let file = { #[cfg(unix)] { root.open_file(Path::new(name), &mut crate::native_host::ordinary_work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(name), &mut crate::native_host::ordinary_work(), |path, work| root.open_file(path, ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work)) } }
             .map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let cancellation = CancellationToken::new();
@@ -4560,11 +4551,7 @@ mod windows_sparse_tests {
         // Every byte read is charged, and the scan stops at the budget or once cancelled.
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-        let file = root
-            .open_file_positional(
-                Path::new("sparse.bin"),
-                &mut crate::native_host::ordinary_work(),
-            )
+        let file = { #[cfg(unix)] { root.open_file(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work(), |path, work| root.open_file(path, ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work)) } }
             .map_err(crate::native_host::ordinary_error)?;
         let metadata =
             test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
@@ -4716,7 +4703,7 @@ fn read_link_bytes(
     #[cfg(windows)]
     {
         let (units, allocation) = root
-            .read_link_wide(path, maximum, &mut meter.source())
+            .read_link(path, maximum, &mut meter.source())
             .map_err(capture_demand_error)?;
         let length = units
             .len()

@@ -6620,7 +6620,7 @@ pub mod native {
             }
             #[cfg(windows)]
             {
-                self.inner.root.stat_wide(relative, work)
+                self.inner.root.stat(relative, work)
             }
         }
 
@@ -6885,7 +6885,7 @@ pub mod native {
             #[cfg(unix)]
             let result = self.inner.root.read_dir_stats(&relative, work);
             #[cfg(windows)]
-            let result = self.inner.root.read_dir_stats_wide(&relative, work);
+            let result = self.inner.root.read_dir_stats(&relative, work);
             match result {
                 Ok((reader, allocation)) => {
                     ownership.retain(allocation, work)?;
@@ -6954,7 +6954,7 @@ pub mod native {
                     let result = self
                         .inner
                         .root
-                        .open_dir_held_wide(directory, work)
+                        .open_dir_held(directory, work)
                         .and_then(|parent| {
                             crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
                         });
@@ -7304,7 +7304,7 @@ pub mod native {
                         self.inner.root.read_link(&relative, maximum, work)?;
                     #[cfg(windows)]
                     let (target, target_bytes) =
-                        self.inner.root.read_link_wide(&relative, maximum, work)?;
+                        self.inner.root.read_link(&relative, maximum, work)?;
                     #[cfg(unix)]
                     ownership.retain(target_bytes, work)?;
                     #[cfg(windows)]
@@ -7506,7 +7506,7 @@ pub mod native {
             ownership.retain(path_owned_bytes(&relative), work)?;
             let file_ownership = SourcePayloadOwnership::new(work)?;
             #[cfg(windows)]
-            let file = provider.inner.root.open_file_yielding_wide(&relative, work);
+            let file = provider.inner.root.open_file_yielding(&relative, work);
             #[cfg(not(windows))]
             let file = provider
                 .inner
@@ -7604,7 +7604,7 @@ pub mod native {
                 .provider
                 .inner
                 .root
-                .open_file_yielding_wide(&self.relative, work)
+                .open_file_yielding(&self.relative, work)
             {
                 Ok(file) => file,
                 Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -8717,7 +8717,7 @@ pub mod native {
                                     .map(|name| Some(NativeChangedName::Wide(name))),
                                 work,
                             )?;
-                            let metadata = inner.root.stat_wide(relative, work);
+                            let metadata = inner.root.stat(relative, work);
                             Self::append_path_change(
                                 &mut reported,
                                 name,

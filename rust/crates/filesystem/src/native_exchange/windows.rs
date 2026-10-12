@@ -9,7 +9,7 @@ pub(super) fn rename_durable_held<W: NativeHostWork>(
     expected: crate::NativeRootIdentity,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    crate::native_host::rename_no_replace_held(from, from_name, to, to_name, Some(expected), work)?;
+    { #[cfg(unix)] { crate::native_host::rename_held(from, from_name, to, to_name, acyclic_native_runtime::RenameMode::NoReplace, Some(expected), work) } #[cfg(windows)] { crate::native_host::with_wide_path(from_name, work, |name, work| crate::native_host::with_wide_path(to_name, work, |target, work| crate::native_host::rename_held(from, name, to, target, acyclic_native_runtime::RenameMode::NoReplace, Some(expected), work))) } }?;
     crate::native_host::sync_directory_held(from, work)?;
     crate::native_host::sync_directory_held(to, work)
 }
@@ -42,7 +42,7 @@ pub(super) fn create_entry_witness<W: NativeHostWork>(
     // The newly and exclusively created handle remains delete-on-close until
     // every witness byte is durable. No failed prefix can become restart authority.
     let mut file = crate::native_host::with_wide_path(witness_name, work, |name, work| {
-        crate::native_host::create_windows_wide_at(left, name, false, false, false, true, work)
+        crate::native_host::open_windows_at(left, name, ::windows::Win32::Storage::FileSystem::FILE_GENERIC_READ | ::windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE | ::windows::Win32::Storage::FileSystem::DELETE, ::windows::Wdk::Storage::FileSystem::FILE_CREATE, ::windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE | ::windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT | ::windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE, work)
     })?;
     write_all(&mut file, ENTRY_WITNESS, work)?;
     write_identity(
@@ -193,14 +193,7 @@ pub(super) fn recover_entry_held<W: NativeHostWork>(
 where
     W::Error: From<NativeExchangeError>,
 {
-    let mut file = crate::native_host::with_wide_path(witness_name, work, |name, work| {
-        crate::native_host::open_windows_leaf_with_options(
-            left,
-            name,
-            &crate::native_host::NativeOpenOptions::Read,
-            work,
-        )
-    })?;
+    let mut file = crate::native_host::open_leaf(left, witness_name, &crate::native_host::NativeOpenOptions::Read, work)?;
     let (witness_identity, witness_length) =
         crate::native_host::file_identity_and_length(&file, work)?;
     let mut magic = [0u8; 32];

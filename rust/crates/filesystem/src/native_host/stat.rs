@@ -1,6 +1,7 @@
 use super::*;
 
 /// One allocated data extent.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostDataRange {
     pub offset: u64,
@@ -289,11 +290,11 @@ impl HostListedEntry {
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         #[cfg(unix)]
         {
-            self.name.as_encoded_bytes().len() as u64
+            self.name.capacity() as u64
         }
         #[cfg(windows)]
         {
-            self.name.len() as u64 * 2
+            self.name.capacity() as u64 * 2
         }
     }
 }
@@ -303,7 +304,7 @@ pub(crate) fn stat_file<W: NativeHostWork>(
 ) -> Result<HostStat, W::Error> {
     #[cfg(unix)]
     {
-        stat_unix_fd_at(file.as_raw_fd(), OsStr::new(""), true, work)
+        stat_at(file.as_raw_fd(), c"", work)
     }
     #[cfg(windows)]
     {

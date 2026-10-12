@@ -3,173 +3,90 @@ use super::*;
 impl HostRoot {
     pub(crate) fn open_child<W: SourceDemandReadWork>(
         &self,
-        name: &Path,
+        #[cfg(unix)] name: &Path,
+        #[cfg(windows)] name: &[u16],
         work: &mut W,
     ) -> Result<HostRoot, DemandError> {
         #[cfg(unix)]
         let directory = open_unix_directory_path(&self.directory, name, false, work)?;
         #[cfg(windows)]
-        let directory = { self.open_dir_held(name, work)? };
+        let directory = self.open_dir_held(name, work)?;
         let identity = directory_identity(&directory, work)?;
         Ok(HostRoot {
             directory,
             identity,
         })
     }
-    pub(crate) fn rename_to<W: SourceDemandReadWork>(
-        &self,
-        name: &Path,
-        destination: &Self,
-        destination_name: &Path,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        require_leaf(name)?;
-        require_leaf(destination_name)?;
-        #[cfg(unix)]
-        {
-            unix_name(name.as_os_str(), work, |name, work| {
-                unix_name(
-                    destination_name.as_os_str(),
-                    work,
-                    |destination_name, work| {
-                        // SAFETY: held parent capabilities and terminated leaf names are live.
-                        unix_mutation(work, || unsafe {
-                            libc::renameat(
-                                self.directory.as_raw_fd(),
-                                name.as_ptr(),
-                                destination.directory.as_raw_fd(),
-                                destination_name.as_ptr(),
-                            )
-                        })
-                    },
-                )
-            })
-        }
-        #[cfg(windows)]
-        {
-            with_wide_path(name, work, |name, work| {
-                with_wide_path(destination_name, work, |destination_name, work| {
-                    rename_windows_leaf(
-                        &self.directory,
-                        name,
-                        &destination.directory,
-                        destination_name,
-                        work,
-                    )
-                })
-            })
-        }
-    }
     pub(crate) fn remove<W: SourceDemandReadWork>(
         &self,
-        name: &Path,
+        #[cfg(unix)] name: &Path,
+        #[cfg(windows)] name: &[u16],
+        expected: Option<NativeRootIdentity>,
         work: &mut W,
     ) -> Result<(), DemandError> {
+        #[cfg(unix)]
+        require_leaf(name)?;
+        #[cfg(windows)]
+        windows_leaf_name(name, work)?;
         let stat = match self.stat(name, work) {
             Ok(stat) => stat,
-            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(DemandError::Io(error))
+                if expected.is_none() && error.kind() == io::ErrorKind::NotFound =>
+            {
+                return Ok(());
+            }
             Err(error) => return Err(error),
         };
-        self.remove_identity(name, stat.identity(), work)
-    }
-    pub(crate) fn remove_identity<W: SourceDemandReadWork>(
-        &self,
-        name: &Path,
-        expected: NativeRootIdentity,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        require_leaf(name)?;
-        #[cfg(unix)]
-        {
-            let stat = self.stat(name, work)?;
-            if stat.identity() != expected {
-                return Err(DemandError::StaleVersion);
-            }
-            if stat.file_type().is_dir() && !stat.file_type().is_symlink() {
-                let root = self.open_child(name, work)?;
-                if root.identity() != expected {
-                    return Err(DemandError::StaleVersion);
-                }
-                let child = root;
-                let (mut reader, buffer_bytes) = child.read_dir_stats(Path::new(""), work)?;
-                let result: Result<(), DemandError> = (|| {
-                    while let Some((entry, name_bytes)) = reader.next(work)? {
-                        let result = child.remove(Path::new(&entry.name), work);
-                        drop(entry);
-                        work.release(name_bytes)?;
-                        result?;
-                    }
-                    Ok(())
-                })();
-                drop(reader);
-                work.release(buffer_bytes)?;
-                result?;
-                drop(child);
-            }
-            if self.stat(name, work)?.identity() != expected {
-                return Err(DemandError::StaleVersion);
-            }
-            remove_leaf(
-                &self.directory,
-                name,
-                stat.file_type().is_dir() && !stat.file_type().is_symlink(),
-                work,
-            )
-        }
-        #[cfg(windows)]
-        {
-            with_wide_path(name, work, |name, work| {
-                self.remove_identity_wide(name, expected, work)
-            })
-        }
-    }
-    #[cfg(windows)]
-    pub(super) fn remove_identity_wide<W: SourceDemandReadWork>(
-        &self,
-        name: &[u16],
-        expected: NativeRootIdentity,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        let root = self;
-        let stat = root.stat_wide(name, work)?;
+        let expected = expected.unwrap_or(stat.identity());
         if stat.identity() != expected {
             return Err(DemandError::StaleVersion);
         }
-        let real_directory = stat.is_dir()
-            && stat.file_attributes()
-                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0
-                == 0;
+        let real_directory = stat.file_type().is_dir() && !stat.file_type().is_symlink();
+        #[cfg(windows)]
+        let real_directory =
+            real_directory && stat.file_attributes() & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 == 0;
         if real_directory {
-            let directory = root.open_dir_held_wide(name, work)?;
-            let identity = directory_identity(&directory, work)?;
-            let child = HostRoot {
-                directory,
-                identity,
-            };
-            let child_root = &child;
-            if child_root.identity() != expected {
+            let child = self.open_child(name, work)?;
+            if child.identity() != expected {
                 return Err(DemandError::StaleVersion);
             }
-            let (mut reader, bytes) = child_root.read_dir_stats_wide(&[], work)?;
-            let result: Result<(), DemandError> = (|| {
-                while let Some((entry, bytes)) = reader.next(work)? {
-                    let result = (|| {
-                        let stat = child_root.stat_wide(&entry.name, work)?;
-                        child.remove_identity_wide(&entry.name, stat.identity(), work)
-                    })();
+            let (mut reader, allocation) = child.read_dir_stats(
+                #[cfg(unix)]
+                Path::new(""),
+                #[cfg(windows)]
+                &[],
+                work,
+            )?;
+            let result = (|| {
+                while let Some((entry, allocation)) = reader.next(work)? {
+                    #[cfg(unix)]
+                    let name = Path::new(&entry.name);
+                    #[cfg(windows)]
+                    let name = &entry.name[..];
+                    let result = match child.stat(name, work) {
+                        Ok(stat) => child.remove(name, Some(stat.identity()), work),
+                        #[cfg(unix)]
+                        Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    };
                     drop(entry);
-                    work.release(bytes)?;
+                    work.release(allocation)?;
                     result?;
                 }
-                Ok(())
+                Ok::<_, DemandError>(())
             })();
             drop(reader);
-            work.release(bytes)?;
+            work.release(allocation)?;
             result?;
         }
-        if root.stat_wide(name, work)?.identity() != expected {
+        if self.stat(name, work)?.identity() != expected {
             return Err(DemandError::StaleVersion);
         }
-        remove_windows_leaf(&self.directory, name, stat.is_dir(), None, work)
+        #[cfg(unix)]
+        return remove_leaf(&self.directory, name, real_directory, work);
+        #[cfg(windows)]
+        remove_windows_leaf(&self.directory, name, stat.is_dir(), Some(expected), work)
     }
 }

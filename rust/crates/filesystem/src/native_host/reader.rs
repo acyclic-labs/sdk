@@ -15,7 +15,7 @@ pub struct HostStatReader {
 impl HostStatReader {
     pub(super) const BUFFER_BYTES: usize = 64 * 1024;
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        (self.buffer.len() * 8) as u64
+        (self.buffer.capacity() * 8) as u64
     }
     pub(crate) fn next<W: NativeHostWork>(
         &mut self,
@@ -40,7 +40,11 @@ impl HostStatReader {
                 }
             }
             work.started_io(ITEM)?;
-            let (end, raw_name) = self.name()?;
+            let (end, native_name) = self.name()?;
+            #[cfg(unix)]
+            let raw_name = native_name.to_bytes();
+            #[cfg(windows)]
+            let raw_name = native_name;
             if raw_name == [46] || raw_name == [46, 46] {
                 self.next = end;
                 continue;
@@ -55,19 +59,16 @@ impl HostStatReader {
                 work.record(copied)?;
                 #[cfg(unix)]
                 {
-                    stat_leaf(&self.directory, &name, work).map(Some)
+                    stat_at(self.directory.as_raw_fd(), native_name, work).map(Some)
                 }
                 #[cfg(windows)]
                 {
-                    match relative_kernel_name(&name, work)? {
-                        Some(name) => stat_windows_name(
-                            &self.directory,
-                            &name,
-                            self.volume_serial_number,
-                            work,
-                        ),
-                        None => Ok(None),
-                    }
+                    stat_windows_name(
+                        &self.directory,
+                        &windows_leaf_name(&name, work)?,
+                        self.volume_serial_number,
+                        work,
+                    )
                 }
             })();
             let stat = match result {
@@ -154,8 +155,8 @@ impl HostStatReader {
     }
     #[cfg(windows)]
     fn name(&self) -> io::Result<(usize, &[u16])> {
+        use fs::FILE_ID_EXTD_DIR_INFO;
         use std::mem::{align_of, offset_of};
-        use windows::Win32::Storage::FileSystem::FILE_ID_EXTD_DIR_INFO;
         let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
         let header = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
         let start = self.next.checked_add(header).ok_or_else(malformed)?;
@@ -204,7 +205,7 @@ impl HostStatReader {
         }))
     }
     #[cfg(unix)]
-    fn name(&self) -> io::Result<(usize, &[u8])> {
+    fn name(&self) -> io::Result<(usize, &std::ffi::CStr)> {
         let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
         #[cfg(target_os = "linux")]
         let header = 19;
@@ -221,8 +222,10 @@ impl HostStatReader {
         }
         let end = self.next.checked_add(length).ok_or_else(malformed)?;
         let tail = bytes.get(start..end).ok_or_else(malformed)?;
-        let name = &tail[..tail.iter().position(|b| *b == 0).ok_or_else(malformed)?];
-        if name.is_empty() || name.contains(&b'/') {
+        let terminator = tail.iter().position(|b| *b == 0).ok_or_else(malformed)?;
+        let name = std::ffi::CStr::from_bytes_with_nul(&tail[..=terminator])
+            .expect("record ends at its first NUL");
+        if name.is_empty() || name.to_bytes().contains(&b'/') {
             return Err(malformed());
         }
         Ok((end, name))
@@ -233,53 +236,35 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<(HostStatReader, W::Allocation), W::Error> {
+    #[cfg(windows)]
+    let volume_serial_number = u32::try_from(directory_identity(directory, work)?.device)
+        .map_err(|_| W::invalid_request())?;
     #[cfg(unix)]
-    {
+    let file = {
         let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY;
         #[cfg(target_os = "linux")]
         let flags = flags | libc::O_NOATIME;
-        let directory = Dir::from_std_file(open_unix(directory.as_raw_fd(), c".", flags, work)?);
-        new_reader(directory, work)
-    }
+        open_unix(directory.as_raw_fd(), c".", flags, work)?
+    };
     #[cfg(windows)]
-    {
-        let volume = u32::try_from(directory_identity(directory, work)?.device)
-            .map_err(|_| io::Error::other("native volume serial exceeds u32"))?;
-        read_dir_held_with_volume(directory, volume, work)
-    }
-}
-#[cfg(windows)]
-pub(super) fn read_dir_held_with_volume<W: NativeHostWork>(
-    directory: &Dir,
-    volume: u32,
-    work: &mut W,
-) -> Result<(HostStatReader, W::Allocation), W::Error> {
-    let file = open_windows_wide_at(
+    let file = open_windows_at(
         directory,
         &[46],
-        windows::Win32::Storage::FileSystem::FILE_GENERIC_READ,
-        windows::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
-            | windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+        fs::FILE_GENERIC_READ,
+        nt::FILE_OPEN,
+        nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
         work,
-    )?
-    .ok_or_else(W::invalid_request)?;
-    new_reader(Dir::from_std_file(file.into_std()), volume, work)
-}
-fn new_reader<W: NativeHostWork>(
-    directory: Dir,
-    #[cfg(windows)] volume: u32,
-    work: &mut W,
-) -> Result<(HostStatReader, W::Allocation), W::Error> {
+    )?;
     let (mut buffer, allocation) = buffer::<u64, _>(HostStatReader::BUFFER_BYTES / 8, work)?;
     buffer.resize(HostStatReader::BUFFER_BYTES / 8, 0);
     Ok((
         HostStatReader {
-            directory,
+            directory: Dir::from_std_file(file),
             buffer,
             next: HostStatReader::BUFFER_BYTES,
             filled: HostStatReader::BUFFER_BYTES,
             #[cfg(windows)]
-            volume_serial_number: volume,
+            volume_serial_number,
             #[cfg(target_os = "macos")]
             base: 0,
         },

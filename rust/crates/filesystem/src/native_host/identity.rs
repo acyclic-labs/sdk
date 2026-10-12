@@ -111,14 +111,17 @@ pub(crate) fn entry_identity<W: NativeHostWork>(
             Wdk::Storage::FileSystem::{FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT},
             Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE},
         };
-        open_windows_held(
-            parent,
-            name,
-            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-            work,
-        )
-        .and_then(|file| file_identity_and_length(&file, work).map(|(identity, _)| identity))
+        with_wide_path(name, work, |name, work| {
+            let file = open_windows_at(
+                parent,
+                name,
+                FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                nt::FILE_OPEN,
+                FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                work,
+            )?;
+            file_identity_and_length(&file, work).map(|(identity, _)| identity)
+        })
     };
     match result {
         Ok(identity) => Ok(Some(identity)),

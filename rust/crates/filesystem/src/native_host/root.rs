@@ -34,64 +34,67 @@ impl HostRoot {
     }
     pub(crate) fn open_dir_held<W: NativeHostWork>(
         &self,
-        path: &Path,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<Dir, W::Error> {
         #[cfg(windows)]
         {
-            with_wide_path(path, work, |path, work| self.open_dir_held_wide(path, work))
+            let mut directory = clone_directory(&self.directory, work)?;
+            if !path.is_empty() {
+                for name in path.split(|u| *u == 92) {
+                    work.started_io(ITEM)?;
+                    directory = open_windows_directory(&directory, name, work)?.0;
+                }
+            }
+            Ok(directory)
         }
         #[cfg(unix)]
         {
-            let mut directory = clone_directory(&self.directory, work)?;
-            for component in path.components() {
-                work.started_io(ITEM)?;
-                let std::path::Component::Normal(name) = component else {
-                    return Err(W::invalid_request());
-                };
-                let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW;
-                #[cfg(target_os = "linux")]
-                let flags = flags | libc::O_NOATIME;
-                directory =
-                    Dir::from_std_file(open_unix_at(&directory, name, flags, work)?.into_std());
-            }
-            Ok(directory)
+            open_unix_directory_path(&self.directory, path, false, work)
         }
     }
     pub(crate) fn read_dir_stats<W: NativeHostWork>(
         &self,
-        path: &Path,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<(HostStatReader, W::Allocation), W::Error> {
-        #[cfg(windows)]
-        {
-            with_wide_path(path, work, |path, work| {
-                self.read_dir_stats_wide(path, work)
-            })
-        }
-        #[cfg(unix)]
-        {
-            read_dir_held(&self.open_dir_held(path, work)?, work)
-        }
+        read_dir_held(&self.open_dir_held(path, work)?, work)
     }
     pub(crate) fn stat<W: NativeHostWork>(
         &self,
-        path: &Path,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<HostStat, W::Error> {
         #[cfg(windows)]
         {
-            with_wide_path(path, work, |path, work| self.stat_wide(path, work))
+            let volume = self.volume_serial_number()?;
+            if path.is_empty() || path == [46] {
+                return stat_windows_file(&self.directory, volume, work);
+            }
+            let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+            let parent = self.open_dir_held(parent, work)?;
+            let file = open_windows_at(
+                &parent,
+                leaf,
+                fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+                nt::FILE_OPEN,
+                nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                work,
+            )?;
+            stat_windows_file(&file, volume, work)
         }
         #[cfg(unix)]
         {
             work.check()?;
             if path.as_os_str().is_empty() {
-                return stat_unix_fd_at(self.directory.as_raw_fd(), OsStr::new("."), false, work);
+                return stat_at(self.directory.as_raw_fd(), c"", work);
             }
-            let leaf = path.file_name().ok_or_else(W::invalid_request)?;
-            let parent = self.open_dir_held(path.parent().ok_or_else(W::invalid_request)?, work)?;
-            stat_leaf(&parent, leaf, work)
+            with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+                stat_at(parent.as_raw_fd(), leaf, work)
+            })
         }
     }
     pub(crate) fn stat_file<W: NativeHostWork>(
@@ -101,7 +104,7 @@ impl HostRoot {
     ) -> Result<HostStat, W::Error> {
         #[cfg(unix)]
         {
-            stat_unix_fd_at(file.as_raw_fd(), OsStr::new(""), true, work)
+            stat_at(file.as_raw_fd(), c"", work)
         }
         #[cfg(windows)]
         {
@@ -110,24 +113,27 @@ impl HostRoot {
     }
     pub(crate) fn open_file<W: NativeHostWork>(
         &self,
-        path: &Path,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
+        #[cfg(windows)] synchronization: nt::NTCREATEFILE_CREATE_OPTIONS,
         work: &mut W,
     ) -> Result<cap_std::fs::File, W::Error> {
         #[cfg(windows)]
         {
-            with_wide_path(path, work, |path, work| {
-                self.open_file_wide(
-                    path,
-                    windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
-                    work,
-                )
-            })
+            let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+            let file = open_windows_at(
+                &self.open_dir_held(parent, work)?,
+                leaf,
+                fs::FILE_GENERIC_READ,
+                nt::FILE_OPEN,
+                nt::FILE_NON_DIRECTORY_FILE | synchronization,
+                work,
+            )?;
+            Ok(cap_std::fs::File::from_std(file))
         }
         #[cfg(unix)]
         {
             work.check()?;
-            let leaf = path.file_name().ok_or_else(W::invalid_request)?;
-            let parent = self.open_dir_held(path.parent().ok_or_else(W::invalid_request)?, work)?;
             let flags = libc::O_RDONLY
                 | libc::O_CLOEXEC
                 | libc::O_NOFOLLOW
@@ -135,29 +141,12 @@ impl HostRoot {
                 | libc::O_NOCTTY;
             #[cfg(target_os = "linux")]
             let flags = flags | libc::O_NOATIME;
-            open_unix_at(&parent, leaf, flags, work)
-        }
-    }
-    pub(crate) fn open_file_positional<W: NativeHostWork>(
-        &self,
-        path: &Path,
-        work: &mut W,
-    ) -> Result<cap_std::fs::File, W::Error> {
-        #[cfg(windows)]
-        {
-            with_wide_path(path, work, |path, work| {
-                self.open_file_wide(
-                    path,
-                    windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
-                    work,
-                )
+            with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+                open_unix(parent.as_raw_fd(), leaf, flags, work).map(cap_std::fs::File::from_std)
             })
         }
-        #[cfg(unix)]
-        {
-            self.open_file(path, work)
-        }
     }
+
     #[cfg(unix)]
     pub(crate) fn read_link<W: NativeHostWork>(
         &self,
@@ -165,28 +154,13 @@ impl HostRoot {
         maximum: u64,
         work: &mut W,
     ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
-        let leaf = path.file_name().ok_or_else(W::invalid_request)?;
-        read_unix_link(
-            &self.open_dir_held(path.parent().ok_or_else(W::invalid_request)?, work)?,
-            leaf,
-            maximum,
-            work,
-        )
-    }
-    #[cfg(unix)]
-    pub(crate) fn read_source_link<W: SourceDemandReadWork>(
-        &self,
-        path: &Path,
-        maximum: u64,
-        work: &mut W,
-    ) -> Result<acyclic_stream::OwnedBytes, DemandError> {
-        let leaf = path.file_name().ok_or(DemandError::InvalidRequest)?;
-        read_source_link_held(
-            &self.open_dir_held(path.parent().ok_or(DemandError::InvalidRequest)?, work)?,
-            Path::new(leaf),
-            maximum,
-            work,
-        )
+        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            read_unix_link(parent, leaf, maximum, work)
+        })
+        .map(|(mut bytes, count, allocation)| {
+            bytes.truncate(count);
+            (bytes, allocation)
+        })
     }
     #[cfg(windows)]
     pub(crate) fn open_root_wide<W: NativeHostWork>(
@@ -194,9 +168,9 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<Self, W::Error> {
         check_root_wide_name(name, work)?;
-        let directory = Dir::from_std_file(work.attempt_io(READ, || {
-            open_windows_root_name(name, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ)
-        })?);
+        let directory = Dir::from_std_file(
+            work.attempt_io(READ, || open_windows_root_name(name, fs::FILE_GENERIC_READ))?,
+        );
         let identity = directory_identity(&directory, work)?;
         Ok(Self {
             directory,
@@ -218,7 +192,7 @@ impl HostRoot {
             }
             Err(e) => return Err(e),
         };
-        if !stat_unix_fd_at(source.as_raw_fd(), OsStr::new(""), true, work)?
+        if !stat_at(source.as_raw_fd(), c"", work)?
             .file_type()
             .is_file()
         {
@@ -246,15 +220,32 @@ impl HostRoot {
     pub(crate) fn clone_file_from<W: SourceDemandReadWork>(
         &self,
         source_root: &HostRoot,
-        source: &Path,
-        destination: &Path,
+        source: &[u16],
+        destination: &[u16],
         work: &mut W,
     ) -> Result<bool, DemandError> {
-        with_wide_path(source, work, |source, work| {
-            with_wide_path(destination, work, |destination, work| {
-                self.clone_file_from_wide(source_root, source, destination, work)
-            })
-        })
+        let source = source_root
+            .open_file(source, nt::FILE_SYNCHRONOUS_IO_NONALERT, work)?
+            .into_std();
+        let stat = source_root.stat_file(&source, work)?;
+        if !stat.file_type().is_file()
+            || stat.file_attributes() & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        {
+            return Err(DemandError::InvalidRequest);
+        }
+        if !clonable_windows_length(stat.len()) {
+            return Ok(false);
+        }
+        let target = self.create_file(
+            destination,
+            nt::FILE_SYNCHRONOUS_IO_NONALERT | nt::FILE_DELETE_ON_CLOSE,
+            work,
+        )?;
+        let cloned = clone_windows_file(&source, &target, stat.len(), work)?;
+        if cloned {
+            keep_windows_created_file(&target, work)?;
+        }
+        Ok(cloned)
     }
     /// Atomically publishes a pinned source copy, preserving sparse data and COW when supported.
     #[cfg(windows)]
@@ -274,12 +265,12 @@ impl HostRoot {
             .file_name()
             .ok_or(io::ErrorKind::InvalidInput)?
             .to_os_string();
-        let parent = self
-            .open_dir_held(
-                destination.parent().ok_or(io::ErrorKind::InvalidInput)?,
-                &mut ordinary_work(),
-            )
-            .map_err(ordinary_error)?;
+        let parent = with_wide_path(
+            destination.parent().ok_or(io::ErrorKind::InvalidInput)?,
+            &mut ordinary_work(),
+            |path, work| self.open_dir_held(path, work),
+        )
+        .map_err(ordinary_error)?;
         let source_root = HostRoot {
             directory: source_root.directory.try_clone()?,
             identity: source_root.identity,
@@ -328,58 +319,33 @@ impl HostRoot {
         })
     }
     #[cfg(all(windows, any(feature = "native-mount", test)))]
-    pub(crate) fn open_windows_metadata_target_wide<W: SourceDemandReadWork>(
+    pub(crate) fn open_windows_metadata_target<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         work: &mut W,
     ) -> Result<cap_std::fs::File, DemandError> {
-        use windows::{
-            Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT},
-            Win32::Storage::FileSystem::{
-                FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
-            },
-        };
-        work.check()?;
-        let access = FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE;
-        if path.is_empty() {
-            return open_windows_wide_at(
+        let access = fs::FILE_READ_ATTRIBUTES | fs::FILE_WRITE_ATTRIBUTES | fs::SYNCHRONIZE;
+        let file = if path.is_empty() {
+            open_windows_at(
                 &self.directory,
                 &[46],
                 access,
-                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                nt::FILE_OPEN,
+                nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
                 work,
             )?
-            .ok_or(DemandError::InvalidRequest);
-        }
-        for _ in path {
-            work.charge(ITEM)?;
-        }
-        let (parent_path, leaf) = wide_parent_leaf(path)?;
-        if path.first() == Some(&92) {
-            return Err(DemandError::InvalidRequest);
-        }
-        let parent = if parent_path.is_empty() {
-            None
         } else {
-            Some(Dir::from_std_file(
-                open_windows_wide_at(
-                    &self.directory,
-                    parent_path,
-                    FILE_GENERIC_READ,
-                    FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-                    work,
-                )?
-                .ok_or(DemandError::InvalidRequest)?
-                .into_std(),
-            ))
+            let (parent, leaf) = wide_parent_leaf(path)?;
+            open_windows_at(
+                &self.open_dir_held(parent, work)?,
+                leaf,
+                access,
+                nt::FILE_OPEN,
+                nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                work,
+            )?
         };
-        Ok(cap_std::fs::File::from_std(open_windows_leaf_handle(
-            parent.as_ref().unwrap_or(&self.directory),
-            leaf,
-            access,
-            None,
-            work,
-        )?))
+        Ok(cap_std::fs::File::from_std(file))
     }
 }
 
@@ -405,10 +371,7 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
         work.release(input_allocation)?;
         let (name, allocation) = result?;
         let file = work.attempt_io(READ, || {
-            open_windows_root_name(
-                &name,
-                windows::Win32::Storage::FileSystem::FILE_GENERIC_READ,
-            )
+            open_windows_root_name(&name, fs::FILE_GENERIC_READ)
         });
         drop(name);
         work.release(allocation)?;
@@ -417,4 +380,54 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
     let directory = Dir::from_std_file(file);
     let identity = directory_identity(&directory, work)?;
     Ok((directory, identity))
+}
+
+#[cfg(windows)]
+pub(super) fn wide_parent_leaf(path: &[u16]) -> Result<(&[u16], &[u16]), DemandError> {
+    let index = path.iter().rposition(|u| *u == 92);
+    let (parent, leaf) = index.map_or((&[][..], path), |i| (&path[..i], &path[i + 1..]));
+    if leaf.is_empty() || path.first() == Some(&92) {
+        return Err(DemandError::InvalidRequest);
+    }
+    Ok((parent, leaf))
+}
+
+#[cfg(windows)]
+pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
+    file: &impl std::os::windows::io::AsRawHandle,
+    work: &mut W,
+) -> Result<bool, DemandError> {
+    use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::GetVolumeInformationByHandleW};
+    let mut name = [0u16; 64];
+    work.started_io(READ)?;
+    // SAFETY: the held handle and output buffer remain live for the query.
+    unsafe {
+        GetVolumeInformationByHandleW(
+            HANDLE(file.as_raw_handle()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut name),
+        )
+    }
+    .map_err(io::Error::from)?;
+    let mut length = 0;
+    for unit in name {
+        work.started_io(ITEM)?;
+        if unit == 0 {
+            break;
+        }
+        length += 1;
+    }
+    Ok(name[..length] == [78, 84, 70, 83])
+}
+
+/// Allows attributes removed by ProjFS hydration.
+#[cfg(windows)]
+pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
+    const MARKS: u32 = 0x0000_0200 | 0x0000_0400 | 0x0004_0000 | 0x0040_0000;
+    let marks = before & MARKS;
+    let ignored = marks | if before & 0x0040_0000 != 0 { 0x20 } else { 0 };
+    before & !ignored == after & !ignored && after & MARKS & !marks == 0
 }

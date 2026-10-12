@@ -39,9 +39,9 @@ impl NativeTreeMaterializationBackend {
         let held_root = HostRoot::open(&root, &mut &work)?;
         let held_operation = HostRoot::open(&operation, &mut &work)?;
         validate_layout(&held_root, &held_operation, Path::new(""), &work)?;
-        let target = held_operation.open_dir_held(Path::new("target"), &mut &work)?;
+        let target = { #[cfg(unix)] { held_operation.open_dir_held(Path::new("target"), &mut &work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("target"), &mut &work, |path, work| held_operation.open_dir_held(path, work)) } }?;
         let target_identity = crate::native_host::directory_identity(&target, &mut &work)?;
-        let backup = held_operation.open_dir_held(Path::new("backup"), &mut &work)?;
+        let backup = { #[cfg(unix)] { held_operation.open_dir_held(Path::new("backup"), &mut &work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("backup"), &mut &work, |path, work| held_operation.open_dir_held(path, work)) } }?;
         let backup_identity = crate::native_host::directory_identity(&backup, &mut &work)?;
         Ok(Arc::new(Self {
             root,
@@ -155,8 +155,8 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         &self,
     ) -> Result<Option<MaterializationPreparationIdentity>, Self::Error> {
         let operation = HostRoot::open(&self.operation, &mut &self.work)?;
-        let target = operation.open_dir_held(Path::new("target"), &mut &self.work)?;
-        let backup = operation.open_dir_held(Path::new("backup"), &mut &self.work)?;
+        let target = { #[cfg(unix)] { operation.open_dir_held(Path::new("target"), &mut &self.work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("target"), &mut &self.work, |path, work| operation.open_dir_held(path, work)) } }?;
+        let backup = { #[cfg(unix)] { operation.open_dir_held(Path::new("backup"), &mut &self.work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("backup"), &mut &self.work, |path, work| operation.open_dir_held(path, work)) } }?;
         Ok(Some(MaterializationPreparationIdentity {
             operation: operation.identity().to_bytes(),
             target: crate::native_host::directory_identity(&target, &mut &self.work)?.to_bytes(),
@@ -176,11 +176,9 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
                     &backend.held_target,
                     &backend.held_backup,
                 ] {
-                    let parent = root.open_dir_held(
-                        path.parent()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                        &mut &backend.work,
-                    )?;
+                    let parent = { #[cfg(unix)] { root.open_dir_held(path.parent()
+                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &backend.work) } #[cfg(windows)] { crate::native_host::with_wide_path(path.parent()
+                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &backend.work, |path, work| root.open_dir_held(path, work)) } }?;
                     crate::native_host::sync_directory_held(&parent, &mut &backend.work)?;
                 }
                 Ok::<_, NativeTreeMaterializationError>(())
@@ -227,7 +225,7 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
                     }
                 };
                 let metadata = if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
-                    Some(native_metadata(&live.0.stat(live.1, &mut &backend.work)?))
+                    Some(native_metadata(&{ #[cfg(unix)] { live.0.stat(live.1, &mut &backend.work) } #[cfg(windows)] { crate::native_host::with_wide_path(live.1, &mut &backend.work, |path, work| live.0.stat(path, work)) } }?))
                 } else {
                     None
                 };
@@ -488,32 +486,29 @@ pub(super) fn durable_native_rename(
     to: &(&HostRoot, &Path),
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    let source = from.0.open_dir_held(
-        from.1
+    let source = { #[cfg(unix)] { from.0.open_dir_held(from.1
             .parent()
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        &mut &*work,
-    )?;
-    let target = to.0.open_dir_held(
-        to.1.parent()
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        &mut &*work,
-    )?;
-    crate::native_host::rename_no_replace_held(
-        &source,
-        Path::new(
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(from.1
+            .parent()
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work, |path, work| from.0.open_dir_held(path, work)) } }?;
+    let target = { #[cfg(unix)] { to.0.open_dir_held(to.1.parent()
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(to.1.parent()
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work, |path, work| to.0.open_dir_held(path, work)) } }?;
+    { #[cfg(unix)] { crate::native_host::rename_held(&source, Path::new(
             from.1
                 .file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        ),
-        &target,
-        Path::new(
+        ), &target, Path::new(
             to.1.file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        ),
-        None,
-        &mut &*work,
-    )?;
+        ), acyclic_native_runtime::RenameMode::NoReplace, None, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(
+            from.1
+                .file_name()
+                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+        ), &mut &*work, |name, work| crate::native_host::with_wide_path(Path::new(
+            to.1.file_name()
+                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+        ), work, |target, work| crate::native_host::rename_held(&source, name, &target, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) } }?;
     crate::native_host::sync_directory_held(&source, &mut &*work)?;
     crate::native_host::sync_directory_held(&target, &mut &*work)
 }
@@ -521,13 +516,13 @@ pub(super) fn remove_native_entry_durable(
     entry: &(&HostRoot, &Path),
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    let parent = entry.0.open_dir_held(
-        entry
+    let parent = { #[cfg(unix)] { entry.0.open_dir_held(entry
             .1
             .parent()
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        &mut &*work,
-    )?;
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry
+            .1
+            .parent()
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work, |path, work| entry.0.open_dir_held(path, work)) } }?;
     let identity = crate::native_host::directory_identity(&parent, &mut &*work)?;
     let parent = HostRoot {
         directory: parent,
@@ -539,7 +534,7 @@ pub(super) fn remove_native_entry_durable(
             .file_name()
             .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
     );
-    work.with_original_leaf(|state| parent.remove(leaf, state))
+    work.with_original_leaf(|state| { #[cfg(unix)] { parent.remove(leaf, None, state) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, state, |path, work| parent.remove(path, None, work)) } })
         .map_err(native_materialization_work_error)?;
     crate::native_host::sync_directory_held(&parent.directory, &mut &*work)
 }
@@ -555,7 +550,7 @@ pub(super) fn native_entry_exists(
     entry: &(&HostRoot, &Path),
     work: &NativeMaterializationWork,
 ) -> Result<bool, NativeTreeMaterializationError> {
-    match entry.0.stat(entry.1, &mut &*work) {
+    match { #[cfg(unix)] { entry.0.stat(entry.1, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry.1, &mut &*work, |path, work| entry.0.stat(path, work)) } } {
         Ok(_) => Ok(true),
         Err(NativeTreeMaterializationError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>

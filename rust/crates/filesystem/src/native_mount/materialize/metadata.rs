@@ -151,7 +151,7 @@ pub(super) async fn apply_host_metadata_offloaded(
             #[cfg(unix)]
             root.0.stat(super::work::host_path(&path.0), work)?;
             #[cfg(windows)]
-            root.0.stat_wide(&path.0, work)?;
+            root.0.stat(&path.0, work)?;
             return Ok(());
         }
         #[cfg(target_os = "linux")]
@@ -161,7 +161,7 @@ pub(super) async fn apply_host_metadata_offloaded(
         #[cfg(target_os = "macos")]
         let target = crate::native_host::open_macos_metadata_target(&root.0.directory, super::work::host_path(&path.0), work)?;
         #[cfg(windows)]
-        let target = root.0.open_windows_metadata_target_wide(&path.0, work)?;
+        let target = root.0.open_windows_metadata_target(&path.0, work)?;
         #[cfg(target_os = "linux")]
         {
             crate::native_host::apply_linux_metadata(&target, metadata, work)
@@ -219,7 +219,7 @@ pub(super) fn validate_options(
         }
     }
     let (mut entries, reader_allocation) =
-        receipt.run(|work| root.read_dir_stats(Path::new(""), work))?;
+        receipt.run(|work| root.read_dir_stats(#[cfg(unix)] Path::new(""), #[cfg(windows)] &[], work))?;
     #[cfg(unix)]
     let next = receipt.run(|work| entries.next(work));
     #[cfg(windows)]
@@ -251,7 +251,7 @@ pub(super) fn create_file(
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     #[cfg(windows)]
-    let file = receipt.run(|work| host_root.create_windows_file_wide(&path, true, false, work))?;
+    let file = receipt.run(|work| host_root.create_file(&path, ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work))?;
     #[cfg(unix)]
     let file = receipt.run(|work| host_root.create_file(super::work::host_path(path), work))?;
     let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(
@@ -350,7 +350,7 @@ pub(super) fn create_symlink_measured(
             })
         })?;
         units.extend(decoded);
-        let result = receipt.run(|work| host_root.symlink_file_wide(&units, &destination, work));
+        let result = receipt.run(|work| host_root.symlink_file(&units, &destination, work));
         let retained = units.capacity() * std::mem::size_of::<u16>();
         drop(units);
         receipt

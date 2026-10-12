@@ -99,12 +99,10 @@ pub(super) fn prepare_restore(
         HostPathReplacement::Atomic => {
             HostRoot::open(&stage_parent_path.0, work).map_err(restore_demand_error)?
         }
-        HostPathReplacement::LiveMount => destination_parent
-            .open_child(Path::new(""), work)
+        HostPathReplacement::LiveMount => { #[cfg(unix)] { destination_parent.open_child(Path::new(""), work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), work, |path, work| destination_parent.open_child(path, work)) } }
             .map_err(restore_demand_error)?,
     };
-    let stage_owner = stage_parent_root
-        .create_dir_all_held(Path::new(""), work)
+    let stage_owner = { #[cfg(unix)] { stage_parent_root.create_dir_all_held(Path::new(""), work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), work, |path, work| stage_parent_root.create_dir_all_held(path, work)) } }
         .map_err(restore_demand_error)?;
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
     let stage_path = match allocation_work
@@ -115,8 +113,7 @@ pub(super) fn prepare_restore(
         Err(error) => {
             let identity = stage_root.identity();
             drop(stage_root);
-            let _ = stage_owner
-                .remove_identity(&stage_name.0, identity, work)
+            let _ = { #[cfg(unix)] { stage_owner.remove(&stage_name.0, Some(identity), work) } #[cfg(windows)] { crate::native_host::with_wide_path(&stage_name.0, work, |path, work| stage_owner.remove(path, Some(identity), work)) } }
                 .and_then(|()| {
                     crate::native_host::sync_directory_held(&stage_owner.directory, work)
                 });
@@ -147,7 +144,7 @@ pub(super) fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    match destination_parent.stat(name, work) {
+    match { #[cfg(unix)] { destination_parent.stat(name, work) } #[cfg(windows)] { crate::native_host::with_wide_path(name, work, |path, work| destination_parent.stat(path, work)) } } {
         Ok(_) => match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries_held(
                 &destination_parent.directory,
@@ -169,8 +166,7 @@ pub(super) fn publish_restore(
         Err(crate::demand::DemandError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>
         {
-            stage_parent
-                .rename_to(name, destination_parent, name, work)
+            { #[cfg(unix)] { crate::native_host::rename_held(&(stage_parent).directory, name, &(destination_parent).directory, name, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(name, work, |name, work| crate::native_host::with_wide_path(name, work, |target, work| crate::native_host::rename_held(&(stage_parent).directory, name, &(destination_parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
                 .map_err(restore_demand_error)?;
             crate::native_host::sync_directory_held(&destination_parent.directory, work)
                 .map_err(restore_demand_error)?;
@@ -211,7 +207,7 @@ pub(super) fn held_parent(
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<HostRoot, MaterializeError> {
-    root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), work)
+    { #[cfg(unix)] { root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative.parent().unwrap_or_else(|| Path::new("")), work, |path, work| root.create_dir_all_held(path, work)) } }
         .map_err(restore_demand_error)
 }
 
@@ -249,9 +245,9 @@ pub(super) fn create_restore_stage(
             .expect("String formatting cannot fail");
         work.record(delta).map_err(restore_demand_error)?;
         let name = (PathBuf::from(name), allocation);
-        match parent.create_dir(&name.0, work) {
+        match { #[cfg(unix)] { parent.create_dir(&name.0, work) } #[cfg(windows)] { crate::native_host::with_wide_path(&name.0, work, |path, work| parent.create_dir(path, work)) } } {
             Ok(()) => {
-                let root = match parent.open_child(&name.0, work) {
+                let root = match { #[cfg(unix)] { parent.open_child(&name.0, work) } #[cfg(windows)] { crate::native_host::with_wide_path(&name.0, work, |path, work| parent.open_child(path, work)) } } {
                     Ok(root) => root,
                     // Without the stage capability no identity authorizes
                     // deleting this name, which may already have been swapped.
@@ -262,8 +258,7 @@ pub(super) fn create_restore_stage(
                 {
                     let identity = root.identity();
                     drop(root);
-                    let _ = parent
-                        .remove_identity(&name.0, identity, work)
+                    let _ = { #[cfg(unix)] { parent.remove(&name.0, Some(identity), work) } #[cfg(windows)] { crate::native_host::with_wide_path(&name.0, work, |path, work| parent.remove(path, Some(identity), work)) } }
                         .and_then(|()| {
                             crate::native_host::sync_directory_held(&parent.directory, work)
                         });
@@ -507,7 +502,7 @@ pub(super) fn remove_restore_witness(
     name: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
-    parent.remove(name, work).map_err(restore_demand_error)?;
+    { #[cfg(unix)] { parent.remove(name, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(name, work, |path, work| parent.remove(path, None, work)) } }.map_err(restore_demand_error)?;
     crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)
 }
 
@@ -526,7 +521,7 @@ pub(super) fn cleanup_removed_restore(
                 relative,
                 work,
                 |witness, work| {
-                    match parent.stat(removed, work) {
+                    match { #[cfg(unix)] { parent.stat(removed, work) } #[cfg(windows)] { crate::native_host::with_wide_path(removed, work, |path, work| parent.stat(path, work)) } } {
                         Ok(_) => {
                             if !validate_restore_witness(
                                 parent,
@@ -538,7 +533,7 @@ pub(super) fn cleanup_removed_restore(
                                     "unowned restore-removal artifact collision",
                                 ));
                             }
-                            parent.remove(removed, work).map_err(restore_demand_error)?;
+                            { #[cfg(unix)] { parent.remove(removed, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(removed, work, |path, work| parent.remove(path, None, work)) } }.map_err(restore_demand_error)?;
                             crate::native_host::sync_directory_held(&parent.directory, work)
                                 .map_err(restore_demand_error)?;
                             remove_restore_witness(parent, witness, work)?;
@@ -581,14 +576,13 @@ pub(super) fn remove_restored_path(
                 work,
                 |witness, work| {
                     create_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)?;
-                    match parent.stat(destination_name, work) {
+                    match { #[cfg(unix)] { parent.stat(destination_name, work) } #[cfg(windows)] { crate::native_host::with_wide_path(destination_name, work, |path, work| parent.stat(path, work)) } } {
                         Ok(_) => {
-                            parent
-                                .rename_to(destination_name, parent, removed, work)
+                            { #[cfg(unix)] { crate::native_host::rename_held(&(parent).directory, destination_name, &(parent).directory, removed, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(destination_name, work, |name, work| crate::native_host::with_wide_path(removed, work, |target, work| crate::native_host::rename_held(&(parent).directory, name, &(parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
                                 .map_err(restore_demand_error)?;
                             crate::native_host::sync_directory_held(&parent.directory, work)
                                 .map_err(restore_demand_error)?;
-                            parent.remove(removed, work).map_err(restore_demand_error)?;
+                            { #[cfg(unix)] { parent.remove(removed, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(removed, work, |path, work| parent.remove(path, None, work)) } }.map_err(restore_demand_error)?;
                             crate::native_host::sync_directory_held(&parent.directory, work)
                                 .map_err(restore_demand_error)?;
                         }
@@ -623,16 +617,15 @@ pub(super) fn replace_live_mount(
                 work,
                 |witness, work| {
                     create_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)?;
-                    parent
-                        .rename_to(destination_name, parent, backup, work)
+                    { #[cfg(unix)] { crate::native_host::rename_held(&(parent).directory, destination_name, &(parent).directory, backup, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(destination_name, work, |name, work| crate::native_host::with_wide_path(backup, work, |target, work| crate::native_host::rename_held(&(parent).directory, name, &(parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
                         .map_err(restore_demand_error)?;
                     crate::native_host::sync_directory_held(&parent.directory, work)
                         .map_err(restore_demand_error)?;
                     if let Err(error) =
-                        staged_parent.rename_to(staged_name, parent, destination_name, work)
+                        { #[cfg(unix)] { crate::native_host::rename_held(&(staged_parent).directory, staged_name, &(parent).directory, destination_name, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(staged_name, work, |name, work| crate::native_host::with_wide_path(destination_name, work, |target, work| crate::native_host::rename_held(&(staged_parent).directory, name, &(parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
                     {
                         if let Err(rollback) =
-                            parent.rename_to(backup, parent, destination_name, work)
+                            { #[cfg(unix)] { crate::native_host::rename_held(&(parent).directory, backup, &(parent).directory, destination_name, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(backup, work, |name, work| crate::native_host::with_wide_path(destination_name, work, |target, work| crate::native_host::rename_held(&(parent).directory, name, &(parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
                         {
                             return Err(MaterializeError::RestoreRollback {
                                 primary: error,
@@ -647,7 +640,7 @@ pub(super) fn replace_live_mount(
                         .map_err(restore_demand_error)?;
                     crate::native_host::sync_directory_held(&staged_parent.directory, work)
                         .map_err(restore_demand_error)?;
-                    parent.remove(backup, work).map_err(restore_demand_error)?;
+                    { #[cfg(unix)] { parent.remove(backup, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(backup, work, |path, work| parent.remove(path, None, work)) } }.map_err(restore_demand_error)?;
                     crate::native_host::sync_directory_held(&parent.directory, work)
                         .map_err(restore_demand_error)?;
                     remove_restore_witness(parent, witness, work)
@@ -673,7 +666,7 @@ pub(super) fn recover_live_mount_replacement(
                 relative,
                 work,
                 |witness, work| {
-                    let backup_exists = match parent.stat(backup, work) {
+                    let backup_exists = match { #[cfg(unix)] { parent.stat(backup, work) } #[cfg(windows)] { crate::native_host::with_wide_path(backup, work, |path, work| parent.stat(path, work)) } } {
                         Ok(_) => true,
                         Err(crate::demand::DemandError::Io(error))
                             if error.kind() == std::io::ErrorKind::NotFound =>
@@ -693,13 +686,12 @@ pub(super) fn recover_live_mount_replacement(
                             "unowned live-restore backup collision",
                         ));
                     }
-                    match parent.stat(destination_name, work) {
-                        Ok(_) => parent.remove(backup, work).map_err(restore_demand_error)?,
+                    match { #[cfg(unix)] { parent.stat(destination_name, work) } #[cfg(windows)] { crate::native_host::with_wide_path(destination_name, work, |path, work| parent.stat(path, work)) } } {
+                        Ok(_) => { #[cfg(unix)] { parent.remove(backup, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(backup, work, |path, work| parent.remove(path, None, work)) } }.map_err(restore_demand_error)?,
                         Err(crate::demand::DemandError::Io(error))
                             if error.kind() == std::io::ErrorKind::NotFound =>
                         {
-                            parent
-                                .rename_to(backup, parent, destination_name, work)
+                            { #[cfg(unix)] { crate::native_host::rename_held(&(parent).directory, backup, &(parent).directory, destination_name, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(backup, work, |name, work| crate::native_host::with_wide_path(destination_name, work, |target, work| crate::native_host::rename_held(&(parent).directory, name, &(parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
                                 .map_err(restore_demand_error)?;
                         }
                         Err(error) => return Err(restore_demand_error(error)),

@@ -345,12 +345,12 @@ impl NativeTreeMaterializationBackend {
                     )
                 }
             };
-            work.with_original_leaf(|state| parent.create_dir(leaf, state))
+            work.with_original_leaf(|state| { #[cfg(unix)] { parent.create_dir(leaf, state) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, state, |path, work| parent.create_dir(path, work)) } })
                 .map_err(native_materialization_work_error)
                 .map_err(backend)?;
             crate::native_host::sync_directory_held(&parent.directory, &mut &*work)
                 .map_err(backend)?;
-            let directory = parent.open_dir_held(leaf, &mut &*work).map_err(backend)?;
+            let directory = { #[cfg(unix)] { parent.open_dir_held(leaf, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, &mut &*work, |path, work| parent.open_dir_held(path, work)) } }.map_err(backend)?;
             let identity = crate::native_host::directory_identity(&directory, &mut &*work)
                 .map_err(backend)?
                 .to_bytes();
@@ -405,7 +405,7 @@ fn recorded_child(
     expected: [u8; 16],
     work: &NativeMaterializationWork,
 ) -> Result<crate::native_host::HostRoot, NativeTreeMaterializationError> {
-    let directory = parent.open_dir_held(leaf, &mut &*work)?;
+    let directory = { #[cfg(unix)] { parent.open_dir_held(leaf, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, &mut &*work, |path, work| parent.open_dir_held(path, work)) } }?;
     let actual = crate::native_host::directory_identity(&directory, &mut &*work)?;
     let expected = crate::NativeRootIdentity::from_bytes(expected);
     if actual != expected {
