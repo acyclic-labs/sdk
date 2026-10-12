@@ -9,10 +9,10 @@ use super::authority_codec::{
 use crate::storage::{FenceOutcome, ObjectWrite};
 use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityFailure, AuthorityId,
-    AuthorityReceipt, AuthorityResult, AuthorityStoreError, CancellationToken,
+    AuthorityResult, AuthorityStoreError, CancellationToken,
     CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource,
     GuardedAppend, Head, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead,
-    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, OperationId,
+    ObjectReadRetention, ObjectResult, ObjectStoreError, OperationId,
     ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     Sequence, WorkBudget, WorkCounters, WorkspaceForkCommit, WorkspaceForkOutcome,
     authority_commit_digest, object_digest,
@@ -505,7 +505,7 @@ impl IndexedDbAuthorityStore {
             .await
             .map_err(|error| Self::backend(error, work))?;
         let Some(array) = value else {
-            return Ok(AuthorityReceipt { value: None, work });
+            return Ok(crate::OperationReceipt { value: None, work });
         };
         let array = array.dyn_into::<Uint8Array>().map_err(|error| {
             Self::corrupt(format!("invalid operation window buffer: {error:?}"), work)
@@ -538,7 +538,7 @@ impl IndexedDbAuthorityStore {
         if !snapshot.is_valid_for(workspace) {
             return Err(Self::corrupt("invalid operation window", work));
         }
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: Some(snapshot),
             work,
         })
@@ -581,9 +581,9 @@ impl IndexedDbAuthorityStore {
                     && crate::kernel::volume_authority_id(workspace.volume_id()) == authority_id
                     && active
                     && now < expires_at_millis;
-                Ok(AuthorityReceipt { value, work })
+                Ok(crate::OperationReceipt { value, work })
             }
-            _ => Ok(AuthorityReceipt { value: false, work }),
+            _ => Ok(crate::OperationReceipt { value: false, work }),
         }
     }
 
@@ -949,7 +949,7 @@ impl IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, prepared.work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: AppendOutcome::Committed(prepared.durable),
             work: prepared.work,
         })
@@ -1207,7 +1207,7 @@ impl IndexedDbAuthorityStore {
                 work,
             ));
         }
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: output,
             work,
         })
@@ -1248,7 +1248,7 @@ impl IndexedDbAuthorityStore {
             ));
         }
         if after == head.sequence {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: Vec::new(),
                 work,
             });
@@ -1399,7 +1399,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, work))?;
-        Ok(AuthorityReceipt { value: true, work })
+        Ok(crate::OperationReceipt { value: true, work })
     }
 
     /// One strict transaction creates the retention and destination authorities with their first records.
@@ -1433,7 +1433,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                     let work = work
                         .checked_add(stepped.work)
                         .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-                    Ok(AuthorityReceipt {
+                    Ok(crate::OperationReceipt {
                         value: stepped.value,
                         work,
                     })
@@ -1463,7 +1463,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: WorkspaceForkOutcome::Committed,
             work,
         })
@@ -1520,7 +1520,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 .map_err(|error| AuthorityFailure::new(error.into(), read_admission))?;
             Self::admit(gate_work, budget)?;
             Self::read_gate(&transaction, &key, cancellation, gate_work).await?;
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: CreateAuthorityOutcome::Existing(head),
                 work: gate_work,
             });
@@ -1547,7 +1547,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: CreateAuthorityOutcome::Created(head),
             work: write_work,
         })
@@ -1573,7 +1573,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             work,
         )
         .await?;
-        Ok(AuthorityReceipt { value, work })
+        Ok(crate::OperationReceipt { value, work })
     }
 
     async fn compare_and_append(
@@ -1623,7 +1623,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let key = authority_key(authority_id);
         let actual = Self::read_head(&transaction, &key, cancellation, work).await?;
         if epoch != actual.epoch {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
                 },
@@ -1641,10 +1641,10 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             )
             .await?;
         if let Some(value) = existing {
-            return Ok(AuthorityReceipt { value, work });
+            return Ok(crate::OperationReceipt { value, work });
         }
         if expected != actual {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: AppendOutcome::Conflict { actual },
                 work,
             });
@@ -1674,7 +1674,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             }
         };
         if !admitted {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
                 },
@@ -1713,13 +1713,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
         let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
         if actual != expected || gate.active.is_some_and(|active| active != operation_id) {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: ReservationOutcome::Conflict { actual },
                 work: read_work,
             });
         }
         if gate.active == Some(operation_id) {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: ReservationOutcome::AlreadyReserved(PublicationReservation {
                     authority_id,
                     operation_id,
@@ -1753,7 +1753,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: ReservationOutcome::Reserved(PublicationReservation {
                 authority_id,
                 operation_id,
@@ -1780,7 +1780,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let key = authority_key(reservation.authority_id);
         let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
         if gate.released == Some((reservation.operation_id, reservation.gate_tail)) {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: (),
                 work: read_work,
             });
@@ -1817,7 +1817,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: (),
             work: write_work,
         })
@@ -1852,7 +1852,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let key = authority_key(authority_id);
         let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
         if actual != expected {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: FenceOutcome::Conflict { actual },
                 work: read_work,
             });
@@ -1887,7 +1887,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: FenceOutcome::Advanced(next),
             work: write_work,
         })
@@ -1918,7 +1918,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             &transaction, authority_id, operation_id, budget, cancellation, head_work,
         ).await?;
         let Some(operation) = operation else {
-            return Ok(AuthorityReceipt { value: None, work });
+            return Ok(crate::OperationReceipt { value: None, work });
         };
         let (commit, work) = self
             .load_indexed_commit(
@@ -1927,7 +1927,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 cancellation,
             )
             .await?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: Some(commit),
             work,
         })
@@ -2034,7 +2034,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         for (blob, bytes) in existing {
             Self::verify_existing(&blob, bytes, cancellation, work).await?;
         }
-        Ok(ObjectReceipt { value: (), work })
+        Ok(crate::OperationReceipt { value: (), work })
     }
 
     async fn read(
@@ -2102,7 +2102,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         // Blob reads yield outside IndexedDB request callbacks. No transaction
         // may remain live across this materialization boundary.
         drop(transaction);
-        Ok(ObjectReceipt {
+        Ok(crate::OperationReceipt {
             value: Self::read_blob(object_id, &stored_blob, length, cancellation, prospective).await?,
             work: prospective,
         })
@@ -2183,7 +2183,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             );
         }
         state.work.items_returned = item_count;
-        Ok(ObjectReceipt {
+        Ok(crate::OperationReceipt {
             value: values,
             work: state.work,
         })
@@ -2204,14 +2204,14 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         )
         .await
         {
-            Ok(receipt) => Ok(ObjectReceipt {
+            Ok(receipt) => Ok(crate::OperationReceipt {
                 value: true,
                 work: receipt.work,
             }),
             Err(ObjectFailure {
                 error: ObjectStoreError::Missing,
                 work,
-            }) => Ok(ObjectReceipt {
+            }) => Ok(crate::OperationReceipt {
                 value: false,
                 work: *work,
             }),
