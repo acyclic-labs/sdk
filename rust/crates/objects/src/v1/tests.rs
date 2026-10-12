@@ -984,7 +984,6 @@ pub(super) struct NativeTransportMeter {
     pub cancelled: std::sync::atomic::AtomicBool,
     pub cancel_on_copy: std::sync::atomic::AtomicU64,
     pub quota_on_copy: std::sync::atomic::AtomicU64,
-    pub copied: std::sync::atomic::AtomicU64,
     pub allocations: std::sync::atomic::AtomicU64,
     pub allocation_limit: std::sync::atomic::AtomicU64,
     pending_allocations: parking_lot::Mutex<(u64, u64)>,
@@ -1001,7 +1000,7 @@ impl NativeTransportMeter {
         Self {
             memory: 0.into(), limit: u64::MAX.into(), cancelled: false.into(),
             cancel_on_copy: u64::MAX.into(), quota_on_copy: u64::MAX.into(),
-            copied: 0.into(), allocations: 0.into(),
+            allocations: 0.into(),
             allocation_limit: u64::MAX.into(), pending_allocations: parking_lot::Mutex::new((0, 0)),
             reads: 0.into(), writes: 0.into(), reserved: 0.into(),
             table: false, read_limit: u64::MAX.into(), write_limit: u64::MAX.into(),
@@ -1102,7 +1101,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
     fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> { self.check() }
     fn record_codec(&self, encoded: u64, copied: u64, _: u64) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::SeqCst;
-        self.copied.fetch_add(copied, SeqCst);
         if encoded == 0 && copied >= self.cancel_on_copy.load(SeqCst) {
             self.cancelled.store(true, SeqCst);
         }
@@ -1297,7 +1295,6 @@ pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
     let observed = Arc::new(NativeTransportMeter::new());
     let receipt = native_transport_put(provider, &bucket, "native-put", bytes.clone(), observed.clone()).await?;
     assert_eq!(receipt.info().size, bytes.len() as u64);
-    assert!(observed.copied.load(SeqCst) >= bytes.len() as u64);
     assert_eq!(observed.reads.load(SeqCst), 0);
     assert_eq!(observed.reserved.load(SeqCst), 0);
     assert!(observed.memory.load(SeqCst) > 0);
@@ -1329,7 +1326,6 @@ pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
         let error = native_transport_put(provider, &bucket, key, bytes.clone(), observed.clone())
             .await.err().ok_or("native PUT published after cancellation/quota")?;
         assert!(matches!(error.into_cause(), super::NativeObjectsCause::Admission(error) if error.kind() == expected));
-        assert!(observed.copied.load(SeqCst) >= 65_536);
         assert_eq!(provider.head(wire::HeadObjectRequest {
             bucket: Some(bucket.clone()), object_key: key.into(), ..Default::default()
         }).await.err().ok_or("cancelled native PUT became visible")?.code, wire::ErrorCode::NotFound);

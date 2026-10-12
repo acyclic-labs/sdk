@@ -54,7 +54,7 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
             .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }),
     );
     let result = async {
-        let platform = crate::grpc::connect(&endpoint, "private-token").await;
+        let platform = crate::grpc::connect(&endpoint, "private-token", None).await;
         if mode == "file" || mode == "dir" {
             let client = platform?;
             let mut client = client;
@@ -62,13 +62,13 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
         } else {
             let error = platform.err().ok_or("private endpoint unexpectedly trusted")?;
             assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
-            let error = crate::client::connect(&endpoint, "private-token").await.err().ok_or("typed client unexpectedly trusted")?;
+            let error = crate::client::connect(&endpoint, "private-token", None).await.err().ok_or("typed client unexpectedly trusted")?;
             assert_eq!(error.code_name(), "unavailable");
         }
-        let client = crate::grpc::connect_with_ca_certificate(&endpoint, "private-token", Some(pem.as_bytes())).await?;
+        let client = crate::grpc::connect(&endpoint, "private-token", Some(pem.as_bytes())).await?;
         let mut client = client;
         client.inspect_actor(wire::InspectActorRequest::default()).await?;
-        let denied = crate::grpc::connect_with_ca_certificate(&endpoint, "private-token", Some(&unrelated)).await;
+        let denied = crate::grpc::connect(&endpoint, "private-token", Some(&unrelated)).await;
         let error = denied.err().ok_or("unrelated supplied CA unexpectedly trusted")?;
         assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())

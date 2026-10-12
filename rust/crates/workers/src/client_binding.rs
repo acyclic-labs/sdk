@@ -114,16 +114,14 @@ async fn run<T>(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-type Backend = crate::grpc::Client;
-#[cfg(target_arch = "wasm32")]
-type Backend = wire::workers_service_client::WorkersServiceClient<
-    tonic::service::interceptor::InterceptedService<tonic_web_wasm_client::Client, crate::BearerAuth>,
->;
-
 /// Connected source-owned Workers transport, cloned per unary RPC.
 pub struct Client {
-    inner: Backend,
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: crate::grpc::Client,
+    #[cfg(target_arch = "wasm32")]
+    inner: wire::workers_service_client::WorkersServiceClient<
+        tonic::service::interceptor::InterceptedService<tonic_web_wasm_client::Client, crate::BearerAuth>,
+    >,
     maximum: usize,
     deadline: Option<u32>,
     metadata: tonic::metadata::MetadataMap,
@@ -153,7 +151,7 @@ impl Client {
         run(
             async move {
                 #[cfg(not(target_arch = "wasm32"))]
-                let inner = crate::grpc::connect_with_ca_certificate(
+                let inner = crate::grpc::connect(
                     &options.endpoint,
                     &options.token,
                     options.ca.as_ref().map(|ca| ca.as_bytes()),
@@ -212,14 +210,7 @@ impl Client {
 
     /// Actual native/browser transport selected by the compilation target.
     pub const fn transport(&self) -> &'static str {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            "grpc"
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            "grpc-web"
-        }
+        if cfg!(target_arch = "wasm32") { "grpc-web" } else { "grpc" }
     }
 
     /// Execute a canonical protobuf service method after checked wire admission.

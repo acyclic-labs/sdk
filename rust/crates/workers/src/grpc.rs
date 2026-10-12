@@ -9,7 +9,7 @@ use tonic::{
 };
 use tracing::field::Empty;
 
-pub use crate::BearerAuth;
+use crate::BearerAuth;
 
 /// Generated client with account authentication on every request.
 pub type Client = wire::workers_service_client::WorkersServiceClient<
@@ -85,13 +85,8 @@ pub async fn connect_channel(
     Ok((configured.connect().await?, authorization))
 }
 
-/// Connect trusting the operating system's roots with account-bound bearer metadata.
-pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
-    connect_with_ca_certificate(endpoint, token, None).await
-}
-
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
-pub async fn connect_with_ca_certificate(
+pub async fn connect(
     endpoint: &str,
     token: &str,
     ca: Option<&[u8]>,

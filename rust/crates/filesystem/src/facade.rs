@@ -2897,15 +2897,15 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let maximum_object_bytes = objects.maximum_object_bytes;
             let objects = std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
-                    acyclic_objects::v1::local::LocalObjects::open_with_ownership_anchor(
+                    acyclic_objects::v1::local::LocalObjects::open(
                         root.join("objects"),
                         objects,
-                        ownership.clone(),
+                        Some(ownership.clone()),
                     )
                     .await?
                 }
                 None => {
-                    acyclic_objects::v1::local::LocalObjects::open(root.join("objects"), objects)
+                    acyclic_objects::v1::local::LocalObjects::open(root.join("objects"), objects, None)
                         .await?
                 }
             });

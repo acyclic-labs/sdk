@@ -7612,6 +7612,7 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
             acyclic_objects::v1::local::LocalObjects::open(
                 directory.path().join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
+                None,
             )
             .await
             .map_err(|error| format!("objects still owned after iteration {iteration}: {error}"))?,
@@ -7680,6 +7681,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     let objects = acyclic_objects::v1::local::LocalObjects::open(
         directory.path().join("objects"),
         acyclic_objects::LocalObjectsLimits::default(),
+        None,
     )
     .await?;
     let bucket = acyclic_objects::v1::wire::BucketRef {

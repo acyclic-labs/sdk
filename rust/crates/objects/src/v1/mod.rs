@@ -358,7 +358,7 @@ pub struct Object {
     header: wire::GetObjectHeader,
     body: acyclic_stream::OwnedBytes,
     #[cfg(not(target_arch = "wasm32"))]
-    header_custody: Option<acyclic_native_runtime::ReadAllocation>,
+    _header_custody: Option<acyclic_native_runtime::ReadAllocation>,
 }
 
 impl Object {
@@ -367,7 +367,7 @@ impl Object {
         Self {
             header, body,
             #[cfg(not(target_arch = "wasm32"))]
-            header_custody: None,
+            _header_custody: None,
         }
     }
 
@@ -376,7 +376,7 @@ impl Object {
     pub fn new_native(
         header: wire::GetObjectHeader, body: acyclic_stream::OwnedBytes,
         header_custody: Option<acyclic_native_runtime::ReadAllocation>,
-    ) -> Self { Self { header, body, header_custody } }
+    ) -> Self { Self { header, body, _header_custody: header_custody } }
 
     /// Borrows the exact response metadata without detaching its original claim.
     pub const fn header(&self) -> &wire::GetObjectHeader { &self.header }
@@ -386,9 +386,6 @@ impl Object {
 
     /// Moves the same body after destroying metadata before its original claim.
     pub fn into_body(self) -> acyclic_stream::OwnedBytes {
-        drop(self.header);
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(self.header_custody);
         self.body
     }
 }
@@ -441,11 +438,6 @@ impl<T> ObjectsBatch<T> {
 
     /// Borrows the actual ordered results without separating their original claim.
     pub fn results(&self) -> &[Result<T, NativeObjectsError>] { self.results.as_slice() }
-
-    /// Iterates owned results while retaining the actual vector's allocation.
-    pub fn into_results(self) -> impl ExactSizeIterator<Item = Result<T, NativeObjectsError>> {
-        self
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

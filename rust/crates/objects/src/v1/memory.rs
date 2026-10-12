@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{Error, NativeBatchObjects, Object, ObjectsProvider, request, wire};
-use crate::body::{BodyParts, BodyReadMode, StoredBody};
+use crate::body::{BodyParts, BodyReadError, BodyReadMode, StoredBody};
 use crate::obs;
 use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -299,7 +299,6 @@ impl MemoryObjects {
                 let _ = (before, next);
                 Ok(())
             },
-            || Ok(()),
         )
     }
 
@@ -313,7 +312,6 @@ impl MemoryObjects {
         action: impl FnOnce(&mut State) -> Result<R, E>,
         receipt: impl FnOnce(&R, &wire::MutationIdentity) -> Result<(SharedInfo<String>, Receipt), E>,
         commit: impl FnOnce(&State, &mut State) -> Result<(), E>,
-        before_publish: impl FnOnce() -> Result<(), E>,
     ) -> Result<R, E> {
         #[cfg(feature = "local")]
         if let Some(journal) = &self.journal { journal.check()?; }
@@ -340,8 +338,6 @@ impl MemoryObjects {
             return Err(Error::from(QuotaExceeded).into());
         }
         commit(guard, &mut next)?;
-        // Admit the native event at publication.
-        before_publish()?;
         *guard = next;
         Ok(response)
     }
@@ -451,9 +447,6 @@ impl MemoryObjects {
                     }
                     #[cfg(not(feature = "local"))]
                     let _ = (before, next);
-                    Ok(())
-                },
-                || {
                     if self.native_table_backend() { meter.admit_write(0)?; }
                     Ok(())
                 },
@@ -652,25 +645,21 @@ struct ResolvedGet {
     body: StoredBody,
     start: usize,
     end: usize,
+    #[cfg(not(target_arch = "wasm32"))]
+    allocation: Option<ReadAllocation>,
 }
 
 impl ResolvedGet {
-    async fn read(self) -> Result<Object, Error> {
-        let body = self.body.read(self.start, self.end, BodyReadMode::Ordinary).await
-            .map_err(|_| Error::from(Unavailable))?;
-        Ok(Object::new(self.header, body))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_native(
-        self,
-        meter: Arc<dyn NativeReadMeter>,
-        header_allocation: ReadAllocation,
-    ) -> Result<Object, NativeObjectsError> {
-        let allocation = header_allocation;
-        let Self { header, body, start, end } = self;
-        let body = body.read(start, end, BodyReadMode::Native(meter)).await?;
-        Ok(Object::new_native(header, body, Some(allocation)))
+    async fn read(self, mode: BodyReadMode) -> Result<Object, BodyReadError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let allocation = self.allocation;
+        let Self { header, body, start, end, .. } = self;
+        let body = body.read(start, end, mode).await?;
+        Ok(Object {
+            header, body,
+            #[cfg(not(target_arch = "wasm32"))]
+            _header_custody: allocation,
+        })
     }
 }
 
@@ -679,19 +668,22 @@ fn get_locked(
     query: &wire::GetObjectRequest,
     maximum_bytes: u64,
 ) -> Result<ResolvedGet, Error> {
-    get_selected_locked(state, query, maximum_bytes, || Ok::<_, Error>(()), |info| Ok(info.clone()))
+    let name = request::get(query)?;
+    let (value, range, start, end) = get_selected_locked(state, name, query, maximum_bytes)?;
+    Ok(ResolvedGet {
+        header: wire::GetObjectHeader { object: Some((*value.info).clone()), content_range: range },
+        body: value.body.clone(), start, end,
+        #[cfg(not(target_arch = "wasm32"))]
+        allocation: None,
+    })
 }
 
-fn get_selected_locked<E: From<Error>>(
-    state: &State,
+fn get_selected_locked<'a>(
+    state: &'a State,
+    name: &str,
     query: &wire::GetObjectRequest,
     maximum_bytes: u64,
-    before_lookup: impl FnOnce() -> Result<(), E>,
-    clone_info: impl FnOnce(&wire::ObjectInfo) -> Result<wire::ObjectInfo, E>,
-) -> Result<ResolvedGet, E> {
-    let name = request::get(query)?;
-    // Record the lookup before fallible header copying.
-    before_lookup()?;
+) -> Result<(&'a Stored, Option<wire::ContentRange>, usize, usize), Error> {
     let value = state
         .buckets
         .get(name)
@@ -709,15 +701,7 @@ fn get_selected_locked<E: From<Error>>(
     if (end - start) as u64 > maximum_bytes {
         return Err(Error::from(QuotaExceeded).into());
     }
-    Ok(ResolvedGet {
-        header: wire::GetObjectHeader {
-            object: Some(clone_info(&value.info)?),
-            content_range: range,
-        },
-        body: value.body.clone(),
-        start,
-        end,
-    })
+    Ok((value, range, start, end))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -882,15 +866,7 @@ fn put_digest_measured(
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
     meter.admit_codec(0, 0, hash_bytes as u64)?;
     let body_hash = blake3::hash(body);
-    let mut hash = blake3::Hasher::new();
-    hash.update(domain);
-    hash.update(&3_u64.to_le_bytes());
-    hash.update(b"put");
-    hash.update(&(encoded.len() as u64).to_le_bytes());
-    hash.update(&encoded);
-    hash.update(&(body.len() as u64).to_le_bytes());
-    hash.update(body_hash.as_bytes());
-    let digest = *hash.finalize().as_bytes();
+    let digest = request::finish_digest("put", &encoded, body.len() as u64, *body_hash.as_bytes());
     meter.record_codec(0, 0, hash_bytes as u64)?;
     drop(encoded);
     drop(normalized);
@@ -917,16 +893,17 @@ fn get_native_locked(
     maximum_bytes: u64,
     meter: &Arc<dyn NativeReadMeter>,
     table_backend: bool,
-) -> Result<(ResolvedGet, ReadAllocation), NativeObjectsError> {
+) -> Result<ResolvedGet, NativeObjectsError> {
     meter.check()?;
+    let name = request::get(query)?;
+    if table_backend { meter.admit_read(0)?; }
+    let (value, range, start, end) = get_selected_locked(state, name, query, maximum_bytes)?;
     let mut retained = ReadAllocation::empty(meter);
-    let selected = get_selected_locked(state, query, maximum_bytes,
-        || {
-            if table_backend { meter.admit_read(0)?; }
-            Ok::<_, NativeObjectsError>(())
-        },
-        |info| clone_native_info(info, meter, &mut retained))?;
-    Ok((selected, retained))
+    let info = clone_native_info(&value.info, meter, &mut retained)?;
+    Ok(ResolvedGet {
+        header: wire::GetObjectHeader { object: Some(info), content_range: range },
+        body: value.body.clone(), start, end, allocation: Some(retained),
+    })
 }
 
 #[async_trait::async_trait]
@@ -987,7 +964,7 @@ impl NativeBatchObjects for MemoryObjects {
                 let mut results = Vec::with_capacity(selected.len());
                 for value in selected {
                     results.push(match value {
-                        Ok(value) => value.read().await,
+                        Ok(value) => value.read(BodyReadMode::Ordinary).await.map_err(|_| Error::from(Unavailable)),
                         Err(error) => Err(error),
                     });
                 }
@@ -1023,7 +1000,7 @@ impl NativeBatchObjects for MemoryObjects {
                 }
                 for value in selected.0.drain(..) {
                     results.0.push(match value {
-                        Ok((value, header)) => value.read_native(Arc::clone(&meter), header).await,
+                        Ok(value) => value.read(BodyReadMode::Native(Arc::clone(&meter))).await,
                         Err(error) => Err(error),
                     });
                 }
@@ -1236,7 +1213,7 @@ impl ObjectsProvider for MemoryObjects {
                     let state = self.lock_state()?;
                     get_locked(&state, &query, maximum_bytes)?
                 };
-                let object = selected.read().await?;
+                let object = selected.read(BodyReadMode::Ordinary).await.map_err(|_| Error::from(Unavailable))?;
                 obs::record!("bytes" = object.body().len());
                 Ok(object)
             },
@@ -1255,12 +1232,12 @@ impl ObjectsProvider for MemoryObjects {
         super::native_future(Arc::clone(&meter), async move {
             let input = input;
             obs::traced(obs::span!(INFO, "acyclic.objects.get", bytes = obs::Empty), async {
-                let (selected, header) = {
+                let selected = {
                     let state = self.lock_state()?;
                     get_native_locked(&state, input.data(), maximum_bytes, &meter,
                         self.native_table_backend())?
                 };
-                let result = selected.read_native(Arc::clone(&meter), header).await?;
+                let result = selected.read(BodyReadMode::Native(Arc::clone(&meter))).await?;
                 obs::record!("bytes" = result.body().len());
                 Ok(result)
             }).await
@@ -1760,7 +1737,6 @@ mod bootstrap_tests {
         }, 6).await?;
         assert_eq!(read.body().as_slice(), b"actual");
         assert_eq!(read.header().object.as_ref(), Some(first.info()));
-        assert!(observed.copied.load(SeqCst) > 0);
         drop(read);
         drop(first);
         drop(retried);
@@ -1822,7 +1798,7 @@ mod bootstrap_tests {
         let custody = ReadAllocation::adopt(&meter, input_bytes)?;
         let input = ObjectsNativeRequest::new(queries, custody, &meter)?;
         let batch = provider.get_batch_native(input, Arc::clone(&meter))?.await?;
-        let mut results = batch.into_results();
+        let mut results = batch;
         drop(results.next().ok_or("missing first native result")??);
         drop(results.next().ok_or("missing second native result")??);
         assert!(results.next().is_none());

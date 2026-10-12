@@ -701,30 +701,32 @@ fn hex_nibble(byte: u8) -> Result<u8, PhysicalError> {
     }
 }
 
-pub(crate) async fn read_body_at_async(
+pub(crate) async fn read_body_at(
     root: &Arc<LocalRoot>,
     expected_digest: &[u8; 32],
     expected_length: usize,
     location: &LocalBodyLocation,
     start: usize,
     end: usize,
-) -> Result<acyclic_stream::OwnedBytes, Error> {
+    mode: crate::body::BodyReadMode,
+) -> Result<acyclic_stream::OwnedBytes, NativeObjectsError> {
     let backend = match location {
         LocalBodyLocation::Segment { .. } => "segment",
         LocalBodyLocation::Journal { .. } => "journal",
     };
     let span = crate::obs::span!(
-        TRACE,
-        "acyclic.objects.physical.read",
-        backend,
-        bytes = end.saturating_sub(start),
-        body_bytes = expected_length,
+        TRACE, "acyclic.objects.physical.read",
+        backend, bytes = end.saturating_sub(start), body_bytes = expected_length,
     );
-    crate::obs::traced(
-        span,
-        read_body_at_inner_async(root, expected_digest, expected_length, location, start, end),
-    )
-    .await
+    crate::obs::traced(span, async {
+        match mode {
+            crate::body::BodyReadMode::Ordinary =>
+                read_body_at_inner_async(root, expected_digest, expected_length, location, start, end)
+                    .await.map_err(Into::into),
+            crate::body::BodyReadMode::Native(meter) =>
+                read_body_at_native_inner(root, expected_digest, expected_length, location, start, end, meter).await,
+        }
+    }).await
 }
 
 async fn read_body_at_inner_async(
@@ -826,29 +828,6 @@ pub(crate) fn local_path(
     Ok(LocalPath { path, _allocation: allocation })
 }
 
-pub(crate) async fn read_body_at_native(
-    root: &Arc<LocalRoot>,
-    expected_digest: &[u8; 32],
-    expected_length: usize,
-    location: &LocalBodyLocation,
-    start: usize,
-    end: usize,
-    meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> Result<acyclic_stream::OwnedBytes, crate::v1::NativeObjectsError> {
-    let backend = match location {
-        LocalBodyLocation::Segment { .. } => "segment",
-        LocalBodyLocation::Journal { .. } => "journal",
-    };
-    let span = crate::obs::span!(
-        TRACE, "acyclic.objects.physical.read",
-        backend, bytes = end.saturating_sub(start), body_bytes = expected_length,
-    );
-    crate::obs::traced(span, read_body_at_native_inner(
-        root, expected_digest, expected_length, location, start, end, meter,
-    )).await
-}
-
-/// The same journal authentication and segment-table selection as ordinary reads, with original-meter buffers and shared controls prepared before physical IO.
 async fn read_body_at_native_inner(
     root: &Arc<LocalRoot>,
     expected_digest: &[u8; 32],
@@ -1194,13 +1173,14 @@ pub(crate) mod tests {
             };
             let root = Arc::new(LocalRoot::new(directory.path().to_path_buf()));
             let read = |location: &LocalBodyLocation, start, end| {
-                futures::executor::block_on(read_body_at_async(
+                futures::executor::block_on(read_body_at(
                     &root,
                     &digest,
                     body.len(),
                     location,
                     start,
                     end,
+                    crate::body::BodyReadMode::Ordinary,
                 ))
             };
             let selected = read(&location, 1, 5).unwrap_or_else(|_| unreachable!());

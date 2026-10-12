@@ -22,9 +22,10 @@ use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::native_mount::{MountOptions, NativeMountKind, probe_native_mount};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
+use acyclic_objects::LocalObjectsLimits;
 use acyclic_objects::v1::{
     ObjectsProvider,
-    local::{LocalObjects, LocalOptions as LocalObjectsLimits},
+    local::LocalObjects,
     wire,
 };
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient};
@@ -85,7 +86,7 @@ async fn qualify_stream_local(root: PathBuf) -> Result<(), String> {
 }
 
 async fn qualify_objects_local(root: PathBuf) -> Result<(), String> {
-    let provider = LocalObjects::open(root, LocalObjectsLimits::default())
+    let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|error| error.to_string())?;
     acyclic_objects::v1::conformance::verify(&provider, "conformance")
@@ -349,7 +350,7 @@ async fn stream_history(root: &Path, seed: u64) -> Result<(), String> {
 }
 
 async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
-    let provider = LocalObjects::open(root, LocalObjectsLimits::default())
+    let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|e| e.to_string())?;
     let bucket = provider
@@ -412,7 +413,7 @@ async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
         verify_objects_current(&provider, &bucket, &expected, &key, step).await?;
     }
     drop(provider);
-    let reopened = LocalObjects::open(root, LocalObjectsLimits::default())
+    let reopened = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|e| e.to_string())?;
     reopened
@@ -443,7 +444,7 @@ async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
 async fn objects_many_chunks_setup(root: &Path) -> Result<(), String> {
     const CHUNK_BYTES: usize = 1_024 * 1_024;
     const CHUNKS: usize = 48;
-    let provider = LocalObjects::open(root, LocalObjectsLimits::default())
+    let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|e| e.to_string())?;
     let bucket = provider
@@ -477,7 +478,7 @@ async fn objects_many_chunks_setup(root: &Path) -> Result<(), String> {
 }
 
 async fn objects_sparse_first_put(root: &Path) -> Result<(), String> {
-    let provider = LocalObjects::open(root, LocalObjectsLimits::default())
+    let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|e| e.to_string())?;
     let bucket = provider
@@ -504,7 +505,7 @@ async fn objects_sparse_first_put(root: &Path) -> Result<(), String> {
 }
 
 async fn objects_sparse_reopen_gc(root: &Path) -> Result<(), String> {
-    let provider = LocalObjects::open(root, LocalObjectsLimits::default())
+    let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|e| e.to_string())?;
     let bucket = wire::BucketRef {
@@ -538,7 +539,7 @@ async fn objects_sparse_reopen_gc(root: &Path) -> Result<(), String> {
 }
 
 async fn objects_many_chunks_startup(root: &Path) -> Result<(), String> {
-    let provider = LocalObjects::open(root, LocalObjectsLimits::default())
+    let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|e| e.to_string())?;
     provider

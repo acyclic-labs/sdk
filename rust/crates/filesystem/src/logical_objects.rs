@@ -259,7 +259,7 @@ impl LogicalReadResults {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(values) => {
-                for value in values.into_results() { if let Err(error) = value { return native_objects_error(error).into(); } }
+                for value in values { if let Err(error) = value { return native_objects_error(error).into(); } }
             }
         }
         fallback
@@ -299,7 +299,7 @@ impl LogicalReadResults {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(values) => {
-                for value in values.into_results() { visit(value.map_err(native_objects_error))?; }
+                for value in values { visit(value.map_err(native_objects_error))?; }
             }
         }
         Ok(())
@@ -755,7 +755,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             ).await,
             #[cfg(not(target_arch = "wasm32"))]
             LogicalPutResults::Native(results) => self.finish_put_many_results(
-                results.into_results().map(|result| result.map(|receipt| receipt.info().size).map_err(native_objects_error)),
+                results.map(|result| result.map(|receipt| receipt.info().size).map_err(native_objects_error)),
                 &unique, writes, allow_idempotent, accounting,
             ).await,
         };
