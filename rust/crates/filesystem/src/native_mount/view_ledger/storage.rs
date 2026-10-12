@@ -17,7 +17,11 @@ pub(super) fn vector<T>(
     let (value, bytes) = carrier
         .with_work(|work| crate::native_host::buffer::<T, _>(count, work))
         .map_err(mount_demand_error)?;
-    if let Err(error) = carrier.with_work(|work| custody.retain_admitted(bytes, work)) {
+    if let Err(error) = carrier.with_work(|work| {
+        custody
+            .retain(bytes, work)
+            .map_err(crate::DemandError::from)
+    }) {
         drop(value);
         carrier
             .with_work(|work| work.release(bytes))
