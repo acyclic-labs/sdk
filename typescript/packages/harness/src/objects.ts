@@ -82,7 +82,6 @@ export class ObjectContentStore {
   bindings(): ContentBindings {
     const base: ContentBindings = {
       validate: (file, limits) => { this.#validate(file, limits); },
-      verify: (file, bytes) => this.options.authority.contracts.verifyFileBytes(file, bytes),
       read: file => this.read(file),
       fileReadCapability: file => this.options.authority.fileReadCapability(file),
       volumeReadCapability: volume => this.options.authority.volumeCapability(volume, "read"),

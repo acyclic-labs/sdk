@@ -577,6 +577,7 @@ use values::*;
 mod log;
 use log::*;
 mod native_io;
+pub(crate) use native_io::reserve;
 mod native_log;
 use native_io::*;
 mod journal;

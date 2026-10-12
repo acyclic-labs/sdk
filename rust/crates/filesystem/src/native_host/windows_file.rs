@@ -1,35 +1,27 @@
 use super::*;
+use windows::{
+    Wdk::Storage::FileSystem as nt,
+    Win32::{Foundation as win, Storage::FileSystem as fs},
+};
 
 pub(crate) struct StagedWindowsFile {
     pub(super) parent: Dir,
-    /// Deletes the staged name when closed.
     pub(super) guard: File,
 }
-
 impl Drop for StagedWindowsFile {
     fn drop(&mut self) {
-        use windows::Win32::Storage::FileSystem::{
-            FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
-            FILE_DISPOSITION_FLAG_ON_CLOSE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-        };
-        let set = |flags: u32| {
-            windows_set_information(
-                &self.guard,
-                &flags,
-                windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS(64),
-            )
-        };
-        if set(FILE_DISPOSITION_FLAG_ON_CLOSE.0).is_ok()
-            && set(FILE_DISPOSITION_FLAG_DELETE.0
-                | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
-                | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0)
+        let set =
+            |flags| windows_set_information(&self.guard, &flags, nt::FILE_INFORMATION_CLASS(64));
+        if set(fs::FILE_DISPOSITION_FLAG_ON_CLOSE.0).is_ok()
+            && set(fs::FILE_DISPOSITION_FLAG_DELETE.0
+                | fs::FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
+                | fs::FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0)
             .is_err()
         {
-            let _ = set(FILE_DISPOSITION_FLAG_ON_CLOSE.0 | FILE_DISPOSITION_FLAG_DELETE.0);
+            let _ = set(fs::FILE_DISPOSITION_FLAG_ON_CLOSE.0 | fs::FILE_DISPOSITION_FLAG_DELETE.0);
         }
     }
 }
-
 impl StagedWindowsFile {
     pub(crate) fn create(parent: Dir) -> io::Result<Self> {
         use cap_std::fs::OpenOptionsExt as _;
@@ -37,6 +29,7 @@ impl StagedWindowsFile {
             DELETE, FILE_FLAG_DELETE_ON_CLOSE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
         };
+
         let name =
             std::path::PathBuf::from(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4().simple()));
         let mut options = OpenOptions::new();
@@ -56,7 +49,7 @@ impl StagedWindowsFile {
                 &self.parent,
                 name,
                 false,
-                windows::Wdk::Storage::FileSystem::FileLinkInformation,
+                nt::FileLinkInformation,
                 work,
             )
         })
@@ -64,39 +57,37 @@ impl StagedWindowsFile {
     }
 }
 
-/// Whether a file of `length` bytes can be block cloned at all.
 pub(super) fn clonable_windows_length(length: u64) -> bool {
     length >= 4 * 1024 && i64::try_from(length).is_ok()
 }
 
 pub(super) fn windows_leaf_name<W: NativeHostWork>(
-    path: &[u16],
+    name: &[u16],
     work: &mut W,
-) -> Result<windows::Win32::Foundation::UNICODE_STRING, W::Error> {
+) -> Result<win::UNICODE_STRING, W::Error> {
     work.check()?;
-    if path.is_empty() || path == [46] || path == [46, 46] {
+    if matches!(name, [] | [46] | [46, 46]) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid native leaf").into());
     }
-    for unit in path {
-        let delta = ITEM;
-        work.admit(delta)?;
-        let invalid = matches!(*unit, 0 | 47 | 58 | 92);
-        work.record(delta)?;
+    for unit in name {
+        work.admit(ITEM)?;
+        let invalid = matches!(unit, 0 | 47 | 58 | 92);
+        work.record(ITEM)?;
         if invalid {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid native leaf").into());
         }
     }
-    let bytes = path
+    let bytes = name
         .len()
         .checked_mul(2)
         .ok_or(crate::WorkError::Overflow)?;
     let length = u16::try_from(bytes).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "native leaf exceeds NT length")
     })?;
-    Ok(windows::Win32::Foundation::UNICODE_STRING {
+    Ok(win::UNICODE_STRING {
         Length: length,
         MaximumLength: length,
-        Buffer: windows::core::PWSTR(path.as_ptr().cast_mut()),
+        Buffer: windows::core::PWSTR(name.as_ptr().cast_mut()),
     })
 }
 
@@ -109,58 +100,53 @@ pub(crate) fn create_windows_wide_at<W: NativeHostWork>(
     delete_on_close: bool,
     work: &mut W,
 ) -> Result<File, W::Error> {
-    use windows::Wdk::Storage::FileSystem::{
-        FILE_CREATE, FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
-        FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        NTCREATEFILE_CREATE_OPTIONS,
-    };
-    use windows::Win32::Foundation::{OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE};
-    use windows::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE};
     let name = windows_leaf_name(path, work)?;
     let options = (if directory_file {
-        FILE_DIRECTORY_FILE
+        nt::FILE_DIRECTORY_FILE
     } else {
-        FILE_NON_DIRECTORY_FILE
-    }) | FILE_OPEN_REPARSE_POINT
+        nt::FILE_NON_DIRECTORY_FILE
+    }) | nt::FILE_OPEN_REPARSE_POINT
         | if overlapped {
-            NTCREATEFILE_CREATE_OPTIONS(0)
+            nt::NTCREATEFILE_CREATE_OPTIONS(0)
         } else {
-            FILE_SYNCHRONOUS_IO_NONALERT
+            nt::FILE_SYNCHRONOUS_IO_NONALERT
         }
         | if delete_on_close {
-            FILE_DELETE_ON_CLOSE
+            nt::FILE_DELETE_ON_CLOSE
         } else {
-            NTCREATEFILE_CREATE_OPTIONS(0)
+            nt::NTCREATEFILE_CREATE_OPTIONS(0)
         };
-    let access = FILE_GENERIC_WRITE
-        | FILE_GENERIC_READ
+    let access = fs::FILE_GENERIC_READ
+        | fs::FILE_GENERIC_WRITE
         | if delete_on_close {
-            DELETE
+            fs::DELETE
         } else {
-            Default::default()
+            fs::FILE_ACCESS_RIGHTS(0)
         };
     work.attempt_io(WRITE, || {
         open_windows_name(
             directory,
             &name,
             access,
-            if open_if { FILE_OPEN_IF } else { FILE_CREATE },
+            if open_if {
+                nt::FILE_OPEN_IF
+            } else {
+                nt::FILE_CREATE
+            },
             options,
-            OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+            win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
         )
         .map_err(status_error)
     })
 }
 
 pub(crate) fn create_windows_directory<W: NativeHostWork>(
-    directory: &Dir,
+    parent: &Dir,
     name: &[u16],
     work: &mut W,
 ) -> Result<File, W::Error> {
-    let file = create_windows_wide_at(directory, name, true, false, true, false, work)?;
-    let information = windows_stat_information(&file, work)?;
-    if information.FileAttributes
-        & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0
+    let file = create_windows_wide_at(parent, name, true, false, true, false, work)?;
+    if windows_stat_information(&file, work)?.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
         != 0
     {
         return Err(W::invalid_request());
@@ -168,20 +154,20 @@ pub(crate) fn create_windows_directory<W: NativeHostWork>(
     Ok(file)
 }
 
-pub(super) fn windows_set_information<T>(
+pub(super) fn windows_set_information<T: ?Sized>(
     file: &File,
     information: &T,
-    class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
+    class: nt::FILE_INFORMATION_CLASS,
 ) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle as _;
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-    // SAFETY: correctly sized initialized information and held handle outlive the call.
+    // SAFETY: the held handle and initialized information outlive this call.
     let status = unsafe {
-        windows::Wdk::Storage::FileSystem::NtSetInformationFile(
-            windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
-            &raw mut block,
+        nt::NtSetInformationFile(
+            win::HANDLE(file.as_raw_handle()),
+            &mut block,
             std::ptr::from_ref(information).cast(),
-            std::mem::size_of::<T>() as u32,
+            std::mem::size_of_val(information) as u32,
             class,
         )
     };
@@ -196,104 +182,61 @@ pub(crate) fn keep_windows_created_file<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     work.attempt_io(WRITE, || {
-        windows_set_information(
-            file,
-            &8_u32,
-            windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS(64),
-        )
+        windows_set_information(file, &8_u32, nt::FILE_INFORMATION_CLASS(64))
     })
 }
 
 pub(crate) fn open_windows_leaf_handle<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
-    access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
+    access: fs::FILE_ACCESS_RIGHTS,
     directory: Option<bool>,
     work: &mut W,
 ) -> Result<File, W::Error> {
-    use windows::Wdk::Storage::FileSystem::{
-        FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-        FILE_SYNCHRONOUS_IO_NONALERT, NTCREATEFILE_CREATE_OPTIONS,
-    };
     let name = windows_leaf_name(name, work)?;
-    let options = FILE_OPEN_REPARSE_POINT
-        | FILE_SYNCHRONOUS_IO_NONALERT
+    let options = nt::FILE_OPEN_REPARSE_POINT
+        | nt::FILE_SYNCHRONOUS_IO_NONALERT
         | match directory {
-            Some(true) => FILE_DIRECTORY_FILE,
-            Some(false) => FILE_NON_DIRECTORY_FILE,
-            None => NTCREATEFILE_CREATE_OPTIONS(0),
+            Some(true) => nt::FILE_DIRECTORY_FILE,
+            Some(false) => nt::FILE_NON_DIRECTORY_FILE,
+            None => nt::NTCREATEFILE_CREATE_OPTIONS(0),
         };
     work.attempt_io(READ, || {
         open_windows_name(
             parent,
             &name,
             access,
-            FILE_OPEN,
+            nt::FILE_OPEN,
             options,
-            windows::Win32::Foundation::OBJ_CASE_INSENSITIVE,
+            win::OBJ_CASE_INSENSITIVE,
         )
         .map_err(status_error)
     })
 }
 
-pub(crate) fn create_windows_symbolic_link<W: NativeHostWork>(
-    parent: &Dir,
-    name: &[u16],
+fn set_windows_symbolic_link<W: NativeHostWork>(
+    file: &File,
     target: &[u16],
-    directory: bool,
-    created: &mut Option<File>,
-    on_created: impl FnOnce(),
-    on_reparse_set: impl FnOnce(),
     work: &mut W,
 ) -> Result<(), W::Error> {
-    if created.is_some() {
-        return Err(W::invalid_request());
-    }
-    with_windows_symlink_packet(target, work, |buffer, work| {
-        *created = Some(create_windows_wide_at(
-            parent, name, directory, false, false, true, work,
-        )?);
-        on_created();
-        let file = created
-            .as_ref()
-            .expect("FILE_CREATE capability installed before reparse mutation");
-        set_windows_symlink_packet(file, buffer, work)?;
-        on_reparse_set();
-        keep_windows_created_file(file, work)
-    })
-}
-
-pub(super) fn with_windows_symlink_packet<W: NativeHostWork, T>(
-    target: &[u16],
-    work: &mut W,
-    operation: impl FnOnce(&[u8], &mut W) -> Result<T, W::Error>,
-) -> Result<T, W::Error> {
-    use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
-    use windows::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK;
+    use std::os::windows::io::AsRawHandle as _;
     if target.is_empty() {
         return Err(W::invalid_request());
     }
     for unit in target {
-        let examined = ITEM;
-        work.admit(examined)?;
+        work.admit(ITEM)?;
         let invalid = *unit == 0;
-        work.record(examined)?;
+        work.record(ITEM)?;
         if invalid {
             return Err(W::invalid_request());
         }
     }
-    let slash = u16::from(b'\\');
-    let drive = target.len() >= 3 && target[1] == u16::from(b':') && target[2] == slash;
-    let unc = target.starts_with(&[slash, slash])
-        && !target.starts_with(&[slash, slash, u16::from(b'?'), slash]);
-    let extended = target.starts_with(&[slash, slash, u16::from(b'?'), slash]);
-    let nt = target.starts_with(&[slash, u16::from(b'?'), u16::from(b'?'), slash]);
-    if !drive
-        && !unc
-        && !extended
-        && !nt
-        && (target[0] == slash || (target.len() >= 2 && target[1] == u16::from(b':')))
-    {
+    let drive = target.len() >= 3 && target[1..3] == [58, 92];
+    let extended = target.starts_with(&[92, 92, 63, 92]);
+    let unc = target.starts_with(&[92, 92]) && !extended;
+    let nt_name = target.starts_with(&[92, 63, 63, 92]);
+    let absolute = drive || extended || unc || nt_name;
+    if !absolute && (target[0] == 92 || (target.len() >= 2 && target[1] == 58)) {
         return Err(W::invalid_request());
     }
     let prefix: &[u16] = if unc {
@@ -303,30 +246,27 @@ pub(super) fn with_windows_symlink_packet<W: NativeHostWork, T>(
     } else {
         &[]
     };
-    let substituted = if unc {
+    let substitute = if unc {
         &target[2..]
     } else if extended {
         &target[4..]
     } else {
         target
     };
-    let substitute_units = prefix
+    let substitute_bytes = prefix
         .len()
-        .checked_add(substituted.len())
-        .ok_or(crate::WorkError::Overflow)?;
-    let substitute_bytes = substitute_units
-        .checked_mul(2)
+        .checked_add(substitute.len())
+        .and_then(|n| n.checked_mul(2))
         .ok_or(crate::WorkError::Overflow)?;
     let print_bytes = target
         .len()
         .checked_mul(2)
         .ok_or(crate::WorkError::Overflow)?;
-    let size = 20_usize
+    let size = 24usize
         .checked_add(substitute_bytes)
-        .and_then(|size| size.checked_add(print_bytes))
-        .and_then(|size| size.checked_add(4))
+        .and_then(|n| n.checked_add(print_bytes))
         .ok_or(crate::WorkError::Overflow)?;
-    if size > MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize {
+    if size > fs::MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize {
         return Err(W::invalid_request());
     }
     let encoded = WorkCounters {
@@ -335,57 +275,44 @@ pub(super) fn with_windows_symlink_packet<W: NativeHostWork, T>(
     };
     work.admit(encoded)?;
     let mut storage =
-        std::mem::MaybeUninit::<[u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize]>::uninit();
+        std::mem::MaybeUninit::<[u8; fs::MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize]>::uninit();
     let pointer = storage.as_mut_ptr().cast::<u8>();
-    let mut header = [0_u8; 20];
-    header[..4].copy_from_slice(&IO_REPARSE_TAG_SYMLINK.to_le_bytes());
+    let mut header = [0u8; 20];
+    header[..4].copy_from_slice(
+        &windows::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK.to_le_bytes(),
+    );
     header[4..6].copy_from_slice(&((size - 8) as u16).to_le_bytes());
     header[10..12].copy_from_slice(&(substitute_bytes as u16).to_le_bytes());
     header[12..14].copy_from_slice(&((substitute_bytes + 2) as u16).to_le_bytes());
     header[14..16].copy_from_slice(&(print_bytes as u16).to_le_bytes());
-    header[16..20].copy_from_slice(&(u32::from(!(drive || unc || extended || nt))).to_le_bytes());
-    // SAFETY: the complete header fits the fixed ABI storage; the untouched suffix remains MaybeUninit until each following UTF-16 unit is written.
+    header[16..20].copy_from_slice(&u32::from(!absolute).to_le_bytes());
+    // SAFETY: the checked packet size fits storage, and each consumed byte is initialized.
     unsafe {
-        pointer.copy_from_nonoverlapping(header.as_ptr(), header.len());
-    }
-    let mut offset = 20;
-    for unit in prefix
-        .iter()
-        .chain(substituted)
-        .copied()
-        .chain(std::iter::once(0))
-        .chain(target.iter().copied())
-        .chain(std::iter::once(0))
-    {
-        // SAFETY: checked exact size includes both terminated target names.
-        unsafe {
+        pointer.copy_from_nonoverlapping(header.as_ptr(), 20);
+        for (index, unit) in prefix
+            .iter()
+            .chain(substitute)
+            .copied()
+            .chain(std::iter::once(0))
+            .chain(target.iter().copied())
+            .chain(std::iter::once(0))
+            .enumerate()
+        {
             pointer
-                .add(offset)
+                .add(20 + index * 2)
                 .cast::<[u8; 2]>()
                 .write(unit.to_le_bytes());
         }
-        offset += 2;
     }
-    // SAFETY: every byte in this exact prefix has now been initialized.
-    let buffer = unsafe { std::slice::from_raw_parts(pointer, size) };
     work.record(encoded)?;
-    operation(buffer, work)
-}
-
-pub(super) fn set_windows_symlink_packet<W: NativeHostWork>(
-    file: &File,
-    buffer: &[u8],
-    work: &mut W,
-) -> Result<(), W::Error> {
-    use std::os::windows::io::AsRawHandle as _;
     work.attempt_io(WRITE, || {
-        // SAFETY: the real creation handle and fully initialized exact ABI packet survive this same synchronous mutation for both work shapes.
+        // SAFETY: the initialized packet and held handle outlive DeviceIoControl.
         unsafe {
             windows::Win32::System::IO::DeviceIoControl(
-                windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+                win::HANDLE(file.as_raw_handle()),
                 windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
-                Some(buffer.as_ptr().cast()),
-                buffer.len() as u32,
+                Some(pointer.cast()),
+                size as u32,
                 None,
                 0,
                 None,
@@ -402,34 +329,37 @@ pub(crate) fn open_windows_leaf_with_options<W: NativeHostWork>(
     options: &NativeOpenOptions,
     work: &mut W,
 ) -> Result<File, W::Error> {
-    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_REPARSE_POINT, FILE_GENERIC_READ};
     let file = match options {
-        NativeOpenOptions::Read => {
-            open_windows_leaf_handle(parent, name, FILE_GENERIC_READ, Some(false), work)?
-        }
-        NativeOpenOptions::ReadWrite => {
-            use windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
-            open_windows_leaf_handle(
-                parent,
-                name,
-                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-                Some(false),
-                work,
-            )?
-        }
-        NativeOpenOptions::CreateNew | NativeOpenOptions::ReadWriteCreateNew => {
-            create_windows_wide_at(parent, name, false, false, false, false, work)?
-        }
-        NativeOpenOptions::ReadWriteCreate => {
-            create_windows_wide_at(parent, name, false, false, true, false, work)?
-        }
+        NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => open_windows_leaf_handle(
+            parent,
+            name,
+            fs::FILE_GENERIC_READ
+                | if matches!(options, NativeOpenOptions::ReadWrite) {
+                    fs::FILE_GENERIC_WRITE
+                } else {
+                    fs::FILE_ACCESS_RIGHTS(0)
+                },
+            Some(false),
+            work,
+        )?,
+        _ => create_windows_wide_at(
+            parent,
+            name,
+            false,
+            false,
+            matches!(options, NativeOpenOptions::ReadWriteCreate),
+            false,
+            work,
+        )?,
     };
-    let information = windows_stat_information(&file, work)?;
-    if information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+    if windows_stat_information(&file, work)?.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
+        != 0
+    {
         return Err(W::invalid_request());
     }
     Ok(file)
 }
+
 pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
@@ -437,28 +367,23 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     expected: Option<NativeRootIdentity>,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    use windows::Wdk::Storage::FileSystem::{
-        FILE_DISPOSITION_INFORMATION, FileDispositionInformation,
-    };
-    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
     let file = open_windows_leaf_handle(
         parent,
         name,
-        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        fs::DELETE | fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
         Some(directory),
         work,
     )?;
     if let Some(expected) = expected {
-        let observed = file_identity_and_length(&file, work)?.0;
-        if observed != expected {
+        if file_identity_and_length(&file, work)?.0 != expected {
             return Err(io::Error::other("held deletion target identity changed").into());
         }
     }
     work.attempt_io(WRITE, || {
         windows_set_information(
             &file,
-            &FILE_DISPOSITION_INFORMATION { DeleteFile: true },
-            FileDispositionInformation,
+            &nt::FILE_DISPOSITION_INFORMATION { DeleteFile: true },
+            nt::FileDispositionInformation,
         )
     })
 }
@@ -470,11 +395,10 @@ pub(crate) fn rename_windows_leaf<W: SourceDemandReadWork>(
     to_name: &[u16],
     work: &mut W,
 ) -> Result<(), DemandError> {
-    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
     let file = open_windows_leaf_handle(
         from,
         name,
-        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        fs::DELETE | fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
         None,
         work,
     )?;
@@ -487,25 +411,11 @@ pub(crate) fn rename_windows_leaf<W: SourceDemandReadWork>(
     if to_name == [46] || to_name == [46, 46] {
         return Err(DemandError::InvalidRequest);
     }
-    set_windows_name(
-        &file,
-        to,
-        to_name,
-        true,
-        windows::Wdk::Storage::FileSystem::FileRenameInformation,
-        work,
-    )
+    set_windows_name(&file, to, to_name, true, nt::FileRenameInformation, work)
 }
 
 impl HostRoot {
-    pub(crate) fn create_overlapped_file_wide<W: SourceDemandReadWork>(
-        &self,
-        path: &[u16],
-        work: &mut W,
-    ) -> Result<File, DemandError> {
-        self.create_windows_file_wide(path, true, false, work)
-    }
-    pub(super) fn create_windows_file_wide<W: SourceDemandReadWork>(
+    pub(crate) fn create_windows_file_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         overlapped: bool,
@@ -513,10 +423,15 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<File, DemandError> {
         let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
-        create_windows_wide_at(&parent, leaf, false, overlapped, false, temporary, work)
+        create_windows_wide_at(
+            &self.open_dir_held_wide(parent, work)?,
+            leaf,
+            false,
+            overlapped,
+            false,
+            temporary,
+            work,
+        )
     }
     pub(crate) fn create_dir_wide<W: SourceDemandReadWork>(
         &self,
@@ -524,10 +439,15 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(), DemandError> {
         let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
-        create_windows_wide_at(&parent, leaf, true, false, false, false, work)?;
+        create_windows_wide_at(
+            &self.open_dir_held_wide(parent, work)?,
+            leaf,
+            true,
+            false,
+            false,
+            false,
+            work,
+        )?;
         Ok(())
     }
     pub(crate) fn create_dir_all_held_wide<W: SourceDemandReadWork>(
@@ -535,25 +455,24 @@ impl HostRoot {
         path: &[u16],
         work: &mut W,
     ) -> Result<HostRoot, DemandError> {
-        let mut current = clone_directory(&self.directory, work)?;
+        let mut directory = clone_directory(&self.directory, work)?;
         if path.is_empty() {
             return Ok(Self {
-                directory: current,
+                directory,
                 identity: self.identity,
             });
         }
-        for component in path.split(|unit| *unit == 92) {
+        for name in path.split(|u| *u == 92) {
             work.charge(ITEM)?;
-            if component.is_empty() || component == [46] || component == [46, 46] {
+            if matches!(name, [] | [46] | [46, 46]) {
                 return Err(DemandError::InvalidRequest);
             }
-            let file = create_windows_directory(&current, component, work)?;
-            current = Dir::from_std_file(file);
+            directory = Dir::from_std_file(create_windows_directory(&directory, name, work)?);
         }
-        let identity = directory_identity(&current, work)?;
+        let identity = directory_identity(&directory, work)?;
         Ok(Self {
-            directory: current,
-            identity: identity,
+            directory,
+            identity,
         })
     }
     pub(crate) fn hard_link_wide<W: SourceDemandReadWork>(
@@ -562,34 +481,24 @@ impl HostRoot {
         destination: &[u16],
         work: &mut W,
     ) -> Result<(), DemandError> {
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        };
-        use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
-        let (source_parent, source_leaf) = wide_parent_leaf(source)?;
-        let source_parent = self
-            .open_dir_held_wide(source_parent, work)
-            .map(|(directory, _)| directory)?;
-        let source = open_windows_wide_at(
-            &source_parent,
-            source_leaf,
-            DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        let (parent, name) = wide_parent_leaf(source)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
+        let file = open_windows_wide_at(
+            &parent,
+            name,
+            fs::DELETE | fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+            nt::FILE_OPEN_REPARSE_POINT | nt::FILE_SYNCHRONOUS_IO_NONALERT,
             work,
-            || DemandError::InvalidRequest,
         )?
         .ok_or(DemandError::InvalidRequest)?
         .into_std();
-        let (parent, leaf) = wide_parent_leaf(destination)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let (parent, name) = wide_parent_leaf(destination)?;
         set_windows_name(
-            &source,
-            &parent,
-            leaf,
+            &file,
+            &self.open_dir_held_wide(parent, work)?,
+            name,
             false,
-            windows::Wdk::Storage::FileSystem::FileLinkInformation,
+            nt::FileLinkInformation,
             work,
         )
     }
@@ -601,31 +510,23 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<bool, DemandError> {
         let source = source_root
-            .open_file_wide(
-                source,
-                windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
-                work,
-            )?
+            .open_file_wide(source, nt::FILE_SYNCHRONOUS_IO_NONALERT, work)?
             .into_std();
         let stat = source_root.stat_file(&source, work)?;
         if !stat.file_type().is_file()
-            || stat.file_attributes()
-                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0
-                != 0
+            || stat.file_attributes() & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
         {
             return Err(DemandError::InvalidRequest);
         }
-        let length = stat.len();
-        if !clonable_windows_length(length) {
+        if !clonable_windows_length(stat.len()) {
             return Ok(false);
         }
         let target = self.create_windows_file_wide(destination, false, true, work)?;
-        let cloned = clone_windows_file(&source, &target, length, work);
-        if matches!(cloned, Ok(true)) {
+        let result = clone_windows_file(&source, &target, stat.len(), work);
+        if matches!(result, Ok(true)) {
             keep_windows_created_file(&target, work)?;
         }
-        drop(target);
-        cloned
+        result
     }
     pub(crate) fn symlink_file_wide<W: SourceDemandReadWork>(
         &self,
@@ -634,9 +535,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(), DemandError> {
         let file = self.create_windows_file_wide(destination, false, true, work)?;
-        with_windows_symlink_packet(target, work, |buffer, work| {
-            set_windows_symlink_packet(&file, buffer, work)
-        })?;
+        set_windows_symbolic_link(&file, target, work)?;
         keep_windows_created_file(&file, work)
     }
 }
@@ -646,32 +545,32 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
     replace: bool,
-    class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
+    class: nt::FILE_INFORMATION_CLASS,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
-    windows_wide_name(name, work, W::invalid_request)?.ok_or_else(W::invalid_request)?;
-    let copied = WorkCounters {
-        bytes_copied: (name.len() as u64)
+    relative_kernel_name(name, work)?.ok_or_else(W::invalid_request)?;
+    let copied = copy_work(
+        (name.len() as u64)
             .checked_mul(2)
             .ok_or(crate::WorkError::Overflow)?,
-        ..WorkCounters::UNCHARGED
-    };
+    );
     work.admit(copied)?;
-    let (storage, allocation, length) =
+    let (packet, allocation, length) =
         windows_name_packet(parent, name.iter().copied(), name.len(), replace, work)?;
     let result = (|| {
         work.record(copied)?;
         work.attempt_io(WRITE, || {
-            windows_name_packet_once(
-                file,
-                &storage,
-                length.max(std::mem::size_of::<FILE_RENAME_INFORMATION>() as u32),
-                class,
-            )
+            // SAFETY: the initialized packet covers the fixed header and flexible name.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    packet.as_ptr().cast::<u8>(),
+                    length.max(std::mem::size_of::<nt::FILE_RENAME_INFORMATION>() as u32) as usize,
+                )
+            };
+            windows_set_information(file, bytes, class)
         })
     })();
-    drop(storage);
+    drop(packet);
     work.release(allocation)?;
     result
 }

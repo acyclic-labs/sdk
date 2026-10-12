@@ -2507,7 +2507,7 @@ impl AsyncObjectStore for NoGenerationCalls {
     }
             .await;
         }
-        let _ = context.work.remaining(context.budget)?;
+        let _ = context.read_budget()?;
         let _ = context.cancellation;
         let result = async {
         panic!("denied generation entered ordinary read");

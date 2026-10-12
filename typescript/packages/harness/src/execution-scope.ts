@@ -119,12 +119,6 @@ export class ExecutionScope {
   withLimits(value: EffectiveScope["limits"]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, value, this.grantsExplicit, this.executionProvider); }
 }
 
-export function narrowGrants(parent: readonly string[], child: readonly string[], explicit: boolean): readonly string[] {
-  if (!explicit) return parent;
-  if (child.some(grant => !parent.includes(grant))) throw new Error("child scope cannot widen grants");
-  return [...new Set(child)];
-}
-
 export function narrowLimits(parent: EffectiveScope["limits"], child: EffectiveScope["limits"]): EffectiveScope["limits"] {
   const concurrency = child.concurrency ?? parent.concurrency;
   if (concurrency !== undefined && (!Number.isSafeInteger(concurrency) || concurrency <= 0)) throw new RangeError("scope concurrency must be a positive safe integer");

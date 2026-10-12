@@ -183,8 +183,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let lease = None;
         if let Some(lease) = lease {
             match io {
-                Some(io) => io.verify_publication_lease(lease.as_ref()).await?,
-                None => lease.verify().await?,
+                Some(io) => lease.verify(Some(io))?.await?,
+                None => lease.verify(None)?.await?,
             }
         }
         let volume = source.map_or(self.volume(), FileRef::volume);
@@ -251,33 +251,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     crate::resource_preparation::ScratchCreationIdentity for CreatedFilesystemAccess<A, O>
 {
-    fn original_task(&self) -> crate::TaskId {
-        crate::TaskId::from_bytes(self.origin().intended_child.into_bytes())
-    }
-    fn agent(&self) -> crate::AgentId {
-        self.reader()
-            .scope
-            .agent()
-            .expect("created reader binds its original agent")
-    }
+
     fn volume(&self) -> &VolumeRef {
         self.volume()
     }
-    fn creation_operation(&self) -> acyclic_fs::OperationId {
-        let Self::Task {
-            creation_operation, ..
-        } = self
-        else {
-            unreachable!("scratch identity comes from a task allocation")
-        };
-        *creation_operation
-    }
-    fn initial_generation(&self) -> &GenerationRef {
-        let Self::Task { generation, .. } = self else {
-            unreachable!("scratch identity comes from a task allocation")
-        };
-        generation
-    }
+
     fn origin(&self) -> &ResourceCreationOrigin {
         let Self::Task { origin, .. } = self else {
             unreachable!("scratch identity comes from a task allocation")
@@ -344,7 +322,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if matches!(self, Self::Reference { .. }) {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "private directory operations are unavailable for exact-file access",
@@ -382,7 +360,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         if matches!(self, Self::Reference { .. }) {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "private directory operations are unavailable for exact-file access",
@@ -431,7 +409,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         'io: 'a,
     {
         if matches!(self, Self::Reference { .. }) {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "private directory operations are unavailable for exact-file access",
@@ -562,3 +540,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         })
     }
 }
+
+use crate::executor::stock_boundary;

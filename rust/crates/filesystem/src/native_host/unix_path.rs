@@ -38,10 +38,7 @@ pub(super) fn unix_name_checked<W: NativeHostWork, T>(
         .len()
         .checked_add(1)
         .ok_or(crate::WorkError::Overflow)?;
-    let delta = WorkCounters {
-        bytes_copied: bytes.len() as u64,
-        ..WorkCounters::UNCHARGED
-    };
+    let delta = copy_work(bytes.len() as u64);
     work.admit(delta)?;
     let (mut owned, allocation) = buffer(size, work)?;
     let result = (|| {

@@ -14,8 +14,7 @@ use publication::*;
 pub use publication::{publish_native_exchange, recover_native_exchange};
 mod entry;
 use entry::*;
-pub use entry::{exchange_native_entries, recover_native_entry_exchange};
-pub(crate) use entry::{exchange_native_entries_held, recover_native_entry_exchange_held};
+pub(crate) use entry::{exchange_native_entries, recover_native_entry_exchange};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

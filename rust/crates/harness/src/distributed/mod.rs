@@ -11,7 +11,7 @@ use crate::{
     runtime,
     scheduler::{
         AssemblyKind, EntrypointRef, LeaseFence, OperationSpec, OperationState,
-        OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
+        OrchestrationDecision, Reservation, ResourceRequest, Scheduler, SchedulerEvent,
         assembly_invocation_digest, reduction_invocation_digest,
     },
     wire,
@@ -58,7 +58,7 @@ pub use scheduling::{WorkLease, WorkPull, Worker};
 pub(crate) use serializer::{digest_key, execution_path};
 
 use authority::authorize_operation_scope;
-use commit::{append_if_execution_idle, coordinator_retry_conflict};
+use commit::append_if_execution_idle;
 use journal::{coordinator_boundary, coordinator_stream, next_record, read_intent, read_records};
 use serializer::{
     decode, decode_json, encode, formatted_text, inspect_envelope, stream_key, stream_path,
@@ -67,5 +67,6 @@ use serializer::{
 
 const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "3";
-const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v3";
+const COORDINATOR_WIRE_DIGEST: &str =
+    "667265d00a51e8a59c84844f5e9e9ab38f9fd2118921d50b044b023cc3f7fed6";
 const READ_PAGE_SIZE: u32 = 1_024;

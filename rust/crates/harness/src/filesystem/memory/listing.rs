@@ -141,7 +141,7 @@ impl LocalListFilesTool {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             crate::executor::with_history_io(Some(&io), |observer|
-                crate::contract::canonical_json_digest_with_work(invocation, io.remaining()?.bytes_encoded, observer))?
+                crate::contract::canonical_json_digest(invocation, io.remaining()?.bytes_encoded, observer))?
         };
         let observed = self.observed.lock().await;
         match observed.get(&invocation.operation_id) {
@@ -169,7 +169,7 @@ impl LocalListFilesTool {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             crate::executor::with_history_io(Some(&io), |observer|
-                crate::contract::canonical_json_digest_with_work(invocation, io.remaining()?.bytes_encoded, observer))?
+                crate::contract::canonical_json_digest(invocation, io.remaining()?.bytes_encoded, observer))?
         };
         let limits = context.effective_scope().limits();
         let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
@@ -225,7 +225,7 @@ impl LocalListFilesTool {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "list_files cache ownership overflow",
             })?;
-        cached.1.resize_retained(retained).map_err(Error::from)?;
+        cached.1.resize(retained).map_err(Error::from)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1,
             ..Default::default()
@@ -265,7 +265,7 @@ impl ToolExecutor for LocalListFilesTool {
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
-            let admission_digest = crate::contract::canonical_json_digest(&invocation)?;
+            let admission_digest = crate::contract::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             if let Some(original) = observed.get(&invocation.operation_id) {
                 return if original.admission_digest == admission_digest {
                     Ok(original.result.clone())
@@ -332,7 +332,7 @@ impl ToolExecutor for LocalListFilesTool {
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             let observed = self.observed.lock().await;
-            let admission_digest = crate::contract::canonical_json_digest(&invocation)?;
+            let admission_digest = crate::contract::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             match observed.get(&invocation.operation_id) {
                 Some(original) if original.admission_digest == admission_digest => {
                     Ok(Some(original.result.clone()))
@@ -433,7 +433,7 @@ impl ToolExecutor for LocalListFilesTool {
                             code: crate::wire::ErrorCode::Invalid,
                             reason: "list_files observation ownership overflow",
                         })?;
-                    output.1.resize_retained(retained).map_err(Error::from)?;
+                    output.1.resize(retained).map_err(Error::from)?;
                     Ok((Some(output.0), output.1))
                 }
                 None => Ok((

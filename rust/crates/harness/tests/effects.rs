@@ -176,7 +176,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .effect(effect_id)
         .cloned()
         .ok_or_else(|| acyclic_harness::Error::Invalid("dispatched effect missing".into()))?;
-    let mut registry = EffectRegistry::default().with_result_resolver(verifier.clone());
+    let mut registry = EffectRegistry::new(None, Some(verifier.clone()))?;
     registry.register(Arc::new(ResultProvider(result.clone(), false)), None)?;
     registry.register(Arc::new(ResultProvider(result, true)), None)?;
     let state = aggregate

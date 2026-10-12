@@ -428,9 +428,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     &mut authority,
                 )
                 .await
-                .map(|(value, allocation)| {
-                    (value, allocation.expect("native authority allocation"))
-                })
+                .map(|value| (value, KernelOwnedAllocation::Standalone))
         })
         .map_err(|error| {
             E::from(match error {
@@ -527,7 +525,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .take()
                     .expect("publication prepared its owned root copies"),
             );
-            self.base_file_table = self.root.file_table;
             self.authority_head = Some(head);
             self.prepared_merge_parent = None;
             self.dependencies.proof().clear();
@@ -574,8 +571,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             (operation_id),
                             &mut authority,
                         )
-                        .await
-                        .map(|(value, _allocation)| value);
+                        .await;
                     authority.receipt(result)
                 })
                 .map_err(|failure| {
@@ -676,15 +672,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                                 &mut authority,
                             )
                             .await
-                            .map(|(value, allocation)| {
-                                (value, allocation.expect("native authority allocation"))
-                            })
+                            .map(|value| (value, KernelOwnedAllocation::Standalone))
                     })
                     .map_err(|error| match error {
                         AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),
                         error => FsError::Authority(error),
                     })?;
-                    (value, KernelOwnedAllocation::NativeOriginal(allocation))
+                    (value, allocation)
                 }
                 _ => match ({
                     let mut authority =
@@ -699,8 +693,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             (operation_id),
                             &mut authority,
                         )
-                        .await
-                        .map(|(value, _allocation)| value);
+                        .await;
                     authority.receipt(result)
                 }) {
                     Ok(receipt) => {

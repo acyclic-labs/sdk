@@ -314,15 +314,17 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
         })
         .err(),
         ({
-            let authority_input_1 = Head {
-                epoch: Epoch::GENESIS,
-                sequence: deleted.next.sequence,
-                digest: deleted.next.digest,
-            };
-
             let mut __authority_work = crate::AuthorityWork::new(BUDGET, &cancellation);
             let __authority_result = authority
-                .fence(authority_id, authority_input_1, &mut __authority_work)
+                .fence(
+                    authority_id,
+                    Head {
+                        epoch: Epoch::GENESIS,
+                        sequence: deleted.next.sequence,
+                        digest: deleted.next.digest,
+                    },
+                    &mut __authority_work,
+                )
                 .await;
             __authority_work.receipt(__authority_result)
         })

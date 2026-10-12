@@ -3,56 +3,57 @@ use super::*;
 #[tokio::test]
 async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
+    macro_rules! ready {
+        ($future:expr) => {
+            ($future).await?
+        };
+    }
     let cancellation = CancellationToken::new();
     let fs = Fs::memory();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let mut checkout = (volume.value.checkout(
+    let volume = ready!(fs.create_volume(config(), B, &cancellation,));
+    let mut checkout = ready!(volume.value.checkout(
         GenerationSelector::Head,
         writable_tracking(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-    ))
-    .await?;
+    ));
     let path = path("attributes.bin")?;
-    let file_id = (checkout.value.create(
-        crate::AuthoredMutation::CreateFile {
+    ready!(checkout.value.create(
+        AuthoredMutation::CreateFile {
             path: path.clone(),
-            bytes: (bytes::Bytes::new()).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::new(),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+        B,
+        &cancellation
+    ));
     let name = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.acyclic".to_vec(),
         128,
     )?;
     assert!(
-        (checkout
-            .value
-            .read_named_attribute(&path, &name, WorkBudget::UNBOUNDED, &cancellation,))
-        .await?
+        ready!(
+            checkout
+                .value
+                .read_named_attribute(&path, &name, B, &cancellation,)
+        )
         .value
         .is_none()
     );
-    let empty_listing = (checkout.value.list_named_attributes(
-        &path,
-        None,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let empty_listing =
+        ready!(
+            checkout
+                .value
+                .list_named_attributes(&path, None, 8, B, &cancellation,)
+        );
     assert!(empty_listing.value.entries.is_empty());
     assert!(!empty_listing.value.has_more);
     let absent_remove = (checkout.value.change_named_attribute(
         path.clone(),
-        &name,
+        &name.clone(),
         None,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -61,37 +62,36 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     assert!(matches!(absent_remove.error, FsError::NotFound));
     let absent_replace = (checkout.value.change_named_attribute(
         path.clone(),
-        &name,
+        &name.clone(),
         Some((
-            &bytes::Bytes::from_static(b"replacement"),
+            &OwnedBytes::from_static(b"replacement"),
             NamedAttributeWriteMode::Replace,
         )),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
     .err()
     .ok_or("absent attribute replacement unexpectedly succeeded")?;
     assert!(matches!(absent_replace.error, FsError::CreationRejected));
-    (checkout.value.change_named_attribute(
+    ready!(checkout.value.change_named_attribute(
         path.clone(),
-        &name,
+        &name.clone(),
         Some((
-            &bytes::Bytes::from_static(b"first"),
-            NamedAttributeWriteMode::Create,
+            &OwnedBytes::from_static(b"first"),
+            NamedAttributeWriteMode::Create
         )),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+        B,
+        &cancellation
+    ));
     let duplicate_create = (checkout.value.change_named_attribute(
         path.clone(),
-        &name,
+        &name.clone(),
         Some((
-            &bytes::Bytes::from_static(b"duplicate"),
+            &OwnedBytes::from_static(b"duplicate"),
             NamedAttributeWriteMode::Create,
         )),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -99,83 +99,57 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     .ok_or("duplicate attribute creation unexpectedly succeeded")?;
     assert!(matches!(duplicate_create.error, FsError::CreationRejected));
     assert_eq!(
-        (checkout
-            .value
-            .read_named_attribute(&path, &name, WorkBudget::UNBOUNDED, &cancellation,))
-        .await?
+        ready!(
+            checkout
+                .value
+                .read_named_attribute(&path, &name, B, &cancellation,)
+        )
         .value
         .map(|chunk| chunk.bytes)
         .as_deref(),
         Some(b"first".as_slice())
     );
-    let listing = (checkout.value.list_named_attributes(
-        &path,
-        None,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let listing = ready!(
+        checkout
+            .value
+            .list_named_attributes(&path, None, 8, B, &cancellation,)
+    );
     assert_eq!(listing.value.entries.len(), 1);
     assert_eq!(listing.value.entries[0].name, name);
     assert!(!listing.value.has_more);
-    (checkout.value.change_named_attribute(
+    ready!(checkout.value.change_named_attribute(
         path.clone(),
-        &name,
+        &name.clone(),
         Some((
-            &bytes::Bytes::from_static(b"second"),
-            NamedAttributeWriteMode::Replace,
+            &OwnedBytes::from_static(b"second"),
+            NamedAttributeWriteMode::Replace
         )),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.change_named_attribute(
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.change_named_attribute(
         path.clone(),
-        &name,
+        &name.clone(),
         None,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+        B,
+        &cancellation
+    ));
     assert!(
-        (checkout
-            .value
-            .read_named_attribute(&path, &name, WorkBudget::UNBOUNDED, &cancellation,))
-        .await?
+        ready!(
+            checkout
+                .value
+                .read_named_attribute(&path, &name, B, &cancellation,)
+        )
         .value
         .is_none()
     );
-    let removed_listing = (checkout.value.list_named_attributes(
-        &path,
-        None,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let removed_listing =
+        ready!(
+            checkout
+                .value
+                .list_named_attributes(&path, None, 8, B, &cancellation,)
+        );
     assert!(removed_listing.value.entries.is_empty());
     assert!(!removed_listing.value.has_more);
-    (checkout.value.change_named_attribute_by_id(
-        file_id,
-        &name,
-        Some((&OwnedBytes::new(), NamedAttributeWriteMode::Upsert)),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    assert!(
-        (checkout.value.read_named_attribute_by_id(
-            file_id,
-            &name,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
-        .value
-        .ok_or("empty attribute missing")?
-        .bytes
-        .is_empty()
-    );
     Ok(())
 }

@@ -1,4 +1,4 @@
-import type { CheckpointId, CreateMachine, MachineEventPage, ForkFidelity, IdempotencyKey, MachineId, MachinesProvider, MutationOutcome, SuspensionPolicy } from "./index.js";
+import type { CreateMachine, MachineEventPage, MachineId, MachinesProvider } from "./index.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
 import { validatePageSize } from "../generated/wasm/acyclic_machines_wasm.js";
 
@@ -14,53 +14,9 @@ export interface MachineListOptions {
 /** Creates a machine and checks the outcome kind. */
 export async function createMachine(provider: MachinesProvider, request: CreateMachine): Promise<MachineId> {
   const outcome = await provider.create(request);
-  if (outcome.kind !== "created") throw new MachineOutcomeError("created", outcome);
+  if (outcome.kind !== "created") throw new TypeError(`expected created outcome, received ${outcome.kind}`);
   return outcome.machine.id;
 }
-/** Checkpoints a machine and checks the outcome kind. */
-export async function checkpointMachine(provider: MachinesProvider, id: MachineId, key: IdempotencyKey): Promise<CheckpointId> {
-  const outcome = await provider.checkpoint(id, key);
-  if (outcome.kind !== "checkpointed") throw new MachineOutcomeError("checkpointed", outcome);
-  return outcome.checkpoint.id;
-}
-/** Children of one live fork and its declared fidelity. */
-export interface MachineFork { readonly fidelity: ForkFidelity; readonly children: readonly MachineId[] }
-export async function forkMachine(provider: MachinesProvider, id: MachineId, count: number, key: IdempotencyKey): Promise<MachineFork> {
-  const outcome = await provider.forkMachine(id, count, key);
-  if (outcome.kind !== "machine-forked" || outcome.source !== id) throw new MachineOutcomeError("machine-forked", outcome);
-  return { fidelity: outcome.fidelity, children: outcome.children.map(value => value.id) };
-}
-export async function suspendMachine(provider: MachinesProvider, id: MachineId, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspended" }>> {
-  const outcome = await provider.suspend(id, key);
-  if (outcome.kind !== "suspended") throw new MachineOutcomeError("suspended", outcome);
-  return outcome;
-}
-export async function wakeMachine(provider: MachinesProvider, id: MachineId, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "woken" }>> {
-  const outcome = await provider.wake(id, key);
-  if (outcome.kind !== "woken") throw new MachineOutcomeError("woken", outcome);
-  return outcome;
-}
-export async function setSuspensionPolicy(provider: MachinesProvider, id: MachineId, policy: SuspensionPolicy, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspension-policy-set" }>> {
-  const outcome = await provider.setSuspensionPolicy(id, policy, key);
-  if (outcome.kind !== "suspension-policy-set") throw new MachineOutcomeError("suspension-policy-set", outcome);
-  return outcome;
-}
-export async function destroyMachine(provider: MachinesProvider, id: MachineId, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "machine-destroyed" }>> {
-  const outcome = await provider.destroyMachine(id, key);
-  if (outcome.kind !== "machine-destroyed") throw new MachineOutcomeError("machine-destroyed", outcome);
-  return outcome;
-}
-export async function forkCheckpoint(provider: MachinesProvider, id: CheckpointId, count: number, key: IdempotencyKey): Promise<readonly MachineId[]> {
-  const outcome = await provider.fork(id, count, key);
-  if (outcome.kind !== "forked") throw new MachineOutcomeError("forked", outcome);
-  return outcome.machines.map(value => value.id);
-}
-export async function destroyCheckpoint(provider: MachinesProvider, id: CheckpointId, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "checkpoint-destroyed" }>> {
-  const outcome = await provider.destroyCheckpoint(id, key);
-  if (outcome.kind !== "checkpoint-destroyed") throw new MachineOutcomeError("checkpoint-destroyed", outcome);
-  return outcome;
-}
-
 export function machineEvents(provider: MachinesProvider, id: MachineId, afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<MachineEventPage> {
   return provider.events(id, afterSequence, limit);
 }
@@ -85,5 +41,3 @@ export async function* listMachines(provider: MachinesProvider, options: Machine
     cursor = page.next;
   }
 }
-
-export class MachineOutcomeError extends Error { constructor(readonly expected: MutationOutcome["kind"], readonly outcome: MutationOutcome) { super(`expected ${expected} outcome, received ${outcome.kind}`); } }

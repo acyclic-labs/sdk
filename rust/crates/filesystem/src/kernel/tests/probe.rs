@@ -1169,7 +1169,7 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
             }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             {
