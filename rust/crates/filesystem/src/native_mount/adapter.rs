@@ -8892,11 +8892,7 @@ where
         }, work.native_read_meter().as_ref()).map_err(capture_io_error)?
     }
 
-    fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError> {
-        boundary(&self.cancellation, |work| self.remove_with_meter(path, expected, work))
-    }
-
-    fn remove_with_meter(
+    fn remove(
         &self,
         path: &MountPath,
         expected: Option<FileId>,
@@ -8908,12 +8904,6 @@ where
     }
 
     fn rename(
-        &self, source: &MountPath, destination: &MountPath, replace: bool,
-    ) -> Result<(), MountSourceError> {
-        boundary(&self.cancellation, |work| self.rename_with_meter(source, destination, replace, work))
-    }
-
-    fn rename_with_meter(
         &self,
         source: &MountPath,
         destination: &MountPath,
@@ -10977,7 +10967,7 @@ mod tests {
         source.create_file(&to_path, metadata())?;
         let from = source.detach_file(&from_path)?;
         let to = source.detach_file(&to_path)?;
-        source.remove(&from_path, Some(created.node.file_id))?;
+        boundary(source.cancellation(), |work| source.remove(&from_path, Some(created.node.file_id), work))?;
         let caller = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &caller)
             .map_err(|(error, _)| error)?;
@@ -11681,7 +11671,7 @@ mod tests {
         assert_eq!(current(stamp), [false, true, true, false, true, true]);
 
         let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-        source.remove(&b, Some(b_id))?;
+        boundary(source.cancellation(), |work| source.remove(&b, Some(b_id), work))?;
         assert_eq!(current(stamp), [false, true, false, true, true, true]);
         Ok(())
     }
@@ -11948,7 +11938,7 @@ mod tests {
                 attached.write_range(4, Bytes::from_static(b"-open"))?;
                 assert_eq!(attached.read_range(0, 9)?.as_ref(), b"base-open");
                 let detached = source.detach_file(&path)?;
-                source.remove(&path, Some(created.node.file_id))?;
+                boundary(source.cancellation(), |work| source.remove(&path, Some(created.node.file_id), work))?;
                 detached.write_range(0, Bytes::from_static(b"live"))?;
                 assert_eq!(detached.read_range(0, 9)?.as_ref(), b"live-open");
                 source.sync()?;
@@ -12067,7 +12057,7 @@ mod tests {
 
         let detached = source.detach_file(&file)?;
         let expected = source.lookup(&file)?.map(|lookup| lookup.node.file_id);
-        source.remove(&file, expected)?;
+        boundary(source.cancellation(), |work| source.remove(&file, expected, work))?;
         assert_eq!(source.lookup(&file)?, None);
         assert_eq!(detached.lookup()?.node.link_count, 0);
         assert_eq!(detached.read_range(8, 7)?.as_ref(), b"visible");
@@ -12206,14 +12196,14 @@ mod tests {
         source.write_range(&original, 0, Bytes::from_static(b"base"))?;
         let open = source.open_file(&original)?;
         boundary(&source.cancellation, |work| source.hard_link(&original, &alias, work))?;
-        source.remove(&original, Some(created.node.file_id))?;
+        boundary(source.cancellation(), |work| source.remove(&original, Some(created.node.file_id), work))?;
 
         assert_eq!(source.lookup(&original)?, None);
         assert_eq!(open.lookup()?.node.link_count, 1);
         open.write_range(4, Bytes::from_static(b"-open"))?;
         assert_eq!(source.read_range(&alias, 0, 9)?.as_ref(), b"base-open");
 
-        source.rename(&alias, &renamed, false)?;
+        boundary(source.cancellation(), |work| source.rename(&alias, &renamed, false, work))?;
         open.write_range(0, Bytes::from_static(b"live"))?;
         assert_eq!(source.lookup(&alias)?, None);
         assert_eq!(source.read_range(&renamed, 0, 9)?.as_ref(), b"live-open");
@@ -13149,7 +13139,7 @@ mod tests {
         boundary(&source.cancellation, |work| source.flush(work))?;
         boundary(&source.cancellation, |work| source.flush(work))?;
         let renamed = native_test_path("renamed.bin");
-        source.rename(&path, &renamed, true)?;
+        boundary(source.cancellation(), |work| source.rename(&path, &renamed, true, work))?;
         assert!(source.lookup(&path)?.is_none());
         let landed = source.lookup(&renamed)?;
         assert!(landed.is_some());
@@ -13175,7 +13165,7 @@ mod tests {
         source.write_range(&payload, 0, Bytes::from_static(b"BRAVO"))?;
         boundary(&source.cancellation, |work| source.flush(work))?;
         let renamed = native_test_path("renamed.bin");
-        source.rename(&payload, &renamed, true)?;
+        boundary(source.cancellation(), |work| source.rename(&payload, &renamed, true, work))?;
         let link = native_test_path("link.bin");
         boundary(&source.cancellation, |work| source.hard_link(&renamed, &link, work))?;
         let renamed_id = source
@@ -13183,13 +13173,13 @@ mod tests {
             .ok_or("renamed file is absent")?
             .node
             .file_id;
-        source.remove(&renamed, Some(renamed_id))?;
+        boundary(source.cancellation(), |work| source.remove(&renamed, Some(renamed_id), work))?;
         let link_id = source
             .lookup(&link)?
             .ok_or("linked file is absent")?
             .node
             .file_id;
-        source.remove(&link, Some(link_id))?;
+        boundary(source.cancellation(), |work| source.remove(&link, Some(link_id), work))?;
         source.create_file(&link, metadata())?;
         source.write_range(&link, 0, Bytes::from_static(b"replacement"))?;
         boundary(&source.cancellation, |work| source.flush(work))?;

@@ -337,8 +337,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
     ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
-            let (task, fence) = self.owner.as_ref().task_binding();
-            self.host.read_received_mail_owned(task, fence.clone(), receive_operation, item).await
+            self.host.read_received_mail_owned(self.owner.as_ref(), receive_operation, item, None).await
         })
     }
 }

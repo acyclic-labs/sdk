@@ -444,7 +444,7 @@ where
                 };
                 #[cfg(target_arch = "wasm32")]
                 let ready = self.runtime.task_host().poll_timer(task, &fence, command.operation_id, input.deadline_unix_ms, None).await?;
-                if ready { ready(Outcome::Succeeded(Value::Null), io) }
+                if ready { self::ready(Outcome::Succeeded(Value::Null), io) }
                 else { Ok(TaskCommandProgress::Pending) }
             }
             TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND if reconciliation_only => mail::reconciled(io),
@@ -929,10 +929,11 @@ where
             }
         }
         if let Some(receive) = input.mailbox_operation {
-            let received = context.read_received_mail_for_model_with_native_work(
-                turn, receive, work,
-            )?.await?;
-            let retained = context.observe_received_parcel_with_native_work(&received.1, work).await?;
+            let item = self.committed_mail_input(task, fence, turn, receive, context.context(), Some(io)).await?;
+            let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
+            let copy_path = crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), Some(io))?;
+            let _path = io.guard_owned(copy_path.capacity() as u64)?;
+            let retained = context.context().observe_staged_file_once_with_native_work(copy_operation, work).await?;
             io.absorb_native_custody(retained.1)?;
             let copy = match retained.0 {
                 Some(file) => file,
@@ -941,20 +942,20 @@ where
                     reason: "started steered model has no retained receiver parcel",
                 }),
                 None => {
+                    let bytes = context.context().read_received_mail(receive, &item, &mut Some(&mut io.history_io())).await?;
                     self.runtime.owner_observed(task, fence, false, Some(io)).await?;
                     let staged = context.context().stage_file_once_with_native_work(
-                        received.1.copy_operation(), received.1.path(), &received.0,
-                        received.1.source_file().descriptor().media_type(),
-                        received.1.source_file().display_name(), work,
+                        copy_operation, &copy_path, &bytes,
+                        item.payload.descriptor().media_type(), item.payload.display_name(), work,
                     ).await?;
                     io.absorb_native_custody(staged.1)?;
                     self.runtime.owner_observed(task, fence, false, Some(io)).await?;
                     staged.0
                 }
             };
-            if copy.path() != received.1.path()
-                || copy.descriptor() != received.1.source_file().descriptor()
-                || copy.display_name() != received.1.source_file().display_name()
+            if copy.path() != copy_path
+                || copy.descriptor() != item.payload.descriptor()
+                || copy.display_name() != item.payload.display_name()
             {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "receiver parcel receipt differs from original mail" });
@@ -977,7 +978,7 @@ where
                 file: copy, policy: crate::model::FileProjectionPolicy::BoundedFull,
             }, Some(io))?;
             input.input = ModelContent::Parts(parts);
-            drop(received);
+            drop(item);
         }
         let context = match &input.selected_output_volume {
             Some(volume) => context.with_output_volume_with_native_work(volume, work).await?,
@@ -1121,8 +1122,8 @@ where
             None
         };
         if let Some(receive) = input.mailbox_operation {
-            let item = self.committed_mail_input(task, fence.clone(), turn, receive).await?;
             let context = self.runtime.task_context(task, fence.clone()).await?;
+            let item = self.committed_mail_input(task, &fence, turn, receive, &context, None).await?;
             let copy_operation = crate::durable_host::received_copy_operation(task, receive, None)?;
             let copy_path = format!("mailbox/{receive}/parcel");
             let copy = match context.observe_staged_file_once(copy_operation).await? {
@@ -1130,7 +1131,7 @@ where
                 None if reconciliation_only => return Err(Error::Storage(
                     "started steered model has no retained receiver parcel".into())),
                 None => {
-                    let bytes = context.read_received_mail(receive, &item).await?;
+                    let bytes = context.read_received_mail(receive, &item, &mut None).await?;
                     self.runtime.task_host().verify_dispatch_owner(task, fence.clone()).await?;
                     let file = context.stage_file_once(copy_operation, &copy_path, &bytes,
                         item.payload.descriptor().media_type(), item.payload.display_name()).await?;
@@ -1226,14 +1227,19 @@ where
     }
 
     async fn committed_mail_input(
-        &self, task: TaskId, fence: LeaseFence, model_operation: OperationId,
-        receive_operation: OperationId,
+        &self, task: TaskId, fence: &LeaseFence, model_operation: OperationId,
+        receive_operation: OperationId, context: &TaskContext, io: Option<&super::PreparationIo>,
     ) -> Result<crate::scheduler::InboxItem> {
         use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
-        let io = None;
-        let journal = self.runtime.workflow_journal(task, fence).await?;
-        let latest = journal.observe_latest_record(None).await?.ok_or_else(|| boundary(
+        #[cfg(not(target_arch = "wasm32"))]
+        let journal = match io.and_then(super::PreparationIo::original_native_work) {
+            Some(work) => self.runtime.workflow_journal_with_native_work(task, fence, work).await?,
+            None => self.runtime.workflow_journal(task, fence.clone()).await?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let journal = self.runtime.workflow_journal(task, fence.clone()).await?;
+        let latest = journal.observe_latest_record(io).await?.ok_or_else(|| boundary(
             io, ErrorCode::Unauthorized, "model steering has no committed checkpoint"))?;
         if !latest.transition.commands.iter().any(|command|
             command.operation_id == model_operation && command.kind == MODEL_TASK_COMMAND_KIND)
@@ -1254,8 +1260,11 @@ where
         let [result] = commands.as_slice() else {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering checkpoint consumes more than one item"));
         };
-        let result: CommittedMailResult = serde_json::from_value(result.clone())
-            .map_err(|cause| Error::Unauthorized(format!("invalid steering receipt: {cause}")))?;
+        let result: CommittedMailResult = match io {
+            Some(io) => crate::filesystem::retain_decoded(io.value_decode_preparation(result, ErrorCode::Unauthorized)?),
+            None => serde_json::from_value(result.clone())
+                .map_err(|cause| Error::Unauthorized(format!("invalid steering receipt: {cause}")))?,
+        };
         if result.operation_id != receive_operation {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering result changed its operation"));
         }
@@ -1265,15 +1274,30 @@ where
         if item.task_id != task || item.sequence == 0 {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering item belongs to another recipient"));
         }
-        let context = self.runtime.harness().durable_context(
-            task, OperationId::from_bytes(task.into_bytes()),
-        ).await?;
-        let selection: MailReceiveTaskCommand =
-            crate::contract::json_from_slice(&context.read_file(&receive.payload).await?)
-                .map_err(|error| Error::Storage(error.to_string()))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let bytes = match io.and_then(super::PreparationIo::original_native_work) {
+            Some(work) => context.read_file_with_native_work(&receive.payload, work).await?,
+            None => context.read_file(&receive.payload).await?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let bytes = context.read_file(&receive.payload).await?;
+        let selection: MailReceiveTaskCommand = match io {
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<MailReceiveTaskCommand>, &bytes, ErrorCode::Storage)?),
+            None => crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))?,
+        };
         if selection.after.checked_add(1) != Some(item.sequence) {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering receipt changed the selected cursor"));
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let retained = match io.and_then(super::PreparationIo::original_native_work) {
+            Some(work) => {
+                let (items, custody) = self.runtime.task_host().inbox_with_native_work(task, item.sequence - 1, 1, work).await?;
+                io.expect("native inbox observer").absorb_native_custody(custody)?;
+                items
+            },
+            None => self.runtime.task_host().inbox(task, item.sequence - 1, 1).await?,
+        };
+        #[cfg(target_arch = "wasm32")]
         let retained = self.runtime.task_host().inbox(task, item.sequence - 1, 1).await?;
         if retained.as_slice() != std::slice::from_ref(&item) {
             return Err(boundary(io, ErrorCode::Conflict, "steering item differs from the original mail"));

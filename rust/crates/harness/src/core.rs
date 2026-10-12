@@ -4956,7 +4956,7 @@ mod tests {
                 action_digest: [3; 32],
             }),
         };
-        ticket.validate_request_bytes(&request_bytes)?;
+        ticket.validate_request_bytes(&request_bytes, &mut None)?;
         reducer.apply(command(
             operation(19),
             0,
