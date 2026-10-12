@@ -1562,5 +1562,5 @@ impl crate::async_storage::AsyncObjectStore for MemoryObjectStore {
 
 
 #[cfg(test)]
-#[path = "tests/memory.rs"]
+#[path = "tests/memory/mod.rs"]
 mod tests;

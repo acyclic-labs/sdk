@@ -1,6 +1,7 @@
 use super::*;
 
-pub(super) const WORKSPACE_JOIN_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-workspace-join-operation-v1\0";
+pub(super) const WORKSPACE_JOIN_OPERATION_DOMAIN: &[u8] =
+    b"acyclic-fs-workspace-join-operation-v1\0";
 
 pub(crate) enum WorkspaceJoinOutcome {
     Applied(GenerationId),
@@ -14,7 +15,7 @@ pub(crate) enum WorkspaceJoinOutcome {
     IdempotencyConflict,
 }
 
-pub(crate) struct WorkspaceJoinRequest<'a, A, O, R = BTreeMap<MergeConflict, MergeConflictResolution>> {
+pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
     pub target: &'a Volume<A, O>,
     pub base: WorkspaceCommonAncestor,
     pub source: &'a crate::Generation<A, O>,
@@ -26,11 +27,10 @@ pub(crate) struct WorkspaceJoinRequest<'a, A, O, R = BTreeMap<MergeConflict, Mer
     pub maximum_generations: u32,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
-    pub resolutions: R,
+    pub resolutions: WorkspaceJoinResolutions<'a>,
 }
 
-impl<A, O, R> WorkspaceJoinRequest<'_, A, O, R> {
-
+impl<A, O> WorkspaceJoinRequest<'_, A, O> {
     pub(super) fn operation_context(&self, resolutions: Digest) -> Digest {
         workspace_join_context(
             self.source.workspace.volume.id,
@@ -84,62 +84,75 @@ pub(super) fn workspace_join_context(
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum WorkspaceJoinResolutionView<'a> {
-    Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>), Slice(&'a [(MergeConflict, MergeConflictResolution)]),
+pub(crate) enum WorkspaceJoinResolutions<'a> {
+    Map(BTreeMap<MergeConflict, MergeConflictResolution>),
+    Slice(&'a [(MergeConflict, MergeConflictResolution)]),
 }
 
-pub(super) trait WorkspaceJoinResolutions: Send + Sync { fn view(&self) -> WorkspaceJoinResolutionView<'_>; }
-
-impl WorkspaceJoinResolutions for BTreeMap<MergeConflict, MergeConflictResolution> {
-    fn view(&self) -> WorkspaceJoinResolutionView<'_> { WorkspaceJoinResolutionView::Map(self) }
-}
-
-impl WorkspaceJoinResolutions for &[(MergeConflict, MergeConflictResolution)] {
-    fn view(&self) -> WorkspaceJoinResolutionView<'_> { WorkspaceJoinResolutionView::Slice(self) }
-}
-
-impl WorkspaceJoinResolutionView<'_> {
-
+impl WorkspaceJoinResolutions<'_> {
     pub(super) fn visit(
-        self, mut visit: impl FnMut(&MergeConflict, &MergeConflictResolution) -> Result<(), FsError>,
+        &self,
+        mut visit: impl FnMut(&MergeConflict, &MergeConflictResolution) -> Result<(), FsError>,
     ) -> Result<(), FsError> {
         match self {
-            Self::Map(map) => { for (key, value) in map { visit(key, value)?; } }
-            Self::Slice(slice) => { for (key, value) in slice { visit(key, value)?; } }
+            Self::Map(map) => {
+                for (key, value) in map {
+                    visit(key, value)?;
+                }
+            }
+            Self::Slice(slice) => {
+                for (key, value) in *slice {
+                    visit(key, value)?;
+                }
+            }
         }
         Ok(())
     }
 }
 
 pub(super) fn hash_join_resolutions(
-    resolutions: WorkspaceJoinResolutionView<'_>, accounting: &mut KernelAccounting<'_>,
+    resolutions: &WorkspaceJoinResolutions<'_>,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<Digest, FsError> {
     let mut hasher = blake3::Hasher::new();
     let domain = b"acyclic-fs-workspace-join-resolutions-v1\0";
-    let prefix = WorkCounters { bytes_hashed: domain.len() as u64, ..WorkCounters::UNCHARGED };
+    let prefix = WorkCounters {
+        bytes_hashed: domain.len() as u64,
+        ..WorkCounters::UNCHARGED
+    };
     accounting.admit(prefix)?;
     hasher.update(domain);
     accounting.record_completed(prefix)?;
     resolutions.visit(|conflict, resolution| {
         let key_bytes = match conflict {
-            MergeConflict::File(_) => 17, MergeConflict::Binding { name, .. } =>
-                26_u64.checked_add(name.as_bytes().len() as u64).ok_or(WorkError::Overflow)?,
+            MergeConflict::File(_) => 17,
+            MergeConflict::Binding { name, .. } => 26_u64
+                .checked_add(name.as_bytes().len() as u64)
+                .ok_or(WorkError::Overflow)?,
         };
         let resolution_bytes = match resolution {
-            MergeConflictResolution::Select(_) => 2, MergeConflictResolution::File(None) | MergeConflictResolution::Binding(None) => 2,
-            MergeConflictResolution::Binding(Some(_)) => 18, MergeConflictResolution::File(Some(record)) => {
+            MergeConflictResolution::Select(_) => 2,
+            MergeConflictResolution::File(None) | MergeConflictResolution::Binding(None) => 2,
+            MergeConflictResolution::Binding(Some(_)) => 18,
+            MergeConflictResolution::File(Some(record)) => {
                 let payload_bytes = match record.payload {
                     FilePayload::InlineRegular(data) => 9 + data.as_bytes().len() as u64,
-                    FilePayload::Regular { .. } | FilePayload::SymbolicLink { .. }
-                    | FilePayload::ReparsePoint { .. } => 42, FilePayload::Directory { .. } => 34,
-                    FilePayload::Empty => 1, FilePayload::Device { .. } => 9,
+                    FilePayload::Regular { .. }
+                    | FilePayload::SymbolicLink { .. }
+                    | FilePayload::ReparsePoint { .. } => 42,
+                    FilePayload::Directory { .. } => 34,
+                    FilePayload::Empty => 1,
+                    FilePayload::Device { .. } => 9,
                 };
                 60 + payload_bytes
             }
         };
         let hashing = WorkCounters {
-            bytes_hashed: key_bytes.checked_add(resolution_bytes).ok_or(WorkError::Overflow)?, items_examined: 1,..WorkCounters::UNCHARGED
+            bytes_hashed: key_bytes
+                .checked_add(resolution_bytes)
+                .ok_or(WorkError::Overflow)?,
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
         };
         accounting.admit(hashing)?;
         match conflict {
@@ -165,17 +178,28 @@ pub(super) fn hash_join_resolutions(
     Ok(Digest::from_bytes(*hasher.finalize().as_bytes()))
 }
 
-pub(super) fn workspace_join_conflict_bytes(conflicts: &Vec<MergeConflict>) -> Result<u64, FsError> {
-    let slots = conflicts.capacity().checked_mul(size_of::<MergeConflict>()).map(usize_to_u64).ok_or(WorkError::Overflow)?;
+pub(super) fn workspace_join_conflict_bytes(
+    conflicts: &Vec<MergeConflict>,
+) -> Result<u64, FsError> {
+    let slots = conflicts
+        .capacity()
+        .checked_mul(size_of::<MergeConflict>())
+        .map(usize_to_u64)
+        .ok_or(WorkError::Overflow)?;
     conflicts.iter().try_fold(slots, |bytes, conflict| {
         let name = match conflict {
-            MergeConflict::File(_) => 0, MergeConflict::Binding { name, .. } => name.retained_bytes() as u64,
+            MergeConflict::File(_) => 0,
+            MergeConflict::Binding { name, .. } => name.retained_bytes() as u64,
         };
-        bytes.checked_add(name).ok_or_else(|| WorkError::Overflow.into())
+        bytes
+            .checked_add(name)
+            .ok_or_else(|| WorkError::Overflow.into())
     })
 }
 
 pub(super) fn workspace_join_scalar(
-    outcome: WorkspaceJoinOutcome, accounting: &mut KernelAccounting<'_>,
-) -> Result<Owned<WorkspaceJoinOutcome>, WorkspaceError> { Ok(Owned::new(outcome, accounting.claim_owned(0, 0)?, 0)) }
-
+    outcome: WorkspaceJoinOutcome,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Owned<WorkspaceJoinOutcome>, WorkspaceError> {
+    Ok(Owned::new(outcome, accounting.claim_owned(0, 0)?, 0))
+}

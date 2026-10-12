@@ -11,20 +11,32 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
-    (checkout.create(crate::AuthoredMutation::CreateFile { path: path("file")?, bytes: (bytes::Bytes::from(vec![42; 4096])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (checkout.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path("file")?,
+            bytes: (bytes::Bytes::from(vec![42; 4096])).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     let first_checkpoint = (checkout.checkpoint(WorkBudget::UNBOUNDED, &cancellation)).await?;
     let repeated_checkpoint = (checkout.checkpoint(WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(first_checkpoint.value, repeated_checkpoint.value);
-    let manifest = (checkout.export_manifest(WorkBudget::UNBOUNDED, &cancellation)).await?
+    let manifest = (checkout.export_manifest(WorkBudget::UNBOUNDED, &cancellation))
+        .await?
         .value;
     assert_eq!(manifest.generation_id, first_checkpoint.value);
     assert!(manifest.objects.contains(&manifest.generation_root));
@@ -38,7 +50,8 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
             config().limits.maximum_object_bytes,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        ))
+        .await?;
         let bodies = exported
             .value
             .objects
@@ -52,7 +65,8 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
             2,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        ))
+        .await?;
         assert_eq!(
             imported.value.next_object(),
             cursor.next_object() + u64::try_from(bodies.len())?
@@ -92,7 +106,8 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
             OperationId::from_bytes([31; 16]),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .err()
         .ok_or("invalid manifest unexpectedly restored")?;
         assert!(matches!(failure.error, FsError::InvalidExportManifest));
@@ -109,14 +124,16 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         restore_operation,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let retried = (destination.restore_volume(
         &manifest,
         restore_operation,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     assert_eq!(retried.id(), restored.id());
     let changed_operation = (destination.restore_volume(
@@ -124,7 +141,8 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         OperationId::from_bytes([33; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("changed-operation restore unexpectedly succeeded")?;
     assert!(matches!(changed_operation.error, FsError::CreationRejected));
@@ -133,7 +151,8 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let bytes = (restored_checkout.read_file_range(
         &path("file")?,
@@ -143,7 +162,8 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(bytes.value.bytes.as_ref(), vec![42; 4096]);
     Ok(())
 }
