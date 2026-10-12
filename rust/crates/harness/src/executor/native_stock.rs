@@ -1049,7 +1049,7 @@ pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<
 
 pub(super) fn stock_validate_schema(schema: &Value, value: &Value, label: &'static str,
     io: Option<&PreparationIo>) -> Result<()> {
-    crate::contract::validate_json_schema_value_with_io(schema, value, label, io)
+    crate::contract::validate_json_schema_value(schema, value, label, io)
 }
 
 pub(super) async fn stock_tool_rejection(

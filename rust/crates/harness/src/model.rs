@@ -1451,7 +1451,7 @@ impl ModelRequest {
                         let tool = tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                        crate::contract::validate_json_schema_value_with_io(
+                        crate::contract::validate_json_schema_value(
                             &tool.input_schema, arguments, "model tool arguments", io,
                         )?;
                         pending.insert(call_id, name);
@@ -1479,7 +1479,7 @@ impl ModelRequest {
                             let bytes = io.encode_json(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_owned(bytes.len() as u64)?;
                             let envelope = io.decode_preparation::<Value>(&bytes)?;
-                            crate::contract::validate_json_schema_value_with_io(
+                            crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope, "model tool result", Some(io),
                             )?;
                             }
@@ -1487,8 +1487,7 @@ impl ModelRequest {
                             let envelope = serde_json::to_value(content)
                                 .map_err(|error| Error::Invalid(error.to_string()))?;
                             crate::contract::validate_json_schema_value(
-                                &tool.projection_schema, &envelope, "model tool result",
-                            )?;
+                                &tool.projection_schema, &envelope, "model tool result", None)?;
                         }
                         }
                     }
