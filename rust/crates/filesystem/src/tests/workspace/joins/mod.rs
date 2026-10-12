@@ -24,7 +24,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
         .await?
         .value;
     child.write_text("/first.txt", "first").await?;
-    let first = child.join_into(&parent).plan().await?;
+    let first = child.join_into(&parent).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         first
             .apply(
@@ -38,7 +38,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
         JoinOutcome::Applied(_)
     ));
     child.write_text("/second.txt", "second").await?;
-    let second = child.join_into(&parent).plan().await?;
+    let second = child.join_into(&parent).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         second
             .apply(
@@ -92,7 +92,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     agent.write_text("/agent", "agent").await?;
     main.write_text("/main", "main").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let expected = plan.target_head();
     let idempotency_key = IdempotencyKey::new();
     assert!(main.read("/agent", 16, B, &cancel).await.is_err());
@@ -221,7 +221,7 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
         .value;
     assert_eq!(planned.source_head(), source.id());
     assert_eq!(planned.target_head(), target.id());
-    let current = agent.join_into(&main).plan().await?;
+    let current = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(planned.source_head(), current.source_head());
     assert_eq!(planned.target_head(), current.target_head());
 
@@ -267,7 +267,7 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
         .await?
         .value;
     agent.write_text("/agent", "agent").await?;
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let expected = plan.target_head();
     main.write_text("/raced", "winner").await?;
     let outcome = plan
@@ -308,7 +308,7 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     agent.write_text("/shared", "agent").await?;
     main.write_text("/shared", "main").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut registry = crate::MergeDriverRegistry::new();
     registry.register("theirs", Arc::new(SelectTheirsDriver))?;
     registry.set_default("theirs")?;
@@ -366,7 +366,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     agent.write_text("/shared", "agent\n").await?;
     main.write_text("/shared", "main\n").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,

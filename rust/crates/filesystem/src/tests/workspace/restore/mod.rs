@@ -36,7 +36,7 @@ async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<d
         .await?
         .value;
     assert!(matches!(
-        remove.remove_if("/file.txt", stale).await,
+        remove.remove_if("/file.txt", stale, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::StaleIdentity)
     ));
     assert_eq!(

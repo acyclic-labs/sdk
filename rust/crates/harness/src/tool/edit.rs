@@ -74,7 +74,7 @@ impl AlgorithmWork {
                         code: crate::wire::ErrorCode::Invalid,
                         reason: "tool logical ownership overflow",
                     })?;
-            custody.resize_retained(total).map_err(native_error)?;
+            custody.resize(total).map_err(native_error)?;
         }
         let _ = bytes;
         Ok(())

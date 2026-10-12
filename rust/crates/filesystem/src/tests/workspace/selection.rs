@@ -211,7 +211,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         assert_eq!(child.head(B, &cancel).await?.value.id(), source.id());
         child.write_text("/notes/keep.txt", "child again").await?;
         parent.write_text("/notes/keep.txt", "parent again").await?;
-        let plan = child.join_into(&parent).plan().await?;
+        let plan = child.join_into(&parent).plan(B, &cancel).await?.value;
         assert!(matches!(
             plan.apply(
                 ApplyOptions {
@@ -372,7 +372,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
         .await?
         .value;
     child.remove("/omitted").await?;
-    let plan = child.join_into(&parent).plan().await?;
+    let plan = child.join_into(&parent).plan(B, &cancel).await?.value;
     assert!(matches!(
         plan.apply(
             ApplyOptions {
@@ -428,7 +428,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     );
     child.write_text("/local", "after rebase").await?;
     let source = child.head(B, &cancel).await?.value;
-    let plan = child.join_into(&parent).plan().await?;
+    let plan = child.join_into(&parent).plan(B, &cancel).await?.value;
     assert!(matches!(
         plan.apply(
             ApplyOptions {
@@ -494,7 +494,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
     // Inherited content is the child baseline; only authored child changes
     // enter a destination. An unchanged selected file is not a child edit.
     child.write_text("/new", "child").await?;
-    let plan = child.join_into(&root).plan().await?;
+    let plan = child.join_into(&root).plan(B, &cancel).await?.value;
     plan.apply(
         ApplyOptions {
             if_target: plan.target_head(),
@@ -516,7 +516,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         b"child"
     );
     child.write_text("/keep", "edited").await?;
-    let plan = child.join_into(&root).plan().await?;
+    let plan = child.join_into(&root).plan(B, &cancel).await?.value;
     assert!(matches!(
         plan.apply(
             ApplyOptions {
@@ -529,7 +529,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         JoinOutcome::Conflicted { .. }
     ));
     root.write_text("/keep", "inherited").await?;
-    let plan = child.join_into(&root).plan().await?;
+    let plan = child.join_into(&root).plan(B, &cancel).await?.value;
     plan.apply(
         ApplyOptions {
             if_target: plan.target_head(),

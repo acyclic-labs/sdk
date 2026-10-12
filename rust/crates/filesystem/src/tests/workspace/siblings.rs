@@ -65,8 +65,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
         let plan = first
             .join_into(&main)
             .history(JoinHistory::Merge)
-            .plan()
-            .await?;
+            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
             plan.apply(
                 ApplyOptions {
@@ -98,8 +97,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
         let plan = second
             .join_into(&main)
             .history(JoinHistory::Merge)
-            .plan()
-            .await?;
+            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
             plan.apply(
                 ApplyOptions {
@@ -158,7 +156,7 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
     second.write_text("/b.rs", "b\n").await?;
 
     for (label, fork) in [("first", &first), ("second", &second)] {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let outcome = plan
             .apply(
                 ApplyOptions {
@@ -241,7 +239,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         forks.push(fork);
     }
     for fork in &forks {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         match plan
             .apply(
                 ApplyOptions {
@@ -310,7 +308,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     }
     let mut outcomes = Vec::new();
     for fork in &forks {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         outcomes.push(
             match plan
                 .apply(
@@ -348,7 +346,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         .await?
         .value;
     fork.write_text("/same.rs", "same\n").await?;
-    let plan = fork.join_into(&main).plan().await?;
+    let plan = fork.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     match plan
         .apply(
             ApplyOptions {
@@ -473,7 +471,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             .value;
     }
     for fork in [&first, &second] {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let outcome = plan
             .apply(
                 ApplyOptions {
@@ -528,7 +526,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             .await?
             .value;
     }
-    let plan = third.join_into(&main).plan().await?;
+    let plan = third.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,

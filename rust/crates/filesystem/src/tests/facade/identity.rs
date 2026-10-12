@@ -70,7 +70,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     assert_eq!(current.file_id, source.file_id);
     assert_ne!(current.payload, source.payload);
     assert!(candidate.root.same_original_scope(&original.state));
-    assert_eq!(candidate.base_file_table, checkout.root.file_table);
+    assert_eq!(candidate.base_root.file_table, checkout.root.file_table);
     assert_eq!(
         checkout
             .lookup_no_follow(&path, B, &cancellation,)
@@ -81,7 +81,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     );
     let before = (
         candidate.root.file_table,
-        candidate.base_file_table,
+        candidate.base_root.file_table,
         candidate.authored_operation_id,
         candidate.live_operation_id,
     );
@@ -107,7 +107,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
         before,
         (
             candidate.root.file_table,
-            candidate.base_file_table,
+            candidate.base_root.file_table,
             candidate.authored_operation_id,
             candidate.live_operation_id,
         )

@@ -500,7 +500,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     let mut allow =
         |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
     let denied = workspace
-        .restore_selected_paths_from_with_permit_guarded_with_native_work(
+        .restore_paths_from_with_native_work(
             &frozen,
             &paths,
             current.id(),
@@ -530,7 +530,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
         expected: reservation.expected,
     };
     let restored = workspace
-        .restore_selected_paths_from_with_permit_guarded_with_native_work(
+        .restore_paths_from_with_native_work(
             &frozen,
             &paths,
             current.id(),

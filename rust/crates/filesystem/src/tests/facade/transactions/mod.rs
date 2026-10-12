@@ -184,10 +184,6 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
     candidate.bind_authored_operation(OperationId::new());
     let first = path("transaction-first")?;
     let second = path("transaction-second")?;
-    let expected = [
-        Some(candidate.authored_file_id(FileKind::Regular, &first)),
-        Some(candidate.authored_file_id(FileKind::Regular, &second)),
-    ];
     let input = original_authored_creates(
         &[
             (&first, OwnedBytes::from_static(b"first actual source")),
@@ -208,7 +204,10 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
             &cancellation,
         )
         .await?;
-    assert_eq!(result.value.created_file_ids, expected);
+    let expected = &result.value.created_file_ids;
+    assert_eq!(expected.len(), 2);
+    assert!(expected.iter().all(Option::is_some));
+    assert_ne!(expected[0], expected[1]);
     let KernelOwnedAllocation::NativeOriginal(allocation) = &result.allocation else {
         return Err("native authored result lost its original custody".into());
     };

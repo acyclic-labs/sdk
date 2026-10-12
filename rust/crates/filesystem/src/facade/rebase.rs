@@ -275,7 +275,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if candidate.value.volume_id != self.volume.id {
                 return Err(FsError::VolumeMismatch);
             }
-            let candidate_file_table = candidate.value.file_table;
             let (root, allocation) = self
                 .rebase_private_candidate_with_accounting(
                     candidate_object,
@@ -301,11 +300,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     return Err(error);
                 }
             };
-            Ok::<_, FsError>((rebased, prepared, candidate_file_table))
+            Ok::<_, FsError>((rebased, prepared))
         }
         .await;
         candidate.retire(accounting)?;
-        let (mut rebased, mut prepared, candidate_file_table) = outcome?;
+        let (mut rebased, mut prepared) = outcome?;
         if let Err(error) = cancellation.check() {
             rebased.retire(accounting)?;
             return Err(error.into());
@@ -330,7 +329,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         // Working-root transfer is the final fallible step. No operation
         self.install_root_replacement(candidate_object, rebased.value, prepared);
-        self.base_file_table = candidate_file_table;
         self.generation_root = candidate_object;
         self.authority_head = Some(candidate_head);
         drop(rebased.allocation);
@@ -352,7 +350,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         FsError,
     > {
         use crate::kernel::{clone_generation_root_with_accounting, retire_allocation};
-        if self.root.file_table == self.base_file_table {
+        if self.root.file_table == self.base_root.file_table {
             return clone_generation_root_with_accounting(candidate_root, accounting);
         }
         let checkpoint = crate::kernel::build_checkpoint_with_accounting(

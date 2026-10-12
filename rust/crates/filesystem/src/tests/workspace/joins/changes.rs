@@ -21,13 +21,16 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
     let agent_base = agent.head(B, &cancel).await?.value;
     agent.write_text("/shared", "agent").await?;
     let agent_head = agent.head(B, &cancel).await?.value;
-    let changes = agent.diff(&agent_base, &agent_head, 32).await?;
+    let changes = agent
+        .diff(&agent_base, &agent_head, 32, B, &cancel)
+        .await?
+        .value;
     assert_eq!(changes.from().id(), agent_base.id());
     assert_eq!(changes.to().id(), agent_head.id());
     assert!(!changes.changes().files.is_empty());
 
     main.write_text("/shared", "main").await?;
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(B, &cancel).await?.value;
     assert!(matches!(
         plan.apply(
             ApplyOptions {
@@ -79,10 +82,10 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
         return Err("rename did not commit".into());
     };
 
-    let first = workspace.diff(&base, &middle, 32).await?;
-    let second = workspace.diff(&middle, &end, 32).await?;
+    let first = workspace.diff(&base, &middle, 32, B, &cancel).await?.value;
+    let second = workspace.diff(&middle, &end, 32, B, &cancel).await?.value;
     let composed = first.compose(&second, 32).await?;
-    let direct = workspace.diff(&base, &end, 32).await?;
+    let direct = workspace.diff(&base, &end, 32, B, &cancel).await?.value;
     assert_eq!(composed.from().id(), base.id());
     assert_eq!(composed.to().id(), end.id());
     assert_eq!(composed.changes(), direct.changes());

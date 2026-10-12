@@ -4,7 +4,6 @@ use super::*;
 pub struct Checkout<A, O> {
     pub(super) volume: Volume<A, O>,
     pub(super) generation_root: ObjectId,
-    pub(super) base_file_table: ObjectId,
     pub(super) base_root: GenerationRoot,
     /// The base generation and the working tree, which a running collection
     pub(super) root: crate::collection::CheckoutRoots,
@@ -188,7 +187,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             Ok(Checkout {
                 volume: self.clone(),
                 generation_root,
-                base_file_table: root.file_table,
                 base_root,
                 root,
                 authority_head,
@@ -245,7 +243,7 @@ impl<A, O> Checkout<A, O> {
     /// Whether the private candidate differs from its immutable base.
     #[must_use]
     pub fn has_pending_mutations(&self) -> bool {
-        self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
+        self.root.file_table != self.base_root.file_table || self.prepared_merge_parent.is_some()
     }
 
     /// Whether reads retain exact observations for safe rebase and commit.
@@ -285,7 +283,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, failure.error))?;
         work = merge_simultaneous_work(work, prepared.work, live, budget)?;
         self.install_root_replacement(self.root.base(), root, prepared.value);
-        self.base_file_table = self.root.file_table;
         self.generation_root = self.root.base();
         self.live_operation_id = None;
         self.prepared_merge_parent = None;
@@ -349,7 +346,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         work = merge_simultaneous_work(work, prepared.work, live, budget)?;
         self.generation_root = generation_root;
         self.install_root_replacement(generation_root, root, prepared.value);
-        self.base_file_table = self.root.file_table;
         self.authority_head = Some(head);
         self.dependencies.proof().clear();
         Ok(OperationReceipt {

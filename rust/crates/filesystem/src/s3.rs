@@ -318,7 +318,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
             return Err(S3Error::ForeignTransaction);
         }
         create_parent_directories(transaction, key).await?;
-        transaction.write_staged(&absolute_key(key), parts).await?;
+        transaction.write_staged(&absolute_key(key), parts, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         Ok(())
     }
 
@@ -379,8 +379,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         let mut transaction = self.workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         create_parent_directories(&mut transaction, destination).await?;
         transaction
-            .copy(&absolute_key(source), &absolute_key(destination))
-            .await?;
+            .copy(&absolute_key(source), &absolute_key(destination), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(Into::into)
     }
 
@@ -798,8 +797,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
         }
         create_parent_directories(&mut self.transaction, &self.key).await?;
         self.transaction
-            .write_staged(&absolute_key(&self.key), &staged)
-            .await?;
+            .write_staged(&absolute_key(&self.key), &staged, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         self.transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(Into::into)
     }
 

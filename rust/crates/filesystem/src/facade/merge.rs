@@ -379,7 +379,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             MergeGenerationRequest {
                 base_generation: self.root.base(),
                 base: self.base_root.clone(),
-                ours_generation: (self.root.file_table == self.base_file_table)
+                ours_generation: (self.root.file_table == self.base_root.file_table)
                     .then_some(self.generation_root),
                 ours: self.root.clone(),
                 theirs_generation: theirs_id,

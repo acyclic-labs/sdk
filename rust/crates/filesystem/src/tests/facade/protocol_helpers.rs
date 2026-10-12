@@ -98,7 +98,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         let before = (
             local.generation_id(),
             local.root.file_table,
-            local.base_file_table,
+            local.base_root.file_table,
             local.authority_head,
             local.authored_operation_id,
             local.live_operation_id,
@@ -122,7 +122,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
             (
                 local.generation_id(),
                 local.root.file_table,
-                local.base_file_table,
+                local.base_root.file_table,
                 local.authority_head,
                 local.authored_operation_id,
                 local.live_operation_id,
@@ -218,7 +218,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
     let unchanged = (
         overlapping_local.generation_id(),
         overlapping_local.root.file_table,
-        overlapping_local.base_file_table,
+        overlapping_local.base_root.file_table,
         overlapping_local.authority_head,
         overlapping_local.authored_operation_id,
         overlapping_local.live_operation_id,
@@ -250,7 +250,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         (
             overlapping_local.generation_id(),
             overlapping_local.root.file_table,
-            overlapping_local.base_file_table,
+            overlapping_local.base_root.file_table,
             overlapping_local.authority_head,
             overlapping_local.authored_operation_id,
             overlapping_local.live_operation_id,
