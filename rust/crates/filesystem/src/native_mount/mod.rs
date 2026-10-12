@@ -1281,11 +1281,7 @@ pub(crate) fn run_native_mount_handler<T>(
     let work = crate::NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(cause, work)| NativeMountCallbackFailure { cause: cause.into(), work })?;
     let native = work.native_mount_work();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        operation(&native)
-    })).unwrap_or_else(|panic| Err(NativeMountError::DriverPanicked {
-        operation: "SDK callback", panic: std::sync::Mutex::new(panic),
-    }));
+    let result = run_native_mount_handler_on_meter(&native, operation);
     match result {
         Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
         Err(cause) => Err(NativeMountCallbackFailure { cause, work: work.receipt() }),
@@ -1318,14 +1314,6 @@ impl NativeMountAllocationCustody {
     ) -> Result<(), NativeMountStartupAdmissionError> {
         work.native_materialization_work().original_demand_work()
             .with_original_leaf(|original| self.claim(bytes, original))?
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn retain_admitted_with_meter(
-        &self, bytes: u64, work: &NativeMountMeterWork,
-    ) -> Result<(), NativeMountStartupAdmissionError> {
-        work.native_materialization_work().original_demand_work()
-            .with_original_leaf(|original| self.retain_admitted(bytes, original))?
             .map_err(Into::into)
     }
 
