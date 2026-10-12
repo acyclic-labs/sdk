@@ -15,7 +15,15 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 crate::EmbeddedCapabilities::MEMORY,
             );
             cutting.arm(fail_at, cut);
-            let attempt = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error);
+            let attempt = fs
+                .create_workspace(
+                    "repo",
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error);
             let fired = cutting.disarm();
             let committed = cutting.commits();
             let volume = fs.workspace_id("repo")?.volume_id();
@@ -23,7 +31,12 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 first_fork_record(&stream, crate::kernel::volume_authority_id(volume)).await?;
             if let Some(created) = &created {
                 assert_eq!(
-                    crate::kernel::decode_volume_created(&created.payload, 4 * 1024, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?.volume_id,
+                    crate::kernel::decode_volume_created(
+                        &created.payload,
+                        4 * 1024,
+                        &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())
+                    )?
+                    .volume_id,
                     volume
                 );
             }
@@ -38,14 +51,41 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 "a fault at call {fail_at} was not reported"
             );
             // An interruption leaves no volume or the complete one.
-            let opened = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error);
+            let opened = fs
+                .open_workspace(
+                    "repo",
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error);
             assert_eq!(opened.is_ok(), created.is_some());
-            let retried = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let retried = fs
+                .create_workspace(
+                    "repo",
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await?
+                .value;
             retried.write_text("/after.txt", "after").await?;
             assert_eq!(
-                fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
-                    .read("/after.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+                fs.open_workspace(
+                    "repo",
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await?
+                .value
+                .read(
+                    "/after.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await?
+                .value,
                 OwnedBytes::from_static(b"after")
             );
         }

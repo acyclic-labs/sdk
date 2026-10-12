@@ -106,13 +106,8 @@ impl ObjectsProvider for GrpcObjects {
                 .div_ceil(65_536)
                 .checked_add(2)
                 .ok_or_else(response::invalid)?;
-            let wire = match PreparedWireBody::new(controls.clone(), wire_bytes, owners) {
-                Ok(wire) => wire,
-                Err(error) => {
-                    let original = errors.take().unwrap_or_else(|| error.into());
-                    return Err(original);
-                }
-            };
+            let wire = PreparedWireBody::new(controls.clone(), wire_bytes, owners)
+                .map_err(|error| errors.original(error))?;
             let mut body = None;
             let request_input = request_input.map(|(header, carrier)| {
                 body = Some(carrier);
@@ -120,10 +115,9 @@ impl ObjectsProvider for GrpcObjects {
             });
             let source = upload::chunks_native(
                 body.expect("native publication owns its canonical body"),
-                meter.clone(),
                 errors.clone(),
             )?;
-            match Self::put_stream_controlled(
+            let (info, allocation) = Self::put_stream_controlled(
                 self.clone(),
                 request_input,
                 source,
@@ -131,13 +125,8 @@ impl ObjectsProvider for GrpcObjects {
                 Some(wire),
             )
             .await
-            {
-                Ok((info, allocation)) => Ok(super::ObjectsPutReceipt::new(info, allocation)),
-                Err(error) => {
-                    let original = errors.take().unwrap_or_else(|| error.into());
-                    Err(original)
-                }
-            }
+            .map_err(|error| errors.original(error))?;
+            Ok(super::ObjectsPutReceipt::new(info, allocation))
         })
     }
 
@@ -173,14 +162,9 @@ impl ObjectsProvider for GrpcObjects {
                 .encoded_len()
                 .checked_add(5)
                 .ok_or_else(response::invalid)?;
-            let wire = match PreparedWireBody::new(controls.clone(), wire_bytes, 1) {
-                Ok(wire) => wire,
-                Err(error) => {
-                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    return Err(original);
-                }
-            };
-            let download = match self
+            let wire = PreparedWireBody::new(controls.clone(), wire_bytes, 1)
+                .map_err(|error| prepared.errors.original(error))?;
+            let download = self
                 .get_stream_controlled(
                     request_input,
                     maximum_bytes,
@@ -189,13 +173,7 @@ impl ObjectsProvider for GrpcObjects {
                     Some(wire),
                 )
                 .await
-            {
-                Ok(download) => download,
-                Err(error) => {
-                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    return Err(original);
-                }
-            };
+                .map_err(|error| prepared.errors.original(error))?;
             if let Some(allocation) = header_allocation {
                 prepared.header_allocation = Some(allocation);
             }

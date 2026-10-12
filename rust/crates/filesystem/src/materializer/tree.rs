@@ -21,7 +21,7 @@ pub(super) fn with_native_walk_leaf<T>(
     }
     #[cfg(windows)]
     {
-        crate::native_host::with_wide_path_with_work(leaf, &mut &*work, |name, _| action(name))
+        crate::native_host::with_wide_path(leaf, &mut &*work, |name, _| action(name))
     }
 }
 pub(super) fn next_native_walk_name(
@@ -31,13 +31,13 @@ pub(super) fn next_native_walk_name(
     #[cfg(unix)]
     {
         reader
-            .next_with_work(&mut &*work)
+            .next(&mut &*work)
             .map(|entry| entry.map(|(entry, allocation)| (entry.name, allocation)))
     }
     #[cfg(windows)]
     {
         reader
-            .next_wide_with_work(&mut &*work)
+            .next_wide(&mut &*work)
             .map(|entry| entry.map(|(entry, allocation)| (entry.name, allocation)))
     }
 }
@@ -48,11 +48,11 @@ pub(super) fn stat_native_walk_name(
 ) -> Result<HostStat, NativeTreeMaterializationError> {
     #[cfg(unix)]
     {
-        crate::native_host::stat_leaf_with_work(parent, name, &mut &*work)
+        crate::native_host::stat_leaf(parent, name, &mut &*work)
     }
     #[cfg(windows)]
     {
-        crate::native_host::stat_windows_leaf_with_work(parent, name, &mut &*work)
+        crate::native_host::stat_windows_leaf(parent, name, &mut &*work)
     }
 }
 pub(crate) fn native_stat_held(
@@ -69,11 +69,11 @@ pub(super) fn open_native_walk_directory(
 ) -> Result<cap_std::fs::Dir, NativeTreeMaterializationError> {
     #[cfg(unix)]
     {
-        crate::native_host::open_unix_directory_with_work(parent, name, false, &mut &*work)
+        crate::native_host::open_unix_directory(parent, name, false, &mut &*work)
     }
     #[cfg(windows)]
     {
-        crate::native_host::open_windows_leaf_handle_with_work(
+        crate::native_host::open_windows_leaf_handle(
             parent,
             name,
             windows::Win32::Storage::FileSystem::FILE_GENERIC_READ,
@@ -90,7 +90,7 @@ fn open_native_walk_file(
 ) -> Result<std::fs::File, NativeTreeMaterializationError> {
     #[cfg(unix)]
     {
-        crate::native_host::open_leaf_with_work(
+        crate::native_host::open_leaf(
             parent,
             Path::new(name),
             &crate::native_host::NativeOpenOptions::Read,
@@ -99,7 +99,7 @@ fn open_native_walk_file(
     }
     #[cfg(windows)]
     {
-        crate::native_host::open_windows_leaf_handle_with_work(
+        crate::native_host::open_windows_leaf_handle(
             parent,
             name,
             windows::Win32::Storage::FileSystem::FILE_GENERIC_READ,
@@ -180,8 +180,7 @@ fn hash_frame(
     directory: cap_std::fs::Dir,
     work: &NativeMaterializationWork,
 ) -> Result<HashFrame, NativeTreeMaterializationError> {
-    let (mut reader, cursor) =
-        crate::native_host::read_dir_held_with_work(&directory, &mut &*work)?;
+    let (mut reader, cursor) = crate::native_host::read_dir_held(&directory, &mut &*work)?;
     let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut names = Vec::new();
     while let Some(name) = next_native_walk_name(&mut reader, work)? {
@@ -300,14 +299,14 @@ fn hash_leaf(
     }
     if metadata.file_type().is_symlink() {
         #[cfg(unix)]
-        let (target, allocation) = crate::native_host::read_link_held_with_work(
+        let (target, allocation) = crate::native_host::read_link_held(
             parent,
             Path::new(name),
             work.remaining()?.bytes_hashed,
             &mut &*work,
         )?;
         #[cfg(windows)]
-        let (target, allocation) = crate::native_host::read_link_held_wide_with_work(
+        let (target, allocation) = crate::native_host::read_link_held_wide(
             parent,
             name,
             work.remaining()?.bytes_hashed,
@@ -339,7 +338,7 @@ fn hash_leaf(
         return hash_frame(directory, work).map(Some);
     } else if metadata.file_type().is_file() {
         let mut file = open_native_walk_file(parent, name, work)?;
-        let opened = crate::native_host::stat_file_with_work(&file, &mut &*work)?;
+        let opened = crate::native_host::stat_file(&file, &mut &*work)?;
         if opened
             .identity()
             .map_err(native_materialization_work_error)?
@@ -378,7 +377,7 @@ fn hash_leaf(
             hasher.update(&buffer[..count]);
             offset += count as u64;
         }
-        let current = crate::native_host::stat_file_with_work(&file, &mut &*work)?;
+        let current = crate::native_host::stat_file(&file, &mut &*work)?;
         if current
             .identity()
             .map_err(native_materialization_work_error)?
@@ -517,7 +516,7 @@ fn remove_frame(
     {
         return Err(NativeTreeMaterializationError::ExternalMutation);
     }
-    let (reader, cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &*work)?;
+    let (reader, cursor) = crate::native_host::read_dir_held(&directory, &mut &*work)?;
     Ok(RemoveFrame {
         directory,
         reader,
@@ -534,18 +533,14 @@ fn remove_leaf(
     #[cfg(unix)]
     {
         if directory {
-            crate::native_host::remove_empty_directory_held_with_work(
-                parent,
-                Path::new(name),
-                &mut &*work,
-            )
+            crate::native_host::remove_leaf(parent, Path::new(name), true, &mut &*work)
         } else {
-            crate::native_host::remove_leaf_with_work(parent, Path::new(name), &mut &*work)
+            crate::native_host::remove_leaf(parent, Path::new(name), false, &mut &*work)
         }
     }
     #[cfg(windows)]
     {
-        crate::native_host::remove_windows_leaf_with_work(parent, name, directory, &mut &*work)
+        crate::native_host::remove_windows_leaf(parent, name, directory, None, &mut &*work)
     }
 }
 pub(super) fn remove_native_held(

@@ -1242,7 +1242,7 @@ pub(super) async fn generation_owner_guard_seals_after_planning_and_on_recovery(
     let mut guard = |remaining: WorkBudget| {
         assert!(remaining.allocation_operations < budget.allocation_operations);
         assert!(remaining.backend_read_operations < budget.backend_read_operations);
-        std::future::ready(Err::<crate::FsReceipt<()>, _>(OperationFailure::new(
+        std::future::ready(Err::<crate::OperationReceipt<()>, _>(OperationFailure::new(
             crate::FsError::WorkspaceDeleted,
             WorkCounters {
                 items_examined: 1,
@@ -1326,7 +1326,7 @@ pub(super) async fn native_first_record_seals_prepared_request_and_ack_recovery(
     let mut reject_prepared = |remaining: WorkBudget| {
         assert!(remaining.allocation_operations < budget.allocation_operations);
         assert!(remaining.bytes_hashed < budget.bytes_hashed);
-        std::future::ready(Err::<crate::FsReceipt<()>, _>(
+        std::future::ready(Err::<crate::OperationReceipt<()>, _>(
             OperationFailure::before_work(crate::FsError::WorkspaceDeleted),
         ))
     };

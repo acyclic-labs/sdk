@@ -1987,7 +1987,7 @@ impl PiNativeRootSeed {
                 if retained
                     .as_ref()
                     .expect("actual mount retained above")
-                    .abandon(&original_volume_work)
+                    .retire(original_volume_work.cancellation())
                     .is_ok()
                 {
                     *retained = None;
@@ -2362,11 +2362,11 @@ fn verify_original_native_rollback(
         || receipt.manifest.options.root != allocation.root
         || !receipt.journal.is_valid_for(operation)
         || receipt.journal.phase != acyclic_fs::MaterializationPhase::RolledBack
-        || receipt.journal.root_identity != Some(allocation.expected_identity.into_bytes())
+        || receipt.journal.root_identity != Some(allocation.expected_identity.to_bytes())
         || receipt.journal.preparation_identity != Some(expected)
         || receipt.root
             != acyclic_fs::MaterializationRootObservation::Identical(
-                allocation.expected_identity.into_bytes(),
+                allocation.expected_identity.to_bytes(),
             )
         || receipt.preparation
             != acyclic_fs::MaterializationPreparationObservation::Identical(expected)
@@ -2420,7 +2420,7 @@ where
         proof
             .authorize_settlement_with_native_work(owner, metadata_work)
             .await?;
-        mount.abandon(&volume_work).map_err(Error::from)?;
+        mount.retire(volume_work.cancellation()).map_err(Error::from)?;
     }
     if let Some(session) = startup.as_mut() {
         let state = session.cleanup_state();

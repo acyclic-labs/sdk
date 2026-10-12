@@ -161,7 +161,6 @@ where
                     permit,
                     false,
                     &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                    &mut super::super::view_ledger::ViewLedgerAdmission::default(),
                     cancellation,
                     &mut before_publication,
                     Some(self.snapshot_context()),
@@ -218,7 +217,7 @@ where
     }
 
     /// Retires accepted captures using this source's birth-time credit.
-    pub fn retire_with_work(
+    pub fn retire(
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {

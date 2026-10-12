@@ -67,14 +67,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }, budget, cancellation, E::from(WorkspaceError::Cancelled(crate::CancellationError)), None, |error| E::from(WorkspaceError::from(error))).await
     }
 
-    fn commit_value(&self, outcome: CheckoutCommitOutcome) -> Option<TransactionCommit<A, O>> {
+    fn commit_value(&self, outcome: LivePublicationObservation) -> Option<TransactionCommit<A, O>> {
         let generation = |id| Generation { workspace: self.workspace.clone(), id, publication_closure: self.checkout.publication_closure(id) };
         Some(match outcome {
-            CheckoutCommitOutcome::Committed { generation_id, .. } => TransactionCommit::Committed(generation(generation_id)),
-            CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => TransactionCommit::AlreadyCommitted(generation(generation_id)),
-            CheckoutCommitOutcome::Conflict { .. } => return None,
-            CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
-            CheckoutCommitOutcome::IdempotencyConflict { .. } => TransactionCommit::IdempotencyConflict,
+            LivePublicationObservation::Committed { generation_id, .. } => TransactionCommit::Committed(generation(generation_id)),
+            LivePublicationObservation::AlreadyCommitted { generation_id, .. } => TransactionCommit::AlreadyCommitted(generation(generation_id)),
+            LivePublicationObservation::Conflict { .. } => return None,
+            LivePublicationObservation::Fenced { .. } => TransactionCommit::Fenced,
+            LivePublicationObservation::IdempotencyConflict { .. } => TransactionCommit::IdempotencyConflict,
         })
     }
 

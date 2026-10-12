@@ -49,30 +49,40 @@ impl ObjectsProvider for HttpObjects {
         request: super::ObjectsNativeRequest<(wire::PutObjectHeader, OwnedBytes)>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<super::ObjectsNativeFuture<'_, super::ObjectsPutReceipt>, NativeObjectsError> {
-        let request_input = response::RequestInput::native(request, &meter)?;
+        crate::v1::native_input_meter(&meter, &request)?;
         super::native_future(meter.clone(), async move {
-            let errors = super::NativeTransportErrors::new(&meter)?;
-            let mut body = None;
-            let request_input = request_input.map(|(header, carrier)| {
-                body = Some(carrier);
-                header
-            });
-            let source = upload::chunks_native(
-                body.expect("native publication owns its canonical body"),
-                meter.clone(),
-                errors.clone(),
-            )?;
-            let controls = errors.clone();
-            match self
-                .put_stream_controlled(request_input, source, Some(controls))
-                .await
-            {
-                Ok((info, allocation)) => Ok(super::ObjectsPutReceipt::new(info, allocation)),
-                Err(error) => {
-                    let original = errors.take().unwrap_or_else(|| error.into());
-                    Err(original)
-                }
-            }
+            obs::traced(
+                obs::span!(
+                    INFO,
+                    "acyclic.objects.http.call",
+                    route = "objects/put",
+                    rpc.code = obs::Empty
+                ),
+                async {
+                    let errors = super::NativeTransportErrors::new(&meter)?;
+                    let mut body = None;
+                    request::put(&request.data().0)?;
+                    let request = request.map(|(header, carrier)| {
+                        body = Some(carrier);
+                        wire::PutObjectRequest {
+                            frame: Some(wire::put_object_request::Frame::Header(header)),
+                        }
+                    });
+                    let header = line("PutObjectRequest", request.data(), Some(&errors))
+                        .map_err(|error| errors.original(error))?;
+                    drop(request);
+                    let source = upload::chunks_native(
+                        body.expect("native publication owns its canonical body"),
+                        errors.clone(),
+                    )?;
+                    let (info, allocation) = self
+                        .send_upload(header, source, Some(errors.clone()))
+                        .await
+                        .map_err(|error| errors.original(error))?;
+                    Ok(super::ObjectsPutReceipt::new(info, allocation))
+                },
+            )
+            .await
         })
     }
 
@@ -93,33 +103,18 @@ impl ObjectsProvider for HttpObjects {
         maximum_bytes: u64,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<super::ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
-        let request_input = response::RequestInput::native(request, &meter)?;
+        crate::v1::native_input_meter(&meter, &request)?;
         super::native_future(meter.clone(), async move {
             let mut prepared = Download::prepare_native(maximum_bytes, meter.clone())?;
-            let errors = prepared.errors.clone();
-            let controls = errors.clone();
-            let mut header_allocation = Some(acyclic_native_runtime::ReadAllocation::adopt(
-                &meter,
-                JSON_FRAME_BYTES * 4,
-            )?);
-            let download = match self
+            let download = self
                 .get_stream_controlled(
-                    request_input,
+                    request.data(),
                     maximum_bytes,
-                    Some(controls),
-                    &mut header_allocation,
+                    Some(prepared.errors.clone()),
+                    &mut prepared.header_allocation,
                 )
                 .await
-            {
-                Ok(download) => download,
-                Err(error) => {
-                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    return Err(original);
-                }
-            };
-            if let Some(allocation) = header_allocation {
-                prepared.header_allocation = Some(allocation);
-            }
+                .map_err(|error| prepared.errors.original(error))?;
             download.collect_native(prepared).await
         })
     }

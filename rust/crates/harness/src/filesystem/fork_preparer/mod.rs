@@ -116,7 +116,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             .native
             .as_ref()
             .map(|(work, custody)| {
-                if !custody.matches_work(work) || this.history.is_none() {
+                if !custody.work().shares_allocation_context(work) || this.history.is_none() {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Invalid,
                         reason: "native fork lacks matching custody or prepared history",
@@ -180,7 +180,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         if !self
             .native
             .as_ref()
-            .is_some_and(|(_, guard)| guard.matches_work(work))
+            .is_some_and(|(_, guard)| guard.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -215,7 +215,9 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         match (self.native.as_mut(), custody) {
-            (Some((work, retained)), Some(mut custody)) if custody.matches_work(work) => {
+            (Some((work, retained)), Some(mut custody))
+                if custody.work().shares_allocation_context(work) =>
+            {
                 retained
                     .absorb(&mut custody)
                     .map_err(|cause| Error::NativeWork {

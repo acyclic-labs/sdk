@@ -150,27 +150,27 @@ impl NativeHostWork for DemandWork {
     }
 }
 
-impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
-    type Error = crate::materializer::NativeTreeMaterializationError;
-    type Allocation = crate::materializer::NativeAllocation;
-    type CleanupWrite = crate::materializer::NativeCleanupWrite;
+impl NativeHostWork for &NativeMaterializationWork {
+    type Error = NativeTreeMaterializationError;
+    type Allocation = NativeAllocation;
+    type CleanupWrite = NativeCleanupWrite;
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
         match error {
-            crate::materializer::NativeTreeMaterializationError::Io(error) => Some(error.kind()),
+            NativeTreeMaterializationError::Io(error) => Some(error.kind()),
             _ => None,
         }
     }
     fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
-        crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)
+        NativeTreeMaterializationError::AllocationFailed(error)
     }
     fn invalid_request() -> Self::Error {
-        crate::materializer::NativeTreeMaterializationError::InvalidLayout
+        NativeTreeMaterializationError::InvalidLayout
     }
     fn check(&self) -> Result<(), Self::Error> {
-        crate::materializer::NativeMaterializationWork::admit(self, WorkCounters::UNCHARGED)
+        NativeMaterializationWork::admit(self, WorkCounters::UNCHARGED)
     }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        crate::materializer::NativeMaterializationWork::admit(self, delta)
+        NativeMaterializationWork::admit(self, delta)
     }
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.record_admitted(delta)
@@ -179,7 +179,7 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
         self.charge(delta)
     }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
-        crate::materializer::NativeMaterializationWork::claim(
+        NativeMaterializationWork::claim(
             self,
             bytes,
             u64::from(bytes != 0),
@@ -187,12 +187,7 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
         )
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        crate::materializer::NativeMaterializationWork::claim(
-            self,
-            logical_max,
-            0,
-            WorkCounters::UNCHARGED,
-        )
+        NativeMaterializationWork::claim(self, logical_max, 0, WorkCounters::UNCHARGED)
     }
     fn reconcile_allocation(
         &mut self,
@@ -206,7 +201,7 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
         Ok(())
     }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
-        crate::materializer::NativeMaterializationWork::reserve_cleanup_write(self)
+        NativeMaterializationWork::reserve_cleanup_write(self)
     }
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
@@ -220,19 +215,9 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     }
 }
 
-pub(super) fn native_write<W: crate::demand::SourceDemandReadWork>(
-    work: &mut W,
-) -> Result<(), DemandError> {
-    work.charge(WRITE)
-}
-
-pub(super) fn native_read<W: NativeHostWork>(work: &mut W) -> Result<(), W::Error> {
-    work.started_io(READ)
-}
-
 pub(crate) struct NativeOwned<T> {
     pub(crate) data: T,
-    pub(crate) _allocation: crate::materializer::NativeAllocation,
+    pub(crate) _allocation: NativeAllocation,
 }
 
 impl<T> std::ops::Deref for NativeOwned<T> {
@@ -244,8 +229,8 @@ impl<T> std::ops::Deref for NativeOwned<T> {
 
 pub(crate) fn native_buffer<T>(
     capacity: usize,
-    mut work: &crate::materializer::NativeMaterializationWork,
-) -> Result<NativeOwned<Vec<T>>, crate::materializer::NativeTreeMaterializationError> {
+    mut work: &NativeMaterializationWork,
+) -> Result<NativeOwned<Vec<T>>, NativeTreeMaterializationError> {
     let (data, allocation) = buffer(capacity, &mut work)?;
     Ok(NativeOwned {
         data,

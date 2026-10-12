@@ -150,6 +150,21 @@ pub async fn response_body(
     Ok(Some(bytes))
 }
 
+macro_rules! operations {
+    ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
+        $(/// Executes the canonical HTTP operation.
+        pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
+            let route = HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?.1;
+            self.call(
+                route, route,
+                concat!("acyclic.workers.v1.", stringify!($input)),
+                concat!("acyclic.workers.v1.", stringify!($output)),
+                request,
+            ).await
+        })+
+    };
+}
+
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
@@ -231,86 +246,13 @@ impl Client {
         result
     }
 
-    /// Execute the canonical `PublishVersion` operation.
-    pub async fn publish_version(
-        &self,
-        request: &wire::PublishVersionRequest,
-    ) -> Result<wire::PublishVersionResponse, Error> {
-        let route = HTTP_ROUTES.first().ok_or(Error::InvalidArgument)?.1;
-        self.call(
-            route,
-            route,
-            "acyclic.workers.v1.PublishVersionRequest",
-            "acyclic.workers.v1.PublishVersionResponse",
-            request,
-        )
-        .await
+    operations! {
+        (publish_version, 0, PublishVersionRequest, PublishVersionResponse),
+        (select_deployment, 1, SelectDeploymentRequest, SelectDeploymentResponse),
+        (submit_job, 2, SubmitJobRequest, SubmitJobResponse),
+        (inspect_job, 3, InspectJobRequest, InspectJobResponse),
+        (cancel_job, 4, CancelJobRequest, CancelJobResponse),
     }
-
-    /// Execute the canonical `SelectDeployment` operation.
-    pub async fn select_deployment(
-        &self,
-        request: &wire::SelectDeploymentRequest,
-    ) -> Result<wire::SelectDeploymentResponse, Error> {
-        let route = HTTP_ROUTES.get(1).ok_or(Error::InvalidArgument)?.1;
-        self.call(
-            route,
-            route,
-            "acyclic.workers.v1.SelectDeploymentRequest",
-            "acyclic.workers.v1.SelectDeploymentResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `SubmitJob` operation.
-    pub async fn submit_job(
-        &self,
-        request: &wire::SubmitJobRequest,
-    ) -> Result<wire::SubmitJobResponse, Error> {
-        let route = HTTP_ROUTES.get(2).ok_or(Error::InvalidArgument)?.1;
-        self.call(
-            route,
-            route,
-            "acyclic.workers.v1.SubmitJobRequest",
-            "acyclic.workers.v1.SubmitJobResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `InspectJob` operation.
-    pub async fn inspect_job(
-        &self,
-        request: &wire::InspectJobRequest,
-    ) -> Result<wire::InspectJobResponse, Error> {
-        let route = HTTP_ROUTES.get(3).ok_or(Error::InvalidArgument)?.1;
-        self.call(
-            route,
-            route,
-            "acyclic.workers.v1.InspectJobRequest",
-            "acyclic.workers.v1.InspectJobResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `CancelJob` operation.
-    pub async fn cancel_job(
-        &self,
-        request: &wire::CancelJobRequest,
-    ) -> Result<wire::CancelJobResponse, Error> {
-        let route = HTTP_ROUTES.get(4).ok_or(Error::InvalidArgument)?.1;
-        self.call(
-            route,
-            route,
-            "acyclic.workers.v1.CancelJobRequest",
-            "acyclic.workers.v1.CancelJobResponse",
-            request,
-        )
-        .await
-    }
-
     /// Execute the canonical `InvokeVersion` operation.
     pub async fn invoke_version(
         &self,

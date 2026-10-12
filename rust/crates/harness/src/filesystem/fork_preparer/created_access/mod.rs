@@ -84,7 +84,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         if !self
             .native_custody
             .as_ref()
-            .is_some_and(|custody| custody.matches_work(work))
+            .is_some_and(|custody| custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,

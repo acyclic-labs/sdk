@@ -123,17 +123,14 @@ pub(super) fn git_path_eligible(
     let path = path.trim_start_matches('/');
     let mut ignored = false;
     root.apply(path, is_directory, &mut ignored);
-    let mut applicable = nested
-        .iter()
-        .filter_map(|(directory, policy)| {
-            path.strip_prefix(directory)
-                .and_then(|suffix| suffix.strip_prefix('/'))
-                .map(|relative| (directory.split('/').count(), relative, policy))
-        })
-        .collect::<Vec<_>>();
-    applicable.sort_by_key(|(depth, _, _)| *depth);
-    for (_, relative, policy) in applicable {
-        policy.apply(relative, is_directory, &mut ignored);
+    // Matching directories are path prefixes, already ordered parent before child.
+    for (directory, policy) in nested {
+        if let Some(relative) = path
+            .strip_prefix(directory)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+        {
+            policy.apply(relative, is_directory, &mut ignored);
+        }
     }
     !ignored
 }

@@ -274,39 +274,29 @@ pub(in crate::bindings) fn browser_join_history(value: &str) -> Result<JoinHisto
 pub(in crate::bindings) fn browser_join_result<A, O>(
     outcome: JoinOutcome<A, O>,
 ) -> BrowserJoinResult {
-    let generation = |status, generation: Generation<A, O>| BrowserJoinResult {
-        status,
-        generation_id: Some(serde_bytes::ByteBuf::from(
-            generation.id().digest().into_bytes().to_vec(),
-        )),
-        conflicts: Vec::new(),
-        truncated: false,
-    };
-    match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value.generation),
-        JoinOutcome::AlreadyApplied(value) => generation("already-applied", value.generation),
-        JoinOutcome::NoChanges(value) => generation("no-changes", value),
-        JoinOutcome::StaleTarget(value) => generation("stale-target", value),
+    let (status, generation) = match outcome {
+        JoinOutcome::Applied(value) => ("applied", Some(value.generation)),
+        JoinOutcome::AlreadyApplied(value) => ("already-applied", Some(value.generation)),
+        JoinOutcome::NoChanges(value) => ("no-changes", Some(value)),
+        JoinOutcome::StaleTarget(value) => ("stale-target", Some(value)),
         JoinOutcome::Conflicted {
             conflicts,
             truncated,
-        } => BrowserJoinResult {
-            status: "conflicted",
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        JoinOutcome::Fenced => BrowserJoinResult {
-            status: "fenced",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        JoinOutcome::IdempotencyConflict => BrowserJoinResult {
-            status: "idempotency-conflict",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return BrowserJoinResult {
+                status: "conflicted",
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        JoinOutcome::Fenced => ("fenced", None),
+        JoinOutcome::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    BrowserJoinResult {
+        status,
+        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }

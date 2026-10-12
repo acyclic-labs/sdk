@@ -89,7 +89,7 @@ pub(super) fn read_windows_link_record<W: NativeHostWork>(
         source_bytes_read: buffer.len() as u64,
         ..WorkCounters::UNCHARGED
     })?;
-    native_read(work)?;
+    work.started_io(READ)?;
     // SAFETY: the held no-follow leaf and initialized fixed output remain live.
     let read = unsafe {
         DeviceIoControl(
@@ -157,7 +157,7 @@ pub(super) fn windows_link_target_range<W: NativeHostWork>(
     Ok(start..end)
 }
 
-pub(super) fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn prepare_source_link_buffer<W: SourceDemandReadWork>(
     size: u64,
     work: &mut W,
 ) -> Result<acyclic_stream::PreparedOwnedBytes<crate::demand::SourcePayloadOwnership>, DemandError>
@@ -185,20 +185,18 @@ pub(super) fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>
         return Err(error);
     }
     let copied = original
-        .reserve_work(crate::WorkCounters {
+        .reserve_work(WorkCounters {
             bytes_copied: allocation,
-            ..crate::WorkCounters::UNCHARGED
+            ..WorkCounters::UNCHARGED
         })
         .map_err(crate::native_name::original_name_error)?;
     buffer.resize(buffer.capacity(), 0);
-    {
-        let mut copy = copied;
-        copy.record_completed(crate::WorkCounters {
+    copied
+        .record_completed(WorkCounters {
             bytes_copied: allocation,
-            ..crate::WorkCounters::UNCHARGED
+            ..WorkCounters::UNCHARGED
         })
-    }
-    .map_err(crate::native_name::original_name_error)?;
+        .map_err(crate::native_name::original_name_error)?;
     acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter()).map_err(
         |failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
@@ -212,7 +210,7 @@ pub(super) fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>
 }
 
 #[cfg(windows)]
-pub(super) fn read_source_link_held_wide<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn read_source_link_held_wide<W: SourceDemandReadWork>(
     parent: &Dir,
     name: &[u16],
     maximum_bytes: u64,
@@ -248,7 +246,7 @@ pub(super) fn read_source_link_held_wide<W: crate::demand::SourceDemandReadWork>
 }
 
 #[cfg(unix)]
-pub(crate) fn read_source_link_held<W: crate::demand::SourceDemandReadWork>(
+pub(crate) fn read_source_link_held<W: SourceDemandReadWork>(
     parent: &Dir,
     name: &Path,
     maximum_bytes: u64,
@@ -291,23 +289,6 @@ pub(crate) fn read_source_link_held<W: crate::demand::SourceDemandReadWork>(
 }
 
 #[cfg(unix)]
-pub(crate) fn read_link_held<W: NativeHostWork>(
-    parent: &Dir,
-    name: &Path,
-    maximum: u64,
-    work: &mut W,
-) -> Result<(Vec<u8>, W::Allocation), W::Error> {
-    require_leaf(name)?;
-    read_unix_link(parent, name.as_os_str(), maximum, work, || {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "native link exceeds its bounded buffer",
-        )
-        .into()
-    })
-}
-
-#[cfg(unix)]
 pub(super) fn read_unix_link<W: NativeHostWork>(
     parent: &Dir,
     name: &OsStr,
@@ -327,12 +308,7 @@ pub(super) fn read_unix_link<W: NativeHostWork>(
                 source_bytes_read: size,
                 ..WorkCounters::UNCHARGED
             })?;
-            let allocation = work.claim(size)?;
-            let mut buffer = Vec::new();
-            if let Err(error) = buffer.try_reserve_exact(size as usize) {
-                work.release(allocation)?;
-                return Err(W::allocation_failed(error));
-            }
+            let (mut buffer, allocation) = super::buffer(size as usize, work)?;
             buffer.resize(size as usize, 0u8);
             let result = read_unix_link_into(parent, name, &mut buffer, work);
             let count = match result {
@@ -360,12 +336,7 @@ pub(super) fn read_unix_link<W: NativeHostWork>(
             ..WorkCounters::UNCHARGED
         };
         work.admit(copied)?;
-        let allocation = work.claim(count as u64)?;
-        let mut exact = Vec::new();
-        if let Err(error) = exact.try_reserve_exact(count) {
-            work.release(allocation)?;
-            return Err(io::Error::new(io::ErrorKind::OutOfMemory, error).into());
-        }
+        let (mut exact, allocation) = super::buffer(count, work)?;
         exact.extend_from_slice(&buffer[..count]);
         if let Err(error) = work.record(copied).and_then(|()| work.check()) {
             drop(exact);
@@ -391,7 +362,7 @@ pub(super) fn read_unix_link_into<W: NativeHostWork>(
             source_bytes_read: buffer.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        native_read(work)?;
+        work.started_io(READ)?;
         // SAFETY: held parent, terminated name and initialized output are live.
         let count = unsafe {
             libc::readlinkat(

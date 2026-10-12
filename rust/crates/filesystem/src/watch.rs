@@ -1383,30 +1383,17 @@ impl NativeWatch {
         return Err(NativeWatchError::BoundedObservationUnavailable.into());
         #[cfg(target_os = "linux")]
         {
-            let mut candidate = PathBuf::new();
-            let mut candidate_bytes = 0_u64;
-            let result = (|| {
-                grow_watch_path_with_work(&mut candidate, &self.root, work, &mut candidate_bytes)?;
-                for component in directory.components() {
-                    work.charge(WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::default()
-                    })?;
-                    let (name, name_bytes) = watch_host_name_with_work(component, work)?;
-                    let mut host_components = Path::new(&name).components();
-                    if !matches!(host_components.next(), Some(Component::Normal(_)))
-                        || host_components.next().is_some()
-                    {
-                        drop(name);
-                        work.release(name_bytes)?;
-                        return Err(NativeWatchError::UnrepresentablePath.into());
-                    }
-                    let grown = grow_watch_path_with_work(
-                        &mut candidate,
-                        Path::new(&name),
-                        work,
-                        &mut candidate_bytes,
-                    );
+        let mut candidate = PathBuf::new();
+        let mut candidate_bytes = 0_u64;
+        let result = (|| {
+            grow_watch_path_with_work(&mut candidate, &self.root, work, &mut candidate_bytes)?;
+            for component in directory.components() {
+                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                let (name, name_bytes) = watch_host_name_with_work(component, work)?;
+                let mut host_components = Path::new(&name).components();
+                if !matches!(host_components.next(), Some(Component::Normal(_)))
+                    || host_components.next().is_some()
+                {
                     drop(name);
                     work.release(name_bytes)?;
                     return Err(NativeWatchError::UnrepresentablePath.into());
@@ -1435,7 +1422,7 @@ impl NativeWatch {
                 }
             }
             match &self.watcher {
-                NativeWatchDriver::Source(watcher) => {
+                NativeWatchDriver::Source { watcher, .. } => {
                     if !watcher.is_exact() {
                         return Err(NativeWatchError::BoundedObservationUnavailable.into());
                     }
@@ -3096,5 +3083,5 @@ mod demand_admission_tests {
 }
 
 #[cfg(test)]
-#[path = "tests/watch.rs"]
+#[path = "tests/watch/mod.rs"]
 mod tests;

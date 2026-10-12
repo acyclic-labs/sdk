@@ -36,7 +36,6 @@ pub struct ForkReport {
 }
 
 impl ForkReport {
-
     /// Validates a prepared report, including unavailable captures.
     pub fn validate(
         &self,
@@ -48,8 +47,12 @@ impl ForkReport {
             return Err(work.invalid("fork report changed the child result allocation"));
         }
         validate_child_result_generation(
-            self.child_result_volume.as_ref(), self.child_result_generation.as_ref(),
-            &self.child_private_volume, self.request.child_agent, work.work())?;
+            self.child_result_volume.as_ref(),
+            self.child_result_generation.as_ref(),
+            &self.child_private_volume,
+            self.request.child_agent,
+            work.work(),
+        )?;
         if self.summary.as_ref().map(|capture| &capture.selection)
             != self.request.preparation.summary.as_ref()
         {
@@ -70,7 +73,9 @@ impl ForkReport {
             || self.reference_grants.len()
                 > self.request.preparation.maximum_inherited_references as usize
         {
-            return Err(work.invalid("fork report changed the requested child allocation or prefix"));
+            return Err(
+                work.invalid("fork report changed the requested child allocation or prefix")
+            );
         }
         let inherited_bytes = self
             .inherited_context
@@ -79,9 +84,7 @@ impl ForkReport {
                 work.checkpoint()?;
                 total
                     .checked_add(file.descriptor().byte_length())
-                    .ok_or_else(|| {
-                        work.invalid("fork inherited context byte count overflow")
-                    })
+                    .ok_or_else(|| work.invalid("fork inherited context byte count overflow"))
             })?;
         if inherited_bytes > self.request.preparation.maximum_inherited_bytes {
             return Err(work.invalid("fork inherited context exceeds requested byte limit"));
@@ -97,7 +100,9 @@ impl ForkReport {
                     if let ResourceRevision::Project { volume, .. } = &resource.revision
                         && volume != &self.request.preparation.child_project_volume
                     {
-                        return Err(work.invalid("fork report changed the requested project volume"));
+                        return Err(
+                            work.invalid("fork report changed the requested project volume")
+                        );
                     }
                 }
                 Capture::Captured(_) => {
@@ -110,7 +115,9 @@ impl ForkReport {
             }
         }
         self.child_private_volume.validate(work.work())?;
-        self.child_private_generation.as_resource().validate(work.work())?;
+        self.child_private_generation
+            .as_resource()
+            .validate(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
             || self.child_private_volume.owner() != &VolumeOwner::Agent(self.request.child_agent)
@@ -145,18 +152,17 @@ impl ForkReport {
     ) -> Result<ForkSeed> {
         let mut owned = CodecQuota::observed(work)?;
         self.validate(owned.work())?;
-        let (mut resources, mut omissions) = if owned.work().is_some() {
-            let resource_count = self.captures.iter()
-                .filter(|capture| matches!(capture, Capture::Captured(_))).count();
-            let omission_count = self.captures.len() - resource_count;
-            let resources = crate::core::reserve_copy_vector::<CapturedResource>(
-                resource_count, &mut owned)?;
-            let omissions = crate::core::reserve_copy_vector::<ForkOmission>(
-                omission_count, &mut owned)?;
-            (resources, omissions)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let resource_count = self
+            .captures
+            .iter()
+            .filter(|capture| matches!(capture, Capture::Captured(_)))
+            .count();
+        let mut resources =
+            crate::core::reserve_copy_vector::<CapturedResource>(resource_count, &mut owned)?;
+        let mut omissions = crate::core::reserve_copy_vector::<ForkOmission>(
+            self.captures.len() - resource_count,
+            &mut owned,
+        )?;
         for (selection, capture) in self.request.selections.into_iter().zip(self.captures) {
             owned.checkpoint()?;
             match capture {
@@ -164,13 +170,13 @@ impl ForkReport {
                 Capture::Unsupported(_) | Capture::InFlight(_) | Capture::Indeterminate(_)
                     if selection.required =>
                 {
-                    return Err(boundary_error(owned.work(), crate::wire::ErrorCode::Conflict,
-                        "required fork capture is unavailable"));
+                    return Err(boundary_error(
+                        owned.work(),
+                        crate::wire::ErrorCode::Conflict,
+                        "required fork capture is unavailable",
+                    ));
                 }
-                outcome => omissions.push(ForkOmission {
-                    selection,
-                    outcome,
-                }),
+                outcome => omissions.push(ForkOmission { selection, outcome }),
             }
         }
         let seed = ForkSeed {
@@ -205,11 +211,64 @@ impl ForkReport {
 
     /// Copies report fields under the optional work ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let value = copy_report(self, &mut quota)?;
-        let retained = quota.retained();
-        quota.transfer();
-        Ok((value, retained))
+        CodecQuota::produce(work, |quota| {
+            crate::core::copy_owned(self, quota, |source, work| {
+                use crate::core::{owned_buffer, owned_capture, owned_sum, owned_vector};
+                source.validate(work)?;
+                owned_sum([
+                    source.request.logical_owned_bytes()?,
+                    owned_vector(&source.captures, owned_capture)?,
+                    source.child_private_volume.logical_owned_bytes()?,
+                    source
+                        .child_private_generation
+                        .as_resource()
+                        .logical_owned_bytes()?,
+                    source
+                        .child_result_volume
+                        .as_ref()
+                        .map(VolumeRef::logical_owned_bytes)
+                        .transpose()?
+                        .unwrap_or(0),
+                    source
+                        .child_result_generation
+                        .as_ref()
+                        .map(|reference| reference.as_resource().logical_owned_bytes())
+                        .transpose()?
+                        .unwrap_or(0),
+                    owned_vector(&source.inherited_context, FileRef::logical_owned_bytes)?,
+                    owned_vector(&source.attachment_manifests, FileRef::logical_owned_bytes)?,
+                    owned_vector(&source.shared_grants, |grant| {
+                        owned_sum([
+                            grant.volume.logical_owned_bytes()?,
+                            owned_buffer::<VolumeOperation>(grant.operations.len())?,
+                        ])
+                    })?,
+                    owned_vector(&source.reference_grants, |grant| {
+                        owned_sum([
+                            grant.file.logical_owned_bytes()?,
+                            grant
+                                .attachment_manifest
+                                .as_ref()
+                                .map(FileRef::logical_owned_bytes)
+                                .transpose()?
+                                .unwrap_or(0),
+                        ])
+                    })?,
+                    source
+                        .summary
+                        .as_ref()
+                        .map(|summary| {
+                            owned_sum([
+                                summary.selection.checkpoint.logical_owned_bytes()?,
+                                summary.context.logical_owned_bytes()?,
+                                owned_vector(&summary.payloads, FileRef::logical_owned_bytes)?,
+                                owned_vector(&summary.references, FileRef::logical_owned_bytes)?,
+                            ])
+                        })
+                        .transpose()?
+                        .unwrap_or(0),
+                ])
+            })
+        })
     }
-
 }

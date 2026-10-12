@@ -201,7 +201,7 @@ where
     S: acyclic_fs::LazyWorkspaceStore,
 {
     pub(super) fn require_work(&self, work: &NativeMaterializationWork) -> Result<()> {
-        if !self.custody.matches_work(work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(Error::from(
                 acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
             ));
@@ -412,6 +412,6 @@ where
         &self,
         wait: &acyclic_fs::CancellationToken,
     ) -> Result<acyclic_fs::native_mount::NativeMountDrainProof> {
-        self.mount.retire_with_work(wait).map_err(Error::from)
+        self.mount.retire(wait).map_err(Error::from)
     }
 }
