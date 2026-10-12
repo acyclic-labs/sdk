@@ -155,7 +155,7 @@ impl ResumableTool {
             ));
         }
         let mut registry = MachineRegistry::default();
-        registry.register(self.machine.clone())
+        registry.register(self.machine.clone(), &mut None)
     }
 
     /// Validates native metadata without consulting ordinary machine identity or allocating an unaudited ordinary registration callback.
@@ -240,7 +240,7 @@ impl ResumableTool {
             return Err(Error::Conflict("tool workflow identity belongs to another admission".into()));
         }
         let mut registry = MachineRegistry::default();
-        registry.register(self.machine.clone())?;
+        registry.register(self.machine.clone(), &mut None)?;
         let host = DurableWorkflowHost::open(registry, admission.initial, journal).await?;
         Ok(ResumableToolSession {
             definition: self.definition.clone(),

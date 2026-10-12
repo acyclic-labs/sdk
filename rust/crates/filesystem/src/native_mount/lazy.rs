@@ -1451,32 +1451,7 @@ impl<T> CursorTable<T> {
         token
     }
 
-    fn remember(
-        &self, generation: (u64, u64), cursor: T,
-    ) -> Result<Vec<u8>, MountSourceError> {
-        let token = self.next_token();
-        let mut entries = self.entries.lock().map_err(|_| MountSourceError::Stale)?;
-        while entries.len() >= self.maximum {
-            let Some(oldest) = entries.first_key_value().map(|(&key, _)| key) else { break; };
-            entries.remove(&oldest);
-        }
-        entries.insert(token, StampedCursor { generation, cursor, native_cleanup: None, _native_cleanup_allocation: None });
-        Ok(token.to_le_bytes().to_vec())
-    }
-
     fn take(
-        &self, generation: (u64, u64), cursor: Option<&[u8]>,
-    ) -> Result<Option<T>, MountSourceError> {
-        let Some(cursor) = cursor else { return Ok(None); };
-        let bytes: [u8; 8] = cursor.try_into().map_err(|_| MountSourceError::Stale)?;
-        let stamped = self.entries.lock().map_err(|_| MountSourceError::Stale)?
-            .remove(&u64::from_le_bytes(bytes)).ok_or(MountSourceError::Stale)?;
-        if stamped.generation != generation { return Err(MountSourceError::Stale); }
-        Ok(Some(stamped.cursor))
-    }
-
-
-    fn take_with_carrier(
         &self,
         generation: (u64, u64),
         cursor: Option<&[u8]>,
@@ -1513,15 +1488,7 @@ impl<T> CursorTable<T> {
         Ok(Some(stamped.cursor))
     }
 
-    #[cfg(test)]
-    fn take_with_work(
-        &self, generation: (u64, u64), cursor: Option<&[u8]>,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<Option<T>, MountSourceError> {
-        self.take_with_carrier(generation, cursor, &mut super::adapter::NativeDemandCarrier::Borrowed(work))
-    }
-
-    fn remember_with_carrier(
+    fn remember(
         &self,
         generation: (u64, u64),
         cursor: T,
@@ -1617,22 +1584,6 @@ impl<T> CursorTable<T> {
         Ok(MountOwnedBuffer { value: token_bytes, legacy_bytes: 8, allocation: None })
     }
 
-    #[cfg(test)]
-    fn remember_with_work(
-        &self, generation: (u64, u64), cursor: T,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<Vec<u8>, MountSourceError> {
-        self.remember_with_carrier(generation, cursor, &mut super::adapter::NativeDemandCarrier::Borrowed(work))
-            .map(|owned| owned.into_parts().0)
-    }
-
-    fn clear_with_cleanup_wait(
-        &self, wait: &crate::CancellationToken,
-    ) -> Result<(), MountSourceError> {
-        self.clear_with_cleanup(Some(wait))
-    }
-
-
     fn clear_with_cleanup(
         &self, wait: Option<&crate::CancellationToken>,
     ) -> Result<(), MountSourceError> {
@@ -1666,12 +1617,12 @@ impl<T> CursorTable<T> {
         }
     }
 
-    fn clear_with_carrier(
+    fn retire(
         &self,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
         if let Some(original) = carrier.original_native_work() {
-            return self.clear_with_cleanup_wait(original.cancellation());
+            return self.clear_with_cleanup(Some(original.cancellation()));
         }
         loop {
             let removed = carrier.with_work(|work| {
@@ -1684,13 +1635,6 @@ impl<T> CursorTable<T> {
             drop(removed);
             carrier.with_work(|work| work.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
         }
-    }
-
-    fn clear_with_work(
-        &self,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<(), MountSourceError> {
-        self.clear_with_carrier(&mut super::adapter::NativeDemandCarrier::Borrowed(work))
     }
 
     fn clear(&self) {
@@ -2876,7 +2820,7 @@ where
             return self.cancel_with_cleanup_wait(original.cancellation());
         }
         self.authored.cancel_with_carrier(carrier)?;
-        self.cursors.clear_with_carrier(carrier)?;
+        self.cursors.retire(carrier)?;
         let Some(watch) = self.source_watch.as_ref() else { return Ok(()); };
         watch.stop(carrier).map(|_| ())
     }
@@ -3255,7 +3199,7 @@ where
                 && custody.selected.is_some()
                 && let Some(generation) = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(custody.operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?
             {
-                return self.finish_acknowledged_mount_custody_with_sync_work(
+                return self.finish_acknowledged_mount_custody(
                     custody.operation, generation, work, original, cancellation,
                 ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
             }
@@ -3301,7 +3245,7 @@ where
                     && custody.selected.is_some()
                 {
                     let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(custody.operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-                    return self.finish_acknowledged_mount_custody_with_sync_work(
+                    return self.finish_acknowledged_mount_custody(
                         custody.operation, generation, work, original, cancellation,
                     ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
                 }
@@ -3394,52 +3338,7 @@ where
         Ok(())
     }
 
-    pub(super) async fn finish_acknowledged_mount_custody_with_carrier(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
-        carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        match carrier {
-            super::adapter::NativeDemandCarrier::Borrowed(work) =>
-                super::adapter::BorrowedNativeDemandMeter::new(work)?
-                    .run_async(|meter| async move {
-                        self.finish_acknowledged_mount_custody_with_meter(
-                            operation, generation, &meter, cancellation,
-                        ).await
-                    }).await,
-            super::adapter::NativeDemandCarrier::Shared(meter) =>
-                self.finish_acknowledged_mount_custody_with_meter(
-                    operation, generation, meter, cancellation,
-                ).await,
-            super::adapter::NativeDemandCarrier::Native(original) => {
-                let original = *original;
-                let mut work = MountSyncWork::new(
-                    &self.authored, super::adapter::NativeDemandCarrier::Native(original),
-                )?;
-                self.finish_acknowledged_mount_custody_with_sync_work(
-                    operation, generation, &mut work, original, cancellation,
-                ).await
-            }
-        }
-    }
-
-    async fn finish_acknowledged_mount_custody_with_meter(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
-        meter: &Arc<crate::demand::NativeDemandReadMeter>,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let mut work = MountSyncWork::new(
-            &self.authored, super::adapter::NativeDemandCarrier::Shared(meter),
-        )?;
-        let original = crate::NativeMaterializationWork::from_meter(Arc::clone(meter));
-        self.finish_acknowledged_mount_custody_with_sync_work(
-            operation, generation, &mut work, &original, cancellation,
-        ).await
-    }
-
-    fn finish_acknowledged_mount_custody_with_sync_work<'a, 'work>(
+    fn finish_acknowledged_mount_custody<'a, 'work>(
         &'a self, operation: crate::OperationId, generation: crate::GenerationId,
         work: &'a mut MountSyncWork<'work>, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
@@ -3784,8 +3683,9 @@ where
         let _stable = self.source_view.write_stable_with_carrier(
             None, &mut carrier, cancellation, Some(self.authored.cancellation()),
         ).await?.into_mutation_phase();
-        self.finish_acknowledged_mount_custody_with_carrier(
-            operation, generation, &mut carrier, cancellation,
+        let mut work = MountSyncWork::new(&self.authored, carrier)?;
+        self.finish_acknowledged_mount_custody(
+            operation, generation, &mut work, original, cancellation,
         ).await?.map(Some).ok_or(MountSourceError::Indeterminate)
     }
 
@@ -3849,7 +3749,7 @@ where
             }
             if let Some(generation) = generation {
                 if custody.is_some() {
-                    return self.finish_acknowledged_mount_custody_with_sync_work(
+                    return self.finish_acknowledged_mount_custody(
                         input.operation, generation, work, input.original, cancellation,
                     ).await.map_err(E::from);
                 }
@@ -3860,7 +3760,7 @@ where
                     permit, work, cancellation, before_publication,
                 ).await?;
                 let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(input.operation.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-                return self.finish_acknowledged_mount_custody_with_sync_work(
+                return self.finish_acknowledged_mount_custody(
                     input.operation, generation, work, input.original, cancellation,
                 ).await.map_err(E::from);
             }
@@ -4020,7 +3920,7 @@ where
         self.mark_mount_published(operation_id)?;
         if let Some(input) = &selected {
             let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(operation_id.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-            return self.finish_acknowledged_mount_custody_with_sync_work(
+            return self.finish_acknowledged_mount_custody(
                 operation_id, generation, work, input.original, cancellation,
             ).await.map_err(E::from);
         }
@@ -5515,7 +5415,7 @@ where
             return Err(MountSourceError::NotFound);
         }
         let generation = (lease.generation, removal_epoch);
-        let held = self.cursors.take_with_carrier(generation, cursor, scratch.carrier)?;
+        let held = self.cursors.take(generation, cursor, scratch.carrier)?;
         let (stamp, mut cursor) = match held {
             Some((stamp, cursor)) => (stamp, Some(cursor)),
             None => (ViewStamp::current(), None),
@@ -5655,7 +5555,7 @@ where
         if !unchanged || !same_epoch { return Err(MountSourceError::Stale); }
         let mut cursor_bytes = 0;
         let next_cursor = if let Some(cursor) = page.value.next.take() {
-            let token = self.cursors.remember_with_carrier(generation, (stamp, cursor), scratch.carrier)?;
+            let token = self.cursors.remember(generation, (stamp, cursor), scratch.carrier)?;
             let (token, mut allocation, bytes) = token.into_parts();
             if let Some(allocation) = &mut allocation { scratch.absorb_native(allocation)?; }
             cursor_bytes = bytes;
@@ -5893,7 +5793,7 @@ where
             })?
         } else { crate::WorkCounters::UNCHARGED };
         let mut completion = original.reserve_work(delta).map_err(MountSourceError::NativeWork)?;
-        if rebound { self.cursors.clear_with_carrier(&mut carrier)?; }
+        if rebound { self.cursors.retire(&mut carrier)?; }
         let result = operation(detached);
         let result = match result {
             Ok(value) if rebound => {
@@ -9757,41 +9657,44 @@ mod tests {
     fn finite_cursor_admission_preserves_authority_on_denial()
     -> Result<(), Box<dyn std::error::Error>> {
         let cursors = CursorTable::new(1);
-        let first = cursors.remember((2, 1), 1_u8)?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let first = cursors.remember((2, 1), 1_u8, &mut setup).map(|owned| owned.into_parts().0)?;
         let caller = crate::CancellationToken::new();
         let mut budget = finite_directory_budget();
         budget.allocation_operations = 0;
         let mut denied = crate::demand::DemandWork::new(budget, &caller);
         assert!(matches!(
-            cursors.remember_with_work((2, 1), 2_u8, &mut denied),
+            cursors.remember((2, 1), 2_u8, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut denied)).map(|owned| owned.into_parts().0),
             Err(MountSourceError::Work(_))
         ));
         assert_eq!(denied.work.allocation_operations, 0);
-        assert_eq!(cursors.take((2, 1), Some(&first))?, Some(1));
+        assert_eq!(cursors.take((2, 1), Some(&first), &mut setup)?, Some(1));
 
-        let retained = cursors.remember((2, 1), 3_u8)?;
+        let retained = cursors.remember((2, 1), 3_u8, &mut setup).map(|owned| owned.into_parts().0)?;
         let stopped = crate::CancellationToken::new();
         stopped.cancel();
         let mut cancelled = crate::demand::DemandWork::new(finite_directory_budget(), &stopped);
         assert!(matches!(
-            cursors.take_with_work((2, 1), Some(&retained), &mut cancelled),
+            cursors.take((2, 1), Some(&retained), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut cancelled)),
             Err(MountSourceError::Cancelled)
         ));
-        assert_eq!(cursors.take((2, 1), Some(&retained))?, Some(3));
+        assert_eq!(cursors.take((2, 1), Some(&retained), &mut setup)?, Some(3));
 
         let mut allowed = crate::demand::DemandWork::new(finite_directory_budget(), &caller);
-        let token = cursors.remember_with_work((2, 1), 4_u8, &mut allowed)?;
+        let token = cursors.remember((2, 1), 4_u8, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed)).map(|owned| owned.into_parts().0)?;
         assert_eq!(token.capacity(), 8);
         assert_eq!(allowed.work.allocation_operations, 1);
         assert_eq!(allowed.work.peak_allocation_bytes, 8);
-        assert_eq!(cursors.take_with_work((2, 1), Some(&token), &mut allowed)?, Some(4));
-        let stale = cursors.remember_with_work((2, 1), 5_u8, &mut allowed)?;
+        assert_eq!(cursors.take((2, 1), Some(&token), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed))?, Some(4));
+        let stale = cursors.remember((2, 1), 5_u8, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed)).map(|owned| owned.into_parts().0)?;
         assert!(matches!(
-            cursors.take_with_work((2, 2), Some(&stale), &mut allowed),
+            cursors.take((2, 2), Some(&stale), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed)),
             Err(MountSourceError::Stale)
         ));
         assert!(matches!(
-            cursors.take((2, 1), Some(&stale)),
+            cursors.take((2, 1), Some(&stale), &mut setup),
             Err(MountSourceError::Stale)
         ));
         Ok(())
@@ -9801,24 +9704,27 @@ mod tests {
     fn finite_cursor_retirement_preserves_unvisited_prefix()
     -> Result<(), Box<dyn std::error::Error>> {
         let cursors = CursorTable::new(3);
-        let first = cursors.remember((2, 1), vec![1_u8; 5])?;
-        let second = cursors.remember((2, 1), vec![2_u8; 7])?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let first = cursors.remember((2, 1), vec![1_u8; 5], &mut setup).map(|owned| owned.into_parts().0)?;
+        let second = cursors.remember((2, 1), vec![2_u8; 7], &mut setup).map(|owned| owned.into_parts().0)?;
         let caller = crate::CancellationToken::new();
         let mut budget = finite_directory_budget();
         budget.items_examined = 1;
         let mut denied = crate::demand::DemandWork::new(budget, &caller);
-        assert!(matches!(cursors.clear_with_work(&mut denied), Err(MountSourceError::Work(_))));
+        assert!(matches!(cursors.retire(&mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut denied)), Err(MountSourceError::Work(_))));
         assert_eq!(denied.work.items_examined, 1);
         assert_eq!(denied.work.peak_allocation_bytes, 0);
-        assert!(matches!(cursors.take((2, 1), Some(&first)), Err(MountSourceError::Stale)));
+        assert!(matches!(cursors.take((2, 1), Some(&first), &mut setup), Err(MountSourceError::Stale)));
         assert!(cursors.entries.lock().expect("cursor authority").contains_key(&u64::from_le_bytes(
             second.as_slice().try_into().expect("cursor token"),
         )));
         let mut retry = crate::demand::DemandWork::new(finite_directory_budget(), &caller);
-        cursors.clear_with_work(&mut retry)?;
+        cursors.retire(&mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut retry))?;
         assert_eq!(retry.work.items_examined, 1);
         assert_eq!(retry.work.peak_allocation_bytes, 0);
-        assert!(matches!(cursors.take((2, 1), Some(&second)), Err(MountSourceError::Stale)));
+        assert!(matches!(cursors.take((2, 1), Some(&second), &mut setup), Err(MountSourceError::Stale)));
         Ok(())
     }
 
@@ -9843,14 +9749,17 @@ mod tests {
         let payload = || Payload { meter: Arc::clone(&meter), drops: Arc::clone(&drops) };
         let cursors = CursorTable::new(1);
         let mut carrier = super::super::adapter::NativeDemandCarrier::Shared(&meter);
-        let stale = cursors.remember((2, 1), payload())?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let stale = cursors.remember((2, 1), payload(), &mut setup).map(|owned| owned.into_parts().0)?;
         assert!(matches!(
-            cursors.take_with_carrier((2, 2), Some(&stale), &mut carrier),
+            cursors.take((2, 2), Some(&stale), &mut carrier),
             Err(MountSourceError::Stale)
         ));
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        cursors.remember((2, 1), payload())?;
-        cursors.remember_with_carrier((2, 1), payload(), &mut carrier)?;
+        cursors.remember((2, 1), payload(), &mut setup).map(|owned| owned.into_parts().0)?;
+        cursors.remember((2, 1), payload(), &mut carrier)?;
         assert_eq!(drops.load(Ordering::Relaxed), 2);
         let mut denied_budget = finite_directory_budget();
         denied_budget.allocation_operations = 0;
@@ -9859,13 +9768,13 @@ mod tests {
         )));
         let mut denied_carrier = super::super::adapter::NativeDemandCarrier::Shared(&denied_meter);
         assert!(matches!(
-            cursors.remember_with_carrier((2, 1), Payload {
+            cursors.remember((2, 1), Payload {
                 meter: Arc::clone(&denied_meter), drops: Arc::clone(&drops),
             }, &mut denied_carrier),
             Err(MountSourceError::Work(_))
         ));
         assert_eq!(drops.load(Ordering::Relaxed), 3);
-        cursors.clear_with_carrier(&mut carrier)?;
+        cursors.retire(&mut carrier)?;
         assert_eq!(drops.load(Ordering::Relaxed), 4);
         Ok(())
     }
@@ -9893,7 +9802,7 @@ mod tests {
         let drops = Arc::new(AtomicU64::new(0));
         let native = original.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
-        let token = table.remember_with_carrier((2, 1), Payload {
+        let token = table.remember((2, 1), Payload {
             table: Arc::downgrade(&table), original: original.clone(), drops: Arc::clone(&drops),
         }, &mut carrier)?;
         drop(token);
@@ -9901,18 +9810,18 @@ mod tests {
         let live_before = original.live_allocation_bytes();
         let stopped_wait = crate::CancellationToken::new();
         stopped_wait.cancel();
-        assert!(matches!(table.clear_with_cleanup_wait(&stopped_wait), Err(MountSourceError::Cancelled)));
+        assert!(matches!(table.clear_with_cleanup(Some(&stopped_wait)), Err(MountSourceError::Cancelled)));
         assert_eq!(drops.load(Ordering::Acquire), 0);
         assert_eq!(original.receipt(), before);
         root_stop.cancel();
-        table.clear_with_cleanup_wait(&crate::CancellationToken::new())?;
+        table.clear_with_cleanup(Some(&crate::CancellationToken::new()))?;
         assert_eq!(drops.load(Ordering::Acquire), 1);
         assert!(table.physically_empty()?);
         let completed = original.receipt();
         assert_eq!(completed.items_examined, before.items_examined + 1);
         assert_eq!(completed.allocation_operations, before.allocation_operations);
         assert!(original.live_allocation_bytes() < live_before);
-        table.clear_with_cleanup_wait(&stopped_wait)?;
+        table.clear_with_cleanup(Some(&stopped_wait))?;
         assert_eq!(original.receipt(), completed);
         Ok(())
     }
@@ -9928,7 +9837,7 @@ mod tests {
         let native = original.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
         let before = original.receipt();
-        assert!(matches!(table.remember_with_carrier((2, 1), 7_u8, &mut carrier),
+        assert!(matches!(table.remember((2, 1), 7_u8, &mut carrier),
             Err(MountSourceError::NativeWork(_))));
         assert!(table.physically_empty()?);
         assert_eq!(original.receipt(), before);
@@ -9959,17 +9868,20 @@ mod tests {
             .values().next().ok_or("missing cursor")?.generation;
         original.admit(crate::WorkCounters::UNCHARGED)?;
         let before = original.remaining()?.peak_allocation_bytes;
-        let held = view.cursors.take_with_carrier(generation, Some(token), &mut native)?
+        let held = view.cursors.take(generation, Some(token), &mut native)?
             .ok_or("missing owned cursor")?;
         assert!(held.1.retained_bytes()? > 0);
         assert_eq!(held.1.unclaimed_retained_bytes()?, 0);
         assert_eq!(original.remaining()?.peak_allocation_bytes, before);
-        let token = view.cursors.remember(generation, held)?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let token = view.cursors.remember(generation, held, &mut setup).map(|owned| owned.into_parts().0)?;
         let mut foreign_budget = budget;
         foreign_budget.allocation_operations = 0;
         foreign_budget.peak_allocation_bytes = 0;
         let mut foreign = crate::demand::DemandWork::new(foreign_budget, &caller);
-        let held = view.cursors.take_with_work(generation, Some(&token), &mut foreign)?
+        let held = view.cursors.take(generation, Some(&token), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut foreign))?
             .ok_or("missing borrowed cursor")?;
         assert_eq!(foreign.work.allocation_operations, 0);
         assert_eq!(foreign.work.peak_allocation_bytes, 0);
@@ -10188,32 +10100,35 @@ mod tests {
     #[test]
     fn abandoned_directory_cursors_are_bounded_and_cleared() {
         let cursors = CursorTable::new(2);
-        let first = cursors.remember((2, 1), 1_u8).expect("first cursor");
-        let second = cursors.remember((2, 1), 2_u8).expect("second cursor");
-        let third = cursors.remember((2, 1), 3_u8).expect("third cursor");
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let first = cursors.remember((2, 1), 1_u8, &mut setup).map(|owned| owned.into_parts().0).expect("first cursor");
+        let second = cursors.remember((2, 1), 2_u8, &mut setup).map(|owned| owned.into_parts().0).expect("second cursor");
+        let third = cursors.remember((2, 1), 3_u8, &mut setup).map(|owned| owned.into_parts().0).expect("third cursor");
 
         assert!(matches!(
-            cursors.take((2, 1), Some(&first)),
+            cursors.take((2, 1), Some(&first), &mut setup),
             Err(MountSourceError::Stale)
         ));
         assert_eq!(
-            cursors.take((2, 1), Some(&second)).expect("second token"),
+            cursors.take((2, 1), Some(&second), &mut setup).expect("second token"),
             Some(2)
         );
         assert_eq!(
-            cursors.take((2, 1), Some(&third)).expect("third token"),
+            cursors.take((2, 1), Some(&third), &mut setup).expect("third token"),
             Some(3)
         );
 
-        let stale = cursors.remember((2, 1), 4_u8).expect("stale cursor");
+        let stale = cursors.remember((2, 1), 4_u8, &mut setup).map(|owned| owned.into_parts().0).expect("stale cursor");
         assert!(matches!(
-            cursors.take((3, 1), Some(&stale)),
+            cursors.take((3, 1), Some(&stale), &mut setup),
             Err(MountSourceError::Stale)
         ));
-        let retained = cursors.remember((2, 1), 5_u8).expect("retained cursor");
+        let retained = cursors.remember((2, 1), 5_u8, &mut setup).map(|owned| owned.into_parts().0).expect("retained cursor");
         cursors.clear();
         assert!(matches!(
-            cursors.take((2, 1), Some(&retained)),
+            cursors.take((2, 1), Some(&retained), &mut setup),
             Err(MountSourceError::Stale)
         ));
     }

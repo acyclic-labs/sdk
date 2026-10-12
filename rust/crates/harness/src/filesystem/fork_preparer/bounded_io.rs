@@ -1400,9 +1400,9 @@ where A: AsyncAuthorityStore, O: AsyncObjectStore,
                 }
             }
             WorkspaceMutation::PutFile { path, bytes } => {
-                let result = transaction.write_measured(
+                let result = transaction.write(
                     path, bytes.clone(), io.remaining()?, io.cancellation(),
-                ).await;
+                ).await.map(|receipt| receipt.work);
                 match result {
                     Ok(work) => io.charge(work)?,
                     Err(failure) => { io.spent(*failure.work)?; return Err(Error::from(failure.error)); }
@@ -1506,9 +1506,9 @@ where A: AsyncAuthorityStore, O: AsyncObjectStore,
                 ).await.map_err(|error| native_workspace_error((error, None)))?;
             }
             WorkspaceMutation::PutFile { path, bytes } => {
-                transaction.write_with_native_work(
+                transaction.write(
                     path, bytes.clone(), original, io.cancellation(),
-                ).await.map_err(native_workspace_error)?;
+                ).await.map_err(|error| native_workspace_error((error, None)))?;
             }
             WorkspaceMutation::Remove { .. } => {
                 return Err(native_error(crate::wire::ErrorCode::Unsupported, "bounded publication does not remove content"));

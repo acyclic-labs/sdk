@@ -756,10 +756,9 @@ where
         &self,
         native_work: &crate::NativeMaterializationWork,
     ) -> Result<super::OwnedNativeMountOriginalWorkScope, MountLifecycleError> {
-        let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = owner.as_mut()
+        let owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = owner.as_ref()
             .ok_or(MountLifecycleError::Source(MountSourceError::Stale))?;
-        session.retain_measured_cleanup_owner();
         session.begin_original_work(native_work).map_err(MountLifecycleError::Native)
     }
 
@@ -823,7 +822,6 @@ where
     {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
-                self.retain_failed_session();
                 (NativeMountPublicationFailure {
                     cause: E::from(MountLifecycleError::Native(error)), source_acknowledged: false,
                     accounting_failure: None,
@@ -867,7 +865,6 @@ where
         match result {
             Ok(publication) => self.revalidate_acknowledged_publication(native_work, publication),
             Err((cause, accounting_failure)) => {
-                self.retain_failed_session();
                 Err(NativeMountPublicationFailure {
                     cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
                 })
@@ -882,7 +879,6 @@ where
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where E: From<MountLifecycleError> {
         let result = with_live_session(&self.session, |session| session.revalidate_with_meter(native_work));
-        if result.is_err() { self.retain_failed_session(); }
         result.map(|()| publication).map_err(|cause| NativeMountPublicationFailure {
             cause: E::from(cause), accounting_failure: None, source_acknowledged: true, publication: Some(publication),
         })
@@ -911,7 +907,6 @@ where
     {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
-                self.retain_failed_session();
                 (E::from(MountLifecycleError::Native(error)), spent)
             })?;
         let result = async {
@@ -922,7 +917,6 @@ where
                 cancellation, before_publication,
             ).await
         }.await;
-        if result.is_err() { self.retain_failed_session(); }
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
     }
@@ -981,7 +975,6 @@ where
                 Ok(snapshot)
             }.await;
             drop(plan_custody);
-            if result.is_err() { self.retain_failed_session(); }
             result
         }
     }
@@ -998,10 +991,7 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<Option<crate::LazySnapshotRef>>, (NativeMountError, crate::WorkCounters)> {
-        let work = customer_native_work(budget, cancellation).map_err(|failure| {
-            self.retain_failed_session();
-            failure
-        })?;
+        let work = customer_native_work(budget, cancellation)?;
         let result = self.selected_import_snapshot_with_work(operation, &work, cancellation).await;
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
@@ -1026,7 +1016,6 @@ where
             self.source.selected_import_snapshot(operation, native_work, cancellation)
                 .await.map_err(NativeMountError::from)
         }.await;
-        if result.is_err() { self.retain_failed_session(); }
         result
     }
 
@@ -1082,7 +1071,6 @@ where
     ) -> Result<crate::OperationReceipt<crate::LazySnapshotRef>, (MountLifecycleError, crate::WorkCounters)> {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
-                self.retain_failed_session();
                 (MountLifecycleError::Native(error), spent)
             })?;
         let result = self.snapshot_with_work(&work, cancellation).await;
@@ -1144,7 +1132,6 @@ where
                     .map_err(|cause| (MountLifecycleError::Source(cause), None))
             }
         }.await;
-        if result.is_err() { self.retain_failed_session(); }
         result
     }
 
@@ -1227,8 +1214,6 @@ where
         let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| {
             let Some(session) = owner.as_mut() else { return Ok(()); };
-            // Mark finite cleanup custody before any callback admission can fail.
-            session.retain_measured_cleanup_owner();
             native_work.native_read_meter().with_original_leaf(|work| work.check())
                 .map_err(native_demand_lifecycle_error)?;
             session.stop_with_meter(native_work)
@@ -1258,7 +1243,6 @@ where
         let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| {
             if let Some(session) = owner.as_mut() {
-                session.retain_measured_cleanup_owner();
                 session.stop_with_cleanup_wait(wait).map_err(MountLifecycleError::Native)?;
                 if !session.cleanup_state().cleanup_complete {
                     return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
@@ -1293,13 +1277,6 @@ where
     pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
         self.sync_blocking()?;
         self.detach()
-    }
-
-    fn retain_failed_session(&self) {
-        let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(session) = owner.as_mut() {
-            session.retain_measured_cleanup_owner();
-        }
     }
 
     fn detach(&self) -> Result<(), MountLifecycleError> {
@@ -1719,10 +1696,10 @@ where
             // never published while uninitialized.
             #[allow(unsafe_code, reason = "initializes the real source payload before publishing its Arc")]
             let source = unsafe { source.assume_init() };
-            let session = prepared.start_with_native_work(
-                request, session_destination.1,
+            let session = prepared.start(
+                request,
                 Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
-                native_work,
+                native_work, Some(session_destination.1),
             )?;
             // No fallible work follows acquisition of the live session owner.
             Ok(LazyMount {

@@ -1300,7 +1300,6 @@ export type NativeRawWatchBatch = NativeBoundary<NativeBinding.NativeWatchBatch>
 export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher>;
 export type NativeRawCheckout = NativeBoundary<NativeBinding.NativeCheckout>;
 export type NativeRawTransactionOperation = NativeBoundary<NativeBinding.NativeTransactionOperation>;
-export type NativeRawMergeConflict = NativeBoundary<NativeBinding.NativeMergeConflict>;
 export type NativeRawFs = NativeBoundary<NativeBinding.NativeFs>;
 export type NativeRawWorkspace = NativeBoundary<NativeBinding.NativeWorkspace>;
 export type NativeRawJoinPlan = NativeBoundary<NativeBinding.NativeJoinPlan>;

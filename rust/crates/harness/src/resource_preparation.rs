@@ -130,15 +130,6 @@ impl ResourcePreparationRequest {
         Ok(bytes)
     }
 
-    fn invalid(reason: &'static str, work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().and_then(|observer| observer.original_native_work()).is_some() {
-            return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
-        }
-        let _ = work;
-        Error::Invalid(reason.into())
-    }
-
     /// Decodes the closed preparation DTO from the caller's original retained value.
     pub(crate) fn from_borrowed_value_with_work(
         value: &Value,
@@ -147,7 +138,7 @@ impl ResourcePreparationRequest {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
         let maximum = value.get("maximum_bytes").and_then(Value::as_u64)
             .filter(|maximum| *maximum != 0 && *maximum != u64::MAX)
-            .ok_or_else(|| Self::invalid("retained preparation has no finite byte bound", work))?;
+            .ok_or_else(|| crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "retained preparation has no finite byte bound"))?;
         let encoded = crate::store::history::canonical_bytes_with_work(value, maximum, work)?;
         let encoded_extent = encoded.capacity() as u64;
         let decoded = (|| {
@@ -177,7 +168,7 @@ impl ResourcePreparationRequest {
             let retained = crate::contract::canonical_json_digest_with_work(
                 &request, request.maximum_bytes, work)?;
             if original != retained {
-                return Err(Self::invalid("retained preparation input changes its canonical identity on decode", work));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "retained preparation input changes its canonical identity on decode"));
             }
             crate::core::resource_preparation_owned_bytes(&request, work)
         })();
@@ -186,7 +177,7 @@ impl ResourcePreparationRequest {
             Ok(_) => {
                 drop(request);
                 if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(reserved); }
-                return Err(Self::invalid("closed preparation inventory exceeded its admitted reservation", work));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "closed preparation inventory exceeded its admitted reservation"));
             }
             Err(error) => {
                 drop(request);
@@ -300,9 +291,7 @@ impl ResourcePreparationRequest {
             || self.creation_grant.is_empty()
             || self.creation_grant.chars().any(char::is_control)
         {
-            return Err(Self::invalid(
-                "resource preparation lacks a parent, authority or finite work bounds", work,
-            ));
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "resource preparation lacks a parent, authority or finite work bounds"));
         }
         if work.is_some() {
             let encoded = crate::store::history::canonical_bytes_with_work(self, self.maximum_bytes, work)?;
@@ -315,11 +304,11 @@ impl ResourcePreparationRequest {
         if let Some(checkpoint) = &self.source_checkpoint {
             checkpoint.validate(work)?;
             if checkpoint.descriptor().byte_length() > self.maximum_bytes {
-                return Err(Self::invalid("source checkpoint exceeds preparation byte bound", work));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "source checkpoint exceeds preparation byte bound"));
             }
         }
         if self.input_files.len() as u64 > self.maximum_work {
-            return Err(Self::invalid("child input reference count exceeds preparation work bound", work));
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "child input reference count exceeds preparation work bound"));
         }
         let mut input_bytes = 0_u64;
         for (index, file) in self.input_files.iter().enumerate() {
@@ -328,9 +317,9 @@ impl ResourcePreparationRequest {
             }
             file.validate(work)?;
             input_bytes = input_bytes.checked_add(file.descriptor().byte_length())
-                .ok_or_else(|| Self::invalid("child input reference byte bound overflow", work))?;
+                .ok_or_else(|| crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "child input reference byte bound overflow"))?;
             if input_bytes > self.maximum_bytes || self.input_files[..index].contains(file) {
-                return Err(Self::invalid("child input references exceed their bound or repeat an identity", work));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "child input references exceed their bound or repeat an identity"));
             }
         }
         if let Some(authorization) = &self.read_authorization {
@@ -339,9 +328,7 @@ impl ResourcePreparationRequest {
         if let Some(command) = &self.command {
             command.validate(work)?;
             if command.operation_id == self.child.operation_id {
-                return Err(Self::invalid(
-                    "preparation effect and intended child identities must differ", work,
-                ));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "preparation effect and intended child identities must differ"));
             }
         }
         self.child.validate_with_work(work)?;
@@ -351,9 +338,7 @@ impl ResourcePreparationRequest {
             }
             resource.validate_with_work(work)?;
             if self.resources[..index].contains(resource) {
-                return Err(Self::invalid(
-                    "resource preparation repeats an identity", work,
-                ));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "resource preparation repeats an identity"));
             }
         }
         for proof in &self.child.resource_proofs {
@@ -362,9 +347,7 @@ impl ResourcePreparationRequest {
             }
             if self.resources.contains(&proof.resource) {
                 if proof.provider != self.provider {
-                    return Err(Self::invalid(
-                        "child proof belongs to another creation provider", work,
-                    ));
+                    return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "child proof belongs to another creation provider"));
                 }
             }
         }
@@ -376,9 +359,7 @@ impl ResourcePreparationRequest {
         }
         if self.resources.iter().any(|resource| !self.child.resource_proofs.iter()
             .any(|proof| &proof.resource == resource)) {
-            return Err(Self::invalid(
-                "child proofs differ from requested created resources", work,
-            ));
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "child proofs differ from requested created resources"));
         }
         Ok(())
     }
@@ -704,7 +685,7 @@ impl CreatedResourceAccess {
             if binding.volume.class() != crate::conversation::VolumeClass::AgentPrivate
                 || !matches!(binding.volume.owner(), crate::conversation::VolumeOwner::Agent(_))
             {
-                return Err(created_access_error(work, "current created scratch is not agent-owned private content"));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "current created scratch is not agent-owned private content"));
             }
             return Ok(Some(binding));
         }
@@ -719,7 +700,7 @@ impl CreatedResourceAccess {
     ) -> Result<(Self, u64)> {
         created_access_step(work)?;
         if receipts.len() != admission.resource_proofs.len() || receipts.is_empty() {
-            return Err(created_access_error(work, "created resource receipts are incomplete"));
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created resource receipts are incomplete"));
         }
         let admission_digest = admission.canonical_digest_with_work(work)?;
         let mut labels = BTreeSet::new();
@@ -740,7 +721,7 @@ impl CreatedResourceAccess {
                 || receipt.origin.preparation_task != proof.preparation
                 || receipt.allocation_generation.as_resource().provider() != &proof.provider
             {
-                return Err(created_access_error(work, "created resource receipt changed identity"));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created resource receipt changed identity"));
             }
             let retired = created_access_receipt_temporary_bytes(&receipt)?;
             let mut reference_labels = BTreeSet::new();
@@ -753,7 +734,7 @@ impl CreatedResourceAccess {
                     CreatedResourceOperation::ReadFile(file) => {
                         let label = created_access_file_capability(file, work)?;
                         if reference_labels.contains(&label) {
-                            return Err(created_access_error(work, "created exact-file operation is ambiguous"));
+                            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created exact-file operation is ambiguous"));
                         }
                         let copy = if let Some(io) = work.as_deref_mut() {
                             io.clone_text(&label)?
@@ -763,13 +744,13 @@ impl CreatedResourceAccess {
                     }
                     CreatedResourceOperation::ReadVolume(volume) => {
                         if volume.provider() != &proof.provider {
-                            return Err(created_access_error(work, "created volume provider differs"));
+                            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created volume provider differs"));
                         }
                         created_access_volume_capability(volume, crate::conversation::VolumeOperation::Read, work)?
                     }
                     CreatedResourceOperation::WriteVolume(volume) => {
                         if volume.provider() != &proof.provider {
-                            return Err(created_access_error(work, "created volume provider differs"));
+                            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created volume provider differs"));
                         }
                         created_access_volume_capability(volume, crate::conversation::VolumeOperation::Write, work)?
                     }
@@ -780,25 +761,25 @@ impl CreatedResourceAccess {
                 created_access_step(work)?;
                 let label = created_access_file_capability(&binding.file, work)?;
                 let Some(expected) = reference_labels.take(&label) else {
-                    return Err(created_access_error(work, "created exact-file reader differs from this proof"));
+                    return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created exact-file reader differs from this proof"));
                 };
                 let retired_label = created_access_label_bytes(&expected)?;
                 drop(expected);
                 created_access_release(work, retired_label)?;
                 if reference_keys.contains(&label) {
-                    return Err(created_access_error(work, "created exact-file reader differs from this proof"));
+                    return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created exact-file reader differs from this proof"));
                 }
                 created_access_insert_label(&mut reference_keys, label, work)?;
                 references.push(binding);
             }
             if !reference_labels.is_empty() {
-                return Err(created_access_error(work, "created exact-file operation has no authenticated reader"));
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created exact-file operation has no authenticated reader"));
             }
             drop(reference_labels);
             for mut binding in receipt.content.drain(..) {
                 created_access_step(work)?;
                 if (binding.default_writer || binding.artifact_writer) && binding.binding.writer.is_none() {
-                    return Err(created_access_error(work, "created default content has no writer"));
+                    return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created default content has no writer"));
                 }
                 binding.default_writer &= current_default_origin == Some(receipt.origin.intended_child);
                 binding.artifact_writer &= current_default_origin == Some(receipt.origin.intended_child);
@@ -807,7 +788,7 @@ impl CreatedResourceAccess {
                     if scratch.volume() != &binding.volume || scratch.origin() != &receipt.origin
                         || binding.artifact_writer
                     {
-                        return Err(created_access_error(work, "scratch proof differs from created allocation"));
+                        return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "scratch proof differs from created allocation"));
                     }
                 }
                 let read = created_access_volume_capability(&binding.volume, crate::conversation::VolumeOperation::Read, work)?;
@@ -823,7 +804,7 @@ impl CreatedResourceAccess {
                         || !matches!(binding.volume.owner(), crate::conversation::VolumeOwner::Agent(_))))
                     || (binding.default_writer && (default_writer || binding.binding.writer.is_none()))
                 {
-                    return Err(created_access_error(work, "created content mapping differs from receipt"));
+                    return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created content mapping differs from receipt"));
                 }
                 let retired_labels = created_access_add(read.capacity() as u64, write.capacity() as u64)?;
                 drop((read, write));
@@ -903,17 +884,6 @@ fn created_access_step(work: &mut Option<&mut dyn crate::store::history::History
         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
     Ok(())
-}
-
-fn created_access_error(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason };
-    }
-    let _ = work;
-    Error::Unauthorized(reason.into())
 }
 
 fn created_access_overflow() -> Error {
