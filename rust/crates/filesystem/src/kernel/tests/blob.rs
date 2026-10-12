@@ -68,7 +68,7 @@ impl AsyncObjectStore for PeakRecordingStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let _budget = context.work.remaining(context.budget)?;
+        let _budget = context.read_budget()?;
         let _cancellation = context.cancellation;
         let result = async { unreachable!() }.await;
         context.accept(result)

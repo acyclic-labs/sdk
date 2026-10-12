@@ -102,7 +102,7 @@ impl AsyncAuthorityStore for Stores {
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>>
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>>
     {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
@@ -179,7 +179,7 @@ impl AsyncAuthorityStore for Stores {
         operation: crate::OperationId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<
-        (Option<crate::DurableCommit>, crate::AuthorityAllocation),
+        Option<crate::DurableCommit>,
         crate::AuthorityStoreError,
     > {
         #[cfg(not(target_arch = "wasm32"))]
@@ -242,7 +242,7 @@ delegate!(
         ) -> Result<bool, crate::ObjectStoreError>;
         fn flush_before_publish(
             context: &mut crate::AuthorityWork<'_>,
-            scope: crate::PublicationScope<'_>,
+            scope: crate::PublicationScope<'_>
         ) -> Result<crate::PublicationHold, crate::ObjectStoreError>;
     }
 );

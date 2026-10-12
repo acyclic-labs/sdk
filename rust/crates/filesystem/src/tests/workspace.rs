@@ -265,8 +265,7 @@ async fn first_fork_record(
                 },
                 &mut __authority_work,
             )
-            .await
-            .map(|(value, _allocation)| value);
+            .await;
         __authority_work.receipt(__authority_result)
     }) {
         Ok(records) => Ok(records.value.into_iter().next()),
@@ -335,7 +334,6 @@ async fn creation_operation(
                 &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             )
             .await
-            .map(|(value, _allocation)| value)
     })?;
     Ok(found.is_some_and(|commit| commit.sequence == crate::foundation::Sequence::new(1)))
 }
