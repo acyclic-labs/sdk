@@ -6331,7 +6331,7 @@ async fn native_preflight_path<A: crate::AsyncAuthorityStore, O: crate::AsyncObj
                             !walk_children || host_enqueue_generation_children(root, &path, generation, &observed, &mut pending, &mut storage, work, cancellation).await?
                         }
                         crate::kernel::FileKind::SymbolicLink if observed.file_type().is_symlink() => {
-                            let published = generation.read_symbolic_link_with_native_work(&absolute, work, cancellation).await?;
+                            let published = generation.read_symbolic_link(&absolute, work, cancellation).await.map(|chunk| chunk.bytes).map_err(|error| (error, None))?;
                             let matched = with_native_walk_leaf(leaf, work, |name| {
                                 #[cfg(unix)]
                                 let (target, _target_custody) = crate::native_host::read_link_held_with_work(&parent, Path::new(name), work.remaining()?.source_bytes_read, &mut &*work)?;
@@ -6541,7 +6541,7 @@ where
     if stat.kind != crate::kernel::FileKind::Regular || stat.logical_bytes != Some(metadata.len()) {
         return Ok(false);
     }
-    let published = generation.read_with_native_work(&absolute, metadata.len(), work, cancellation).await?;
+    let published = generation.read(&absolute, metadata.len(), work, cancellation).await.map_err(|error| (error, None))?;
     let mut file = crate::native_host::open_leaf_with_work(&parent, Path::new(leaf), &crate::native_host::NativeOpenOptions::Read, &mut &*work)?;
     let opened = crate::native_host::stat_file_with_work(&file, &mut &*work)?;
     if native_stat_identity(&opened) != native_stat_identity(&metadata) || opened.len() != metadata.len() {

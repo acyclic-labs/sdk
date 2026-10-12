@@ -3374,7 +3374,7 @@ impl LazyDirectoryCleanupCause {
     fn into_cleanup(
         self,
         cleanup: DemandError,
-        publication: crate::demand::SourcePagePublication,
+        publication: Option<Box<dyn crate::demand::SourceDirectoryPublication>>,
     ) -> LazyWorkspaceError {
         LazyWorkspaceError::SourcePageCleanup { cleanup, publication, primary: self }
     }
@@ -3466,7 +3466,7 @@ pub enum LazyWorkspaceError {
         /// The original typed SDK abort cause, including intrinsic custody.
         cleanup: DemandError,
         /// The original publication owner retained by the failed abort.
-        publication: crate::demand::SourcePagePublication,
+        publication: Option<Box<dyn crate::demand::SourceDirectoryPublication>>,
         /// The full primary failure; its box claim retires last.
         #[source]
         primary: LazyDirectoryCleanupCause,
@@ -6734,7 +6734,7 @@ where
             let mut remaining = remaining_work(work, budget, 0)?;
             remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
                 .checked_sub(live_bytes).ok_or_else(counter_overflow)?;
-            let staged = transaction.stage_content_measured(
+            let staged = transaction.stage_content(
                 &mut source, length.max(1), remaining, cancellation,
             ).await;
             let value = match staged {
@@ -6785,7 +6785,7 @@ where
                 expected_source: snapshot.map(|snapshot| snapshot.source),
                 failure_storage: None,
             };
-            let staged = transaction.stage_content_with_native_work(
+            let staged = transaction.stage_content(
                 &mut source, length.max(1), original, cancellation,
             ).await.map_err(native_workspace_error);
             drop(source);
@@ -7849,7 +7849,7 @@ where
                                         return Err(error);
                                     }
                                 };
-                                let cleanup = page.publication.cleanup_budget();
+                                let cleanup = page.publication.as_ref().map_or(WorkCounters::UNCHARGED, |guard| guard.cleanup_budget());
                                 let mut reservation = None;
                                 let projected = async {
                                     let mounted_mask = (move || mounted_mask)();
@@ -8046,7 +8046,7 @@ where
                                             Err(cleanup) => Err(cleanup_slot.into_cleanup(
                                                 cleanup,
                                                 std::mem::replace(&mut page.publication,
-                                                    crate::demand::SourcePagePublication::stateless()),
+                                                    None),
                                             )),
                                         }
                                     }
@@ -13872,18 +13872,17 @@ impl<'a> DirectoryProjectionWork<'a> {
     }
 
     async fn accept_publication(
-        &mut self, publication: &mut crate::demand::SourcePagePublication, cancellation: &CancellationToken,
+        &mut self, publication: &mut Option<Box<dyn crate::demand::SourceDirectoryPublication>>, cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         match self {
             Self::Portable { .. } => {
                 let remaining = self.remaining()?;
-                let response = publication.accept(remaining, cancellation).await
+                let response = crate::demand::accept_publication(publication, remaining, cancellation).await
                     .map_err(|failure| lazy_operation_failure(failure, LazyWorkspaceError::from));
                 self.accept(response)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => publication
-                .accept_with_native_work(crate::demand::NativeSourceWork::from_native_materialization_work(original))
+            Self::Native { original, .. } => crate::demand::accept_publication(publication, *original, cancellation).await
                 .map_err(LazyWorkspaceError::from),
         }
     }
@@ -13926,7 +13925,7 @@ impl<'a> DirectoryProjectionWork<'a> {
         }
     }
 
-    fn abort_publication(&mut self, publication: &mut crate::demand::SourcePagePublication)
+    fn abort_publication(&mut self, publication: &mut Option<Box<dyn crate::demand::SourceDirectoryPublication>>)
     -> Result<(), DemandError> {
         match self {
             Self::Portable { work, allocations, budget, .. } => {
@@ -13934,7 +13933,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 let mut remaining = work.remaining(*budget)?;
                 remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
                     .checked_sub(allocations.live_bytes()).ok_or(crate::WorkError::Overflow)?;
-                let (answer, spent) = match publication.abort(remaining) {
+                let (answer, spent) = match crate::demand::abort_publication(publication, remaining) {
                     Ok(receipt) => (Ok(receipt.value), receipt.work),
                     Err(failure) => (Err(failure.error), *failure.work),
                 };
@@ -13942,9 +13941,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 answer
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => publication.abort_with_native_work(
-                crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ),
+            Self::Native { original, .. } => crate::demand::abort_publication(publication, *original),
         }
     }
 
