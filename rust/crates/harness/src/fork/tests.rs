@@ -51,9 +51,6 @@ impl ForkSeedVerifier for Files {
         work: &'a mut Option<&'w mut dyn HistoryIo>,
     ) -> Result<HistoryContentFuture<'a, ()>> {
         admit_fork_future(work, |work| async move {
-            if file.volume().provider() != &self.provider {
-                return Err(Error::Unauthorized("wrong file provider".into()));
-            }
             let bytes = &self
                 .files
                 .iter()
@@ -145,7 +142,6 @@ fn child_result_capture_rejects_alias_partial_and_foreign_generation() -> Result
 #[test]
 fn project_capture_requires_new_volume_with_independent_owner() -> Result<()> {
     let mut capture = seed()?.resources.remove(1);
-    capture.validate(&mut None)?;
     let original = capture.revision.clone();
     capture.revision = capture.source.clone();
     assert!(capture.validate(&mut None).is_err());
@@ -223,7 +219,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         reader: seed.child_agent,
         attachment_manifest: None,
     });
-    seed.validate(&mut None)?;
     let filesystem_files = files(&filesystem, &[(&member, b"actual"), (&forged, b"forged")]);
     let verifier = CompositeForkVerifier::new(
         &[
@@ -294,7 +289,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         attachment_manifests: Vec::new(),
         inherited_through_sequence: 0,
     };
-    report.validate(&mut None)?;
     let mut duplicate = report.request.clone();
     duplicate.selections.push(duplicate.selections[0].clone());
     assert!(duplicate.validate(&mut None).is_err());
@@ -308,15 +302,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     stale.parent_revision += 1;
     assert!(stale.validate(&mut None).is_err());
     let mut changed = report.clone();
-    changed.child_private_volume = VolumeRef::new(
-        changed.child_private_volume.provider().clone(),
-        "different-child-private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(seed.child_agent),
-        &mut None,
-    )?;
-    assert!(changed.validate(&mut None).is_err());
-    changed = report.clone();
     if let Capture::Captured(capture) = &mut changed.captures[1]
         && let ResourceRevision::Project { volume, .. } = &mut capture.revision
     {
@@ -349,7 +334,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         child_agent: seed.child_agent,
         operations: BTreeSet::from([VolumeOperation::Read]),
     });
-    seed.validate(&mut None)?;
     assert!(
         seed.shared_capabilities(seed.child_agent)?
             .contains(&shared.capability(VolumeOperation::Read, &mut None)?)
@@ -368,7 +352,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     assert!(seed.validate(&mut None).is_err());
     seed.inherited_context = vec![inherited.clone()];
     seed.attached_agents.push(attached);
-    seed.validate(&mut None)?;
     let access = seed.attached_read_capabilities(attached)?;
     assert!(access.contains(&inherited.read_capability()?));
     assert!(

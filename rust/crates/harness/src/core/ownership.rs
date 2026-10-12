@@ -97,39 +97,6 @@ pub(in crate::core) fn owned_effect(effect: &EffectState) -> Result<u64> {
         owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?,
     ])
 }
-// Match ConversationState::copy's existing message claims.
-pub(in crate::core) fn owned_message(message: &ConversationMessage) -> Result<u64> {
-    let attachments = match &message.attachments {
-        crate::conversation::ReferencedAttachments::Inline { items } => {
-            owned_vector(items, |item| {
-                owned_sum([
-                    item.file.logical_owned_bytes()?,
-                    item.label.as_ref().map_or(0, |text| text.capacity() as u64),
-                ])
-            })?
-        }
-        crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
-            manifest.logical_owned_bytes()?
-        }
-    };
-    let mut bytes = owned_sum([
-        message.content.logical_owned_bytes()?,
-        attachments,
-        message
-            .tool_call_id
-            .as_ref()
-            .map_or(0, |text| text.capacity() as u64),
-    ])?;
-    for (key, file) in &message.extensions {
-        bytes = owned_sum([
-            bytes,
-            std::mem::size_of::<(String, FileRef)>() as u64,
-            key.capacity() as u64,
-            file.logical_owned_bytes()?,
-        ])?;
-    }
-    Ok(bytes)
-}
 /// Retained scope, causal parent and payload storage.
 pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     owned_sum([

@@ -89,7 +89,6 @@ impl Default for CompactionPolicy {
 mod selection;
 pub(crate) use selection::compact_context;
 pub(super) use selection::mandatory_flags;
-use selection::{compaction_error, compaction_step};
 mod copying;
 pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;
