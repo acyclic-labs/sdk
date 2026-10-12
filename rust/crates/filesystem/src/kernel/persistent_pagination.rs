@@ -104,16 +104,6 @@ impl<K> PendingState<K> {
     }
 }
 
-pub(crate) fn paginate<S, F>(
-    store: &S, root: ObjectId, after: Option<&F::Key>, maximum_values: u32,
-    limits: DecodeLimits, budget: WorkBudget,
-) -> Result<Receipt<F::Value>, Failure>
-where S: crate::ImmediateObjectStore, F: Format {
-    crate::async_storage::poll_immediate(paginate_async::<S, F>(
-        store, root, after, maximum_values, limits, budget, &CancellationToken::new(), None,
-    ))
-}
-
 pub(crate) async fn paginate_async<S, F>(
     store: &S, root: ObjectId, after: Option<&F::Key>, maximum_values: u32,
     limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,

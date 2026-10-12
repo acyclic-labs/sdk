@@ -335,7 +335,7 @@ impl Owned<TransactionState> {
             })?;
             drop_owned(mutations, bytes, accounting)?;
             self.leaf(accounting, |state, leaf| {
-                state.record_mut(leaf, id)?.working.payload = FilePayload::Directory { entries: receipt.root }; Ok(())
+                state.record_mut(leaf, id)?.working.payload = FilePayload::Directory { entries: receipt.value }; Ok(())
             })?;
             cursor = end;
         }
@@ -387,7 +387,7 @@ impl Owned<TransactionState> {
                 if is_original(accounting) { error } else {
                     GenerationMutationError::FileTable(super::file_table_mutation::project_file_table_error(error)).into()
                 }
-            })?.root
+            })?.value
         };
         drop_owned(mutations, bytes, accounting)?;
         let root = self.leaf(accounting, |state, leaf| state.clone_generation_root(leaf, generation, root))?;

@@ -1,6 +1,7 @@
 //! Canonical resource controls use real Stream/Filesystem allocation and IO.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::VolumeOperation;
 use crate::filesystem::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,

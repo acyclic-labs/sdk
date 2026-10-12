@@ -1,6 +1,7 @@
 //! Mail branches share their original stock dispatch with optional native custody.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 
 impl PreparationRecord for MailSendTaskCommand {}

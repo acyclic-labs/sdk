@@ -29,7 +29,7 @@ use acyclic_fs::{
     StorageLocationId, StorageTier, Transaction, TransactionCommit, RebaseConflict, DependencyState,
     DependencyRegion, DependencyUse, TransactionRebase, ExtentSeekTarget,
     VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,
@@ -7831,7 +7831,7 @@ fn native_workspace_name(value: NativeWorkspaceName) -> Result<LogicalName> {
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
-fn native_workspace_directory_page(value: WorkspaceDirectoryPage) -> NativeWorkspaceDirectoryPage {
+fn native_workspace_directory_page(value: DirectoryPage) -> NativeWorkspaceDirectoryPage {
     NativeWorkspaceDirectoryPage {
         entries: value
             .entries

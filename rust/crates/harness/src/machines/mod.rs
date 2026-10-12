@@ -6,10 +6,7 @@
         reason = "adapter tests run ordered scenarios over fixtures they built"
     )
 )]
-#![doc = include_str!("../../docs/machines.md")]
-
-mod execution;
-pub use execution::{AccessFuture, MachinesExecution, MachinesExecutionAccess, MachinesTaskBuild};
+//! Machines provider adapter.
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
