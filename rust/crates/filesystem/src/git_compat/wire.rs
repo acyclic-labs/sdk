@@ -90,12 +90,6 @@ pub const GIT_COMPAT_PUBLIC_COMMAND_KINDS: &[(&str, &str)] = &[
     ("check-ignore", "CheckIgnore"),
 ];
 
-pub(super) fn public_git_command_variant(kind: &str) -> Option<&'static str> {
-    GIT_COMPAT_PUBLIC_COMMAND_KINDS
-        .iter()
-        .find_map(|(public, wire)| (*public == kind).then_some(*wire))
-}
-
 /// Parses natural JavaScript command JSON into the canonical command.
 pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
     let mut value: serde_json::Value = serde_json::from_str(value)
@@ -107,19 +101,16 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
         .remove("kind")
         .and_then(|value| value.as_str().map(str::to_owned))
         .ok_or_else(|| "Git command kind must be a string".to_owned())?;
-    let variant = public_git_command_variant(&kind)
+    let variant = GIT_COMPAT_PUBLIC_COMMAND_KINDS
+        .iter()
+        .find_map(|(public, wire)| (*public == kind).then_some(*wire))
         .ok_or_else(|| format!("unknown Git command kind: {kind}"))?;
-    if object.values().any(|value| value.is_null()) {
-        object.retain(|_, value| !value.is_null());
-    }
+    object.retain(|_, value| !value.is_null());
     if let Some(mut value) = object.remove("authoredAtSeconds") {
         if let Some(text) = value.as_str() {
             let number = text
                 .parse::<i64>()
                 .map_err(|_| "Git authoredAtSeconds must be an i64".to_owned())?;
-            if number.unsigned_abs() > 9_007_199_254_740_991 {
-                return Err("Git authoredAtSeconds must fit a safe JSON integer".to_owned());
-            }
             value = serde_json::Value::Number(number.into());
         }
         object.insert("authored_at_seconds".to_owned(), value);
@@ -135,20 +126,17 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
     if let Some(value) = object.remove("dryRun") {
         object.insert("dry_run".to_owned(), value);
     }
-    if variant == "Diff" && !object.contains_key("cached") {
-        object.insert("cached".to_owned(), serde_json::Value::Bool(false));
-    }
-    if variant == "Switch" && !object.contains_key("create") {
-        object.insert("create".to_owned(), serde_json::Value::Bool(false));
-    }
-    if variant == "Tag" && !object.contains_key("delete") {
-        object.insert("delete".to_owned(), serde_json::Value::Bool(false));
-    }
-    if variant == "Clean" && !object.contains_key("dry_run") {
-        object.insert("dry_run".to_owned(), serde_json::Value::Bool(false));
-    }
-    if variant == "SymbolicRef" && !object.contains_key("short") {
-        object.insert("short".to_owned(), serde_json::Value::Bool(false));
+    if let Some(field) = match variant {
+        "Diff" => Some("cached"),
+        "Switch" => Some("create"),
+        "Tag" => Some("delete"),
+        "Clean" => Some("dry_run"),
+        "SymbolicRef" => Some("short"),
+        _ => None,
+    } {
+        object
+            .entry(field)
+            .or_insert(serde_json::Value::Bool(false));
     }
     if variant == "Reset" && object.contains_key("mode") {
         let mode = object

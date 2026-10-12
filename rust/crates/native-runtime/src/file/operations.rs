@@ -190,7 +190,10 @@ pub struct OwnedRead {
 
 /// Submits an owned read batch to the shared native completion worker.
 pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> NativeCompletion<Vec<Bytes>> {
-    let file = Arc::new(NativeFilePayload::unmetered(file));
+    let file = Arc::new(NativeFilePayload {
+        file: file,
+        _allocation: None,
+    });
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     {
         match shared_file_health(&file, None) {
