@@ -102,14 +102,13 @@ impl GenerationReceipt {
     ) -> Result<Self, GenerationFailure> {
         let original = crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(error, work)| GenerationFailure::new(materialize_native_error(error), work))?;
-        Self::from_work(&original.native_mount_work())
+        Self::from_work(&original)
     }
 
-    fn from_work(work: &super::NativeMountMeterWork) -> Result<Self, GenerationFailure> {
-        let meter = Arc::clone(work.meter());
-        let native = work.native_materialization_work();
-        let custody = native.retain_owned(0).map_err(|error| {
-            GenerationFailure::new(materialize_native_error(error), native.receipt())
+    fn from_work(work: &crate::NativeMaterializationWork) -> Result<Self, GenerationFailure> {
+        let meter = Arc::clone(work.native_read_meter());
+        let custody = work.retain_owned(0).map_err(|error| {
+            GenerationFailure::new(materialize_native_error(error), work.receipt())
         })?;
         let cancellation = meter.with_original_leaf(|original| original.cancellation().clone());
         Ok(Self {
@@ -934,7 +933,7 @@ enum GenerationSource<'a, A, O> {
 pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     options: &MaterializeOptions,
-    work: &super::NativeMountMeterWork,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<MaterializationReceipt, MaterializeError> {
     let mode = MaterializeMode::DurableOutput;
     let mut receipt = GenerationReceipt::from_work(work)?;
@@ -956,7 +955,7 @@ pub async fn materialize_checkout_paths_with_work<A: AsyncAuthorityStore, O: Asy
     reader: &PinnedReader<A, O>,
     paths: &[NamespacePath],
     options: &MaterializeOptions,
-    work: &super::NativeMountMeterWork,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<MaterializationReceipt, MaterializeError> {
     materialize_checkout_paths_with_mode_and_work(
         reader, paths, options, MaterializeMode::DurableOutput, work,
@@ -968,7 +967,7 @@ pub(crate) async fn materialize_checkout_paths_with_mode_and_work<A: AsyncAuthor
     paths: &[NamespacePath],
     options: &MaterializeOptions,
     mode: MaterializeMode,
-    work: &super::NativeMountMeterWork,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<MaterializationReceipt, MaterializeError> {
     let mut receipt = GenerationReceipt::from_work(work)?;
     let validated = reader.validate_native_work(receipt.custody.work());
@@ -1202,7 +1201,7 @@ pub(crate) async fn materialize_checkout_host_paths_with_work_guarded<A, O, E, F
     reader: &PinnedReader<A, O>,
     relatives: &[String],
     options: &MaterializeOptions,
-    work: &super::NativeMountMeterWork,
+    work: &crate::NativeMaterializationWork,
     before_effect: &mut F,
 ) -> Result<MaterializationReceipt, E>
 where
@@ -1308,7 +1307,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     let receipt = GenerationReceipt::new(budget, cancellation)?;
     restore_checkout_host_path_on_source(
         checkout, relative, replacement, options,
-        &super::NativeMountMeterWork::from_meter(receipt.meter),
+        &crate::NativeMaterializationWork::from_meter(receipt.meter),
     ).await.map_err(OperationFailure::from)
 }
 
@@ -1317,7 +1316,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
     relative: &Path,
     replacement: HostPathReplacement,
     options: &MaterializeOptions,
-    native_work: &super::NativeMountMeterWork,
+    native_work: &crate::NativeMaterializationWork,
 ) -> Result<OperationReceipt<HostPathRestore>, GenerationFailure> {
     let span = crate::obs::span!(
         DEBUG,
@@ -1332,7 +1331,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
     crate::obs::measured_inline_on(
         &span,
         crate::obs::in_span(&span, async move {
-            let work = Arc::clone(native_work.meter());
+            let work = Arc::clone(native_work.native_read_meter());
             let admission = work.with_original_leaf(|original| {
                 if original.budget.has_finite_allowances() {
                     Ok(())
@@ -1343,7 +1342,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
             admission?;
             let result = async {
                 validate_bounds(options)?;
-                let allocation_work = crate::NativeMaterializationWork::from_native_mount_meter_work(native_work);
+                let allocation_work = native_work.clone();
                 let cleanup_allocation = allocation_work.claim(std::mem::size_of::<MaterializeError>() as u64)
                     .map_err(materialize_native_error)?;
                 let cleanup_slot = GenerationOwned {
@@ -1375,7 +1374,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                     transfer_bytes: options.transfer_bytes,
                 };
                 let materialized = match GenerationReceipt::from_work(
-                    &super::NativeMountMeterWork::from_meter(Arc::clone(&work)),
+                    &crate::NativeMaterializationWork::from_meter(Arc::clone(&work)),
                 ) {
                     Err(failure) => Err(failure.error),
                     Ok(receipt) => {
@@ -2901,7 +2900,7 @@ mod restore_recovery_tests {
         let reader = candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
         let reader = original.original_result(reader)?;
         let prefix = original.work();
-        let original_work = super::super::NativeMountMeterWork::from_meter(Arc::clone(&original.meter));
+        let original_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original.meter));
         let original_output = tempfile::tempdir()?;
         let original_failed = materialize_checkout_paths_with_work(
             &reader, &[first.clone(), missing.clone()],
@@ -2955,7 +2954,7 @@ mod restore_recovery_tests {
         let reader = candidate.into_pinned_reader_with_native_work(no_write.custody.work(), &cancellation);
         let reader = no_write.original_result(reader)?;
         let no_write_output = tempfile::tempdir()?;
-        let no_write_work = super::super::NativeMountMeterWork::from_meter(Arc::clone(&no_write.meter));
+        let no_write_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&no_write.meter));
         let original_no_write = materialize_checkout_paths_with_work(
             &reader, std::slice::from_ref(&first),
             &MaterializeOptions::native(no_write_output.path()), &no_write_work,
@@ -3227,8 +3226,8 @@ mod restore_recovery_tests {
         std::fs::create_dir(&destination)?;
         std::fs::write(destination.join("foreign"), b"untouched")?;
         let original = Arc::new(NativeDemandReadMeter(std::sync::Mutex::new(restoration_work())));
-        let native_work = super::super::NativeMountMeterWork::from_meter(Arc::clone(&original));
-        let allocation_work = crate::NativeMaterializationWork::from_native_mount_meter_work(&native_work);
+        let native_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
+        let allocation_work = (&native_work).clone();
         let mut work = NativeSourceWork::new(&original);
         let failure = prepare_restore(
             restore_path(&destination, None, &allocation_work)?,

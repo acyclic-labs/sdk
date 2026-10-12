@@ -948,9 +948,9 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), bytes, Some(revision), key, operation,
-                    identity, &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [bytes], 0, Some(revision), key, operation,
+                    &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![bytes], Some(revision), Some(key)).await.map_err(|error| match error {
