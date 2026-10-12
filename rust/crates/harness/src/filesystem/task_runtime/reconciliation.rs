@@ -1,7 +1,7 @@
 //! Observation of the existing outbox without advancing its task machine.
 
 use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt, WorkerTurn, WorkerContext, deadline, observed};
-use crate::{Error, Outcome, Result, TaskId, runtime::DurableTaskHost as _, scheduler::LeaseFence, workflow::WorkflowJournal as _};
+use crate::{Error, Outcome, Result, TaskId, scheduler::LeaseFence, workflow::WorkflowJournal as _};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::StreamProvider;
 
@@ -127,7 +127,7 @@ where
                     return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native reconciliation differs from original task binding"));
                 }
                 let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                let payload = io.decode_preparation::<serde_json::Value>(&body)?.into_retained();
+                let payload = io.decode_preparation::<serde_json::Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained();
                 drop(body);
                 commands.reconcile_with_native_work(
                     std::sync::Arc::clone(shared), observed::clone_fence(&fence, Some(io))?,

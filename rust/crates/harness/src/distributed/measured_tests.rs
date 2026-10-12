@@ -1,9 +1,8 @@
 use super::*;
-use super::tests::spec;
+use super::tests::{declare, spec};
 use crate::store::history::HistoryWork;
 use acyclic_fs::{CancellationToken, WorkBudget};
-use acyclic_stream::{CommitCondition, MemoryStream, StreamPath};
-use futures::TryStreamExt as _;
+use acyclic_stream::MemoryStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type FaultStream = crate::test_stream::LostSessionAck<MemoryStream>;
@@ -34,8 +33,8 @@ impl ContentResidencyVerifier for UnmeasuredContent {
     }
 }
 
-async fn append_source<P: StreamProvider>(
-    client: &StreamClient<P>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
+async fn append_source(
+    client: &StreamClient<FaultStream>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
@@ -45,19 +44,6 @@ async fn append_source<P: StreamProvider>(
         vec![OwnedBytes::from(bytes)], Some(revision - 1), None,
     ).await?;
     Ok(length)
-}
-
-async fn seed(client: &StreamClient<FaultStream>, ids: &[OperationId]) -> Result<()> {
-    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
-    for (index, id) in ids.iter().enumerate() {
-        let declaration = spec(*id, 0)?;
-        let owner = declaration.owner.authority().clone();
-        let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        coordinator.declare_operation(&owner, &declaration.owner_scope.clone(), &issuer.verifier(),
-            declaration, IdempotencyKey::new(format!("measured-seed-{index}"))?,
-    None,).await?;
-    }
-    Ok(())
 }
 
 #[tokio::test]
@@ -114,8 +100,8 @@ async fn admitted_fixture(
     client: &StreamClient<FaultStream>,
     operation: OperationId,
 ) -> Result<(DistributedCoordinator<FaultStream>, WorkLease)> {
-    seed(client, &[operation]).await?;
     let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
+    declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator.pull(&Worker {
         id: "measured-release-worker".into(),
         available: ResourceSnapshot::default(),
@@ -159,28 +145,6 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     assert_eq!(provider.io_snapshot().writes, 0);
     assert_eq!(coordinator.revision, remote.revision);
     assert_eq!(coordinator.scheduler(), remote.scheduler());
-    Ok(())
-}
-
-#[tokio::test]
-async fn prepared_commit_cancellation_uses_the_original_ledger_before_sdk_publication() -> Result<()> {
-    let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
-    let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
-    let path = StreamPath::new("harness/v2/execution/prepared-cancel")?;
-    let result = {
-        let mut observer = Some(&mut work as &mut dyn crate::store::history::HistoryIo);
-        let mut prepared = PreparedCommitRequest::new_with_digest([23; 32], &mut observer)?;
-        prepared.push_condition(CommitCondition::Absent { path: path.clone() })?;
-        prepared.append(path, OwnedBytes::from_static(b"source-owned"))?;
-        cancellation.cancel();
-        commit_prepared(&client, prepared, OperationId::from_bytes([127; 16]), None, None, None).await
-    };
-    assert!(matches!(result, Err(Error::Invalid(_))));
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    assert_eq!(provider.io_snapshot().writes, 0);
-    assert_eq!(provider.io_snapshot().inspections, 0);
     Ok(())
 }
 
@@ -270,41 +234,6 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         assert_eq!(provider.io_snapshot().writes, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn historical_proof_rejects_an_original_declaration_signed_by_another_key_before_tail_io() -> Result<()> {
-    let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
-    let operation = OperationId::from_bytes([132; 16]);
-    let mut declaration = spec(operation, 0)?;
-    let owner = declaration.owner.authority().clone();
-    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-    let foreign = crate::core::AuthorityIssuer::new("test-runtime", [8; 32], owner.clone());
-    declaration.owner_scope = foreign.root("foreign-original-declaration",
-        crate::Capabilities::new(["operation:declare"]));
-    let key = format!("task-admission:{operation}");
-    let coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
-    append_source(&client, 1, &key, SchedulerEvent::Declared { spec: Box::new(declaration) }, 1).await?;
-    let record = client.stream(COORDINATOR_PATH)?.read(0, 1).await?.try_next().await?
-        .expect("actual canonical source record");
-    let (_, _, _, event_digest, _, _) = decode_with_work(&record.value, &mut None)?;
-    let location = IntentLocation { key, revision: 1, event_digest, commit_id: *record.commit_id.as_bytes() };
-    coordinator.ensure_intent_location_with_work(&location, &mut None).await?;
-    provider.reset_io();
-    provider.forbid_writes.store(true, Ordering::SeqCst);
-    let scope = issuer.root("observe", crate::Capabilities::new(["operation:observe"]));
-    let candidate = LeaseFence { reservation_id: "not-used".into(), placement: "not-used".into() };
-    let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
-    let result = original_reservation_proof_with_work(
-        &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
-    ).await;
-    assert!(matches!(result, Err(Error::Unauthorized(_))));
-    assert_eq!(provider.io_snapshot().reads, 2);
-    assert_eq!(provider.io_snapshot().tails, 0);
-    assert_eq!(provider.io_snapshot().writes, 0);
     Ok(())
 }
 

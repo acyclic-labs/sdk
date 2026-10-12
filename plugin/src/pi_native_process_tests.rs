@@ -474,7 +474,7 @@ async fn required_pinned_pi_native_denies_changed_publication_and_unrelated_ledg
     let original = fixture.provider().await?;
     let sealed_guard = fixture.context.volume_callback_guard_with_native_work(&fixture.owner, &fixture.work).await?;
     let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?;
-    let original_header = fixture.work.native_mount_work();
+    let original_header = fixture.work.clone();
     acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &original_header)
         .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?.await
         .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
@@ -485,7 +485,7 @@ async fn required_pinned_pi_native_denies_changed_publication_and_unrelated_ledg
     assert!(unrelated_effects.run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan.0, &fixture.work).await.is_err(), "another ledger supplied native metadata authority");
     assert_eq!(fixture.work.receipt().backend_read_operations, before.backend_read_operations);
     assert_eq!(fixture.work.receipt().backend_write_operations, before.backend_write_operations);
-    let foreign_header = unrelated_work.native_mount_work();
+    let foreign_header = unrelated_work.clone();
     let callback = acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &foreign_header)
         .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
     assert!(callback.await.is_err(), "an unrelated accounting header admitted the original task's source callback");

@@ -1,31 +1,58 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 import { PiOperatorDriver } from "./pi-operator-driver.ts";
-
-// Pi's actual deterministic provider drives production tools and the native
-// model loop. It does not implement task admission, storage, process spawning,
-// waiting, cancellation, merge or writeback in the fixture.
+import { blake3 } from "@noble/hashes/blake3";
+import { openNativeFs, DEFAULT_OBJECT_CACHE_OPTIONS } from "../../../typescript/packages/filesystem/src/native.ts";
+import { loadPiContextHelpers } from "./pi-fixture.ts";
+function volumeName(volume: unknown): string {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, entry]) => [key, canonical(entry)])) : value;
+  return `harness-${Buffer.from(blake3(new TextEncoder().encode(JSON.stringify(canonical(volume))))).toString("hex")}`;
+}
 const recursiveProvider = `
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
-import { writeFileSync } from "node:fs";
+import { existsSync, statSync, writeFileSync, watch } from "node:fs";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { promisify } from "node:util";
 import { join } from "node:path";
 export default function(pi) {
   if (VERSION !== "1.1.0") throw new Error("unpinned native Pi");
   let sessionId, role, first = true, concurrentWritten = false;
   pi.on("session_start", (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); });
   pi.on("before_agent_start", event => {
-    const selected = event.prompt.match(/^ACYCLIC_NATIVE_(ROOT|CHILD_A|CHILD_B|GRANDCHILD|FOREIGN|REOPEN)(?:\\s|$)/);
+    const selected = event.prompt.match(/^ACYCLIC_NATIVE_(ROOT|CHILD_A|CHILD_B|GRANDCHILD|FOREIGN|REOPEN|CONTROL)(?:\\s|$)/);
     if (!selected) throw new Error("missing actual current native invocation instruction");
     role = selected[1];
   });
+  pi.on("tool_result", async (event, ctx) => {
+    if (event.toolCallId !== "a-edit" || event.isError) return;
+    try {
+      const path = join(ctx.cwd, "child-a.txt");
+      const before = statSync(path, {bigint:true});
+      const replay = promisify(execFile)(process.env.ACYCLIC_BINARY, ["__pi", "NativeBuiltinEdit"], {
+        cwd:ctx.cwd, env:process.env, windowsHide:true, timeout:30000, encoding:"utf8", maxBuffer:1048576,
+      });
+      replay.child.stdin.end(JSON.stringify({cwd:ctx.cwd,session_id:sessionId,
+        caller:JSON.parse(process.env.ACYCLIC_PI_CALLER), operation:"a-edit", path:"child-a.txt", phase:"write",
+        content:"child A edited\\n", expected_sha256:createHash("sha256").update("child A original\\n").digest("hex"),
+      }));
+      await replay;
+      const after = statSync(path, {bigint:true});
+      if (after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || after.size !== before.size) {
+        throw new Error("lost exact-edit acknowledgement repeated the original native mutation");
+      }
+    } catch (error) { return {isError:true,content:[{type:"text",text:String(error)}]}; }
+  });
   const provider = fauxProvider({provider:"acyclic-native-qualification", models:[{id:"probe"},{id:"switched"}]});
-  const response = (context, _options, _state, model) => {
+  const response = async (context, _options, _state, model) => {
     if (!role) throw new Error("actual native invocation instruction was not captured");
     if (first) {
       const userTexts = context.messages.filter(message => message.role === "user").map(message =>
@@ -51,10 +78,20 @@ export default function(pi) {
       }
       const oracle = process.env.ACYCLIC_NATIVE_ORACLE_DIRECTORY;
       if (!oracle) throw new Error("missing independent native context/process oracle");
-      writeFileSync(join(oracle, sessionId + "." + role + ".json"), JSON.stringify({
+      writeFileSync(join(oracle, sessionId + "." + role + (role === "CONTROL" ? "." + model.id : "") + ".json"), JSON.stringify({
         role, sessionId, pid: process.pid, ppid: process.ppid, model: model.id, messages: context.messages,
       }), {flag:"wx"});
       first = false;
+      if (role === "CHILD_B" && process.env.ACYCLIC_NATIVE_PAUSE) {
+        const release = join(oracle, sessionId + ".release");
+        await new Promise((resolve, reject) => {
+          const watcher = watch(oracle, () => {
+            if (existsSync(release)) { clearTimeout(timeout); watcher.close(); resolve(); }
+          });
+          const timeout = setTimeout(() => { watcher.close(); reject(new Error("native child cut was never released")); }, 30000);
+          if (existsSync(release)) { clearTimeout(timeout); watcher.close(); resolve(); }
+        });
+      }
     }
     const results = context.messages.filter(message => message.role === "toolResult");
     const done = id => results.some(message => message.toolCallId === id);
@@ -135,19 +172,20 @@ export default function(pi) {
 
 test("required pinned Pi recursively launches original native effects and reopens without repeating work", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-recursive-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   const oracleDirectory = join(directory, "native-oracles");
   const ownedServicePids: number[] = [];
   let originalFailure: unknown;
   try {
     mkdirSync(oracleDirectory);
-    fixture = await installedNativeFixture(directory, recursiveProvider, {ACYCLIC_NATIVE_ORACLE_DIRECTORY:oracleDirectory});
+    fixture = await installedNativeFixture(directory, recursiveProvider, {
+      ACYCLIC_NATIVE_ORACLE_DIRECTORY:oracleDirectory, ACYCLIC_BINARY:process.env.ACYCLIC_BINARY!,
+    });
     await fixture.start();
     ownedServicePids.push(fixture.servicePid()!);
     fixture.environment.ACYCLIC_NATIVE_ORIGINAL_PROJECT = fixture.project;
     const operator = new PiOperatorDriver({
-      binary:fixture.binary, session:fixture.manager.getSessionId(), cwd:fixture.project, command:fixture.command,
-      beforeApprove:async (driver, operation) => driver.wrongDigest(operation),
+      session:fixture.manager.getSessionId(), cwd:fixture.project, command:fixture.command,
       operation:"root-writeback", selected:{
         "child-a.txt":{baseline:null,candidate:"child A edited\n",current:null},
         "child-b.txt":{baseline:null,candidate:"child B isolated\n",current:null},
@@ -155,7 +193,6 @@ test("required pinned Pi recursively launches original native effects and reopen
       }, preserved:{"concurrent.txt":"external root edit after original child admission\n"},
     });
     const result = await fixture.runJson("ACYCLIC_NATIVE_ROOT", line => operator.consumeJsonLine(line));
-    await operator.completed();
     await operator.assertPublished();
     const finalMessages = result.stdout.split("\n").filter(line => line.trim()).map(line => JSON.parse(line))
       .filter(event => event.type === "message_end" && event.message?.role === "assistant")
@@ -176,6 +213,49 @@ test("required pinned Pi recursively launches original native effects and reopen
     assert.notEqual(first.task, second.task);
     assert.notEqual(first.native_session_id, fixture.manager.getSessionId());
     assert.notEqual(first.native_session_id, second.native_session_id);
+    const grandchildSpawn = SessionManager.open(first.session_file, directory).getEntries().find(entry =>
+      entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "a-spawn-g");
+    assert.ok(grandchildSpawn?.type === "message" && grandchildSpawn.message.role === "toolResult");
+    const grandchildResult = JSON.parse(grandchildSpawn.message.content.filter(part => part.type === "text").map(part => part.text).join(""));
+    const filesystem = await openNativeFs({
+      root: join(directory, process.platform === "win32" ? "local/Acyclic/state-v5/filesystem" : "state/acyclic/state-v5/filesystem"),
+      objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
+    });
+    try {
+      for (const [id, spawned] of [["root-spawn-a", JSON.parse(outputs.get("root-spawn-a")!.text)],
+        ["root-spawn-b", JSON.parse(outputs.get("root-spawn-b")!.text)], ["a-spawn-g", grandchildResult]] as const) {
+        const created = spawned.preparation.outcome.Succeeded;
+        const capture = created.captures.find((value: {kind: string; value?: {source: {kind: string}}}) =>
+          value.kind === "captured" && value.value?.source.kind === "private_volume")?.value;
+        assert.ok(capture, "installed creator must retain its actual scratch fork");
+        const source = capture.source.reference, revision = capture.revision.reference;
+        assert.deepEqual(source.paths, []);
+        assert.deepEqual(revision.paths, []);
+        assert.deepEqual(revision.volume, created.child_private_volume);
+        const parent = await filesystem.openWorkspace(volumeName(source.volume));
+        const child = await filesystem.openWorkspace(volumeName(revision.volume));
+        const parentGeneration = await parent.generation(Uint8Array.from(source.generation.key));
+        const initial = await child.generation(Uint8Array.from(revision.generation.key));
+        assert.notDeepEqual(initial.workspaceId, parentGeneration.workspaceId);
+        assert.deepEqual((await initial.listDirectory("/", undefined, 256)).entries, []);
+        assert.ok((await parentGeneration.listDirectory("/", undefined, 256)).entries.length > 0);
+        const destination = await parent.forkAt(`scratch-exclusion-${id}`, parentGeneration);
+        const destinationBefore = await destination.sync();
+        const parentHead = await parent.head(), childHead = await child.head();
+        const plan = await child.joinInto(destination, {
+          history: "merge", maximumGenerations: 256, maximumChanges: 256, maximumConflicts: 16,
+          sourceGeneration: initial.id, targetGeneration: destinationBefore.id,
+        });
+        try {
+          assert.deepEqual(plan.commonAncestor, parentGeneration.id, "actual scratch generation must retain parent lineage");
+          assert.equal((await plan.apply(plan.targetHead)).status, "applied");
+          assert.deepEqual((await destination.diff(destinationBefore, await destination.sync(), 256)).changes().files, [],
+            "filtered exclusions must not publish parent deletions");
+          assert.deepEqual(await parent.head(), parentHead);
+          assert.deepEqual(await child.head(), childHead);
+        } finally { await plan.close(); }
+      }
+    } finally { filesystem.cancel(); }
     const originalStatus = JSON.parse(outputs.get("root-status")!.text);
     assert.equal(originalStatus.tasks.length, 5, "root/two fresh children/grandchild/foreign-workspace child must be the actual retained task topology");
     assert.equal(new Set(originalStatus.tasks.map((task: {task:string}) => task.task)).size, 5);
@@ -262,6 +342,135 @@ test("required pinned Pi recursively launches original native effects and reopen
     if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "native fixture cleanup failed");
   }
 }, { timeout: 240_000 });
+
+test("installed Pi retains split spawn, import and cancellation identities across lost replies and extension reload", async () => {
+  const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-cuts-", import.meta.url)));
+  const oracleDirectory = join(directory, "native-oracles");
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
+  try {
+    mkdirSync(oracleDirectory);
+    fixture = await installedNativeFixture(directory, recursiveProvider, {
+      ACYCLIC_NATIVE_ORACLE_DIRECTORY: oracleDirectory, ACYCLIC_NATIVE_PAUSE: "1",
+    });
+    const { nativeChildSession, observePiOperation } = await loadPiContextHelpers();
+    await fixture.start();
+    await fixture.run("ACYCLIC_NATIVE_CONTROL");
+    const fields = { cwd: fixture.project, session_id: fixture.manager.getSessionId() };
+    const caller = JSON.parse((await fixture.command(["__pi", "SessionStart"], JSON.stringify(fields))).stdout).caller;
+    assert.ok(caller, "split controls must reuse the original issued root caller proof");
+    const control = async (event: string, arguments_: Record<string, unknown>) =>
+      JSON.parse((await fixture!.command(["__pi", event], JSON.stringify({ ...fields, caller, ...arguments_ }))).stdout);
+    const restart = async () => { await fixture!.kill(); await fixture!.start(); };
+    const rootBytes = readFileSync(fixture.session);
+    const sourceBytes = readFileSync(join(fixture.project, "seed.txt"));
+    const spawn = { operation: "cut-spawn", id: "cut-child", context: "scratch",
+      prompt: "ACYCLIC_NATIVE_CHILD_B CHILD_B_ONLY_NATIVE_INSTRUCTION", provider: "acyclic-native-qualification", model: "probe" };
+    const prepared = await control("SpawnPrepare", spawn);
+    assert.equal(existsSync(prepared.child.session_file), false);
+    await restart();
+    assert.deepEqual(await control("SpawnPrepare", spawn), prepared);
+    assert.equal(existsSync(prepared.child.session_file), false, "prepare retry must not start native work");
+    const commit = { ...spawn, ...nativeChildSession(fixture.manager, prepared.child.cwd) };
+    const started = await control("SpawnCommit", commit);
+    assert.equal(started.child.task, prepared.child.task);
+    const nativeOracle = join(oracleDirectory, `${started.child.native_session_id}.CHILD_B.json`);
+    await observePiOperation("cut-native-start", async () => ({
+      state: existsSync(nativeOracle) ? "completed" : "pending", outcome: {},
+    }));
+    const originalNative = readFileSync(nativeOracle);
+    const beforeReload = await control("TaskStatus", {});
+    const reloaded = JSON.parse((await fixture.run("ACYCLIC_NATIVE_CONTROL", "switched")).stdout.trim());
+    assert.equal(reloaded.model, "switched");
+    assert.deepEqual((await control("TaskStatus", {})).tasks, beforeReload.tasks);
+    assert.equal(JSON.parse(originalNative.toString()).model, "probe");
+    writeFileSync(join(oracleDirectory, `${started.child.native_session_id}.release`), "release");
+    const completed = await observePiOperation("cut-wait", () => control("TaskWait", { id: spawn.id }));
+    const childBytes = readFileSync(started.child.session_file);
+    await restart();
+    const duplicate = await control("SpawnCommit", commit);
+    for (const key of ["child", "fork_operation", "native_operation", "native_effect", "preparation"]) {
+      assert.deepEqual(duplicate[key], started[key], `lost start reply changed ${key}`);
+    }
+    assert.deepEqual(duplicate.outcome, completed.outcome);
+    assert.deepEqual(readFileSync(started.child.session_file), childBytes);
+    assert.deepEqual(readFileSync(nativeOracle), originalNative);
+    const importing = { operation: "cut-import", source: spawn.id, destination: fields.session_id,
+      paths: ["child-b.txt"], confirm: true };
+    await control("TaskImport", importing);
+    const destination = await control("TaskInspect", { operation: "cut-destination-before", id: fields.session_id });
+    const source = await control("TaskInspect", { operation: "cut-source-before", id: spawn.id });
+    assert.ok(destination.snapshot.authored_generation && source.snapshot.authored_generation);
+    await restart();
+    await control("TaskImport", importing);
+    assert.deepEqual((await control("TaskInspect", { operation: "cut-destination-after", id: fields.session_id })).snapshot.authored_generation, destination.snapshot.authored_generation,
+      "lost import reply must not publish a second destination generation");
+    assert.deepEqual((await control("TaskInspect", { operation: "cut-source-after", id: spawn.id })).snapshot.authored_generation, source.snapshot.authored_generation);
+    assert.deepEqual(readFileSync(started.child.session_file), childBytes);
+    const cancelling = { ...spawn, operation: "cut-cancel-spawn", id: "cancel-child" };
+    const cancelPrepared = await control("SpawnPrepare", cancelling);
+    const cancelCommit = { ...cancelling, ...nativeChildSession(fixture.manager, cancelPrepared.child.cwd) };
+    const pending = await control("SpawnCommit", cancelCommit);
+    await observePiOperation("cut-cancel-start", async () => ({
+      state: existsSync(join(oracleDirectory, `${pending.child.native_session_id}.CHILD_B.json`)) ? "completed" : "pending", outcome: {},
+    }));
+    await restart();
+    const interrupted = await control("SpawnCommit", cancelCommit);
+    assert.deepEqual(interrupted.child, pending.child);
+    assert.deepEqual(interrupted.native_effect, pending.native_effect);
+    assert.equal(interrupted.outcome?.Succeeded, undefined, "unreleased original native work must not be reported successful after death");
+    await control("TaskCancel", { task: pending.child.task });
+    await restart();
+    const cancelled = await control("SpawnCommit", cancelCommit);
+    assert.equal(cancelled.child.task, pending.child.task);
+    assert.deepEqual(cancelled.native_effect, pending.native_effect);
+    assert.ok(cancelled.uncertain || cancelled.outcome, "cancelled dispatch must retain its original uncertainty or terminal outcome");
+    assert.equal(existsSync(join(pending.child.cwd, "child-b.txt")), false);
+    assert.deepEqual(readFileSync(join(fixture.project, "seed.txt")), sourceBytes);
+    assert.deepEqual(readFileSync(fixture.session).subarray(0, rootBytes.length), rootBytes);
+    const unstarted = { ...spawn, operation: "cancel-preparation", id: "never-started" };
+    const unstartedPreparation = await control("SpawnPrepare", unstarted);
+    const unstartedCommit = { ...unstarted, ...nativeChildSession(fixture.manager, unstartedPreparation.child.cwd) };
+    const rootTask = (await control("TaskStatus", {})).caller_task;
+    assert.equal(typeof rootTask, "string");
+    const filesystem = await openNativeFs({
+      root: join(directory, process.platform === "win32" ? "local/Acyclic/state-v5/filesystem" : "state/acyclic/state-v5/filesystem"),
+      objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
+    });
+    try {
+      const importedSource = await filesystem.openWorkspace(volumeName(source.volume));
+      const importedDestination = await filesystem.openWorkspace(volumeName(destination.volume));
+      const sourceHead = await importedSource.head();
+      const racingImport = { ...importing, operation: "cancel-import" };
+      const raced = await Promise.allSettled([control("TaskImport", racingImport), control("TaskCancel", { task: rootTask })]);
+      assert.equal(raced[1].status, "fulfilled");
+      const destinationHead = await importedDestination.head();
+      await restart();
+      const cancelledRoot = (await control("TaskStatus", {})).tasks.find((task: {task:string}) => task.task === rootTask);
+      assert.ok(cancelledRoot.outcome === "Cancelled" || cancelledRoot.outcome?.Indeterminate
+        || (cancelledRoot.state === "unresolved" && cancelledRoot.error));
+      const replayed = await control("TaskImport", racingImport).catch(() => undefined);
+      if (replayed) {
+        assert.equal(replayed.operation, racingImport.operation);
+        assert.ok(replayed.original_operation);
+        if (raced[0].status === "fulfilled") assert.deepEqual(replayed, raced[0].value);
+      }
+      await assert.rejects(() => control("SpawnCommit", unstartedCommit));
+      assert.equal(existsSync(unstartedPreparation.child.session_file), false);
+      assert.deepEqual(await importedSource.head(), sourceHead);
+      assert.deepEqual(await importedDestination.head(), destinationHead);
+    } finally { filesystem.cancel(); }
+    await fixture.close();
+    assertNativePidExited(JSON.parse(originalNative.toString()).pid);
+  } finally {
+    for (const name of readdirSync(oracleDirectory).filter(name => name.endsWith(".json"))) {
+      const { pid } = JSON.parse(readFileSync(join(oracleDirectory, name), "utf8"));
+      try { process.kill(pid, "SIGKILL"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    }
+    try { await fixture?.close(); }
+    finally { await fixture?.kill(); rmSync(directory, { recursive: true }); }
+  }
+}, { timeout: 180_000 });
 
 function assertNativePidExited(pid: number): void {
   assert.ok(Number.isSafeInteger(pid) && pid > 0, "native process oracle did not record an actual PID");

@@ -145,7 +145,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     request: request.clone(),
                     result_schema: invalid_schema,
                 }
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await
             .is_err()
     );
@@ -162,7 +162,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 request,
                 result_schema: schema,
             },
-        ))
+        ), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let planned = aggregate
         .reducer()
@@ -178,7 +178,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 effect_id,
                 attempt_id,
             },
-        ))
+        ), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let dispatched = aggregate
         .reducer()
@@ -203,7 +203,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             Action::ResolveEffect {
                 observation: attestation.clone(),
             },
-        ))
+        ), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert!(matches!(
         aggregate
@@ -304,7 +304,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         },
                         reason: None,
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
         }
         if matches!(retained, 3 | 1_003 | 10_003) {
@@ -420,18 +420,18 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     ];
     for (position, id) in active.into_iter().enumerate() {
         ordinal += 1;
-        aggregate.execute(fresh(ordinal, aggregate.reducer().revision(), plan(id, position == 2))).await?;
+        aggregate.execute(fresh(ordinal, aggregate.reducer().revision(), plan(id, position == 2)), #[cfg(feature = "filesystem")] None, &mut None).await?;
         if position > 0 {
             ordinal += 1;
             aggregate.execute(fresh(ordinal, aggregate.reducer().revision(), Action::MarkEffectDispatched {
                 effect_id: id, attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
-            })).await?;
+            }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         if position == 2 {
             let state = aggregate.reducer().effect(id).unwrap();
             let observation = registry.dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?).await?;
             ordinal += 1;
-            aggregate.execute(fresh(ordinal, aggregate.reducer().revision(), Action::ResolveEffect { observation })).await?;
+            aggregate.execute(fresh(ordinal, aggregate.reducer().revision(), Action::ResolveEffect { observation }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
     }
     let retirement_limits = HistoryReadLimits { maximum_events: 3, maximum_bytes: 1_000_000 };
@@ -475,7 +475,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     ordinal += 1;
     aggregate.execute(fresh(ordinal, aggregate.reducer().revision(), Action::TransitionLifecycle {
         to: LifecycleState::Waiting, reason: None,
-    })).await?;
+    }), #[cfg(feature = "filesystem")] None, &mut None).await?;
     provider.forbid_writes.store(true, Ordering::SeqCst);
     assert_eq!(worst_reader.effect(&worst_cut, worst_id, retirement_limits).await?, worst_completed);
     Ok(())
@@ -489,11 +489,11 @@ async fn complete<P: acyclic_stream::StreamProvider>(
         effect_id: id, attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
     }] {
         *ordinal += 1;
-        aggregate.execute(command(*ordinal, aggregate.reducer().revision(), action)).await?;
+        aggregate.execute(command(*ordinal, aggregate.reducer().revision(), action), #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
     let state = aggregate.reducer().effect(id).unwrap();
     let observation = registry.dispatch_and_attest(issuer, id, state, EffectDispatch::from_state(id, state)?).await?;
     *ordinal += 1;
-    aggregate.execute(command(*ordinal, aggregate.reducer().revision(), Action::ResolveEffect { observation })).await?;
+    aggregate.execute(command(*ordinal, aggregate.reducer().revision(), Action::ResolveEffect { observation }), #[cfg(feature = "filesystem")] None, &mut None).await?;
     Ok(aggregate.reducer().effect(id).unwrap().clone())
 }

@@ -4,10 +4,7 @@ import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
-
-// The async faux response factory is Pi AI's actual provider API. All mailbox,
-// admission, process and delivery behavior below belongs to the production extension.
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 const provider = `
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -49,8 +46,6 @@ export default function nativeMailbox(pi) {
     const expected = role === "ROOT" ? ["original root follow-up", "original root steering"]
       : ["original child follow-up", "original child steering"];
     if (!expected.every(text => ownMessages.some(entry => entry.content === text))) {
-      // An empty native assistant boundary lets Pi itself consume its queued
-      // follow-up/steering messages. This does not restart or emulate the engine.
       return fauxAssistantMessage("");
     }
     return fauxAssistantMessage(JSON.stringify({role, sessionId:native.sessionManager.getSessionId(),
@@ -76,7 +71,7 @@ function nativeMailDetails(entry: SessionEntry) {
 
 test("installed root and child consume original mailbox messages through native SDK queues and persisted entries", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-mail-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     fixture = await installedNativeFixture(directory, provider, {});
     await fixture.start();

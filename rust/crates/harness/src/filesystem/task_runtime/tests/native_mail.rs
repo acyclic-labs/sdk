@@ -37,15 +37,14 @@ impl MailFixture {
         let fixture = Fixture::new().await?;
         fixture.machine.native.store(true, Ordering::SeqCst);
         let sdk = Arc::new(LostSessionAck::default());
-        let runtime = FilesystemTaskRuntime::open_with_clock(
-            StreamClient::new(Arc::clone(&sdk)), fixture.filesystem.clone(), fixture.volume.clone(),
-            fixture.issuer.verifier(), fixture.signed.clone(), fixture.scope.clone(),
-            fixture.tasks.clone(), fixture.machines.clone(), fixture.tools.clone(),
+        let runtime = FilesystemTaskRuntime::open(
+            StreamClient::new(Arc::clone(&sdk)), fixture.filesystem.clone(), &fixture.volume,
+            &fixture.issuer.verifier(), &fixture.signed, &fixture.scope,
+            &fixture.tasks, &fixture.machines, &fixture.tools,
             SessionLimits { active_tasks: 8, total_tasks: 8, depth: 4, model_steps: 8 },
-            8, 65_536, fixture.clock.clone(),
+            8, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), fixture.volume.clone(),
-            &fixture.issuer.verifier(), &fixture.signed, 65_536)?;
+        let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(), &fixture.signed, 65_536, None)?;
         let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1")?;
         let mut tasks = Vec::new();
         for byte in 190..193 {
@@ -70,7 +69,7 @@ impl MailFixture {
         Ok(Self { fixture, sdk, runtime, tasks, payload })
     }
 
-    async fn send(&self, recipient: usize, operation: OperationId, io: &PreparationIo) -> Result<crate::durable_host::MailSendAck> {
+    async fn send(&self, recipient: usize, operation: OperationId, io: &PreparationIo) -> Result<crate::conversation::FileRef> {
         let payload = self.payload.clone_with_io(io)?;
         self.runtime.task_host().send_owned_with_io(self.tasks[0].0, &self.tasks[0].1,
             self.tasks[recipient].0, operation, payload, Some(io)).await
@@ -88,9 +87,7 @@ async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original
     let io = PreparationIo::from_native_work(&work)?;
     let operation = OperationId::from_bytes([194; 16]);
     let ack = fixture.send(1, operation, &io).await?;
-    assert_eq!(ack.payload, fixture.payload);
-    assert_eq!(ack.sender, fixture.tasks[0].0);
-    assert_eq!(ack.recipient, fixture.tasks[1].0);
+    assert_eq!(ack, fixture.payload);
     assert!(fixture.sdk.io_snapshot().inspections > 0);
     let committed = fixture.sdk.io_snapshot().records;
     assert_eq!(committed, 2, "one original atomic intent/envelope pair");

@@ -203,7 +203,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         .open_workspace(owner.policy.journal.storage_name().unwrap())
         .await
         .unwrap();
-    let original_head = workspace.head().await.unwrap().id();
+    let original_head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap().id();
     let PiRootIntent::Project { paths, .. } = &mut changed.root else {
         unreachable!()
     };
@@ -413,7 +413,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
             .open_workspace(owner.policy.journal.storage_name().unwrap())
             .await
             .unwrap();
-        let original_head = workspace.head().await.unwrap().id();
+        let original_head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap().id();
         if failure == "owner" {
             fs::remove_file(session.path().join(OWNER_FILE)).unwrap();
         }

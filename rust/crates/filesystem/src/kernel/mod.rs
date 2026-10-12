@@ -106,7 +106,6 @@ pub(crate) use volume::{decode_volume_created_with_steps, encode_volume_created_
 pub use attribute::{
     AttributeChild, AttributeClass, AttributeEncodeError, AttributeEntry, AttributeError,
     AttributeName, AttributePage, attribute_page_id, decode_attribute_page, encode_attribute_page,
-    encode_attribute_page_measured,
 };
 pub use attribute_access::{
     AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure,
@@ -175,13 +174,12 @@ pub use file_table::{
     FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup,
     FileRecordReadError, FileRecordReadFailure, FileTableChild, FileTableEncodeError, FileTableError,
     FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES,
-    decode_file_table_page, encode_file_table_page, encode_file_table_page_measured,
+    decode_file_table_page, encode_file_table_page,
     file_table_page_id, lookup_file_record, lookup_file_record_async,
     lookup_file_records, lookup_file_records_async,
 };
 pub(crate) use file_table::{
     decode_file_record, encode_file_record, encode_file_record_measured,
-    encode_file_table_leaf_records_measured,
     lookup_file_record_async_with_custody, lookup_file_records_async_with_custody,
 };
 pub(crate) use file_table::{
@@ -304,7 +302,7 @@ pub use retention::{
     decode_workspace_deleted, encode_retention_created, encode_workspace_deleted,
     retention_authority_id,
 };
-pub(crate) use retention::{encode_retention_created_measured, encode_workspace_deleted_measured};
+pub(crate) use retention::encode_workspace_deleted_measured;
 #[cfg(all(
     feature = "local",
     feature = "native-watch",

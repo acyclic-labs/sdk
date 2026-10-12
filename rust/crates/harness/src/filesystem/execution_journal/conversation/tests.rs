@@ -7,7 +7,7 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityIssuer},
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::ContentBindings,
 };
@@ -40,7 +40,7 @@ impl ModelProvider for CountedModel {
             Ok(ModelEvent::Completed { metadata: serde_json::Value::Null }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt)
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent])
         -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>>
     {
         Box::pin(async { Err(Error::Unsupported("all fixture attempts settle".into())) })
@@ -89,7 +89,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     let writer = Arc::new(FilesystemContentPublisher::new(host.clone(), volume.clone(),
         &issuer.verifier(), &scope, 262_144)?);
     let journal = Arc::new(FilesystemExecutionJournal::new(stream, host, volume,
-        issuer.verifier(), scope, 262_144)?.with_input_verifier(reader.clone()));
+        issuer.verifier(), crate::core::SchemaRegistry::new(), scope, 262_144)?.with_input_verifier(reader.clone()));
     let instructions = Context {
         messages: ["Keep the user's constraints.", "Preserve original references."].into_iter()
             .map(|text| crate::model::ModelMessage { role: crate::model::ModelRole::System,
