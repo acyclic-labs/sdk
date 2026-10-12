@@ -31,10 +31,6 @@ fn fuse_fixture_work() -> crate::NativeMaterializationWork {
     )
 }
 
-fn fuse_fixture_errno(error: NativeMountError) -> i32 {
-    native_callback_errno(&error)
-}
-
 fn projection_core(
     source: Arc<dyn MountFilesystem>,
     budget: crate::WorkBudget,
