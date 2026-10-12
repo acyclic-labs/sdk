@@ -94,7 +94,7 @@ async fn acquire_engine<I: RootInstrumentation>(
             Arc::clone(registration)
         } else {
             let key = instrumentation.copy_path(&canonical.0)?;
-            let slot_custody = instrumentation.claim(std::mem::size_of::<SharedRootSlot>())?;
+            let slot_custody = instrumentation.claim(std::mem::size_of::<SharedRootSlot>(), u64::from((std::mem::size_of::<SharedRootSlot>()) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
             let slot = Arc::new(SharedRootSlot {
                 state: AsyncMutex::new(SharedRootRegistration::default()),
                 _native_custody: [key.1, slot_custody],
@@ -154,7 +154,7 @@ async fn acquire_engine<I: RootInstrumentation>(
     });
     if original.is_some() && registration.reference.as_ref()
         .is_none_or(|reference| reference._native_custody.is_none()) {
-        let custody = instrumentation.claim(std::mem::size_of::<SharedSourceReference>())?;
+        let custody = instrumentation.claim(std::mem::size_of::<SharedSourceReference>(), u64::from((std::mem::size_of::<SharedSourceReference>()) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
         registration.reference = Some(Arc::new(SharedSourceReference {
             value: Mutex::new(reference), _native_custody: custody,
         }));
@@ -195,7 +195,7 @@ async fn acquire_engine<I: RootInstrumentation>(
     *reference.lock().map_err(|_| instrumentation.rejection(
         POISONED_REFERENCE, &canonical.0))? = source.reference();
     let native_identity = source.inner().root_identity().to_bytes();
-    let shared_custody = instrumentation.claim(std::mem::size_of::<SharedPhysicalRoot>())?;
+    let shared_custody = instrumentation.claim(std::mem::size_of::<SharedPhysicalRoot>(), u64::from((std::mem::size_of::<SharedPhysicalRoot>()) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
     let shared = Arc::new(SharedPhysicalRoot {
         source, watcher, reference: Arc::clone(&reference), _native_custody: shared_custody,
     });
@@ -342,9 +342,7 @@ fn native_reserved_paths(work: &NativeMaterializationWork)
     -> RootResult<(Vec<NamespacePath>, NativeAllocation)> {
     use acyclic_fs::kernel::{LogicalName, NameEncoding};
     let limits = VolumeLimits::default();
-    let mut custody = work.claim(
-        (RESERVED_ROOT_NAMES.len() * std::mem::size_of::<NamespacePath>()) as u64,
-    ).map_err(native_work_error)?;
+    let mut custody = { let claim_bytes = (RESERVED_ROOT_NAMES.len() * std::mem::size_of::<NamespacePath>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }.map_err(native_work_error)?;
     let mut paths = Vec::new();
     paths.try_reserve_exact(RESERVED_ROOT_NAMES.len())
         .map_err(|cause| native_work_error(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)))?;
@@ -436,7 +434,7 @@ where G: FnMut() -> F + Send,
         self.work.copy_path(root).map(|(path, custody)| (path, Some(custody))).map_err(native_work_error)
     }
     fn claim(&mut self, bytes: usize) -> RootResult<Option<NativeAllocation>> {
-        self.work.claim(bytes as u64).map(Some).map_err(native_work_error)
+        self.work.claim(bytes as u64, u64::from((bytes as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map(Some).map_err(native_work_error)
     }
     async fn identity(&mut self, root: &Path) -> RootResult<NativeRootIdentity> {
         self.work.root_identity(root).map_err(native_work_error)
@@ -478,7 +476,7 @@ where G: FnMut() -> F + Send,
     }
     fn share_watcher(&mut self, pending: &mut Option<NativeWatch>)
         -> RootResult<Arc<Mutex<NativeWatch>>> {
-        let mut ownership = self.work.claim(std::mem::size_of::<Mutex<NativeWatch>>() as u64)
+        let mut ownership = self.work.claim(std::mem::size_of::<Mutex<NativeWatch>>() as u64, u64::from((std::mem::size_of::<Mutex<NativeWatch>>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(native_work_error)?;
         let watcher = pending.as_mut().ok_or(RootError::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
@@ -511,7 +509,7 @@ where G: FnMut() -> F + Send,
         let mut source = FilteredDemandSource::new_with_native_work(
             source, excluded.0, excluded.1, self.work,
         ).map_err(native_work_error)?;
-        let mut owner = self.work.claim(std::mem::size_of::<LocalLazySource>() as u64)
+        let mut owner = self.work.claim(std::mem::size_of::<LocalLazySource>() as u64, u64::from((std::mem::size_of::<LocalLazySource>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(native_work_error)?;
         source.retain_owner_allocation(&mut owner).map_err(native_work_error)?;
         Ok(Arc::new(source))

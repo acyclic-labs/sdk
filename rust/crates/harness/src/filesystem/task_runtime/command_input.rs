@@ -187,7 +187,7 @@ mod tests {
     }
 
     fn result(work: &NativeMaterializationWork, text: &str) -> TaskCommandProgress {
-        let mut custody = work.retain_owned(0).expect("same-ledger custody");
+        let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("same-ledger custody");
         let value = Value::String(native_text(&mut custody, text).expect("admitted actual string"));
         TaskCommandProgress::ReadyWithNativeCustody { value, custody }
     }
@@ -228,7 +228,7 @@ mod tests {
         let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).expect("state allocation only");
         let baseline = work.live_allocation_bytes();
         let progress = TaskCommandProgress::ReadyWithNativeCustody {
-            value: Value::Null, custody: work.retain_owned(0).expect("zero-byte genuine custody"),
+            value: Value::Null, custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("zero-byte genuine custody"),
         };
         let mut ready = CommandDispatch::empty_results();
         let error = ready.push_result(OperationId::from_bytes([1; 16]), progress).err().expect("copy quota");
