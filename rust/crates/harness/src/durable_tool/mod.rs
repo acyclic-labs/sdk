@@ -8,7 +8,7 @@ use crate::{
         ExecutionEvent, ExecutionJournal, ToolFailureKind, load_json, replay_execution, stage_json,
     },
     runtime::ToolContext,
-    tool::{ToolDefinition, ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{ToolDefinition, ToolInvocation, ToolRegistry, ToolResult},
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineRegistry, MachineStatus, MachineTransition,
         ResumableMachine, WorkflowAdmission, WorkflowJournal,

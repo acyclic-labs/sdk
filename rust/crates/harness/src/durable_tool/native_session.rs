@@ -68,12 +68,7 @@ impl NativeResumableToolSession<'_> {
                     work,
                     |transition| {
                         if let MachineStatus::Completed { value } = &transition.status {
-                            crate::contract::validate_json_schema_value(
-                                output_schema,
-                                value,
-                                "tool output",
-                                Some(&io),
-                            )?;
+                            crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(output_schema, value, "tool output", work))?;
                         }
                         Ok(())
                     },

@@ -52,7 +52,7 @@ impl ModelRequest {
                         crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) { return Err(Error::Invalid("model tool call role or identity is invalid".into())); }
                         let tool = tools.get(name).ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                        crate::contract::validate_json_schema_value(&tool.input_schema, arguments, "model tool arguments", io)?;
+                        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&tool.input_schema, arguments, "model tool arguments", work))?;
                         pending.insert(call_id, name);
                     }
                     ModelContentPart::ToolResult { call_id, name, content } => {
@@ -67,11 +67,11 @@ impl ModelRequest {
                                 let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                                 _hold = io.guard_bytes(&bytes)?;
                                 let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
-                                crate::contract::validate_json_schema_value(&tool.projection_schema, &envelope.0, "model tool result", Some(io))?;
+                                crate::executor::with_history_io(Some(io), |work| crate::contract::validate_json_schema_value(&tool.projection_schema, &envelope.0, "model tool result", work))?;
                             }
                             _ => {
                                 let envelope = serde_json::to_value(content).map_err(|error| Error::Invalid(error.to_string()))?;
-                                crate::contract::validate_json_schema_value(&tool.projection_schema, &envelope, "model tool result", None)?;
+                                crate::contract::validate_json_schema_value(&tool.projection_schema, &envelope, "model tool result", &mut None)?;
                             }
                         }
                     }

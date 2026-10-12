@@ -176,11 +176,7 @@ impl DiscoveredContext {
             {
                 bound_skill_values(&self.skills, limits.render_bytes, observer)?;
             }
-            crate::contract::count_trusted_json_bytes_with_work(
-                &self.skills,
-                limits.render_bytes,
-                work,
-            )
+            crate::contract::json_byte_length(&self.skills, limits.render_bytes, work)
         })?;
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
