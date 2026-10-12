@@ -942,42 +942,7 @@ fn stock_compact(
 }
 
 impl StockExecution<'_> {
-    /// Summarizes an explicit projection through ordinary admission, accounting, exact request retention and reconciliation.
-    pub async fn summarize(
-        &self,
-        journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        source: crate::context::Context,
-        instruction: ModelContent,
-    ) -> Result<crate::context::ContextSummary> {
-        self.summarize_admitted(journal, None, operation_id, 0, source, instruction)
-            .await
-    }
-
-    /// Summarizes within the parent's existing execution journal.
-    pub async fn summarize_in_turn(
-        &self,
-        journal: &dyn ExecutionJournal,
-        parent: &TurnInput,
-        step: u32,
-        source: crate::context::Context,
-        instruction: ModelContent,
-    ) -> Result<crate::context::ContextSummary> {
-        if step >= parent.max_steps {
-            return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary step exceeds parent turn bounds"));
-        }
-        self.summarize_admitted(
-            journal,
-            Some(parent),
-            parent.operation_id,
-            step,
-            source,
-            instruction,
-        )
-        .await
-    }
-
-    async fn summarize_admitted(
+    async fn summarize(
         &self,
         journal: &dyn ExecutionJournal,
         parent: Option<&TurnInput>,
@@ -986,6 +951,9 @@ impl StockExecution<'_> {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
+        if parent.is_some_and(|parent| step >= parent.max_steps) {
+            return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary step exceeds parent turn bounds"));
+        }
         crate::context::validate_projected_context(&source, self.stock.limits, self.io())?;
         crate::executor::with_history_io(self.io(), |work| instruction.validate_limits(self.stock.limits, work))?;
         stock_json_bound(&source, self.stock.limits.file_bytes, self.io())?;
@@ -1006,7 +974,13 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary source is empty"));
         }
         let revision = stock_key(format_args!("{}", blake3::Hash::from(source_digest).to_hex()), self.io())?;
-        let executor = self.summary_executor(source, revision, summary_output)?;
+        let executor = StockExecution {
+            stock: self.stock,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native: self.native,
+            summary: Some((ContextPipeline::summary_source(source, revision, self.io())?, summary_output)),
+            reconciliation_only: self.reconciliation_only,
+        };
         let input = TurnInput {
             operation_id,
             input: instruction,
@@ -1161,21 +1135,6 @@ impl StockExecution<'_> {
             }
             _ => Ok(self.output_tokens()),
         }
-    }
-
-    fn summary_executor(
-        &self,
-        source: crate::context::Context,
-        revision: String,
-        output: Option<u32>,
-    ) -> Result<StockExecution<'_>> {
-        Ok(StockExecution {
-            stock: self.stock,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native: self.native,
-            summary: Some((ContextPipeline::summary_source(source, revision, self.io())?, output)),
-            reconciliation_only: self.reconciliation_only,
-        })
     }
 
     async fn validate_summary_capacity(
@@ -2016,15 +1975,15 @@ impl StockExecution<'_> {
             {
                 if let Some(work) = self.native_work() {
                     crate::NativeFutureBundle::new(work, || {
-                        self.summarize_in_turn(journal, input, step, source, instruction)
+                        self.summarize(journal, Some(input), input.operation_id, step, source, instruction)
                     })?.await?
                 } else {
-                    Box::pin(self.summarize_in_turn(journal, input, step, source, instruction)).await?
+                    Box::pin(self.summarize(journal, Some(input), input.operation_id, step, source, instruction)).await?
                 }
             }
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             {
-                Box::pin(self.summarize_in_turn(journal, input, step, source, instruction)).await?
+                Box::pin(self.summarize(journal, Some(input), input.operation_id, step, source, instruction)).await?
             }
         };
         if self.reconciliation_only {
@@ -3752,9 +3711,7 @@ impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 /// Typed payload custody.
 pub(crate) struct LoadedPreparation<'a, T> {
     pub(crate) value: T,
-    #[cfg(feature = "filesystem")]
-    hold: Option<crate::filesystem::DecodeReservation<'a>>,
-    marker: std::marker::PhantomData<&'a PreparationIo>,
+    hold: Option<crate::conversation::ContentHold<'a>>,
 }
 
 impl<T> std::ops::Deref for LoadedPreparation<'_, T> {
@@ -3820,37 +3777,34 @@ pub(crate) fn preparation_digest<T: Serialize>(
 }
 
 pub(crate) async fn load_json<'a, T: PreparationRecord>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    io: Option<&'a PreparationIo>,
+    journal: &dyn ExecutionJournal, reference: &FileRef, io: Option<&'a PreparationIo>,
 ) -> Result<LoadedPreparation<'a, T>> {
     let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
+    let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+    decode_json(&bytes, io)
+}
+
+pub(crate) fn decode_json<'a, T: PreparationRecord>(
+    bytes: &[u8], io: Option<&'a PreparationIo>,
+) -> Result<LoadedPreparation<'a, T>> {
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let _bytes_hold;
-        _bytes_hold = io.guard_bytes(&bytes)?;
         {
-            let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
+            let parsed = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
             let canonical = io.encode(&parsed.0, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
-            if canonical.as_ref() != bytes.as_ref() {
+            if canonical.as_ref() != bytes {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?;
-        return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
+        let (value, hold) = io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?;
+        return Ok(LoadedPreparation { value, hold: Some(hold) });
     }
-    Ok(LoadedPreparation {
-        value: decode_json(&bytes)?,
-        #[cfg(feature = "filesystem")]
-        hold: None,
-        marker: std::marker::PhantomData,
-    })
-}
-
-pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
     let parsed: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
     if crate::contract::canonical_json_bytes(&parsed)? != bytes {
@@ -3858,8 +3812,9 @@ pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Resul
             "execution journal JSON is not canonical".into(),
         ));
     }
-    crate::contract::json_from_slice(bytes)
-        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
+    let value = crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))?;
+    Ok(LoadedPreparation { value, hold: None })
 }
 
 #[derive(Default)]
@@ -4670,60 +4625,59 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    struct SlippingModel {
+    struct ScriptedModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
+        dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
+        reconciliations: AtomicUsize,
+        responses: Vec<Vec<std::result::Result<ModelEvent, String>>>,
+        recovery: Option<(Vec<ModelEvent>, Vec<ModelEvent>)>,
     }
 
-    impl ModelProvider for SlippingModel {
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            let request = request.request().clone();
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Ok(mut requests) = self.requests.lock() {
-                requests.push(request);
+    fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
+        ModelEvent::ToolCall { call_id: call_id.into(), name: "example.echo".into(), arguments }
+    }
+
+    impl Default for ScriptedModel {
+        fn default() -> Self {
+            Self {
+                calls: AtomicUsize::new(0), requests: Mutex::new(Vec::new()),
+                dispatches: Mutex::new(Vec::new()), reconciliations: AtomicUsize::new(0),
+                responses: vec![
+                    vec![Ok(echo_call("call-1", json!({"value":"hello"}))),
+                        Ok(ModelEvent::Completed { metadata: Value::Null })],
+                    vec![Ok(ModelEvent::Content { delta: "done".into() }),
+                        Ok(ModelEvent::Completed { metadata: json!({"finish":"stop"}) })],
+                ],
+                recovery: None,
             }
-            let events = match call {
-                0 => vec![
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "call-1".into(),
-                        name: "example.echo".into(),
-                        arguments: json!({"parameters": {"value": "hello"}}),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ],
-                1 => vec![
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "call-2".into(),
-                        name: "example.echo".into(),
-                        arguments: json!({"value": "hello"}),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ],
-                _ => vec![
-                    Ok(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: json!({"finish": "stop"}),
-                    }),
-                ],
-            };
-            Box::pin(stream::iter(events))
+        }
+    }
+
+    impl ScriptedModel {
+        fn slipping() -> Self {
+            let mut model = Self::default();
+            model.responses.insert(0, vec![
+                Ok(echo_call("call-1", json!({"parameters":{"value":"hello"}}))),
+                Ok(ModelEvent::Completed { metadata: Value::Null }),
+            ]);
+            model.responses[1][0] = Ok(echo_call("call-2", json!({"value":"hello"})));
+            model
         }
 
-    }
-
-    struct FakeModel {
-        calls: AtomicUsize,
-        requests: Mutex<Vec<ModelRequest>>,
+        fn recoverable() -> Self {
+            let observed = vec![ModelEvent::Content { delta: "partial-".into() }; 70];
+            let mut response: Vec<_> = observed.iter().cloned().map(Ok).collect();
+            response.push(Err("stream interrupted".into()));
+            Self {
+                responses: vec![response],
+                recovery: Some((observed, vec![
+                    ModelEvent::Content { delta: "restored".into() },
+                    ModelEvent::Completed { metadata: json!({"finish":"stop"}) },
+                ])),
+                ..Self::default()
+            }
+        }
     }
 
     async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
@@ -4835,10 +4789,7 @@ mod tests {
             executor: tool.clone(),
             projection: Arc::new(Projection),
         })?;
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let base = StockExecutor::new(
             Model::new("fixture", "exact", "1", Value::Null)?,
             model.clone(),
@@ -4905,136 +4856,36 @@ mod tests {
         Ok(())
     }
 
-    impl ModelProvider for FakeModel {
+    impl ModelProvider for ScriptedModel {
         fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-            Ok(crate::context::ModelContextCapacity {
-                context_tokens: 131_072,
-                output_tokens: 4_096,
-            })
+            Ok(crate::context::ModelContextCapacity { context_tokens: 131_072, output_tokens: 4_096 })
         }
 
-        fn count_tokens(
-            &self,
-            request: &crate::model::PreparedModelRequest,
-        ) -> Result<crate::context::ModelTokenCount> {
+        fn count_tokens(&self, request: &crate::model::PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
             fixture_token_count(request)
         }
 
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            assert_eq!(
-                request.bytes(),
-                crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
-            );
-            assert_eq!(
-                request.request_digest(),
-                *blake3::hash(request.bytes()).as_bytes()
-            );
-            let request = request.request().clone();
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Ok(mut requests) = self.requests.lock() {
-                requests.push(request);
-            }
-            let events = if call == 0 {
-                vec![
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "call-1".into(),
-                        name: "example.echo".into(),
-                        arguments: json!({"value": "hello"}),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ]
-            } else {
-                vec![
-                    Ok(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: json!({"finish": "stop"}),
-                    }),
-                ]
-            };
-            Box::pin(stream::iter(events))
-        }
-
-    }
-
-    struct RecoverableModel {
-        generate_calls: AtomicUsize,
-        reconcile_calls: AtomicUsize,
-        dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
-    }
-
-    impl ModelProvider for RecoverableModel {
-        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-            Ok(crate::context::ModelContextCapacity {
-                context_tokens: 131_072,
-                output_tokens: 4_096,
-            })
-        }
-
-        fn count_tokens(
-            &self,
-            request: &crate::model::PreparedModelRequest,
-        ) -> Result<crate::context::ModelTokenCount> {
-            fixture_token_count(request)
-        }
-
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
+        fn generate<'a>(&'a self, request: crate::model::PreparedModelRequest,
             dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+            assert_eq!(request.bytes(), crate::contract::canonical_json_bytes(request.request()).unwrap_or_default());
+            assert_eq!(request.request_digest(), *blake3::hash(request.bytes()).as_bytes());
             assert_eq!(dispatch.request_digest, request.request_digest());
             self.dispatches.lock().unwrap().push(dispatch);
-            self.generate_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(stream::iter(
-                (0..70)
-                    .map(|_| {
-                        Ok(ModelEvent::Content {
-                            delta: "partial-".into(),
-                        })
-                    })
-                    .chain(std::iter::once(Err(Error::Storage(
-                        "stream interrupted".into(),
-                    )))),
-            ))
+            self.requests.lock().unwrap().push(request.request().clone());
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = &self.responses[call.min(self.responses.len() - 1)];
+            Box::pin(stream::iter(events.iter().cloned().map(|event| event.map_err(Error::Storage))))
         }
 
-        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            assert!(
-                self.dispatches
-                    .lock()
-                    .unwrap()
-                    .contains(&dispatch)
-            );
-            self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
-            async move {
-                if observed
-                    != vec![
-                        ModelEvent::Content {
-                            delta: "partial-".into(),
-                        };
-                        70
-                    ]
-                {
-                    return Err(Error::Conflict("unexpected model event prefix".into()));
-                }
-                Ok(Some(vec![
-                    ModelEvent::Content {
-                        delta: "restored".into(),
-                    },
-                    ModelEvent::Completed {
-                        metadata: json!({"finish": "stop"}),
-                    },
-                ]))
-            }
-            .boxed()
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            let Some((expected, response)) = &self.recovery else { return Box::pin(async { Ok(None) }); };
+            assert!(self.dispatches.lock().unwrap().contains(&dispatch));
+            self.reconciliations.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if observed != expected { return Err(Error::Conflict("unexpected model event prefix".into())); }
+                Ok(Some(response.clone()))
+            })
         }
     }
 
@@ -5200,11 +5051,7 @@ mod tests {
 
     #[tokio::test]
     async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
-        let provider = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("test", "summary", "1", Value::Null)?,
             provider.clone(),
@@ -5237,7 +5084,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
         let summary = executor
             .summarize(&journal, operation, source.clone(), instruction.clone())
             .await?;
@@ -5255,18 +5102,14 @@ mod tests {
                 .await?,
             summary
         );
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
     #[tokio::test]
     async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
-        let provider = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("test", "summary", "1", Value::Null)?,
             provider.clone(),
@@ -5316,7 +5159,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
         let summary = executor
             .summarize_in_turn(&journal, &parent, 0, source.clone(), instruction.clone())
             .await?;
@@ -5339,8 +5182,8 @@ mod tests {
                 .await?,
             summary
         );
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 2);
         let (_, admissions) = replay_execution(&journal, parent.operation_id, 3, |event| {
             matches!(
                 event,
@@ -5463,11 +5306,7 @@ mod tests {
     async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()> {
         let journal = Journal::default();
         let source = Arc::new(ChangingContextSource(AtomicUsize::new(0)));
-        let provider = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("test", "model", "1", json!({}))?,
             provider.clone(),
@@ -5488,7 +5327,7 @@ mod tests {
         StockExecution::ordinary(&executor).ensure_started(&journal, &input).await?;
         let original = StockExecution::ordinary(&executor).prepared_response(&journal, &input, 0, &[]).await?;
         assert_eq!(source.0.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         let reopened = executor.clone();
         let recovered = StockExecution::ordinary(&reopened).prepared_response(&journal, &input, 0, &[]).await?;
         assert_eq!(original.bytes(), recovered.bytes());
@@ -5497,8 +5336,8 @@ mod tests {
         let events = reopened.model_step(&journal, &input, 0, &[]).await?;
         assert_eq!(events.len(), 72);
         assert_eq!(source.0.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 1);
         assert_eq!(
             journal
                 .0
@@ -5873,10 +5712,7 @@ mod tests {
 
     #[tokio::test]
     async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
@@ -5966,10 +5802,7 @@ mod tests {
             }
         }
         for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
-            let model = Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            });
+            let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
             let mut tools = ToolRegistry::new();
             tools.register(crate::tool::Tool {
@@ -6084,46 +5917,17 @@ mod tests {
         Ok(())
     }
 
-    struct TwoCallModel(FakeModel);
-
-    impl ModelProvider for TwoCallModel {
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            Box::pin(futures::StreamExt::flat_map(
-                self.0.generate(request, dispatch),
-                |event| {
-                    let is_call = matches!(&event, Ok(ModelEvent::ToolCall { .. }));
-                    let mut events = vec![event];
-                    if is_call {
-                        events.push(Ok(ModelEvent::ToolCall {
-                            call_id: "call-2".into(),
-                            name: "example.echo".into(),
-                            arguments: json!({"value":"later"}),
-                        }));
-                    }
-                    stream::iter(events)
-                },
-            ))
-        }
-
-        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(dispatch, observed)
-        }
-    }
-
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
         reason = "one actual retained two-call batch and later-call recovery controls"
     )]
     async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> Result<()> {
-        let model = Arc::new(TwoCallModel(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        }));
+        let model = Arc::new({
+            let mut model = ScriptedModel::default();
+            model.responses[0].insert(1, Ok(echo_call("call-2", json!({"value":"later"}))));
+            model
+        });
         let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6172,7 +5976,6 @@ mod tests {
             Some(first.request().messages.as_slice())
         );
         let dispatched = model
-            .0
             .requests
             .lock()
             .map_err(|_| Error::Storage("model lock".into()))?
@@ -6306,17 +6109,14 @@ mod tests {
                 .len(),
             records.len()
         );
-        assert_eq!(model.0.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         assert_eq!(tool.0.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
     #[tokio::test]
     async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6590,10 +6390,7 @@ mod tests {
         })?;
         let executor = uncompacted_executor(
             Model::new("example", "model", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
         )
@@ -6631,10 +6428,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6687,10 +6481,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
-        let model = Arc::new(SlippingModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6741,10 +6532,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
-        let model = Arc::new(SlippingModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6892,10 +6680,7 @@ mod tests {
                 ToolFailureKind::ProjectionRejected,
             ),
         ] {
-            let model = Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            });
+            let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
             let mut tools = ToolRegistry::new();
             tools.register(crate::tool::Tool {
@@ -6941,10 +6726,7 @@ mod tests {
 
     #[tokio::test]
     async fn operation_identity_rejects_changed_input() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let executor = uncompacted_executor(
             Model::new("example", "model", "1", Value::Null)?,
             model,
@@ -7025,11 +6807,7 @@ mod tests {
             claims: AtomicUsize::new(0),
             owned: std::sync::atomic::AtomicBool::new(true),
         });
-        let model = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("example", "recoverable", "1", Value::Null)?,
             model.clone(),
@@ -7061,8 +6839,8 @@ mod tests {
 
         assert_eq!(recovered.text, format!("{}restored", "partial-".repeat(70)));
         assert_eq!(replayed, recovered);
-        assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.reconciliations.load(Ordering::SeqCst), 1);
         assert_eq!(host.claims.load(Ordering::SeqCst), 1);
         assert_eq!(journal.replay(input.operation_id, 0, 64).await?.len(), 64);
         assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 11);
@@ -7096,8 +6874,8 @@ mod tests {
             executor.execute(input, &journal).await,
             Err(Error::Conflict(_))
         ));
-        assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.reconciliations.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
@@ -7208,10 +6986,7 @@ mod tests {
     async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
         let mut executor = uncompacted_executor(
             Model::new("example", "model", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             ToolRegistry::new(),
         );
@@ -7321,10 +7096,7 @@ mod tests {
         };
         let executor = StockExecutor::new(
             Model::new("test", "scoped", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
         )
@@ -7370,10 +7142,7 @@ mod tests {
         };
         let base = StockExecutor::new(
             Model::new("test", "scoped", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
             tools,
         )
