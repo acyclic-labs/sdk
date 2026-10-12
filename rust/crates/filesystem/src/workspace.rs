@@ -987,7 +987,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             let current_record = current_records
                 .next()
-                .ok_or_else(|| WorkspaceError::manual_engine("missing batch lookup result"))?;
+                .ok_or_else(|| WorkspaceError::Engine("missing batch lookup result".to_owned()))?;
             if self.same_path_state(current_record, source_record).await? {
                 continue;
             }
@@ -1664,7 +1664,7 @@ async fn plan_generation_extents<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             length,
             source_end: offset
                 .checked_add(length)
-                .ok_or_else(|| WorkspaceError::manual_engine("file range overflows"))?,
+                .ok_or_else(|| WorkspaceError::Engine("file range overflows".to_owned()))?,
             kind: WorkspaceExtentKind::Content,
         }],
     };
@@ -1692,37 +1692,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
     }
 
-    /// Reuses the workspace transaction compiler against a private checkout
-    pub(crate) fn for_checkout_candidate(
-        workspace: &Workspace<A, O>,
-        checkout: Checkout<A, O>,
-    ) -> Self {
-        Self {
-            workspace: workspace.clone(),
-            checkout,
-            idempotency_key: IdempotencyKey::new(),
-            requires_rebase: false,
-        }
-    }
-
-    /// Moves a private candidate with its already-bound SDK operation identity.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn for_checkout_candidate_with_native_work(
-        workspace: &Workspace<A, O>,
-        checkout: Checkout<A, O>,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Self, WorkspaceError> {
-        original.admit(crate::WorkCounters::UNCHARGED).map_err(FsError::from)
-            .map_err(WorkspaceError::from)?;
-        cancellation.check()?;
-        let operation = checkout.bound_authored_operation_id()
-            .ok_or_else(|| WorkspaceError::from(FsError::MutationNotAllowed))?;
-        Ok(Self {
-            workspace: workspace.clone(), checkout,
-            idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
-            requires_rebase: false,
-        })
+    /// Wraps a private candidate using its original native retry identity when funded.
+    pub(crate) fn for_checkout_candidate<W: crate::facade::FsWork>(
+        workspace: &Workspace<A, O>, checkout: Checkout<A, O>,
+        work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<Self, WorkspaceError> {
+        let accounting = work.accounting(cancellation);
+        let result = (|| -> Result<Self, WorkspaceError> {
+            accounting.check()?;
+            let idempotency_key = match checkout.bound_authored_operation_id() {
+                #[cfg(not(target_arch = "wasm32"))]
+                Some(operation) if accounting.native_work().is_some() => IdempotencyKey::from_bytes(operation.into_bytes()),
+                #[cfg(not(target_arch = "wasm32"))]
+                None if accounting.native_work().is_some() => return Err(WorkspaceError::from(FsError::MutationNotAllowed)),
+                _ => IdempotencyKey::new(),
+            };
+            Ok(Self { workspace: workspace.clone(), checkout, idempotency_key, requires_rebase: false })
+        })();
+        work.finish(result, &accounting)
     }
 
     fn mutation_path_with_accounting(
@@ -1834,7 +1821,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             self.checkout.validate_native_work(original)?;
         }
         let depth = PortablePath::validate(path, self.checkout.volume_config().limits)
-            .map_err(|error| namespace_path_error(crate::kernel::NamespacePathError::Path(error)))?;
+            .map_err(|error| WorkspaceError::from(crate::kernel::NamespacePathError::Path(error)))?;
         if depth == 0 { return Ok(()); }
         for end in path.match_indices('/').skip(1).map(|(index, _)| index)
             .chain(std::iter::once(path.len())) {
@@ -5322,15 +5309,7 @@ impl WorkspaceError {
         Self::Engine(error.to_string())
     }
 
-    /// Intentional human-authored diagnostics are not canonical error aliases.
-    pub(crate) fn manual_engine(message: &'static str) -> Self {
-        Self::Engine(message.to_owned())
-    }
 
-    /// Only intentional human-authored semantic diagnostics use this buffer.
-    pub(crate) fn path(message: &'static str) -> Self {
-        Self::Path(message.to_owned())
-    }
 }
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -5462,7 +5441,7 @@ impl From<FsError> for WorkspaceError {
             return bounded;
         }
         match error {
-            FsError::Path(crate::kernel::PathLookupError::NamespacePath(error)) => namespace_path_error(error),
+            FsError::Path(crate::kernel::PathLookupError::NamespacePath(error)) => Self::from(error),
             FsError::SourceSnapshotStale => Self::StaleSource,
             FsError::NotFound => Self::NotFound,
             FsError::NotDirectory => Self::NotDirectory,
@@ -5479,7 +5458,11 @@ impl From<FsError> for WorkspaceError {
 
 impl From<crate::kernel::NamespacePathError> for WorkspaceError {
     fn from(error: crate::kernel::NamespacePathError) -> Self {
-        namespace_path_error(error)
+        match error {
+            crate::kernel::NamespacePathError::Work(error) => Self::Work(error),
+            crate::kernel::NamespacePathError::Cancelled => Self::Cancelled(crate::CancellationError),
+            error => Self::NamespacePath(error),
+        }
     }
 }
 
@@ -5547,7 +5530,7 @@ pub(crate) fn customer_path(
         &mut crate::kernel::allocation::AllocationLedger::default(),
         &mut crate::WorkCounters::UNCHARGED, crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).map_err(namespace_path_error)
+    ).map_err(WorkspaceError::from)
 }
 
 /// Borrows the caller's original accounting owner; no SDK path producer is
@@ -5562,13 +5545,6 @@ pub(crate) fn customer_path_with_accounting(
     ).map_err(WorkspaceError::from)
 }
 
-pub(crate) fn namespace_path_error(error: crate::kernel::NamespacePathError) -> WorkspaceError {
-    match error {
-        crate::kernel::NamespacePathError::Work(error) => WorkspaceError::Work(error),
-        crate::kernel::NamespacePathError::Cancelled => WorkspaceError::Cancelled(crate::CancellationError),
-        error => WorkspaceError::NamespacePath(error),
-    }
-}
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 fn merge_workspace_work<T>(

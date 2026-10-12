@@ -7245,8 +7245,8 @@ where
                 };
                 let candidate_bytes = if portable_lookup.is_some() { candidate.logical_owned_bytes() } else { 0 };
                 if portable_accounting { work.adopt(candidate_bytes)?; }
-                let mut transaction = lazy_dispatch!{work, crate::Transaction::for_checkout_candidate(&self.workspace, candidate),
-                    |original| crate::Transaction::for_checkout_candidate_with_native_work(
+                let mut transaction = lazy_dispatch!{work, accept_lazy_write_receipt(work, crate::Transaction::for_checkout_candidate(&self.workspace, candidate, work.remaining()?, cancellation).map_err(|failure| failure.map_error(workspace_error)))?,
+                    |original| crate::Transaction::for_checkout_candidate(
                         &self.workspace, candidate, original, cancellation,
                     ).map_err(native_workspace_error)?
                 };
