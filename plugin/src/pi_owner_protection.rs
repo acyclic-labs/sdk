@@ -47,8 +47,6 @@ pub(super) fn open_private(path: &Path) -> io::Result<File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt as _;
-        // FlushFileBuffers requires a writable handle. Loading never changes
-        // bytes; it completes any interrupted publication durability boundary.
         options.write(true);
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
@@ -94,8 +92,6 @@ fn validate_metadata(metadata: &fs::Metadata, _directory: bool) -> io::Result<()
 pub(super) fn new_key() -> io::Result<[u8; 32]> {
     use std::io::Read as _;
     let mut key = [0; 32];
-    // This system CSPRNG is available on every supported Unix release target,
-    // including both glibc and musl, without a libc-specific symbol or ABI.
     File::open("/dev/urandom")?.read_exact(&mut key)?;
     Ok(key)
 }
@@ -110,7 +106,6 @@ pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
 }
 
 /// The managed copy belongs to the original caller's guarded SDK producer.
-/// Unix protection has no foreign buffer; no intermediate plaintext is made.
 #[cfg(unix)]
 pub(super) fn unprotect_with_copy<T, E>(
     bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
@@ -135,8 +130,7 @@ pub(super) fn new_key() -> io::Result<[u8; 32]> {
         BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
     };
     let mut key = [0; 32];
-    // SAFETY: system-preferred RNG requires no algorithm handle; the live
-    // writable buffer is exactly 32 bytes and no pointers are retained.
+    // SAFETY: system-preferred RNG requires no algorithm handle; the live writable buffer is exactly 32 bytes and no pointers are retained.
     let status = unsafe {
         BCryptGenRandom(
             std::ptr::null_mut(),
@@ -160,9 +154,7 @@ pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
     windows_protect(bytes, false)
 }
 
-/// DPAPI owns its opaque foreign allocation. The original native copy callback
-/// admits the managed output before growth; denial still clears and frees the
-/// foreign plaintext in the same protection engine.
+/// DPAPI owns its opaque foreign allocation.
 #[cfg(windows)]
 pub(super) fn unprotect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
@@ -206,9 +198,7 @@ fn windows_protect_with_copy<T, E: From<io::Error>>(
         cbData: 0,
         pbData: ptr::null_mut(),
     };
-    // SAFETY: input points to a live read-only buffer. DPAPI copies it, retains
-    // no pointers, and allocates the output with LocalAlloc. No UI or machine-
-    // wide protection is permitted; decryption requires this Windows user.
+    // SAFETY: input points to a live read-only buffer.
     let success = unsafe {
         if protect {
             CryptProtectData(
@@ -245,8 +235,7 @@ fn windows_protect_with_copy<T, E: From<io::Error>>(
         copy(unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) })
     };
     if !output.pbData.is_null() {
-        // SAFETY: output is the live DPAPI allocation above, cleared before
-        // release, including error paths that reject an oversized result.
+        // SAFETY: output is the live DPAPI allocation above, cleared before release, including error paths that reject an oversized result.
         unsafe {
             ptr::write_bytes(output.pbData, 0, output.cbData as usize);
             LocalFree(output.pbData.cast());

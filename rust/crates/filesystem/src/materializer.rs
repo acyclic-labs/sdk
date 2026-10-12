@@ -514,25 +514,25 @@ impl acyclic_native_runtime::NativeReadMeter for $owner {
     fn check(&self) -> std::io::Result<()> { self.with_io(|work| work.check()) }
 
     fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.reserve_native_operations(kind, count))
+        self.with_original_leaf(|work| work.reserve(kind, count, false))
     }
     fn cancel_reserved_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) {
-        self.with_original_leaf(|work| work.cancel_reserved_native_operations(kind, count));
+        self.with_original_leaf(|work| work.refund(kind, count, false));
     }
     fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.record_reserved_native_operation(kind))
+        self.with_original_leaf(|work| work.complete(kind, 1, 1, false))
     }
     fn admit_write_bytes(&self, maximum: usize) -> std::io::Result<()> {
         self.with_original_leaf(|work| work.admit_native_write_bytes(maximum))
     }
     fn reserve_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.reserve_native_bytes(kind, maximum))
+        self.with_original_leaf(|work| work.reserve(kind, maximum, true))
     }
     fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) {
-        self.with_original_leaf(|work| work.cancel_reserved_native_bytes(kind, maximum));
+        self.with_original_leaf(|work| work.refund(kind, maximum, true));
     }
     fn record_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.record_reserved_native_bytes(kind, maximum, actual))
+        self.with_original_leaf(|work| work.complete(kind, maximum, actual, true))
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
         self.with_io(|work| work.claim_native_owned(bytes, u64::from(bytes != 0), &None))
@@ -1371,7 +1371,7 @@ impl NativeMaterializationWork {
 
     /// Observes the opened root allocation.
     pub fn root_identity(&self, path: &std::path::Path) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
-        Ok(crate::native_host::HostRoot::open_materialization_measured(path, self)?.identity())
+        Ok(crate::native_host::HostRoot::open_with_work(path, &mut &*self)?.identity())
     }
 
     /// Copies actual lexical bytes into one exactly admitted owned path.
@@ -1406,9 +1406,9 @@ impl NativeMaterializationWork {
                 return Err(NativeTreeMaterializationError::InvalidLayout);
             }
         }
-        let held = crate::native_host::HostRoot::open_materialization_measured(root, self)?;
+        let held = crate::native_host::HostRoot::open_with_work(root, &mut &*self)?;
         if held.identity() != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual: held.identity() }); }
-        let directory = held.open_dir_materialization_measured(relative, self)?;
+        let directory = held.open_dir_held_with_work(relative, &mut &*self)?;
         let actual = self.root_identity(root)?;
         if actual != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual }); }
         Ok(directory.into_std_file())
@@ -1562,11 +1562,11 @@ impl NativeMaterializationWork {
         Fut: Future<Output = Result<(), E>>,
     {
         guard().await?;
-        let held = crate::native_host::HostRoot::open_materialization_measured(root, self).map_err(E::from)?;
+        let held = crate::native_host::HostRoot::open_with_work(root, &mut &*self).map_err(E::from)?;
         if held.identity() != expected {
             return Err(E::from(NativeTreeMaterializationError::AllocationChanged { expected, actual: held.identity() }));
         }
-        let mut parent = held.open_dir_materialization_measured(Path::new(""), self).map_err(E::from)?;
+        let mut parent = held.open_dir_held_with_work(Path::new(""), &mut &*self).map_err(E::from)?;
         guard().await?;
         for component in relative.parent().unwrap_or_else(|| Path::new("")).components() {
             let std::path::Component::Normal(name) = component else {
@@ -1584,7 +1584,7 @@ impl NativeMaterializationWork {
             }
         }
         guard().await?;
-        let parent_identity = crate::native_host::directory_identity_materialization_measured(&parent, self).map_err(E::from)?;
+        let parent_identity = crate::native_host::directory_identity(&parent, &mut &*self).map_err(E::from)?;
         native_builtin_parent(root, expected, relative, parent_identity, self).map_err(E::from)?;
         let leaf = Path::new(relative.file_name().ok_or_else(|| E::from(NativeTreeMaterializationError::InvalidLayout))?);
         let opened = crate::native_host::open_leaf_with_work(&parent, leaf, &options, &mut &*self);
@@ -1632,7 +1632,7 @@ impl NativeMaterializationWork {
         ).map_err(|failure| E::from(match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => self.runtime_error(error),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+            => {
                 NativeTreeMaterializationError::InvalidLayout
             }
         }))?;
@@ -1689,21 +1689,21 @@ impl NativeMaterializationWork {
             self.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
             if !matches!(component, std::path::Component::Normal(_)) { return Err(NativeTreeMaterializationError::InvalidLayout); }
         }
-        let held = crate::native_host::HostRoot::open_materialization_measured(root, self)?;
+        let held = crate::native_host::HostRoot::open_with_work(root, &mut &*self)?;
         if held.identity() != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual: held.identity() }); }
         if relative.as_os_str().is_empty() {
             if require_new { return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into()); }
             return Ok(held.identity());
         }
-        let base = held.open_dir_materialization_measured(Path::new(""), self)?;
-        let parent = crate::native_host::create_directories_held_with_work(&base, relative.parent().unwrap_or_else(|| Path::new("")), &mut &*self)?;
+        let base = held.open_dir_held_with_work(Path::new(""), &mut &*self)?;
+        let parent = crate::native_host::create_directories_held(&base, relative.parent().unwrap_or_else(|| Path::new("")), &mut &*self)?;
         let leaf = Path::new(relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?);
         let directory = if require_new {
             crate::native_host::create_new_directory_held_with_work(&parent, leaf, &mut &*self)?
         } else {
-            crate::native_host::create_directories_held_with_work(&parent, leaf, &mut &*self)?
+            crate::native_host::create_directories_held(&parent, leaf, &mut &*self)?
         };
-        crate::native_host::directory_identity_materialization_measured(&directory, self)
+        crate::native_host::directory_identity(&directory, &mut &*self)
     }
 
     /// Observes a working-directory binding without granting mutation authority.
@@ -1743,12 +1743,12 @@ fn native_builtin_parent(
     path: &Path, expected: crate::NativeRootIdentity, relative: &Path,
     expected_parent: crate::NativeRootIdentity, work: &NativeMaterializationWork,
 ) -> Result<cap_std::fs::Dir, NativeTreeMaterializationError> {
-    let root = crate::native_host::HostRoot::open_materialization_measured(path, work)?;
+    let root = crate::native_host::HostRoot::open_with_work(path, &mut &*work)?;
     if root.identity() != expected {
         return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual: root.identity() });
     }
-    let parent = root.open_dir_materialization_measured(relative.parent().unwrap_or_else(|| Path::new("")), work)?;
-    let actual = crate::native_host::directory_identity_materialization_measured(&parent, work)?;
+    let parent = root.open_dir_held_with_work(relative.parent().unwrap_or_else(|| Path::new("")), &mut &*work)?;
+    let actual = crate::native_host::directory_identity(&parent, &mut &*work)?;
     if actual != expected_parent {
         return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_parent, actual });
     }
@@ -4546,25 +4546,25 @@ impl NativeTreeMaterializationBackend {
                 let work = work.clone();
                 move || {
                     let _paths = (root_custody, operation_custody);
-                    let source = crate::native_host::HostRoot::open_materialization_measured(&root_copy, &work)?;
+                    let source = crate::native_host::HostRoot::open_with_work(&root_copy, &mut &work)?;
                     if source.identity() != expected_root { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: source.identity() }); }
-                    let parent = crate::native_host::HostRoot::open_materialization_measured(operation_copy.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, &work)?;
+                    let parent = crate::native_host::HostRoot::open_with_work(operation_copy.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &work)?;
                     let expected_parent = crate::NativeRootIdentity::from_bytes(progress.parent);
                     if parent.identity() != expected_parent { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_parent, actual: parent.identity() }); }
-                    let parent = parent.open_dir_materialization_measured(Path::new(""), &work)?;
+                    let parent = parent.open_dir_held_with_work(Path::new(""), &mut &work)?;
                     let leaf = Path::new(operation_copy.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?);
                     let allocation = match step {
                         MaterializationPreparationAllocation::Operation => crate::native_host::create_new_directory_held_with_work(&parent, leaf, &mut &work)?,
                         MaterializationPreparationAllocation::Target | MaterializationPreparationAllocation::Backup => {
                             let expected = crate::NativeRootIdentity::from_bytes(progress.operation.ok_or(NativeTreeMaterializationError::InvalidLayout)?);
                             let operation = with_native_walk_leaf(leaf, &work, |name| open_native_walk_directory(&parent, name, &work))?;
-                            let actual = crate::native_host::directory_identity_materialization_measured(&operation, &work)?;
+                            let actual = crate::native_host::directory_identity(&operation, &mut &work)?;
                             if actual != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual }); }
                             if let Some(expected) = progress.target { Self::recorded_preparation_child(&operation, Path::new("target"), expected, &work)?; }
                             crate::native_host::create_new_directory_held_with_work(&operation, match step { MaterializationPreparationAllocation::Target => Path::new("target"), _ => Path::new("backup") }, &mut &work)?
                         }
                     };
-                    crate::native_host::directory_identity_materialization_measured(&allocation, &work).map(|identity| identity.to_bytes())
+                    crate::native_host::directory_identity(&allocation, &mut &work).map(|identity| identity.to_bytes())
                 }
             }).await.map_err(|error| backend_error(NativeTreeMaterializationError::Io(error)))?.map_err(backend_error)?;
             match step {
@@ -4597,19 +4597,19 @@ impl NativeTreeMaterializationBackend {
 
     fn recorded_preparation_child(parent: &cap_std::fs::Dir, leaf: &Path, expected: [u8; 16], work: &NativeMaterializationWork) -> Result<cap_std::fs::Dir, NativeTreeMaterializationError> {
         let directory = with_native_walk_leaf(leaf, work, |name| open_native_walk_directory(parent, name, work))?;
-        let actual = crate::native_host::directory_identity_materialization_measured(&directory, work)?;
+        let actual = crate::native_host::directory_identity(&directory, &mut &*work)?;
         let expected = crate::NativeRootIdentity::from_bytes(expected);
         if actual != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual }); }
         Ok(directory)
     }
 
     fn verify_recorded_preparation(root: &Path, expected_root: crate::NativeRootIdentity, operation_directory: &Path, progress: MaterializationPreparationProgress, work: &NativeMaterializationWork) -> Result<(), NativeTreeMaterializationError> {
-        let source = crate::native_host::HostRoot::open_materialization_measured(root, work)?;
+        let source = crate::native_host::HostRoot::open_with_work(root, &mut &*work)?;
         if source.identity() != expected_root { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: source.identity() }); }
-        let parent = crate::native_host::HostRoot::open_materialization_measured(operation_directory.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, work)?;
+        let parent = crate::native_host::HostRoot::open_with_work(operation_directory.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work)?;
         let expected_parent = crate::NativeRootIdentity::from_bytes(progress.parent);
         if parent.identity() != expected_parent { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_parent, actual: parent.identity() }); }
-        let parent = parent.open_dir_materialization_measured(Path::new(""), work)?;
+        let parent = parent.open_dir_held_with_work(Path::new(""), &mut &*work)?;
         if let Some(expected) = progress.operation {
             let operation = Self::recorded_preparation_child(&parent, Path::new(operation_directory.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?), expected, work)?;
             if let Some(expected) = progress.target { Self::recorded_preparation_child(&operation, Path::new("target"), expected, work)?; }
@@ -4628,14 +4628,14 @@ impl NativeTreeMaterializationBackend {
         if !work.shares_ledger(custody.work()) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let operation_root = crate::native_host::HostRoot::open_materialization_measured(&operation_directory, &work)?;
-        let held_root = native_owned_arc(crate::native_host::HostRoot::open_materialization_measured(&root, &work)?, &work, &mut custody)?;
+        let operation_root = crate::native_host::HostRoot::open_with_work(&operation_directory, &mut &work)?;
+        let held_root = native_owned_arc(crate::native_host::HostRoot::open_with_work(&root, &mut &work)?, &work, &mut custody)?;
         let root_identity = held_root.identity();
         if root_identity.device != operation_root.identity().device {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let operation_directory_cap = operation_root.open_dir_materialization_measured(Path::new(""), &work)?;
-        let root_directory_cap = held_root.open_dir_materialization_measured(Path::new(""), &work)?;
+        let operation_directory_cap = operation_root.open_dir_held_with_work(Path::new(""), &mut &work)?;
+        let root_directory_cap = held_root.open_dir_held_with_work(Path::new(""), &mut &work)?;
         #[cfg(unix)]
         let nested = crate::native_host::directory_has_ancestor_with_work(&operation_directory_cap, root_identity, &mut &work)?
             || crate::native_host::directory_has_ancestor_with_work(&root_directory_cap, operation_root.identity(), &mut &work)?;
@@ -4651,14 +4651,14 @@ impl NativeTreeMaterializationBackend {
         let backup = backup_owned.0;
         let operation_identity = operation_root.identity().to_bytes();
         if create_backup {
-            let directory = operation_root.open_dir_materialization_measured(Path::new(""), &work)?;
-            crate::native_host::create_directories_held_materialization_measured(&directory, Path::new("backup"), &work)?;
+            let directory = operation_root.open_dir_held_with_work(Path::new(""), &mut &work)?;
+            crate::native_host::create_directories_held(&directory, Path::new("backup"), &mut &work)?;
         }
-        let target_directory = operation_root.open_dir_materialization_measured(Path::new("target"), &work)?;
-        let target_identity = crate::native_host::directory_identity_materialization_measured(&target_directory, &work)?;
+        let target_directory = operation_root.open_dir_held_with_work(Path::new("target"), &mut &work)?;
+        let target_identity = crate::native_host::directory_identity(&target_directory, &mut &work)?;
         let held_target = native_owned_arc(crate::native_host::HostRoot::from_held_dir_with_identity(target_directory, target_identity), &work, &mut custody)?;
-        let backup_directory = operation_root.open_dir_materialization_measured(Path::new("backup"), &work)?;
-        let backup_identity = crate::native_host::directory_identity_materialization_measured(&backup_directory, &work)?;
+        let backup_directory = operation_root.open_dir_held_with_work(Path::new("backup"), &mut &work)?;
+        let backup_identity = crate::native_host::directory_identity(&backup_directory, &mut &work)?;
         let held_backup = native_owned_arc(crate::native_host::HostRoot::from_held_dir_with_identity(backup_directory, backup_identity), &work, &mut custody)?;
         let preparation_identity = MaterializationPreparationIdentity {
             operation: operation_identity,
@@ -4702,8 +4702,8 @@ impl NativeTreeMaterializationBackend {
         if actual != self.root_identity {
             return Err(NativeTreeMaterializationError::AllocationChanged { expected: self.root_identity, actual });
         }
-        let directory = self.held_root.open_dir_materialization_measured(Path::new(path), &self.work)?;
-        crate::native_host::directory_identity_materialization_measured(&directory, &self.work)
+        let directory = self.held_root.open_dir_held_with_work(Path::new(path), &mut &self.work)?;
+        crate::native_host::directory_identity(&directory, &mut &self.work)
     }
 
     /// Allocates a lexical staging path with retained capacity ownership.
@@ -4721,7 +4721,7 @@ impl NativeTreeMaterializationBackend {
             (&self.held_target, self.target.as_path()),
             (&self.held_backup, self.backup.as_path()),
         ] {
-            let directory = root.open_dir_materialization_measured(Path::new(""), &self.work)?;
+            let directory = root.open_dir_held_with_work(Path::new(""), &mut &self.work)?;
             let (mut reader, _cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &self.work)?;
             if next_native_walk_name(&mut reader, &self.work)?.is_some() {
                 return Err(native_diagnostic(&self.work, path.display(), NativeTreeMaterializationError::ExternalMutation)?);
@@ -4739,7 +4739,7 @@ impl NativeTreeMaterializationBackend {
                 return Err(NativeTreeMaterializationError::InvalidLayout);
             }
         }
-        let directory = self.held_root.open_dir_materialization_measured(Path::new(""), &self.work)?;
+        let directory = self.held_root.open_dir_held_with_work(Path::new(""), &mut &self.work)?;
         let (mut reader, _cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &self.work)?;
         while let Some((name, _allocation)) = next_native_walk_name(&mut reader, &self.work)? {
             let mut selected = false;
@@ -4785,7 +4785,7 @@ impl NativeTreeMaterializationBackend {
         let path = duplicate_native_string(path, &self.work, &mut path_allocation)?;
         acyclic_native_runtime::run_blocking_io(move || {
             let _path_allocation = path_allocation;
-            let directory = backend.held_target.open_dir_materialization_measured(Path::new(""), &backend.work)?;
+            let directory = backend.held_target.open_dir_held_with_work(Path::new(""), &mut &backend.work)?;
             let identity = if path.is_empty() {
                 let (mut reader, cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &backend.work)?;
                 while let Some((name, allocation)) = next_native_walk_name(&mut reader, &backend.work)? {
@@ -4799,14 +4799,14 @@ impl NativeTreeMaterializationBackend {
             } else {
                 let relative = Path::new(&path);
                 backend.create_parents(&NativeEntry { root: &backend.held_target, path: relative })?;
-                let parent = backend.held_target.open_dir_materialization_measured(relative.parent().unwrap_or_else(|| Path::new("")), &backend.work)?;
+                let parent = backend.held_target.open_dir_held_with_work(relative.parent().unwrap_or_else(|| Path::new("")), &mut &backend.work)?;
                 let leaf = relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
                 remove_native_held(&parent, Path::new(leaf), &backend.work)?;
                 let child = crate::native_host::create_new_directory_held_with_work(&parent, Path::new(leaf), &mut &backend.work)?;
-                let identity = crate::native_host::directory_identity_materialization_measured(&child, &backend.work)?;
+                let identity = crate::native_host::directory_identity(&child, &mut &backend.work)?;
                 identity
             };
-            crate::native_host::sync_directory_held_measured(&directory, &backend.work)?;
+            crate::native_host::sync_directory_held(&directory, &mut &backend.work)?;
             Ok(identity)
         }).await?
     }
@@ -4826,8 +4826,8 @@ impl NativeTreeMaterializationBackend {
     }
 
     fn create_parents(&self, path: &NativeEntry<'_>) -> Result<(), NativeTreeMaterializationError> {
-        let directory = path.root.open_dir_materialization_measured(Path::new(""), &self.work)?;
-        crate::native_host::create_directories_held_materialization_measured(&directory, path.path.parent().unwrap_or_else(|| Path::new("")), &self.work)?;
+        let directory = path.root.open_dir_held_with_work(Path::new(""), &mut &self.work)?;
+        crate::native_host::create_directories_held(&directory, path.path.parent().unwrap_or_else(|| Path::new("")), &mut &self.work)?;
         Ok(())
     }
 
@@ -4835,10 +4835,10 @@ impl NativeTreeMaterializationBackend {
         let (source, from_name) = self.parent(from)?;
         let (destination, to_name) = self.parent(to)?;
         self.work.admit(crate::WorkCounters { materializations: 1, ..crate::WorkCounters::default() })?;
-        crate::native_host::rename_no_replace_held_measured(&source, &from_name, &destination, &to_name, &self.work)?;
+        crate::native_host::rename_no_replace_held(&source, &from_name, &destination, &to_name, &mut &self.work)?;
         self.work.spent(crate::WorkCounters { materializations: 1, ..crate::WorkCounters::default() })?;
-        let source = crate::native_host::sync_directory_held_measured(&source, &self.work);
-        let destination = crate::native_host::sync_directory_held_measured(&destination, &self.work);
+        let source = crate::native_host::sync_directory_held(&source, &mut &self.work);
+        let destination = crate::native_host::sync_directory_held(&destination, &mut &self.work);
         source.and(destination)?;
         Ok(())
     }
@@ -4850,7 +4850,7 @@ impl NativeTreeMaterializationBackend {
             Err(error) => return Err(error),
         };
         remove_native_held(&parent, &leaf, &self.work)?;
-        crate::native_host::sync_directory_held_measured(&parent, &self.work)?;
+        crate::native_host::sync_directory_held(&parent, &mut &self.work)?;
         Ok(())
     }
 
@@ -4955,10 +4955,10 @@ pub fn validate_native_preparation_location(
     operation_directory: &Path,
     work: &NativeMaterializationWork,
 ) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
-    let root = crate::native_host::HostRoot::open_materialization_measured(root, work)?;
+    let root = crate::native_host::HostRoot::open_with_work(root, &mut &*work)?;
     let mut existing_path = operation_directory;
     let operation = loop {
-        match crate::native_host::HostRoot::open_materialization_measured(existing_path, work) {
+        match crate::native_host::HostRoot::open_with_work(existing_path, &mut &*work) {
             Ok(held) => break held,
             Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 existing_path = existing_path.parent().ok_or(error)?;
@@ -4971,8 +4971,8 @@ pub fn validate_native_preparation_location(
         if !matches!(component, std::path::Component::Normal(_)) { return Err(NativeTreeMaterializationError::InvalidLayout); }
     }
     if root.identity().device != operation.identity().device { return Err(NativeTreeMaterializationError::InvalidLayout); }
-    let root_directory = root.open_dir_materialization_measured(Path::new(""), work)?;
-    let operation_directory_cap = operation.open_dir_materialization_measured(Path::new(""), work)?;
+    let root_directory = root.open_dir_held_with_work(Path::new(""), &mut &*work)?;
+    let operation_directory_cap = operation.open_dir_held_with_work(Path::new(""), &mut &*work)?;
     let exists = existing_path == operation_directory;
     #[cfg(unix)]
     let nested = crate::native_host::directory_has_ancestor_with_work(&operation_directory_cap, root.identity(), &mut &*work)?
@@ -5023,12 +5023,12 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 MaterializationEdit::Rename { .. } => return Err(NativeTreeMaterializationError::UnsupportedRename),
             };
             for root in [&backend.held_root, &backend.held_target, &backend.held_backup] {
-                let parent = match root.open_dir_materialization_measured(Path::new(path).parent().unwrap_or_else(|| Path::new("")), &backend.work) {
+                let parent = match root.open_dir_held_with_work(Path::new(path).parent().unwrap_or_else(|| Path::new("")), &mut &backend.work) {
                     Ok(parent) => parent,
                     Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
                     Err(error) => return Err(error),
                 };
-                crate::native_host::sync_directory_held_measured(&parent, &backend.work)?;
+                crate::native_host::sync_directory_held(&parent, &mut &backend.work)?;
             }
             if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
                 let (live, _, _) = backend.paths(path);
@@ -5099,7 +5099,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 (backend.target.as_path(), &mut current.target),
                 (backend.backup.as_path(), &mut current.backup),
             ] {
-                *slot = crate::native_host::HostRoot::open_materialization_measured(path, &backend.work)?.identity().to_bytes();
+                *slot = crate::native_host::HostRoot::open_with_work(path, &mut &backend.work)?.identity().to_bytes();
             }
             Ok(Some(current))
         }).await?
@@ -5109,7 +5109,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let root = self.root.clone();
         let work = self.work.clone();
         acyclic_native_runtime::run_blocking_io(move || {
-            crate::native_host::HostRoot::open_materialization_measured(root.as_path(), &work)
+            crate::native_host::HostRoot::open_with_work(root.as_path(), &mut &work)
                 .map(|held| Some(held.identity().to_bytes())).map_err(Self::Error::from)
         }).await?
     }
@@ -5273,7 +5273,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                     backend.remove(&live)?;
                 }
                 let (parent, _) = backend.parent(&backup)?;
-                crate::native_host::sync_directory_held_measured(&parent, &backend.work)?;
+                crate::native_host::sync_directory_held(&parent, &mut &backend.work)?;
                 return Ok(());
             }
             if live_exists {
@@ -5374,7 +5374,7 @@ struct NativeRemoveFrame {
 #[cfg(not(target_arch = "wasm32"))]
 fn native_remove_frame(parent: &cap_std::fs::Dir, name: &NativeWalkNameRef, metadata: &crate::native_host::HostStat, work: &NativeMaterializationWork) -> Result<NativeRemoveFrame, NativeTreeMaterializationError> {
     let directory = open_native_walk_directory(parent, name, work)?;
-    let actual = crate::native_host::directory_identity_materialization_measured(&directory, work)?;
+    let actual = crate::native_host::directory_identity(&directory, &mut &*work)?;
     if actual != native_stat_identity(metadata) {
         return Err(NativeTreeMaterializationError::AllocationChanged { expected: native_stat_identity(metadata), actual });
     }
@@ -5452,7 +5452,7 @@ impl NativeRemoveWalker {
                 drop(allocation);
             }
             NativeRemoveStep::Directory(frame) => {
-                crate::native_host::sync_directory_held_measured(&frame.directory, work)?;
+                crate::native_host::sync_directory_held(&frame.directory, &mut &*work)?;
                 let NativeRemoveFrame { directory, reader, cursor, name, .. } = frame;
                 drop(reader);
                 drop(cursor);
@@ -5699,7 +5699,7 @@ fn native_stat_readonly(metadata: &crate::native_host::HostStat) -> bool {
 impl NativeTreeMaterializationBackend {
     fn parent<'a>(&self, path: &NativeEntry<'a>) -> Result<(cap_std::fs::Dir, &'a Path), NativeTreeMaterializationError> {
         self.work.charge(crate::WorkCounters { source_path_components: 1, ..crate::WorkCounters::default() })?;
-        let parent = path.root.open_dir_materialization_measured(path.path.parent().unwrap_or_else(|| Path::new("")), &self.work)?;
+        let parent = path.root.open_dir_held_with_work(path.path.parent().unwrap_or_else(|| Path::new("")), &mut &self.work)?;
         let leaf = path.path.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
         Ok((parent, Path::new(leaf)))
     }
@@ -5731,7 +5731,7 @@ impl NativeTreeMaterializationBackend {
 
 #[cfg(windows)]
 fn native_directory_contains(directory: &cap_std::fs::Dir, wanted: crate::NativeRootIdentity, work: &NativeMaterializationWork) -> Result<bool, NativeTreeMaterializationError> {
-    if crate::native_host::directory_identity_materialization_measured(directory, work)? == wanted { return Ok(true); }
+    if crate::native_host::directory_identity(directory, &mut &*work)? == wanted { return Ok(true); }
     let (reader, cursor) = crate::native_host::read_dir_held_with_work(directory, &mut &*work)?;
     let mut frames = Vec::new();
     let mut storage = work.claim(std::mem::size_of::<(Option<cap_std::fs::Dir>, crate::native_host::HostStatReader, NativeAllocation)>() as u64)?;
@@ -5743,7 +5743,7 @@ fn native_directory_contains(directory: &cap_std::fs::Dir, wanted: crate::Native
         let metadata = stat_native_walk_name(parent, &name, work)?;
         if metadata.is_dir() && !metadata.file_type().is_symlink() {
             let child = open_native_walk_directory(parent, &name, work)?;
-            let actual = crate::native_host::directory_identity_materialization_measured(&child, work)?;
+            let actual = crate::native_host::directory_identity(&child, &mut &*work)?;
             if actual != native_stat_identity(&metadata) { return Err(NativeTreeMaterializationError::AllocationChanged { expected: native_stat_identity(&metadata), actual }); }
             if actual == wanted { return Ok(true); }
             let (reader, cursor) = crate::native_host::read_dir_held_with_work(&child, &mut &*work)?;
@@ -6117,7 +6117,7 @@ fn hash_native_entry_shallow(
         drop(allocation);
     } else if metadata.is_dir() {
         let directory = open_native_walk_directory(parent, leaf, &backend.work)?;
-        let opened = crate::native_host::directory_identity_materialization_measured(&directory, &backend.work)?;
+        let opened = crate::native_host::directory_identity(&directory, &mut &backend.work)?;
         if opened != native_stat_identity(metadata) {
             return Err(NativeTreeMaterializationError::AllocationChanged { expected: native_stat_identity(metadata), actual: opened });
         }
@@ -6661,7 +6661,7 @@ where
         .await?;
     drop(changes);
     drop(changes_custody);
-    let held_root = crate::native_host::HostRoot::open_materialization_measured(&root, &work)?;
+    let held_root = crate::native_host::HostRoot::open_with_work(&root, &mut &work)?;
     if held_root.identity() != source_root_identity {
         return Err(NativeTreeMaterializationError::AllocationChanged { expected: source_root_identity, actual: held_root.identity() }.into());
     }
@@ -6741,7 +6741,7 @@ where
     let plan = MaterializationPlan { operation_id, intent: MaterializationIntent::GenerationTransition { from, to }, edits };
     if !native_check_plan(&plan, &work)? { return Err(NativeWorkspacePublicationError::MismatchedJournal); }
     work.set_original_work(crate::WorkCounters::UNCHARGED);
-    let parent = crate::native_host::HostRoot::open_materialization_measured(operation_directory.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, &work)?;
+    let parent = crate::native_host::HostRoot::open_with_work(operation_directory.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &work)?;
     let journal = MaterializationJournal {
         version: JOURNAL_VERSION, revision: 0, plan,
         root_identity: Some(source_root_identity.to_bytes()), preparation_identity: None,
@@ -6834,7 +6834,7 @@ async fn native_preflight_path<A: crate::AsyncAuthorityStore, O: crate::AsyncObj
             Err(cause) => return Err(cause.into()),
         };
         let host_path = Path::new(&path);
-        let parent = match root.open_dir_materialization_measured(host_path.parent().unwrap_or_else(|| Path::new("")), work) {
+        let parent = match root.open_dir_held_with_work(host_path.parent().unwrap_or_else(|| Path::new("")), &mut &*work) {
             Ok(parent) => Some(parent),
             Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
@@ -6994,12 +6994,12 @@ where
     A: crate::AsyncAuthorityStore,
     O: crate::AsyncObjectStore,
 {
-    let directory = match root.open_dir_materialization_measured(Path::new(path), work) {
+    let directory = match root.open_dir_held_with_work(Path::new(path), &mut &*work) {
         Ok(directory) => directory,
         Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    if crate::native_host::directory_identity_materialization_measured(&directory, work)? != native_stat_identity(observed) {
+    if crate::native_host::directory_identity(&directory, &mut &*work)? != native_stat_identity(observed) {
         return Err(native_diagnostic(work, path, NativeTreeMaterializationError::ExternalMutation)?.into());
     }
     let mut host = Vec::new();
@@ -8657,9 +8657,9 @@ mod tests {
         let fs = crate::Fs::memory();
         let workspace = fs.create_workspace("native-publication").await.expect("workspace");
         for name in ["/one", "/two", "/untouched"] { workspace.write_text(name, "before").await.expect("logical baseline"); }
-        let from = workspace.head().await.expect("original generation");
+        let from = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original generation");
         for name in ["/one", "/two"] { workspace.write_text(name, "after").await.expect("logical target"); }
-        let to = workspace.head().await.expect("target generation");
+        let to = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("target generation");
         let budget = finite_native_budget();
         let cancellation = crate::CancellationToken::new();
         let identity_work = NativeMaterializationWork::new(budget, &cancellation).expect("identity meter");
@@ -8725,9 +8725,9 @@ mod tests {
         std::fs::write(root.join("new"), b"after").expect("matching but unauthenticated user file");
         let fs = crate::Fs::memory();
         let workspace = fs.create_workspace("before-absent").await.expect("workspace");
-        let from = workspace.head().await.expect("empty baseline");
+        let from = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("empty baseline");
         workspace.write_text("/new", "after").await.expect("target");
-        let to = workspace.head().await.expect("target generation");
+        let to = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("target generation");
         let budget = finite_native_budget();
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("identity work");
@@ -8785,15 +8785,15 @@ mod tests {
         std::fs::write(root.join("tree/user"), b"unknown untouched").expect("unknown descendant");
         let fs = crate::Fs::memory();
         let workspace = fs.create_workspace("structural-source").await.expect("workspace");
-        let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await.expect("logical transaction");
+        let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("logical transaction");
         transaction.create_directory("/tree").await.expect("logical directory");
         transaction.write_text("/tree/file", "before").await.expect("logical descendant");
-        transaction.commit().await.expect("logical publication");
-        let generation = workspace.head().await.expect("baseline");
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("logical publication");
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("baseline");
         let budget = finite_native_budget();
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("meter");
-        let held = crate::native_host::HostRoot::open_materialization_measured(&root, &work).expect("held checkout");
+        let held = crate::native_host::HostRoot::open_with_work(&root, &mut &work).expect("held checkout");
         native_preflight_path(&held, "tree", &generation, false, true, &work, &cancellation).await.expect("metadata-only action does not consume descendants");
         let error = native_preflight_path(&held, "tree", &generation, true, true, &work, &cancellation).await.expect_err("structural removal must authenticate the entire consumed subtree");
         assert!(matches!(error, NativeWorkspacePublicationError::Native(NativeTreeMaterializationError::ExternalMutation(_, Some(_)))));
@@ -8926,7 +8926,7 @@ mod tests {
         let fs = crate::Fs::memory();
         let workspace = fs.create_workspace("native-capture-barrier").await.expect("workspace");
         workspace.write_text("/file", "before").await.expect("original authored source");
-        let from = workspace.head().await.expect("immutable original generation");
+        let from = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("immutable original generation");
         let budget = finite_native_budget();
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("same actual native meter");

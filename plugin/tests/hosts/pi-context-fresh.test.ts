@@ -7,9 +7,6 @@ import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native
 
 const rootOnly = "ROOT_ONLY_NATIVE_CONTEXT_0d20f1";
 const foreignTranscript = "FOREIGN_NATIVE_TRANSCRIPT_19d2ae";
-
-// Probes inspect the entire first actual model context, without slicing messages
-// around role markers or filtering parent/tool exchanges in the qualification code.
 const provider = `
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 export default function freshNativeContext(pi) {

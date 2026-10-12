@@ -130,7 +130,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 action: Action::BindConversation {
                     agent: parent_agent,
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let writer =
             ContentGrant::verify(&issuer.verifier(), &scope, &private, VolumeOperation::Write)?;
@@ -181,7 +181,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                         extensions: Default::default(),
                     }),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let workspaces = FilesystemProjectWorkspaces::new(
             &host,
@@ -338,7 +338,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 action: Action::PublishProjectMerge {
                     receipt: Box::new(receipt),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         (
             message_file,

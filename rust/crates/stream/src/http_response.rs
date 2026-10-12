@@ -225,10 +225,6 @@ fn commit_value(value: wire::CommitResponse) -> Result<Value> {
     let outcome = value.outcome.ok_or("invalid_response")?;
     Ok(match outcome {
         wire::commit_response::Outcome::Committed(envelope) => {
-            // Commit responses can be larger than the bounded command
-            // request that produced them. Validate the complete envelope
-            // before deriving its compact public result so nested records
-            // cannot bypass identity and width checks.
             let envelope_json = envelope_value(&envelope)?;
             validate("commits/read", &envelope_json)?;
             let mut tails = serde_json::Map::new();

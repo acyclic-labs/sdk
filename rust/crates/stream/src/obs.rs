@@ -143,7 +143,7 @@ impl ErrorKind for crate::StreamError {
 #[cfg(any(test, feature = "http", feature = "local"))]
 pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Result<T, E> {
     match &result {
-        Ok(_) => record(span, "outcome", "ok"),
+        Ok(_) => { span.record("outcome", "ok"); }
         Err(error) => failed(span, error.kind()),
     }
     result
@@ -152,11 +152,6 @@ pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Resu
 /// Records a failure of `kind` on the owned operation span.
 pub(crate) fn failed(span: &Span, kind: &'static str) {
     span.record("outcome", "err").record("error.kind", kind);
-}
-
-/// Records one field on the owned operation span; a no-op without a subscriber.
-pub(crate) fn record(span: &Span, field: &'static str, value: impl tracing::Value) {
-    span.record(field, value);
 }
 
 #[cfg(test)]
@@ -422,7 +417,7 @@ pub(crate) mod tests {
                 rev = tracing::field::Empty
             );
             assert!(child.is_disabled());
-            super::record(&child, "rev", 99);
+            child.record("rev", 99);
             super::finish(&child, Ok::<_, crate::StreamError>(())).unwrap();
             assert!(super::finish(&child, Err::<(), _>(crate::StreamError::AccessDenied)).is_err());
             assert_eq!(captured.fields("caller")["outcome"], "caller");
