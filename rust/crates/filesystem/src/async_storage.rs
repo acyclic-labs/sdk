@@ -1865,7 +1865,7 @@ pub async fn read_many_sequential_async<S: AsyncObjectStore + ?Sized>(
     match result {
         Ok(values) => Ok(crate::storage::ObjectReceipt { value: values.0, work }),
         Err(error) => Err(crate::storage::ObjectFailure::new(
-            sequential_read_error(error), work,
+            object_error(error), work,
         )),
     }
 }
@@ -1880,7 +1880,7 @@ pub async fn read_many_sequential_with_native_work<S: AsyncObjectStore + ?Sized>
 ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
     let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
     let result = read_many_sequential_engine(store, requests, &mut accounting, cancellation)
-        .await.map_err(sequential_read_error)?;
+        .await.map_err(object_error)?;
     match result.1 {
         crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
             crate::async_storage::native_read_batch(result.0, allocation)
@@ -1964,38 +1964,20 @@ pub(crate) fn merge_completed_object_read(
     completed: crate::performance::WorkCounters,
     retained: u64,
 ) -> Result<(), crate::FsError> {
-    fn merge(
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut crate::performance::WorkCounters,
-        budget: WorkBudget,
-        completed: crate::performance::WorkCounters,
-        retained: u64,
-    ) -> Result<(), crate::FsError> {
-        let peak = allocations.live_bytes().checked_add(completed.peak_allocation_bytes)
-            .ok_or(crate::performance::WorkError::Overflow)?;
-        let mut combined = work.checked_add(completed)?;
-        combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(peak);
-        *work = combined;
-        allocations.record_owned_bytes(retained, work)
-            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-        work.verify(budget)?;
-        Ok(())
-    }
-    match accounting {
-        crate::kernel::allocation::KernelAccounting::Standalone {
-            allocations, work, budget, ..
-        } => merge(allocations, work, *budget, completed, retained),
-        crate::kernel::allocation::KernelAccounting::BorrowedStandalone {
-            allocations, work, budget, ..
-        } => merge(allocations, work, *budget, completed, retained),
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::kernel::allocation::KernelAccounting::NativeOriginal { .. } => {
-            Err(crate::storage::ObjectStoreError::Corrupt.into())
-        }
-    }
+    let (allocations, work, budget, _) = accounting.standalone_parts()
+        .ok_or(crate::storage::ObjectStoreError::Corrupt)?;
+    let peak = allocations.live_bytes().checked_add(completed.peak_allocation_bytes)
+        .ok_or(crate::performance::WorkError::Overflow)?;
+    let mut combined = work.checked_add(completed)?;
+    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(peak);
+    *work = combined;
+    allocations.record_owned_bytes(retained, work)
+        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+    work.verify(budget)?;
+    Ok(())
 }
 
-pub(crate) fn sequential_read_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
+pub(crate) fn object_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
     match error {
         crate::FsError::Object(error) => error,
         crate::FsError::Work(error) => crate::storage::ObjectStoreError::Work(error),
