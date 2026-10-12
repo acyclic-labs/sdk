@@ -65,8 +65,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?
             .ok_or(MountSourceError::Stale)?;
@@ -77,11 +75,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                     work,
                     cancellation,
                     Some(&self.cancellation),
-                    &mut source_publication_guard(self.native_callback_guard.clone(), Some(self.cancellation.clone())),
+                    &mut source_publication_guard(
+                        self.native_callback_guard.clone(),
+                        Some(self.cancellation.clone()),
+                    ),
                     None,
                     &mut None,
                 )
-                .await.map_err(|(cause, _)| cause)?;
+                .await
+                .map_err(|(error, _)| error)?;
         }
         Ok(MountLookup {
             node: mount_node(created.record),
