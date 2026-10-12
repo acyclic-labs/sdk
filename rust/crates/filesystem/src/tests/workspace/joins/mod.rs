@@ -315,15 +315,10 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     let mut cache = crate::MemoryMergeResolutionCache::default();
     let join_key = IdempotencyKey::new();
     let outcome = plan
-        .apply_with_drivers(
-            ApplyOptions {
+        .apply_with_drivers(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: join_key,
-            },
-            &registry,
-            &mut cache,
-            false,
-        )
+            }, &registry, &mut cache, false, PublicationPermit::Unrestricted)
         .await?;
     let JoinOutcome::Applied(application) = outcome else {
         return Err("resolved join did not publish".into());
@@ -400,15 +395,10 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     registry.set_default("text")?;
     let mut cache = crate::MemoryMergeResolutionCache::default();
     let outcome = plan
-        .apply_with_drivers(
-            ApplyOptions {
+        .apply_with_drivers(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            &registry,
-            &mut cache,
-            false,
-        )
+            }, &registry, &mut cache, false, PublicationPermit::Unrestricted)
         .await?;
     assert!(matches!(outcome, JoinOutcome::Applied(_)));
     let merged = String::from_utf8(main.read("/shared", 1024, B, &cancel).await?.value.to_vec())?;

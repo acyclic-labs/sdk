@@ -143,13 +143,7 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled batch lookup"
     );
     cancelled!(
-        checkout.list_directory(
-            &root_path()?,
-            std::ops::Bound::Unbounded,
-            8,
-            B,
-            &cancelled_token
-        ),
+        checkout.list_directory(&root_path()?, None, 8, B, &cancelled_token),
         "cancelled directory listing"
     );
     cancelled!(
