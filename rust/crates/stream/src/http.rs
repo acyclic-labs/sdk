@@ -117,7 +117,7 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?;
         let success = response.status().is_success();
-        obs::record(span, "http.status", response.status().as_u16());
+        span.record("http.status", response.status().as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
@@ -135,7 +135,7 @@ impl HttpStream {
             }
             body.extend_from_slice(&chunk);
         }
-        obs::record(span, "bytes", body.len());
+        span.record("bytes", body.len());
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
             let code = value

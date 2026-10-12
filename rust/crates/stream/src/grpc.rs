@@ -1431,10 +1431,10 @@ impl Completion {
         self.finished = true;
         match kind {
             Some(kind) => obs::failed(&self.span, kind),
-            None => obs::record(&self.span, "outcome", "ok"),
+            None => { self.span.record("outcome", "ok"); }
         }
         if let Some(code) = code {
-            obs::record(&self.span, "rpc.code", code as u64);
+            self.span.record("rpc.code", code as u64);
         }
     }
     fn ok(&mut self) {
@@ -1473,7 +1473,7 @@ impl<T> RpcResponse<T> {
         decode: impl FnOnce(T) -> Result<U, StreamError>,
     ) -> Result<U, StreamError> {
         // Tonic unary completion already observed the successful trailers.
-        obs::record(&self.completion.span, "rpc.code", Code::Ok as u64);
+        self.completion.span.record("rpc.code", Code::Ok as u64);
         let result = decode(self.body);
         match &result {
             Ok(_) => self.completion.ok(),

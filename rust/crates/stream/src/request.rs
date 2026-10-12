@@ -28,7 +28,7 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
 /// Computes the canonical digest of a pre-normalized, caller-validated request.
 #[must_use]
 pub fn normalized_commit_digest(request: &CommitRequest) -> [u8; 32] {
-    memory::commit_digest(request, &mut memory::CommitDigestWork::Live(&memory::MemoryObserver::default()))
+    memory::commit_digest(request, &mut memory::DigestWork::Live(&memory::MemoryObserver::default()))
         .expect("ordinary hashing has no fallible observer")
 }
 

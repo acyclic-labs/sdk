@@ -795,7 +795,7 @@ impl LocalStream {
             if journal.synced >= journal.appended {
                 return Ok(());
             }
-            obs::record(span, "batch_len", journal.appended - journal.synced);
+            span.record("batch_len", journal.appended - journal.synced);
             (
                 journal.appended,
                 Arc::clone(&journal.sync),
@@ -1207,7 +1207,7 @@ impl LocalStream {
                     return Ok(());
                 }
                 persisted?;
-                if let Some(revision) = completion.revision { obs::record(&operation, "rev", revision); }
+                if let Some(revision) = completion.revision { operation.record("rev", revision); }
                 Ok(())
             }.await;
             MutationCompletion {
@@ -2299,8 +2299,8 @@ impl Journal {
             return Err(LocalStreamError::InvalidLimits);
         }
         self.file.seek(SeekFrom::End(0))?;
-        obs::record(span, "frames", operations);
-        obs::record(span, "bytes", valid_length);
+        span.record("frames", operations);
+        span.record("bytes", valid_length);
         self.operations = operations;
         self.bytes = valid_length;
         Ok(())

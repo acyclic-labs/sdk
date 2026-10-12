@@ -527,7 +527,7 @@ impl MemoryStream {
         observer.check()?;
         normalize_commit(request, observer)?;
         validate_commit_shape(request, observer)?;
-        let digest = commit_digest(request, &mut CommitDigestWork::Live(observer))?;
+        let digest = commit_digest(request, &mut DigestWork::Live(observer))?;
         let bytes = request.mutations.iter().map(|mutation| match mutation {
             CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
                 records.iter().map(OwnedBytes::len).sum::<usize>()
@@ -1074,7 +1074,7 @@ impl MemoryStream {
             if !unchanged { return prepared_failure(late, StreamError::InvalidArgument); }
         }
         // Record prepaid work without fresh admission.
-        let digest = commit_digest(request, &mut CommitDigestWork::Prepared {
+        let digest = commit_digest(request, &mut DigestWork::Prepared {
             meter: &meter, late: &mut late,
         }).expect("the prepared writer retains late causes instead of abandoning settlement");
         let ((), recorded) = prepared.write_operation.attempt(|| ());
@@ -2656,11 +2656,12 @@ pub(crate) fn append_digest(
     observer: &MemoryObserver,
 ) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
-    hash_update_observed(&mut hash, b"acyclic.stream.request.v1\0", observer)?;
-    hash_update_observed(&mut hash, b"append", observer)?;
-    hash_path_observed(&mut hash, &request.path, observer)?;
-    hash_update_observed(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes(), observer)?;
-    hash_records_observed(&mut hash, &request.records, observer)?;
+    let mut work = DigestWork::Live(observer);
+    work.update(&mut hash, b"acyclic.stream.request.v1\0")?;
+    work.update(&mut hash, b"append")?;
+    work.path(&mut hash, &request.path)?;
+    work.update(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes())?;
+    work.records(&mut hash, &request.records)?;
     Ok(hash.finalize().into())
 }
 
@@ -2701,23 +2702,7 @@ fn hash_update_observed(
     Ok(())
 }
 
-fn hash_path_observed(hash: &mut Sha256, path: &StreamPath, observer: &MemoryObserver) -> std::io::Result<()> {
-    hash_update_observed(hash, &(path.as_str().len() as u64).to_le_bytes(), observer)?;
-    hash_update_observed(hash, path.as_str().as_bytes(), observer)
-}
-
-fn hash_records_observed(hash: &mut Sha256, records: &[OwnedBytes], observer: &MemoryObserver) -> std::io::Result<()> {
-    hash_update_observed(hash, &(records.len() as u64).to_le_bytes(), observer)?;
-    for record in records {
-        observer.admit_item()?;
-        hash_update_observed(hash, &(record.len() as u64).to_le_bytes(), observer)?;
-        hash_update_observed(hash, record, observer)?;
-        observer.record_item()?;
-    }
-    Ok(())
-}
-
-pub(crate) enum CommitDigestWork<'a> {
+pub(crate) enum DigestWork<'a> {
     Live(&'a MemoryObserver),
     #[cfg(not(target_arch = "wasm32"))]
     Prepared {
@@ -2726,7 +2711,7 @@ pub(crate) enum CommitDigestWork<'a> {
     },
 }
 
-impl CommitDigestWork<'_> {
+impl DigestWork<'_> {
     fn admit_item(&self) -> std::io::Result<()> {
         match self {
             Self::Live(observer) => observer.admit_item(),
@@ -2776,7 +2761,7 @@ impl CommitDigestWork<'_> {
 }
 
 /// One canonical Commit writer.
-pub(crate) fn commit_digest(request: &CommitRequest, work: &mut CommitDigestWork<'_>) -> std::io::Result<[u8; 32]> {
+pub(crate) fn commit_digest(request: &CommitRequest, work: &mut DigestWork<'_>) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
     work.update(&mut hash, b"acyclic.stream.request.v1\0")?;
     work.update(&mut hash, b"commit")?;
@@ -3696,7 +3681,7 @@ mod tests {
             ).await?, Err(StreamError::IdempotencyMismatch)));
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocation_count);
             assert_eq!(provider.state.read().await.replays.get(request.idempotency_key.as_bytes())
-                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request, &mut CommitDigestWork::Live(&MemoryObserver::default()))?);
+                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request, &mut DigestWork::Live(&MemoryObserver::default()))?);
             assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
             assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
             drop(replay);
