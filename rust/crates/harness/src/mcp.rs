@@ -263,7 +263,7 @@ impl McpCatalog {
         installation: McpCatalogInstallation<'_>,
     ) -> Result<()> {
         self.validate_transport_binding(transport.as_ref())?;
-        installation.verifier.verify(installation.scope)?;
+        installation.verifier.verify(installation.scope, &mut None)?;
         if !installation
             .scope
             .capabilities()
@@ -752,7 +752,7 @@ mod tests {
         let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
         let missing = issuer.root("installer", Capabilities::default());
         let forged = foreign.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let approval = CatalogApproval {
             operation: OperationId::from_bytes([46; 16]),
@@ -866,7 +866,7 @@ mod tests {
             },
         );
         let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let mut replacement = catalog("2", &["a"]);
         replacement.schema_exposure = McpSchemaExposure::Selected { names: vec![] };

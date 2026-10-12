@@ -50,7 +50,7 @@ pub(crate) fn clone_value(
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
-    let retained = value_owned_bytes(&copied)?;
+    let retained = crate::core::value_owned_bytes(&copied)?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }
@@ -1063,7 +1063,7 @@ impl ToolRegistry {
         interaction_id: InteractionId,
         approval: &dyn ToolApprovalVerifier,
     ) -> Result<()> {
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if !scope
             .capabilities()
             .contains(&format!("tool:install:{}", tool.definition.name))
@@ -1463,7 +1463,7 @@ mod tests {
                     tool.clone(),
                     OperationId::from_bytes([9; 16]),
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     interaction_id,
                     &approval
                 )
@@ -1475,7 +1475,7 @@ mod tests {
                 tool,
                 operation_id,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 interaction_id,
                 &approval,
             )

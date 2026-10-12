@@ -16,7 +16,7 @@ use crate::{
 };
 use serde_json::Value;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for Value {
     fn diagnostic_label_bytes() -> u64 { 0 }
     fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::Root }
@@ -571,7 +571,7 @@ impl DurableToolRunner {
     pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &self.native_custody {
-            limits.validate_with_native_work(custody.work())?;
+            limits.validate(&mut Some(&mut crate::store::history::native_work_io(custody.work())?))?;
             self.limits = limits;
             return Ok(self);
         }

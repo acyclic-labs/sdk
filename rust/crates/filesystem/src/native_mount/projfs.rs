@@ -214,7 +214,7 @@ struct Runtime {
     /// Present only while a real lifecycle operation owns SDK callbacks.
     stop_meter: Mutex<super::NativeMountMeterActivation>,
     staging_custody: Mutex<Option<StagingDirectoryCustody>>,
-    metadata_edits: Arc<RetainedArcValue<KeyedLocks<(u64, u64)>>>,
+    metadata_edits: Arc<RetainedArcValue<Mutex<MemoMap<(u64, u64), Arc<RetainedArcValue<Mutex<()>>>>>>>,
     post_operation_failure: Arc<RetainedArcValue<Mutex<PostOperationFailures>>>,
     callbacks: CallbackGate,
     handler_budget: crate::WorkBudget,
@@ -1503,7 +1503,7 @@ struct Projector {
     /// Held by whatever writes directories into the projection, so a listing is written and recorded as one step.
     tree: Mutex<()>,
     /// Held for a path while what is written there is replaced or removed.
-    paths: KeyedLocks<MountPath>,
+    paths: Mutex<MemoMap<MountPath, Arc<RetainedArcValue<Mutex<()>>>>>,
     changed: Condvar,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     budget: crate::WorkBudget,
@@ -1697,7 +1697,7 @@ impl Projector {
             state: Mutex::new(ProjectorState::default()),
             notification: Mutex::new(None),
             tree: Mutex::new(()),
-            paths: KeyedLocks::default(),
+            paths: Mutex::new(MemoMap::default()),
             changed: Condvar::new(),
             worker: Mutex::new(None),
             budget: work.budget,
@@ -1932,7 +1932,7 @@ impl Projector {
     fn release_recorded(
         &self, projection: Projection<'_>, path: &MountPath,
     ) -> Result<(Option<Owned>, Release), NativeMountError> {
-        self.paths.with(path, projection, || {
+        with_keyed_lock(&self.paths, path, projection, || {
             let owned = {
                 let state = lock_recover(&self.state);
                 match state.written.get(path, projection)? {
@@ -2255,7 +2255,7 @@ impl Projector {
         let attempted = lock_recover(&self.state).pending.copy_owned(projection)?;
         for path in attempted.keys().rev() {
             examine_memo(projection)?;
-            self.paths.with(path, projection, || {
+            with_keyed_lock(&self.paths, path, projection, || {
                 let Some(written) = lock_recover(&self.state).pending.get(path, projection)?.cloned()
                     else { return Ok(()); };
                 let mut committed = None;
@@ -3938,7 +3938,7 @@ impl ProjFsSession {
             flush_gate: Mutex::new(()),
             stop_meter: Mutex::new(super::NativeMountMeterActivation::default()),
             staging_custody: Mutex::new(None),
-            metadata_edits: retained_arc(KeyedLocks::default(), meter)?,
+            metadata_edits: retained_arc(Mutex::new(MemoMap::default()), meter)?,
             post_operation_failure: retained_arc(Mutex::new(PostOperationFailures::default()), meter)?,
             callbacks: callback_gate,
             handler_budget,
@@ -4241,8 +4241,8 @@ impl ProjFsSession {
         drop(self.root_custody.take());
         if let Some(retirement) = self.retirement.as_mut() {
             let retired = match cleanup_wait {
-                Some(wait) => retirement.retire_with_cleanup_wait(wait),
-                None => retirement.retire_accepted_cleanup(),
+                Some(wait) => retirement.retire(Some(wait)),
+                None => retirement.retire(None),
             };
             lock_recover(&ingress.state).loan_custody = Some((
                 retirement.destination_guard.is_some(),
@@ -5214,40 +5214,31 @@ fn reparse_tag(
     Ok((tag, identity))
 }
 
-struct KeyedLocks<K>(Mutex<MemoMap<K, Arc<RetainedArcValue<Mutex<()>>>>>);
-
-impl<K> Default for KeyedLocks<K> {
-    fn default() -> Self {
-        Self(Mutex::new(MemoMap::default()))
-    }
-}
-
-impl<K: MemoKey> KeyedLocks<K> {
-    fn with<T>(
-        &self, key: &K, projection: Projection<'_>,
-        edit: impl FnOnce() -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        let lock = {
-            let mut locks = lock_recover(&self.0);
-            if let Some(lock) = locks.get(key, projection)? {
-                lock.clone()
-            } else {
-                let lock = retained_arc(Mutex::new(()), projection.work)?;
-                locks.insert(key, lock.clone(), projection)?;
-                lock
-            }
-        };
-        let outcome = (|| {
-            let _held = lock_with_meter(&lock, projection.work, HELD_RETRY)?;
-            edit()
-        })();
-        let retirement = {
-            let mut locks = lock_recover(&self.0);
-            if Arc::strong_count(&lock) == 2 { locks.remove(key, projection).map(drop) }
-            else { Ok(()) }
-        };
-        match outcome { Err(error) => Err(error), Ok(value) => retirement.map(|()| value) }
-    }
+fn with_keyed_lock<K: MemoKey, T>(
+    locks: &Mutex<MemoMap<K, Arc<RetainedArcValue<Mutex<()>>>>>,
+    key: &K, projection: Projection<'_>,
+    edit: impl FnOnce() -> Result<T, NativeMountError>,
+) -> Result<T, NativeMountError> {
+    let lock = {
+        let mut locks = lock_recover(locks);
+        if let Some(lock) = locks.get(key, projection)? {
+            lock.clone()
+        } else {
+            let lock = retained_arc(Mutex::new(()), projection.work)?;
+            locks.insert(key, lock.clone(), projection)?;
+            lock
+        }
+    };
+    let outcome = (|| {
+        let _held = lock_with_meter(&lock, projection.work, HELD_RETRY)?;
+        edit()
+    })();
+    let retirement = {
+        let mut locks = lock_recover(locks);
+        if Arc::strong_count(&lock) == 2 { locks.remove(key, projection).map(drop) }
+        else { Ok(()) }
+    };
+    match outcome { Err(error) => Err(error), Ok(value) => retirement.map(|()| value) }
 }
 
 fn lock_with_meter<'a, T>(
@@ -5973,12 +5964,6 @@ impl Drop for SourceListingLease<'_> {
     }
 }
 
-struct SourceListingPage {
-    entries: Vec<super::MountDirectoryEntry>,
-    next_cursor: Option<Vec<u8>>,
-    ownership: crate::demand::SourcePayloadOwnership,
-}
-
 fn source_insert<T>(
     projection: Projection<'_>, entries: &mut RetainedBuffer<Vec<T>>, index: usize, entry: T,
 ) -> Result<(), NativeMountError> {
@@ -6007,10 +5992,13 @@ fn source_listing(
         let page = projection.source.read_directory_with_meter(
             path, cursor.map(|index| seen_cursors[index].as_slice()), DIRECTORY_PAGE_SIZE, projection.work,
         ).map_err(detach_source_error)?;
-        let (entries_page, next_cursor, ownership) = page.into_parts();
-        let mut page = SourceListingPage { entries: entries_page, next_cursor, ownership };
+        // Declare ownership first so all page buffers drop before their claim.
+        let (mut ownership, mut page_entries, mut next_cursor) = {
+            let (entries, cursor, ownership) = page.into_parts();
+            (ownership, entries, cursor)
+        };
         {
-            let mut drain = page.entries.drain(..);
+            let mut drain = page_entries.drain(..);
             while drain.len() != 0 {
                 projection.work.charge(crate::WorkCounters {
                     bytes_copied: size_of::<super::MountDirectoryEntry>() as u64,
@@ -6018,7 +6006,7 @@ fn source_listing(
                 }).map_err(detach_work_error)?;
                 let entry = drain.next().expect("nonempty source page");
                 let lookup = MountLookup { node: entry.node, metadata: entry.metadata };
-                let ownership = page.ownership.split_owned_payload(entry.name.capacity() as u64).map_err(detach_work_error)?;
+                let ownership = ownership.split_owned_payload(entry.name.capacity() as u64).map_err(detach_work_error)?;
                 let component = RetainedBuffer::source_owned(entry.name, ownership, projection.custody.clone());
                 let Some(projected) = projected_entry(projection, path, component, lookup, entry.pin)? else { continue; };
                 let mut low = 0;
@@ -6042,8 +6030,8 @@ fn source_listing(
                 if !collision { source_insert(projection, &mut entries, low, projected)?; }
             }
         }
-        let Some(next) = page.next_cursor.take() else { break; };
-        let ownership = page.ownership.split_owned_payload(next.capacity() as u64).map_err(detach_work_error)?;
+        let Some(next) = next_cursor.take() else { break; };
+        let ownership = ownership.split_owned_payload(next.capacity() as u64).map_err(detach_work_error)?;
         let next = RetainedBuffer::source_owned(next, ownership, projection.custody.clone());
         let mut low = 0;
         let mut high = seen_cursors.len();
@@ -6346,7 +6334,7 @@ unsafe fn notification(
                 match lookup {
                     Some(_) if metadata_changed_since_open(baseline, host) => {
                         verify_source_write_work(projection.source, projection.work)?;
-                        runtime.metadata_edits.with(&(host.identity.device, host.identity.object), projection, || {
+                        with_keyed_lock(&runtime.metadata_edits, &(host.identity.device, host.identity.object), projection, || {
                             let Some(lookup) = projection.source.lookup_with_meter(&path, projection.work)
                                 .map_err(detach_source_error)? else {
                                 return defer_host_capture(projection.captures, &path, projection);
@@ -6844,14 +6832,14 @@ mod tests {
             destination: destination.clone(), writable: false,
         };
         let checkout = source.native_namespace_lineage().expect("stock borrowed lineage")
-            .owner.retain().downcast::<SharedCheckout<
+            .owner.downcast::<SharedCheckout<
                 crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend,
             >>().map_err(|_| "original stock checkout alias differs")?;
-        let mut old = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let mut old = crate::native_mount::prepare_native_mount_start(&meter)?
             .start_with_meter(request.clone(), source.clone(), &meter)?;
         old.stop(&CancellationToken::new())?;
         assert!(old.cleanup_state().cleanup_complete);
-        let refused = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let refused = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old, source.clone(), &meter).err().expect("old permanently retired capture gate is denied");
         let crate::NativeMountError::StartupFailed(refused) = refused else { panic!("original preborn failure custody"); };
         assert!(refused.retired_owner().expect("complete original outcome").cleanup_state().cleanup_complete);
@@ -6866,20 +6854,20 @@ mod tests {
             checkout, config, root_path, original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
             &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
-        let cold = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let cold = crate::native_mount::prepare_native_mount_start(&meter)?
             .start_with_meter(request, fresh.clone(), &meter).err().expect("cold raw ProjFS marker never grants authority");
         let crate::NativeMountError::StartupFailed(mut cold) = cold else { panic!("cold failure retains actual controls"); };
         assert!(matches!(cold.error(), crate::NativeMountError::UnsafeRecoveryDestination { .. }));
         cold.owner_mut().stop(&CancellationToken::new())?;
         let checkout = fresh.native_namespace_lineage().expect("original stock alias")
-            .owner.retain().downcast::<SharedCheckout<
+            .owner.downcast::<SharedCheckout<
                 crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend,
             >>().map_err(|_| "original stock checkout alias differs")?;
         let fresh = CheckoutMountSource::new_at_meter(
             checkout, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
             original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
-        let mut restarted = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let mut restarted = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old.expect("actual original issuer retained once"), fresh, &meter)?;
         assert_eq!(restarted.destination(), destination);
         restarted.stop(&CancellationToken::new())?;
@@ -7506,7 +7494,7 @@ mod tests {
         mut child: acyclic_native_runtime::ProcessTree,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let result = child.wait(std::time::Duration::from_secs(120));
-        child.terminate()?;
+        child.terminate(None)?;
         let status = result?;
         if status.success() {
             Ok(())

@@ -201,25 +201,46 @@ impl Inference {
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
     }
 
-    /// Prepare one immutable evaluation admission with a caller-known identity.
+    /// Prepares one immutable evaluation request with its identity allocated before effects.
     #[must_use]
-    pub fn evaluation(&self, spec: wire::EvaluationSpec) -> CreateEvaluation {
-        CreateEvaluation {
-            client: self.clone(),
-            request: wire::CreateEvaluationRequest {
-                identity: Some(self.identity()),
-                spec: Some(spec),
-            },
-        }
+    pub fn evaluation(&self, spec: wire::EvaluationSpec) -> wire::CreateEvaluationRequest {
+        wire::CreateEvaluationRequest { identity: Some(self.identity()), spec: Some(spec) }
     }
 
-    /// Recover one previously admitted evaluation without admitting new work.
-    #[must_use]
-    pub fn recover_evaluation(&self, evaluation_id: [u8; 16]) -> Evaluation {
-        Evaluation {
-            client: self.clone(),
-            evaluation_id,
-        }
+    /// Admits or reconciles the same prepared evaluation request.
+    #[tracing::instrument(
+        name = "acyclic.inference.evaluation.create",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn create_evaluation(&self, request: &wire::CreateEvaluationRequest) -> Result<[u8; 16], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            let expected = fixed(&request.identity.as_ref()
+                .ok_or(Error::Invalid("missing evaluation identity"))?.request_id)?;
+            let spec = request.spec.as_ref().ok_or(Error::Invalid("evaluation spec is absent"))?;
+            validate_evaluation_spec(spec)?;
+            let view = self.evaluations().create(self.request(request.clone())?).await?.into_inner();
+            validate_evaluation_admission(&view, expected, spec)?;
+            Ok(expected)
+        }.await)
+    }
+
+    /// Inspects one retained evaluation ID and validates its exact result evidence.
+    #[tracing::instrument(
+        name = "acyclic.inference.evaluation.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_evaluation(&self, evaluation_id: [u8; 16]) -> Result<wire::EvaluationView, Error> {
+        obs::finish(async {
+            nonzero(&evaluation_id)?;
+            let view = self.evaluations().inspect(self.request(wire::InspectEvaluationRequest {
+                evaluation_id: evaluation_id.to_vec(),
+            })?).await?.into_inner();
+            validate_evaluation_view(&view, evaluation_id)?;
+            Ok(view)
+        }.await)
     }
 
     /// Discover exact model revisions and the customer features currently admitted for them.
@@ -337,108 +358,6 @@ fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {
         return Err(Error::Invalid("message exceeds transport ceiling"));
     }
     Ok(())
-}
-
-/// Replayable immutable evaluation admission. Reusing this value reconciles the
-/// same candidate/suite/grader contract and never creates another evaluation.
-#[derive(Clone)]
-pub struct CreateEvaluation {
-    client: Inference,
-    request: wire::CreateEvaluationRequest,
-}
-
-impl CreateEvaluation {
-    /// Caller-known evaluation identity allocated before network effects.
-    pub fn id(&self) -> Result<[u8; 16], Error> {
-        fixed(
-            &self
-                .request
-                .identity
-                .as_ref()
-                .ok_or(Error::Invalid("missing evaluation identity"))?
-                .request_id,
-        )
-    }
-
-    /// Admit or reconcile this exact immutable evaluation.
-    #[tracing::instrument(
-        name = "acyclic.inference.evaluation.create",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<Evaluation, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let expected = self.id()?;
-                validate_evaluation_spec(
-                    self.request
-                        .spec
-                        .as_ref()
-                        .ok_or(Error::Invalid("evaluation spec is absent"))?,
-                )?;
-                let view = self
-                    .client
-                    .evaluations()
-                    .create(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_evaluation_admission(
-                    &view,
-                    expected,
-                    self.request
-                        .spec
-                        .as_ref()
-                        .ok_or(Error::Invalid("evaluation spec is absent"))?,
-                )?;
-                Ok(Evaluation {
-                    client: self.client.clone(),
-                    evaluation_id: expected,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Recoverable immutable evaluation handle.
-#[derive(Clone)]
-pub struct Evaluation {
-    client: Inference,
-    evaluation_id: [u8; 16],
-}
-
-impl Evaluation {
-    /// Stable caller-known evaluation identity.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 16] {
-        self.evaluation_id
-    }
-
-    /// Inspect durable evaluation state and exact result evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.evaluation.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::EvaluationView, Error> {
-        obs::finish(
-            async {
-                nonzero(&self.evaluation_id)?;
-                let view = self
-                    .client
-                    .evaluations()
-                    .inspect(self.client.request(wire::InspectEvaluationRequest {
-                        evaluation_id: self.evaluation_id.to_vec(),
-                    })?)
-                    .await?
-                    .into_inner();
-                validate_evaluation_view(&view, self.evaluation_id)?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
 }
 
 /// Replayable creation builder. Reusing it reconciles the same exact command.

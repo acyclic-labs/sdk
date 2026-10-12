@@ -53,7 +53,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 });
             }
             if !path.is_empty() {
-                crate::conversation::validate_content_path_with_native_work(path, work)?;
+                crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
             return handle.grant().require_directory_path_with_native_work(project, path, work);
         }

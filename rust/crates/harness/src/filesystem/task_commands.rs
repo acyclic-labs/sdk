@@ -879,24 +879,24 @@ where
                     let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native tool wait requires original observer",
                     ))?;
-                    let definition = self.runtime.tool_definition_with_native_work(&input.name, &input.revision, work)?;
+                    let definition = self.runtime.tool_definition(&input.name, &input.revision, Some(io))?;
                     let task = context.durable_task_id().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized, reason: "tool has no original task" })?;
                     let operation = super::task_runtime::execution_operation_with_native_work(task, command.operation_id, work)?;
                     let invocation = tool_invocation(context, operation, definition, input.arguments, Some(io))?;
-                    return self.runtime.tool_approval_ready_with_native_work(
-                        context, definition, &invocation, work,
+                    return self.runtime.tool_approval_ready(
+                        context, definition, &invocation, Some(io),
                     ).await;
                 }
                 let input: ToolTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
+                let definition = self.runtime.tool_definition(&input.name, &input.revision, None)?;
                 let task = context.durable_task_id().ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
                 let operation = super::task_runtime::execution_operation(task, command.operation_id);
                 let invocation = tool_invocation(context, operation, &definition, input.arguments, None)?;
                 Box::pin(
                     self.runtime
-                        .tool_approval_ready(context, &definition, &invocation),
+                        .tool_approval_ready(context, &definition, &invocation, None),
                 )
                 .await
             }
@@ -904,18 +904,18 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
                     let input: ModelTaskCommand = mail::decode_command(payload, Some(io))?;
-                    let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
+                    io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native model wait requires original observer",
                     ))?;
-                    return self.runtime.model_approval_ready_with_native_work(
-                        context, command.operation_id, &input, work,
+                    return self.runtime.model_approval_ready(
+                        context, command.operation_id, &input, Some(io),
                     ).await;
                 }
                 let input: ModelTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 Box::pin(
                     self.runtime
-                        .model_approval_ready(context, command.operation_id, &input),
+                        .model_approval_ready(context, command.operation_id, &input, None),
                 )
                 .await
             }
@@ -1144,7 +1144,7 @@ where
         io: &super::PreparationIo, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
         let input: ToolTaskCommand = mail::decode_command(payload, Some(io))?;
-        let definition = self.runtime.tool_definition_with_native_work(&input.name, &input.revision, work)?;
+        let definition = self.runtime.tool_definition(&input.name, &input.revision, Some(io))?;
         let (journal, operation) = self.runtime.execution_journal_with_native_work(task, fence, turn, work).await?;
         if reconciliation_only {
             let dispatched = std::sync::atomic::AtomicBool::new(false);
@@ -1267,7 +1267,7 @@ where
             .ok_or_else(|| Error::Unsupported("model command provider is not bound".into()))?;
         let execution = self
             .runtime
-            .stock_execution_with_output(
+            .stock_execution(
                 task,
                 fence,
                 turn,
@@ -1399,7 +1399,7 @@ where
     ) -> Result<TaskCommandProgress> {
         let input: ToolTaskCommand = serde_json::from_value(payload)
             .map_err(|error| Error::Invalid(format!("invalid tool command: {error}")))?;
-        let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
+        let definition = self.runtime.tool_definition(&input.name, &input.revision, None)?;
         let journal = self.runtime.execution_journal(task, fence, turn).await?;
         let context = self
             .runtime
@@ -1428,7 +1428,7 @@ where
             .run_with_context(
                 task,
                 operation,
-                definition,
+                definition.clone(),
                 input.arguments,
                 ToolContext::new(context, operation, operation.to_string())?,
             )
