@@ -232,7 +232,7 @@ impl ProjectionState {
             && entry.open_handles == 0
             && let Some(entry) = self.by_inode.remove(&inode)
         {
-            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
+            self.forget_file(entry.lookup.node.file_id, inode);
         }
         Ok(())
     }
