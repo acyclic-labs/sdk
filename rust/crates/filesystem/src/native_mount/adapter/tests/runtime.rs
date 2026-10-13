@@ -103,55 +103,36 @@ impl AsyncObjectStore for MetadataRefusingObjects {
 }
 
 #[test]
-fn callbacks_run_on_their_driver_threads_without_helper_threads()
--> Result<(), Box<dyn std::error::Error>> {
+fn callback_driver_thread_cases() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = CallbackRuntime::create()?;
-    let callers = (0..32)
-        .map(|index| {
-            let runtime = runtime.clone();
-            std::thread::Builder::new()
-                .name(format!("native-driver-{index}"))
-                .spawn(move || {
+    for nested in [false, true] {
+        let callers = (0..32)
+            .map(|_| {
+                let runtime = runtime.clone();
+                std::thread::spawn(move || {
+                    let driver = std::thread::current().id();
                     runtime.wait(|| async {
-                        // A real reactor wait parks the driver thread
-                        // until a runtime worker wakes it.
                         tokio::time::sleep(Duration::from_millis(1)).await;
-                        Ok::<_, MountSourceError>(
-                            std::thread::current().name().unwrap_or_default().to_owned(),
-                        )
+                        let observed = if nested {
+                            runtime.wait(|| async {
+                                tokio::time::sleep(Duration::from_millis(1)).await;
+                                Ok(std::thread::current().id())
+                            })?
+                        } else {
+                            std::thread::current().id()
+                        };
+                        assert_eq!(observed, driver);
+                        Ok(())
                     })
                 })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for (index, caller) in callers.into_iter().enumerate() {
-        assert_eq!(
+            })
+            .collect::<Vec<_>>();
+        for caller in callers {
             caller
                 .join()
-                .map_err(|_| std::io::Error::other("native driver thread panicked"))??,
-            format!("native-driver-{index}")
-        );
+                .map_err(|_| "native driver callback panicked")??;
+        }
     }
-    Ok(())
-}
-
-#[test]
-fn nested_callbacks_reenter_on_the_same_driver_thread() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = CallbackRuntime::create()?;
-    let nested = runtime.clone();
-    let observed = std::thread::Builder::new()
-        .name("native-driver".to_owned())
-        .spawn(move || {
-            runtime.wait(|| async {
-                tokio::task::yield_now().await;
-                nested.wait(|| async {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                    Ok(std::thread::current().name().unwrap_or_default().to_owned())
-                })
-            })
-        })?
-        .join()
-        .map_err(|_| "native driver callback panicked")??;
-    assert_eq!(observed, "native-driver");
     Ok(())
 }
 
