@@ -138,6 +138,40 @@ impl<P: StreamProvider> StreamAggregate<P> {
             None => ticket.validate_answer_bytes(&request.0, reference, &bytes, quota.work()),
         }
     }
+    pub(super) async fn validate_extension_admission_content(
+        &self,
+        action: &crate::core::Action,
+    ) -> Result<()> {
+        if let crate::core::Action::AppendCustom {
+            schema,
+            version,
+            content,
+        } = action
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("extension content verifier is not bound".into())
+            })?;
+            let bytes = verifier
+                .read(content, (content).descriptor().byte_length(), None)?
+                .await?;
+            self.reducer
+                .schemas()
+                .validate_bytes(schema, *version, content, &bytes)?;
+        }
+        if let crate::core::Action::ConfigureExtension { extension, content } = action {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("extension content verifier is not bound".into())
+            })?;
+            let bytes = verifier
+                .read(content, (content).descriptor().byte_length(), None)?
+                .await?;
+            self.reducer
+                .schemas()
+                .validate_configuration_bytes(extension, content, &bytes, None)?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn validate_admission_content(
         &self,
         action: &crate::core::Action,

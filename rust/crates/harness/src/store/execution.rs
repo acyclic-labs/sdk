@@ -132,47 +132,20 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .map(|(result, _)| result)
     }
 
-    pub(super) async fn plan_command(
-        &self,
-        command: &Command,
-        fresh_migration: bool,
-    ) -> Result<ApplyResult> {
-        if !fresh_migration {
-            if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
-                && let Some(effect) = self
-                    .effect(effect_id, default_projection_read_limits(), &mut None)
-                    .await
-                    .map(|state| state.map(|(state, _)| state))?
-            {
-                return self
-                    .reducer
-                    .plan_with_archived_effect(command, effect_id, &effect, &mut None)
-                    .map(|(result, _)| result);
-            }
+    pub(super) async fn plan_command(&self, command: &Command) -> Result<ApplyResult> {
+        if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
+            && let Some(effect) = self
+                .effect(effect_id, default_projection_read_limits(), &mut None)
+                .await
+                .map(|state| state.map(|(state, _)| state))?
+        {
             return self
                 .reducer
-                .plan_indexed_with_retained_quota(command, false, &mut None)
+                .plan_with_archived_effect(command, effect_id, &effect, &mut None)
                 .map(|(result, _)| result);
         }
-        if let Action::MigrateExtensionState {
-            name,
-            previous,
-            to_version,
-            content,
-        } = &command.action
-        {
-            self.reducer.preflight_extension_migration(
-                &command.scope,
-                command.expected_revision,
-                previous,
-                name,
-                *to_version,
-                content.volume(),
-            )?;
-        }
-        self.validate_admission_content(&command.action).await?;
         self.reducer
-            .plan_indexed_with_retained_quota(command, true, &mut None)
+            .plan_indexed_with_retained_quota(command, false, &mut None)
             .map(|(result, _)| result)
     }
 
