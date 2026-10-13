@@ -54,13 +54,11 @@ pub(in crate::bindings) struct MemoryOptions {
 
 #[wasm_bindgen]
 impl BrowserFs {
-    /// Exact backend facts selected during open.
     #[wasm_bindgen(getter)]
     pub fn capabilities(&self) -> Result<JsValue, JsValue> {
         serde_wasm_bindgen::to_value(&self.capabilities).map_err(js_error)
     }
 
-    /// Exact process-local immutable-object accelerator telemetry.
     #[wasm_bindgen(js_name = objectCacheStats)]
     pub fn object_cache_stats(&self) -> Result<JsValue, JsValue> {
         let stats = self
@@ -86,7 +84,6 @@ impl BrowserFs {
         .map_err(js_error)
     }
 
-    /// Discards resident acceleration without changing persistent state.
     #[wasm_bindgen(js_name = clearObjectCache)]
     pub fn clear_object_cache(&self) -> Result<(), JsValue> {
         self.engine
@@ -96,7 +93,6 @@ impl BrowserFs {
             .map_err(js_error)
     }
 
-    /// Creates both generation-fenced speculation engines over this
     #[wasm_bindgen(js_name = createSpeculation)]
     pub fn create_speculation(
         &self,
@@ -122,12 +118,10 @@ impl BrowserFs {
         })
     }
 
-    /// Releases browser handles. Durable state remains in the selected browser stores.
     pub fn close(&mut self) {
         self.engine.take();
     }
 
-    /// Creates or idempotently reopens one named workspace.
     #[wasm_bindgen(js_name = createWorkspace)]
     pub async fn create_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
         let engine = sdk_value!(unbounded_future!(
@@ -137,7 +131,6 @@ impl BrowserFs {
         Ok(BrowserWorkspace { engine })
     }
 
-    /// Opens one existing named workspace.
     #[wasm_bindgen(js_name = openWorkspace)]
     pub async fn open_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
         let engine = sdk_value!(unbounded_future!(
@@ -147,13 +140,11 @@ impl BrowserFs {
         Ok(BrowserWorkspace { engine })
     }
 
-    /// Creates one independently configured volume.
     #[wasm_bindgen(js_name = createVolume)]
     pub async fn create_volume(&self, options: JsValue) -> Result<BrowserVolume, JsValue> {
         self.create_volume_internal(None, options).await
     }
 
-    /// Idempotently creates one caller-selected volume identity.
     #[wasm_bindgen(js_name = createVolumeWithId)]
     pub async fn create_volume_with_id(
         &self,
@@ -203,7 +194,6 @@ impl BrowserFs {
         })
     }
 
-    /// Opens one previously created or restored persistent volume.
     #[wasm_bindgen(js_name = openVolume)]
     pub async fn open_volume(&self, volume_id: Vec<u8>) -> Result<BrowserVolume, JsValue> {
         let volume_id = VolumeId::from_bytes(fixed_16(&volume_id)?);
@@ -226,7 +216,6 @@ impl BrowserFs {
         })
     }
 
-    /// Exports one exact authenticated immutable object for resumable transfer.
     #[wasm_bindgen(js_name = exportObject)]
     pub async fn export_object(
         &self,
@@ -253,7 +242,6 @@ impl BrowserFs {
         })
     }
 
-    /// Idempotently imports one immutable object under its authenticated identity.
     #[wasm_bindgen(js_name = importObject)]
     pub async fn import_object(
         &self,
@@ -278,7 +266,6 @@ impl BrowserFs {
         mutation_value(receipt.work)
     }
 
-    /// Exports one bounded manifest-ordered immutable-object page.
     #[wasm_bindgen(js_name = exportGenerationBatch)]
     pub async fn export_generation_batch(
         &self,
@@ -320,7 +307,6 @@ impl BrowserFs {
         })
     }
 
-    /// Idempotently imports one manifest-aligned immutable-object page.
     #[wasm_bindgen(js_name = importGenerationBatch)]
     pub async fn import_generation_batch(
         &self,
@@ -360,7 +346,6 @@ impl BrowserFs {
         })
     }
 
-    /// Restores authority only after authenticating a complete imported closure.
     #[wasm_bindgen(js_name = restoreVolume)]
     pub async fn restore_volume(
         &self,
@@ -430,13 +415,33 @@ pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
         CachedObjectStore::new(objects, object_cache).map_err(js_error)?,
         EmbeddedCapabilities { durable: true },
     );
-    Ok(BrowserFs {
+    Ok(browser_fs(engine, "indexeddb", immutable_objects))
+}
+
+/// Opens the deterministic process-local reference backend.
+#[wasm_bindgen(js_name = openMemoryFs)]
+pub fn open_memory_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
+    let options: MemoryOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
+    let engine = memory_engine(
+        options.maximum_object_bytes,
+        options.maximum_memory_bytes,
+        browser_object_cache_options(&options.object_cache),
+    )?;
+    Ok(browser_fs(engine, "memory", "memory"))
+}
+
+pub(in crate::bindings) fn browser_fs(
+    engine: Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
+    authority: &'static str,
+    immutable_objects: &'static str,
+) -> BrowserFs {
+    BrowserFs {
         engine: Some(engine),
         capabilities: Capabilities {
             version: env!("CARGO_PKG_VERSION"),
             platform: "browser",
             architecture: "wasm32",
-            authority: "indexeddb",
+            authority,
             immutable_objects,
             native_mount: "none",
             writable_native_mount: false,
@@ -446,39 +451,7 @@ pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
             native_watch_root_identity_fencing: false,
             provider_process_io_observable: false,
         },
-    })
-}
-
-/// Opens the deterministic process-local reference backend.
-#[wasm_bindgen(js_name = openMemoryFs)]
-pub fn open_memory_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
-    let options: MemoryOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
-    if options.maximum_object_bytes == 0
-        || options.maximum_memory_bytes < options.maximum_object_bytes
-    {
-        return Err(js_error("memory filesystem options are invalid"));
     }
-    Ok(BrowserFs {
-        engine: Some(memory_engine(
-            options.maximum_object_bytes,
-            options.maximum_memory_bytes,
-            browser_object_cache_options(&options.object_cache),
-        )?),
-        capabilities: Capabilities {
-            version: env!("CARGO_PKG_VERSION"),
-            platform: "browser",
-            architecture: "wasm32",
-            authority: "memory",
-            immutable_objects: "memory",
-            native_mount: "none",
-            writable_native_mount: false,
-            native_watch: false,
-            native_watch_backend: "none".to_owned(),
-            native_watch_persistent_restart: false,
-            native_watch_root_identity_fencing: false,
-            provider_process_io_observable: false,
-        },
-    })
 }
 
 pub(in crate::bindings) fn memory_engine(

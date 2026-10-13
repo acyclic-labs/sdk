@@ -352,7 +352,7 @@ impl OperationSpec {
             resources,
             placement,
             orchestration,
-            state: crate::core::copy_file(&self.state, quota)?,
+            state: self.state.clone_in_quota(quota)?,
         })
     }
 }

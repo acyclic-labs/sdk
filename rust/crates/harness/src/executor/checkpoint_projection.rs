@@ -1,11 +1,8 @@
 use super::*;
+use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized, Unsupported};
 
 /// Imports a checkpoint and its complete canonical delta through a logical cut.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "combines the existing owner-bound checkpoint, indexed history and content providers without constructing replacement authority"
-)]
+#[allow(clippy::too_many_arguments)]
 pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
@@ -25,7 +22,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     if history_limits.maximum_events == 0 || history_limits.maximum_bytes == 0 {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Invalid,
+            Invalid,
             "checkpoint delta bounds are invalid",
         ));
     }
@@ -45,11 +42,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         .checked_sub(after_sequence)
         .filter(|count| *count <= u64::from(history_limits.maximum_events - 1))
         .ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "checkpoint delta exceeds history work bound",
-            )
+            stock_boundary(io, Invalid, "checkpoint delta exceeds history work bound")
         })?;
     retained.current_input_index = None;
     if count == 0 {
@@ -60,140 +53,65 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         .checked_sub(consumed)
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "checkpoint delta exceeds history byte bound",
-            )
+            stock_boundary(io, Invalid, "checkpoint delta exceeds history byte bound")
         })?;
-    let range_limits = crate::store::HistoryReadLimits {
-        maximum_events: history_limits.maximum_events - 1,
-        maximum_bytes: remaining_bytes,
-    };
     #[cfg(feature = "filesystem")]
-    let _records_hold;
+    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
-    let _view_workspace;
-    let view = match io {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        Some(io) if io.original_native_work().is_some() => {
-            let before = io.owned_bytes()?;
-            let mut observer =
-                crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
-                    io.original_native_work()
-                        .expect("native branch retains original work"),
-                )?);
-            let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-            let records = history
-                .conversation_range(
-                    cursor,
-                    after_sequence,
-                    through_sequence,
-                    range_limits,
-                    &mut work,
-                )
-                .await?;
-            let (view, _) = crate::conversation::ConversationState::from_wire(
-                crate::conversation::ConversationStateWire {
-                    agent: None,
-                    messages: records,
-                    archived_prefix: None,
-                },
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut work,
-            )?;
-            observer.return_staged_output()?;
-            io.absorb_native_custody(observer.into_custody()?)?;
-            _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
-            _view_workspace = None;
-            view
-        }
-        _ => {
-            let records = match io {
-                #[cfg(feature = "filesystem")]
-                Some(io) => {
-                    let before = io.owned_bytes()?;
-                    let mut observer = io.history_io();
-                    let value = history
-                        .conversation_range(
-                            cursor,
-                            after_sequence,
-                            through_sequence,
-                            range_limits,
-                            &mut Some(&mut observer),
-                        )
-                        .await?;
-                    _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
-                    value
-                }
-                _ => {
-                    #[cfg(feature = "filesystem")]
-                    {
-                        _records_hold = None;
-                    }
-                    history
-                        .conversation_range(
-                            cursor,
-                            after_sequence,
-                            through_sequence,
-                            range_limits,
-                            &mut None,
-                        )
-                        .await?
-                }
-            };
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let before = io.owned_bytes()?;
-                let mut observer = io.history_io();
-                let (view, _) = crate::conversation::ConversationState::from_wire(
-                    crate::conversation::ConversationStateWire {
-                        agent: None,
-                        messages: records,
-                        archived_prefix: None,
-                    },
-                    acyclic_stream::MAX_RECORD_BYTES as u64,
-                    &mut Some(&mut observer),
-                )?;
-                _view_workspace = Some(io.guard_owned(io.owned_bytes()? - before)?);
-                view
-            } else {
-                _view_workspace = None;
-                crate::conversation::ConversationState::from_wire(
-                    crate::conversation::ConversationStateWire {
-                        agent: None,
-                        messages: records,
-                        archived_prefix: None,
-                    },
-                    acyclic_stream::MAX_RECORD_BYTES as u64,
-                    &mut None,
-                )
-                .map(|(state, _)| state)?
-            }
-            #[cfg(not(feature = "filesystem"))]
-            crate::conversation::ConversationState::from_wire(
-                crate::conversation::ConversationStateWire {
-                    agent: None,
-                    messages: records,
-                    archived_prefix: None,
-                },
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut None,
-            )
-            .map(|(state, _)| state)?
-        }
-    };
+    let _view_hold;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io.filter(|io| !stock_is_native(Some(io))) {
-        let bytes = (view.messages().len() * std::mem::size_of::<uuid::Uuid>()) as u64;
-        io.retain_owned(bytes)?;
-        io.allocation_attempt(bytes)?;
+    let mut borrowed = io.map(PreparationIo::history_io);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut native = io
+        .and_then(PreparationIo::original_native_work)
+        .map(PreparationIo::from_native_work)
+        .transpose()?
+        .map(crate::store::HistoryWork::new);
+    #[cfg(feature = "filesystem")]
+    let mut work = borrowed
+        .as_mut()
+        .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = native.as_mut() {
+        work = Some(native);
     }
-    let mut message_ids = if stock_is_native(io) {
-        Vec::new()
-    } else {
-        Vec::with_capacity(view.messages().len())
-    };
+    #[cfg(not(feature = "filesystem"))]
+    let mut work = None;
+    let records = history
+        .conversation_range(
+            cursor,
+            after_sequence,
+            through_sequence,
+            crate::store::HistoryReadLimits {
+                maximum_events: history_limits.maximum_events - 1,
+                maximum_bytes: remaining_bytes,
+            },
+            &mut work,
+        )
+        .await?;
+    let (view, _) = crate::conversation::ConversationState::from_wire(
+        crate::conversation::ConversationStateWire {
+            agent: None,
+            messages: records,
+            archived_prefix: None,
+        },
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+        &mut work,
+    )?;
+    #[cfg(feature = "filesystem")]
+    {
+        drop(work);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(mut native) = native {
+            native.return_staged_output()?;
+            io.expect("native observer has an original IO")
+                .absorb_native_custody(native.into_custody()?)?;
+        }
+        _view_hold = io
+            .map(|io| io.guard_owned(io.owned_bytes()? - before))
+            .transpose()?;
+    }
+    let mut message_ids = Vec::new();
     for message in view.messages() {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
@@ -210,19 +128,11 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 | crate::conversation::MessageKind::ToolCall
                 | crate::conversation::MessageKind::ToolResult
         ) {
-            if stock_is_native(io) {
-                stock_vec_push(&mut message_ids, message.id, io)?;
-            } else {
-                message_ids.push(message.id);
-            }
+            stock_vec_push(&mut message_ids, message.id, io)?;
         }
     }
     #[cfg(feature = "filesystem")]
-    let message_ids_bytes = if stock_is_native(io) {
-        message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()
-    } else {
-        view.messages().len() * std::mem::size_of::<uuid::Uuid>()
-    };
+    let message_ids_bytes = (message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64;
     let resolver = CheckpointDeltaResolver {
         inner: resolver,
         scope,
@@ -266,7 +176,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     drop(selected.selection);
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        io.release(message_ids_bytes as u64)?;
+        io.release(message_ids_bytes)?;
     }
     let retained = crate::context::apply_context_projection(
         retained,
@@ -287,7 +197,7 @@ impl CheckpointDeltaResolver<'_> {
         })? {
             return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unauthorized,
+                Unauthorized,
                 "attenuated task cannot read checkpoint delta",
             ));
         }
@@ -303,22 +213,14 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
     ) -> Result<bool> {
         self.inner.supports_read(volume, io)
     }
-
     fn verify<'a>(
         &'a self,
         _: &'a FileRef,
         _: u64,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "projection-only reader",
-            ))
-        })
+        Err(stock_boundary(io, Unsupported, "projection-only reader"))
     }
-
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
@@ -330,14 +232,14 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
         if file.descriptor().byte_length() > maximum_bytes {
             return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                Invalid,
                 "checkpoint delta exceeds render bound",
             ));
         }
         if !self.inner.supports_read(file.volume(), io)? {
             return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unsupported,
+                Unsupported,
                 "checkpoint delta reader has no bounded capability",
             ));
         }
@@ -361,7 +263,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
                 if items.len() > self.limits.attachments {
                     return Err(stock_boundary(
                         io,
-                        crate::wire::ErrorCode::Invalid,
+                        Invalid,
                         "checkpoint delta manifest exceeds item bound",
                     ));
                 }
@@ -394,7 +296,7 @@ pub async fn load_canonical_checkpoint(
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
     envelope.0.validate(limits, io)?;
     #[cfg(feature = "filesystem")]
-    let publication_before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _publication_hold;
     let publication =
@@ -402,13 +304,13 @@ pub async fn load_canonical_checkpoint(
     #[cfg(feature = "filesystem")]
     {
         _publication_hold = io
-            .map(|io| io.guard_owned(io.owned_bytes()? - publication_before))
+            .map(|io| io.guard_owned(io.owned_bytes()? - before))
             .transpose()?;
     }
     if publication.as_ref() != Some(reference) {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Conflict,
+            Conflict,
             "checkpoint is not published by its owning execution",
         ));
     }
@@ -436,7 +338,7 @@ pub async fn load_canonical_checkpoint(
         {
             return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unauthorized,
+                Unauthorized,
                 "attenuated task cannot read checkpoint metadata",
             ));
         }
@@ -460,7 +362,7 @@ pub async fn load_canonical_checkpoint(
     {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Storage,
+            Storage,
             "canonical checkpoint summary belongs to another step",
         ));
     }

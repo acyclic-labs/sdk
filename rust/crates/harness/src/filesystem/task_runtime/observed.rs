@@ -66,7 +66,7 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker observation requires original native work",
             })?;
-            let (admission, custody) = self.host.observe_admission_with_native_work(task, work).await?;
+            let (admission, custody) = self.host.observe_admission_with_native_work(task, work)?.await?;
             io.absorb_native_custody(custody)?;
             return Ok(admission);
         }
@@ -80,7 +80,7 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker outcome requires original native work",
             })?;
-            let (outcome, custody) = self.host.outcome_with_native_work(task, work).await?;
+            let (outcome, custody) = self.host.outcome_with_native_work(task, work)?.await?;
             io.absorb_native_custody(custody)?;
             return Ok(outcome);
         }
@@ -94,7 +94,7 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker owner requires original native work",
             })?;
-            let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
+            let owner = self.host.journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
             return owner.verify(settlement, &mut Some(&mut crate::store::HistoryWork::new(
                         crate::filesystem::PreparationIo::from_native_work(work)?,
                     ))).await;

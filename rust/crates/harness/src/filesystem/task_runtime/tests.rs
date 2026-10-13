@@ -1443,11 +1443,12 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let witness = reopened
         .readonly_workflow_journal_with_native_work(task, &work)
         .await?;
+    let replay_io = crate::executor::PreparationIo::from_native_work(&work)?;
     let records =
-        crate::workflow::WorkflowJournal::replay_with_native_work(witness.as_ref(), 0, 64, &work)?
+        crate::workflow::WorkflowJournal::replay(witness.as_ref(), 0, 64, Some(&replay_io))?
             .await?;
     assert!(!records.0.is_empty());
-    assert!(records.1.work().shares_ledger(&work));
+    assert!(records.1.as_ref().unwrap().work().shares_ledger(&work));
     drop(records);
     drop(witness);
     drop(attempt);

@@ -72,8 +72,6 @@ pub enum JsonValueSchema {
     WorkflowAdmission,
     /// Value reachability for MachineCheckpoint.
     MachineCheckpoint,
-    /// Value reachability for ProjectedToolInvocation.
-    ProjectedToolInvocation,
     /// Value reachability for ToolResultContent.
     ToolResultContent,
     /// Value reachability for ResourcePreparationRequest.

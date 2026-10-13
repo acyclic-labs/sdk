@@ -47,7 +47,7 @@ impl Reducer {
                     schema_digest: binding.schema_digest,
                     implementation_digest: binding.implementation_digest,
                     fork_policy: binding.fork_policy,
-                    content: copying::copy_file(content, quota)?,
+                    content: content.clone_in_quota(quota)?,
                 };
                 record.validate()?;
                 Ok(EventPayload::Custom { record })
@@ -80,7 +80,7 @@ impl Reducer {
                     schema_digest: binding.schema_digest,
                     implementation_digest: binding.implementation_digest,
                     fork_policy: binding.fork_policy,
-                    content: copying::copy_file(content, quota)?,
+                    content: content.clone_in_quota(quota)?,
                 };
                 record.validate()?;
                 Ok(EventPayload::ExtensionStateMigrated {
@@ -196,9 +196,9 @@ impl Reducer {
                     provider: copying::copy_text(provider, quota)?,
                     guarantee: *guarantee,
                     effect_kind: copying::copy_text(effect_kind, quota)?,
-                    request: copying::copy_file(request, quota)?,
+                    request: request.clone_in_quota(quota)?,
                     request_digest,
-                    result_schema: copying::copy_file(result_schema, quota)?,
+                    result_schema: result_schema.clone_in_quota(quota)?,
                     result_schema_digest,
                 })
             }
@@ -265,7 +265,11 @@ impl Reducer {
                     .conversation
                     .validate_append(message, &mut None)?;
                 Ok(EventPayload::ConversationMessageAppended {
-                    message: copying::copy_boxed(message.as_ref(), quota, copying::copy_message)?,
+                    message: copying::copy_boxed(
+                        message.as_ref(),
+                        quota,
+                        ConversationMessage::clone_in_quota,
+                    )?,
                 })
             }
             Action::SelectModelContext { selection } => {

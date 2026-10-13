@@ -276,6 +276,7 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
     let from = root.join("from");
     let to = root.join("to");
     let context = NativeEventContext {
+        _root_allocation: None,
         root: root.clone(),
         root_identity: NativeRootIdentity {
             device: 0,
@@ -451,6 +452,7 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
     let queued = Arc::new(AtomicU32::new(0));
     let shared = Arc::new(Mutex::new(SharedState::new(None)));
     let context = NativeEventContext {
+        _root_allocation: None,
         root: root.clone(),
         root_identity: NativeRootIdentity {
             device: 0,
@@ -459,7 +461,6 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
         maximum_queued_changes: 1,
-        _root_allocation: None,
     };
     for name in ["a", "b"] {
         accept_native_event(

@@ -458,7 +458,7 @@ impl PiNativeCommandHost {
             let effect = entry.handles.lock().await.effect.clone().ok_or_else(|| {
                 unauthorized("Pi selected child has not entered its original native operation")
             })?;
-            let outcome = effect.owner.outcome_with_native_work(&meter).await?;
+            let outcome = effect.owner.outcome_with_native_work(&meter)?.await?;
             if outcome.0.is_none() {
                 let original_work = entry
                     .handles

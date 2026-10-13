@@ -82,7 +82,7 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
             |_| Ok(()),
         )
         .await?;
-    let record = workflow.replay(0, 1).await?.pop().unwrap();
+    let record = workflow.replay(0, 1, None)?.await?.0.pop().unwrap();
     assert_eq!(
         workflow
             .commit(0, record.idempotency_key.clone(), record.clone())
@@ -90,7 +90,6 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
         record
     );
     let mut wrong = record.clone();
-    wrong.next.state = json!(1);
     wrong.transition.state = json!(1);
     assert!(
         workflow
@@ -129,7 +128,7 @@ async fn b15_replacement_rejects_stale_publications() -> Result<()> {
             |_| Ok(()),
         )
         .await?;
-    let record = workflow.replay(0, 1).await?.pop().unwrap();
+    let record = workflow.replay(0, 1, None)?.await?.0.pop().unwrap();
     let attempt = OperationId::from_bytes([3; 16]);
     let journal = f.execution(f.owner(1).await?, attempt)?;
     journal
@@ -548,5 +547,35 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
             .max_steps,
         Some(1)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_deadline_rejects_fresh_execution_publication() -> Result<()> {
+    let f = fixture::fixture().await?;
+    let mut admission = f.admission(1, json!(0));
+    admission.run_limits.deadline_epoch_ms = Some(1);
+    f.host.admit(admission).await?;
+    f.claim(1, "expired").await?;
+    let operation = OperationId::from_bytes([2; 16]);
+    let journal = f.execution(f.owner(1).await?, operation)?;
+    assert!(matches!(
+        journal
+            .append(
+                operation,
+                "started",
+                &ExecutionEvent::Started {
+                    request_digest: [9; 32]
+                },
+                None
+            )?
+            .await,
+        Err(Error::Indeterminate(_))
+    ));
+    assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
+    assert!(!matches!(
+        f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+        crate::distributed::WorkPull::Idle
+    ));
     Ok(())
 }

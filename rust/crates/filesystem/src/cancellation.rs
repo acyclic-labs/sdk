@@ -176,16 +176,6 @@ impl CancellationToken {
         Self::default()
     }
 
-    pub(crate) fn new_measured(
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut crate::WorkCounters,
-        budget: crate::WorkBudget,
-    ) -> Result<Self, crate::WorkError> {
-        allocations.claim_elements::<CancellationState>(1, work, budget)
-            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        Ok(Self::new())
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
@@ -199,9 +189,7 @@ impl CancellationToken {
         }) })
     }
 
-    /// Links one operation-owned stop to its original parent without letting
-    /// local stop cancel that parent. All metadata and the parent subscription
-    /// use the parent's original invocation, before a caller creates its view.
+    /// Links a child stop without letting it cancel its parent.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn linked_child_with_native_work(
         parent: &Self, original: &crate::NativeMaterializationWork,
@@ -239,10 +227,6 @@ impl CancellationToken {
         Ok(child)
     }
 
-    pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        std::mem::size_of::<CancellationState>() as u64
-    }
-
     pub(crate) fn same_state(&self, other: &Self) -> bool { Arc::ptr_eq(&self.state, &other.state) }
 
     /// Atomically marks the token cancelled and wakes every registered waiter.
@@ -256,14 +240,7 @@ impl CancellationToken {
         self.cancel_inner(Some((work, budget)))
     }
 
-    pub(crate) fn prepare_cancel_measured(
-        &self, work: &mut crate::WorkCounters, budget: crate::WorkBudget,
-    ) -> Result<PreparedCancellation, crate::WorkError> {
-        self.prepare_cancel(Some((work, budget)))
-    }
-
-    /// Only the physical, non-callback commit belongs inside this closure.
-    /// Cancellation and this commit use the original token's existing lock.
+    /// Serializes a physical commit with cancellation.
     #[cfg(any(feature = "native-mount", feature = "native-watch"))]
     pub(crate) fn commit_if_live<T>(
         &self, commit: impl FnOnce() -> T,

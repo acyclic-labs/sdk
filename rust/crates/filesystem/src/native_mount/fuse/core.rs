@@ -55,7 +55,6 @@ pub(super) struct ProjectionCore {
     pub(super) state: Mutex<ProjectionState>,
     pub(super) names: RwLock<()>,
     pub(super) invalidation: Condvar,
-    pub(super) page_stored: Condvar,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
     pub(super) notifier: OnceLock<Notifier>,
@@ -107,6 +106,12 @@ impl Drop for NativeMountWorkScope {
 }
 
 impl ProjectionCore {
+    pub(super) fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        self.invalidation.notify_all();
+    }
+
     pub(super) fn new(
         source: Arc<dyn MountFilesystem>,
         root: MountLookup,
@@ -169,7 +174,6 @@ impl ProjectionCore {
             state: Mutex::new(state),
             names: RwLock::new(()),
             invalidation: Condvar::new(),
-            page_stored: Condvar::new(),
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),
             notifier: OnceLock::new(),
@@ -255,34 +259,22 @@ impl ProjectionCore {
         }
     }
 
-    pub(super) fn active_meter(&self) -> Option<crate::NativeMaterializationWork> {
-        self.startup_meter
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .upgrade()
-    }
-
     pub(super) fn callback_meter(
         &self,
     ) -> Result<Option<crate::NativeMaterializationWork>, NativeMountError> {
-        let active = self.active_meter();
+        let active = self
+            .startup_meter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .upgrade();
         let candidate = active.as_ref().or(self.source_original_work.as_ref());
         let current = fuse_native_source_original(self.source.as_ref(), candidate)?;
-        if self.source_original_work.is_some() != current.is_some() {
-            return Err(NativeMountError::ControlPending);
-        }
-        if let Some(original) = &self.source_original_work {
-            let current = current
-                .as_ref()
-                .expect("installed native original remains present");
-            if !fuse_same_native_view(original, current) {
-                return Err(NativeMountError::ControlPending);
-            }
+        match (&self.source_original_work, &current) {
+            (None, None) => (),
+            (Some(original), Some(current)) if fuse_same_native_view(original, current) => (),
+            _ => return Err(NativeMountError::ControlPending),
         }
         let selected = candidate.cloned();
-        if let Some(work) = &selected {
-            work.admit(crate::WorkCounters::UNCHARGED)?;
-        }
         let current_guard = self.source.native_callback_guard();
         match (&self.callback_guard, &current_guard) {
             (None, None) => {}
@@ -292,25 +284,6 @@ impl ProjectionCore {
             _ => return Err(NativeMountError::ControlPending),
         }
         Ok(selected)
-    }
-
-    pub(super) fn claim_content(
-        &self,
-        file_id: crate::FileId,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<ContentClaim<'_>, NativeMountError> {
-        work.admit(crate::WorkCounters::UNCHARGED)?;
-        let mut state = self.state()?;
-        while state.page_stores.in_flight.contains_key(&file_id) {
-            work.admit(crate::WorkCounters::UNCHARGED)?;
-            state = self.page_stored.wait(state).map_err(|_| libc::EIO)?;
-            work.admit(crate::WorkCounters::UNCHARGED)?;
-        }
-        state.page_stores.claim(file_id, work)?;
-        Ok(ContentClaim {
-            core: self,
-            file_id,
-        })
     }
 
     pub(super) fn request<T>(
@@ -364,22 +337,10 @@ impl ProjectionCore {
     }
 }
 
-pub(super) struct ContentClaim<'a> {
-    pub(super) core: &'a ProjectionCore,
-    pub(super) file_id: crate::FileId,
-}
-
-impl Drop for ContentClaim<'_> {
-    fn drop(&mut self) {
-        self.core
-            .state_to_finish()
-            .page_stores
-            .release(self.file_id);
-    }
-}
-
 impl ViewObserver for ProjectionCore {
-    fn allocation_custody(&self) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
+    fn allocation_custody(
+        &self,
+    ) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
         Some(self.allocation_custody.clone())
     }
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {

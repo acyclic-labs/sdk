@@ -315,8 +315,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     &key,
                     self.preparer.resolver.as_ref(),
                     self.io.as_ref(),
-                    self.task_preparation.map(Arc::as_ref),
-                    #[cfg(not(target_arch = "wasm32"))]
                     self.task_preparation,
                 )
                 .await?;
@@ -476,7 +474,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         )?;
         if let Some(preparation) = &self.task_preparation {
             for grant in &report.reference_grants {
-                require_reference_donor(&preparation.origin().source_grants, grant, self.io.as_ref())?;
+                require_reference_donor(
+                    &preparation.origin().source_grants,
+                    grant,
+                    self.io.as_ref(),
+                )?;
                 if grant.reader == report.request.child_agent
                     && !{
                         let key = match self.io.as_ref() {

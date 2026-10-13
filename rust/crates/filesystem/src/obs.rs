@@ -1,13 +1,6 @@
-//! Tracing glue for `docs/observability.md`. Each operation owns its completion
-//! span and dispatcher; filtered children cannot overwrite caller fields.
-//! These helpers erase tracing on wasm32, which never links `tracing`.
-//!
-//! Only [`Observe::observe_on`] emits the `acyclic.work` event, and only facade
-//! operations returning an [`OperationReceipt`] call it, while no observed
-//! facade operation calls another. Summing those events therefore counts each
-//! unit of work once; nested spans record just the `work.*` summary fields.
+//! Operation tracing on native hosts.
 
-use crate::performance::{MeasuredResult, OperationReceipt, WorkCounters};
+use crate::performance::{MeasuredResult, WorkCounters};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::field::Empty;
@@ -62,8 +55,7 @@ pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
     job()
 }
 
-/// Captures ancestry at a boundary with no operation span of its own.
-/// This context is for worker attribution, never for recording completion.
+/// Captures caller ancestry for worker attribution.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn caller_context() -> OperationSpan {
     OperationSpan::new(tracing::Span::current())
@@ -81,8 +73,7 @@ pub(crate) fn in_context<T>(
     move || scope(&span, job)
 }
 
-/// A failure with a stable, path-free name to record as `error.kind`: its
-/// variant name, from `strum::IntoStaticStr`.
+/// A stable, path-free error variant name.
 pub(crate) trait ErrorKind {
     #[cfg_attr(
         target_arch = "wasm32",
@@ -100,8 +91,7 @@ where
     }
 }
 
-/// Records on an operation's owned span, even when a filter disabled it.
-/// Falling back to `Span::current()` would overwrite the caller's outcome.
+/// Records the result on its operation span.
 #[cfg_attr(
     target_arch = "wasm32",
     allow(unused_variables, reason = "WASM records no spans")
@@ -148,29 +138,6 @@ pub(crate) fn measured_on_with_kind<T, E>(
     result
 }
 
-/// Records the same operation summary for a native inline failure prefix.
-/// Failure observation does not require allocating a counter box.
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(unused_variables, reason = "WASM records no spans")
-)]
-pub(crate) fn measured_inline_on<T, E: ErrorKind>(
-    span: &OperationSpan,
-    result: Result<T, (E, WorkCounters)>,
-    work: impl FnOnce(&T) -> &WorkCounters,
-) -> Result<T, (E, WorkCounters)> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if !span.is_disabled() {
-        let (work, kind) = match &result {
-            Ok(value) => (work(value), None),
-            Err((error, spent)) => (spent, Some(error.kind())),
-        };
-        record_outcome(span, kind);
-        record_work(span, work);
-    }
-    result
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn record_work(span: &tracing::Span, work: &WorkCounters) {
     if !span.is_disabled() {
@@ -181,46 +148,6 @@ fn record_work(span: &tracing::Span, work: &WorkCounters) {
         span.record("work.items", work.items_examined)
             .record("work.bytes", bytes)
             .record("work.durability", work.durability_operations);
-    }
-}
-
-/// Closes a facade operation: records [`measured_on`] on its span and emits its
-/// receipt through [`WorkCounters::emit`].
-pub(crate) trait Observe {
-    fn observe_on(self, span: &OperationSpan, op: &'static str) -> Self;
-}
-
-impl<T, E: ErrorKind> Observe for MeasuredResult<OperationReceipt<T>, E> {
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(unused_variables, reason = "WASM records no spans")
-    )]
-    fn observe_on(self, span: &OperationSpan, op: &'static str) -> Self {
-        let result = measured_on(span, self, |receipt| &receipt.work);
-        #[cfg(not(target_arch = "wasm32"))]
-        scope(span, || match &result {
-            Ok(receipt) => receipt.work.emit(span, op, "ok"),
-            Err(failure) => failure.work.emit(span, op, "err"),
-        });
-        result
-    }
-}
-
-/// An id field value: `bytes` as lowercase hex, formatted only when recorded.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn hex(bytes: &[u8]) -> tracing::field::DisplayValue<Hex<'_>> {
-    tracing::field::display(Hex(bytes))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct Hex<'a>(&'a [u8]);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::fmt::Display for Hex<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0
-            .iter()
-            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
     }
 }
 

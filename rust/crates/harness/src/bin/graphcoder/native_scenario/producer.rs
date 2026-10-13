@@ -24,16 +24,15 @@ impl Producer {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner_with_native_work(caller.task, &fence, &work)
+            .journal_owner(caller.task, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
             .await?
             .into_native_shared(&work)?;
         let context = self
             .runtime
             .task_context_with_native_work(caller.task, &fence, &work)
             .await?;
-        let guards = [context
-            .volume_callback_guard_with_native_work(&owner, &work)
-            .await?];
+        context.verify_volume_owner(&owner, &work).await?;
+        let guards = [Arc::clone(&context)];
         let namespace = self.root.join("native-command-view");
         let preparation = self.root.join("native-command-preparation");
         for directory in [
@@ -353,7 +352,7 @@ impl Producer {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
                 self.files.clone(),
                 &self.config.owner.authority,
-                graph_root,
+                graph_root, None,
                 None,
             )?;
             let service_issuer = AuthorityIssuer::new(
@@ -364,7 +363,7 @@ impl Producer {
             let owner = Arc::new(
                 self.runtime
                     .task_host()
-                    .journal_owner(parent.task, LeaseFence::from(&parent.lease.reservation))
+                    .journal_owner(parent.task, &(LeaseFence::from(&parent.lease.reservation)), None)
                     .await?
                     .with_invocation_cancellation(&self.cancellation),
             );
@@ -373,7 +372,7 @@ impl Producer {
                     .authorize_project_source(
                         &context,
                         &service_issuer,
-                        &policy,
+                        policy.as_ref(),
                         source_task,
                         operation,
                         acyclic_harness::source_authorization::ProjectSourceSnapshot {
@@ -483,14 +482,7 @@ impl Producer {
             ));
         }
         let command_file = context
-            .stage_file_once(
-                OperationId::new(),
-                &format!(".qualification-forks/{operation}.json"),
-                &fork_bytes,
-                "application/json",
-                "fork-request.json",
-            )
-            .await?;
+            .stage_file_once(OperationId::new(), &format!(".qualification-forks/{operation}.json"), &fork_bytes, "application/json", "fork-request.json", None).await.map(|(file, _)| file)?;
         let command = WorkflowCommand {
             operation_id: operation,
             kind: FORK_PREPARE_TASK_COMMAND_KIND.into(),

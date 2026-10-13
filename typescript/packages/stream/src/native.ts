@@ -38,17 +38,6 @@ export async function createNativeStreamCancellation(): Promise<GeneratedNative.
   return new module.NativeStreamCancellation();
 }
 
-function missingNativeBinding(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const code = "code" in error ? (error as { readonly code?: unknown }).code : undefined;
-  if (code !== "MODULE_NOT_FOUND") return false;
-  const message = "message" in error && typeof (error as { readonly message?: unknown }).message === "string"
-    ? (error as { readonly message: string }).message : String(error);
-  const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/)?.[1];
-  return requested !== undefined && isOwnNativeLoader(requested);
-}
-
 function isOwnNativeLoader(path: string): boolean {
   return (path.startsWith("file:") ? fileURLToPath(path) : path).replace(/\\/g, "/") === nativeBindingPath.replace(/\\/g, "/");
 }
@@ -63,15 +52,17 @@ function importedByNativeLoader(message: string): boolean {
 }
 
 function expectedNativeAbsence(error: unknown): boolean {
-  if (missingNativeBinding(error)) return true;
   if (typeof error !== "object" || error === null) return false;
-  const message = "message" in error && typeof (error as { readonly message?: unknown }).message === "string"
-    ? (error as { readonly message: string }).message : "";
-  if (!message.startsWith("Cannot find native binding.")) return false;
+  const message = "message" in error && typeof error.message === "string" ? error.message : undefined;
+  if ("code" in error && error.code === "MODULE_NOT_FOUND") {
+    const firstLine = (message ?? String(error)).split(/\r?\n/, 1)[0];
+    const requested = firstLine?.match(/^Cannot find module ['"]([^'"]+)['"]/)?.[1];
+    if (requested !== undefined && isOwnNativeLoader(requested)) return true;
+  }
+  if (!message?.startsWith("Cannot find native binding.")) return false;
   let cause: unknown = "cause" in error ? (error as { readonly cause?: unknown }).cause : undefined;
-  let sawCause = false;
+  if (cause === null || cause === undefined) return false;
   while (cause !== null && cause !== undefined) {
-    sawCause = true;
     if (typeof cause !== "object") return false;
     const code = "code" in cause ? cause.code : undefined;
     if (code !== undefined && code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") return false;
@@ -88,7 +79,7 @@ function expectedNativeAbsence(error: unknown): boolean {
     }
     cause = "cause" in cause ? (cause as { readonly cause?: unknown }).cause : undefined;
   }
-  return sawCause;
+  return true;
 }
 
 /** Whether the staged native binding is installed for this runtime. */

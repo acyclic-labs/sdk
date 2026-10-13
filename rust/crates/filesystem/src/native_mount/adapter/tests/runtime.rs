@@ -68,14 +68,6 @@ impl AsyncObjectStore for MetadataRefusingObjects {
         self.admit(object_id)?;
         self.inner.put(object_id, bytes, context).await
     }
-    async fn put_hashed(
-        &self,
-        object: crate::storage::HashedObject,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        self.admit(object.object_id())?;
-        self.inner.put_hashed(object, context).await
-    }
     async fn put_many(
         &self,
         writes: &[crate::storage::ObjectWrite],
@@ -85,16 +77,6 @@ impl AsyncObjectStore for MetadataRefusingObjects {
             self.admit(write.object_id)?;
         }
         self.inner.put_many(writes, context).await
-    }
-    async fn put_many_hashed(
-        &self,
-        objects: &[crate::storage::HashedObject],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        for object in objects {
-            self.admit(object.object_id())?;
-        }
-        self.inner.put_many_hashed(objects, context).await
     }
     async fn read(
         &self,
@@ -121,55 +103,36 @@ impl AsyncObjectStore for MetadataRefusingObjects {
 }
 
 #[test]
-fn callbacks_run_on_their_driver_threads_without_helper_threads()
--> Result<(), Box<dyn std::error::Error>> {
+fn callback_driver_thread_cases() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = CallbackRuntime::create()?;
-    let callers = (0..32)
-        .map(|index| {
-            let runtime = runtime.clone();
-            std::thread::Builder::new()
-                .name(format!("native-driver-{index}"))
-                .spawn(move || {
+    for nested in [false, true] {
+        let callers = (0..32)
+            .map(|_| {
+                let runtime = runtime.clone();
+                std::thread::spawn(move || {
+                    let driver = std::thread::current().id();
                     runtime.wait(|| async {
-                        // A real reactor wait parks the driver thread
-                        // until a runtime worker wakes it.
                         tokio::time::sleep(Duration::from_millis(1)).await;
-                        Ok::<_, MountSourceError>(
-                            std::thread::current().name().unwrap_or_default().to_owned(),
-                        )
+                        let observed = if nested {
+                            runtime.wait(|| async {
+                                tokio::time::sleep(Duration::from_millis(1)).await;
+                                Ok(std::thread::current().id())
+                            })?
+                        } else {
+                            std::thread::current().id()
+                        };
+                        assert_eq!(observed, driver);
+                        Ok(())
                     })
                 })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for (index, caller) in callers.into_iter().enumerate() {
-        assert_eq!(
+            })
+            .collect::<Vec<_>>();
+        for caller in callers {
             caller
                 .join()
-                .map_err(|_| std::io::Error::other("native driver thread panicked"))??,
-            format!("native-driver-{index}")
-        );
+                .map_err(|_| "native driver callback panicked")??;
+        }
     }
-    Ok(())
-}
-
-#[test]
-fn nested_callbacks_reenter_on_the_same_driver_thread() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = CallbackRuntime::create()?;
-    let nested = runtime.clone();
-    let observed = std::thread::Builder::new()
-        .name("native-driver".to_owned())
-        .spawn(move || {
-            runtime.wait(|| async {
-                tokio::task::yield_now().await;
-                nested.wait(|| async {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                    Ok(std::thread::current().name().unwrap_or_default().to_owned())
-                })
-            })
-        })?
-        .join()
-        .map_err(|_| "native driver callback panicked")??;
-    assert_eq!(observed, "native-driver");
     Ok(())
 }
 
@@ -193,52 +156,19 @@ async fn in_place_callback_outlasts_its_callers_cooperative_budget()
 }
 
 #[test]
-fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    let abandoned = native_test_path("abandoned.bin");
-    let kept = native_test_path("kept.bin");
-    let work = capture_meter(boundary_budget(), &source.cancellation)?;
-    let create = |path| AuthoredMutation::CreateFile {
-        path,
-        metadata: metadata(),
-        bytes: acyclic_stream::OwnedBytes::new(),
-    };
-    source.runtime.wait(|| async {
-        // While another holder keeps the checkout, one caller queues its
-        // change and gives up waiting, as a callback deadline does.
-        let held = source.checkout.lock().await;
-        let gave_up = tokio::time::timeout(
-            Duration::from_millis(20),
-            source.create(&abandoned, &work, create),
-        )
-        .await;
-        assert!(gave_up.is_err(), "the checkout was held");
-        drop(held);
-        source.create(&kept, &work, create).await
-    })?;
-    assert!(source.lookup(&kept)?.is_some());
-    assert!(
-        source.lookup(&abandoned)?.is_none(),
-        "a change its caller saw fail applied later"
-    );
-    Ok(())
-}
-
-#[test]
-fn abandoning_a_blocked_caller_leaves_other_callers_live() -> Result<(), Box<dyn std::error::Error>>
-{
+fn abandoning_a_blocked_change_never_applies_and_leaves_other_callers_live()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Portable)?);
-    let abandoned = native_test_path("drainer.bin");
-    let kept = native_test_path("waiter.bin");
-    let work = capture_meter(boundary_budget(), &source.cancellation)?;
+    let abandoned = native_test_path("abandoned");
+    let kept = native_test_path("kept");
+    let work = capture_meter(boundary_budget(), source.cancellation())?;
     let create = |path| AuthoredMutation::CreateFile {
         path,
         metadata: metadata(),
-        bytes: acyclic_stream::OwnedBytes::new(),
+        bytes: OwnedBytes::new(),
     };
     source.runtime.wait(|| async {
         let held = source.checkout.lock().await;
-        // Both callers wait for the same held checkout.
         let mut drainer = Box::pin(source.create(&abandoned, &work, create));
         assert!(futures::poll!(drainer.as_mut()).is_pending());
         let waiter_source = Arc::clone(&source);
@@ -249,8 +179,11 @@ fn abandoning_a_blocked_caller_leaves_other_callers_live() -> Result<(), Box<dyn
                 .create(&waiter_path, &waiter_work, create)
                 .await
         });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        // Abandoning the first caller must not stop the second.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), drainer.as_mut())
+                .await
+                .is_err()
+        );
         drop(drainer);
         drop(held);
         tokio::time::timeout(Duration::from_secs(5), waiter)

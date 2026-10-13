@@ -1,28 +1,5 @@
 use super::*;
 
-fn identity(
-    authority: AuthorityId,
-    operation: OperationId,
-    tail: u64,
-    work: &mut AuthorityWork<'_>,
-) -> Result<[u8; 40], AuthorityStoreError> {
-    let copy = WorkCounters {
-        bytes_copied: 40,
-        ..WorkCounters::UNCHARGED
-    };
-    if work.is_native() {
-        work.admit(copy)?;
-    }
-    let mut bytes = [0; 40];
-    bytes[..16].copy_from_slice(&authority.into_bytes());
-    bytes[16..32].copy_from_slice(&operation.into_bytes());
-    bytes[32..].copy_from_slice(&tail.to_le_bytes());
-    if work.is_native() {
-        work.charge(copy)?;
-    }
-    Ok(bytes)
-}
-
 fn request(
     authority: AuthorityId,
     snapshot: Option<AuthoritySnapshot>,
@@ -62,21 +39,27 @@ fn request(
     };
     let mut mutations = work.vec(1)?;
     work.append_record(&mut mutations, gate, [body])?;
-    let id = identity(authority, operation, tail, work)?;
     let domain: &[u8] = if snapshot.is_some() {
-        b"reserve-publication"
+        b"reserve-publication\0"
     } else {
-        b"release-publication"
+        b"release-publication\0"
     };
     Ok(CommitRequest {
         conditions,
         mutations,
-        idempotency_key: work.stream_key(domain, &id)?,
+        idempotency_key: work.key(
+            domain,
+            &[
+                &authority.into_bytes(),
+                &operation.into_bytes(),
+                &tail.to_le_bytes(),
+            ],
+        )?,
     })
 }
 
 fn digest(
-    request: &CommitRequest,
+    request: &mut CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<[u8; 32], AuthorityStoreError> {
     let mut bytes = (b"acyclic.stream.request.v1\0".len() + b"commit".len()) as u64;
@@ -110,16 +93,22 @@ fn digest(
         ..WorkCounters::UNCHARGED
     };
     work.admit(hashing)?;
-    let digest = acyclic_stream::request::commit_digest(request);
+    let digest = acyclic_stream::request::commit_digest(request)?;
     work.charge(hashing)?;
     Ok(digest)
 }
 
-fn key_matches(key: &[u8], domain: &[u8], identity: &[u8]) -> bool {
-    key.len() == domain.len() + 1 + identity.len()
-        && key.starts_with(domain)
-        && key[domain.len()] == 0
-        && key[domain.len() + 1..] == *identity
+fn key_matches(key: &[u8], domain: &[u8], parts: &[&[u8]]) -> bool {
+    let Some(mut remaining) = key.strip_prefix(domain) else {
+        return false;
+    };
+    for part in parts {
+        let Some(next) = remaining.strip_prefix(*part) else {
+            return false;
+        };
+        remaining = next;
+    }
+    remaining.is_empty()
 }
 
 fn qualified(
@@ -132,11 +121,14 @@ fn qualified(
     let Some(prior) = tail.checked_sub(1) else {
         return Ok(false);
     };
-    let id = identity(authority, operation, prior, work)?;
     if !key_matches(
         observation.idempotency_key.as_bytes(),
-        b"reserve-publication",
-        &id,
+        b"reserve-publication\0",
+        &[
+            &authority.into_bytes(),
+            &operation.into_bytes(),
+            &prior.to_le_bytes(),
+        ],
     ) {
         return Ok(false);
     }
@@ -198,7 +190,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     async fn inspect_reservation(
         &self,
         domain: &[u8],
-        id: &[u8],
+        parts: &[&[u8]],
         work: &mut AuthorityWork<'_>,
     ) -> Result<
         (
@@ -208,7 +200,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         AuthorityStoreError,
     > {
         let baseline = work.allocations.live_bytes();
-        let key = work.stream_key(domain, id)?;
+        let key = work.key(domain, parts)?;
         let key_bytes = work
             .allocations
             .live_bytes()
@@ -328,9 +320,16 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             gate_tail,
         };
         let prior = gate_tail.checked_sub(1).ok_or_else(unavailable)?;
-        let id = identity(authority_id, operation_id, prior, work)?;
         let observed = self
-            .inspect_reservation(b"reserve-publication", &id, work)
+            .inspect_reservation(
+                b"reserve-publication\0",
+                &[
+                    &authority_id.into_bytes(),
+                    &operation_id.into_bytes(),
+                    &prior.to_le_bytes(),
+                ],
+                work,
+            )
             .await?;
         let observation = observed.0.as_ref().ok_or_else(unavailable)?;
         if !qualified(observation, authority_id, operation_id, gate_tail, work)? {
@@ -364,7 +363,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                         }
                     }
                 }
-                if digest(&candidate, work)? == observation.request_digest {
+                if digest(&mut candidate, work)? == observation.request_digest {
                     tails = Some((records, epochs));
                     break 'candidate;
                 }
@@ -509,30 +508,26 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
         work.check()?;
-        let copying = WorkCounters {
-            bytes_copied: 40,
-            ..WorkCounters::UNCHARGED
-        };
-        if !work.is_native() {
-            work.admit(copying)?;
-        }
-        let id = identity(
-            reservation.authority_id,
-            reservation.operation_id,
-            reservation.gate_tail,
-            work,
-        )?;
-        if !work.is_native() {
-            work.charge(copying)?;
-        }
         let observed = self
-            .inspect_reservation(b"release-publication", &id, work)
+            .inspect_reservation(
+                b"release-publication\0",
+                &[
+                    &reservation.authority_id.into_bytes(),
+                    &reservation.operation_id.into_bytes(),
+                    &reservation.gate_tail.to_le_bytes(),
+                ],
+                work,
+            )
             .await?;
         if let Some(observation) = &observed.0 {
             if !key_matches(
                 observation.idempotency_key.as_bytes(),
-                b"release-publication",
-                &id,
+                b"release-publication\0",
+                &[
+                    &reservation.authority_id.into_bytes(),
+                    &reservation.operation_id.into_bytes(),
+                    &reservation.gate_tail.to_le_bytes(),
+                ],
             ) {
                 return Err(authority_corrupt(
                     "publication release observation has another retry identity",
@@ -550,7 +545,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     "publication reservation is no longer active",
                 ));
             };
-            let request = request(
+            let mut request = request(
                 reservation.authority_id,
                 None,
                 reservation.operation_id,
@@ -558,14 +553,15 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 None,
                 work,
             )?;
-            let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
-                unreachable!("release is one append");
-            };
             let end = reservation
                 .gate_tail
                 .checked_add(1)
                 .ok_or(crate::WorkError::Overflow)?;
-            let valid = digest(&request, work)? == observation.request_digest
+            let request_digest = digest(&mut request, work)?;
+            let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
+                unreachable!("release is one append");
+            };
+            let valid = request_digest == observation.request_digest
                 && matches!(envelope.mutations.as_slice(), [acyclic_stream::CommittedMutation::Append(append)] if &append.path == gate
                     && append.start == reservation.gate_tail && append.end == end && append.tail == end
                     && matches!(append.records.as_slice(), [record] if record.sequence == reservation.gate_tail

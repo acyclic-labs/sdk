@@ -2,7 +2,7 @@
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 #[cfg(all(test, feature = "memory"))]
-use super::allocation::{AllocationError, AllocationLedger};
+use super::allocation::AllocationLedger;
 use super::regular_mutation::{RegularMutation, RegularMutationError};
 use super::{
     DecodeLimits, DirectoryReadError, FileKind, FileMutation, FilePayload, FileRecord,
@@ -1584,11 +1584,6 @@ fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, crate::FsError> {
         .checked_mul(size_of::<T>())
         .map(usize_to_u64)
         .ok_or_else(|| WorkError::Overflow.into())
-}
-
-#[cfg(all(test, feature = "memory"))]
-fn allocation_failure(error: AllocationError) -> crate::FsError {
-    error.into_work_or(GenerationMutationError::AllocationFailed).into()
 }
 
 fn path_cancelled() -> GenerationMutationError {

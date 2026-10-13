@@ -107,7 +107,7 @@ impl PiNativeCommandHost {
             let retained = entry.handles.lock().await.effect.clone();
             if !deactivate {
                 if let Some(effect) = retained {
-                    let outcome = effect.owner.outcome_with_native_work(&meter).await?;
+                    let outcome = effect.owner.outcome_with_native_work(&meter)?.await?;
                     if outcome.0.is_none() {
                         let workflow = self
                             .runtime

@@ -63,7 +63,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
             },
             work,
         )?;
-        let opened = context.open(&path, context.ledger.latest(), work)?;
+        let opened = context.open(&path, context.completed.load(Ordering::Acquire), work)?;
         // SAFETY: the bridge supplies a writable handle.
         work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
         unsafe { handle.write(opened) };
@@ -104,7 +104,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_read(
         let maximum = bounded_length(length).map_err(driver_errno)?;
         let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
         let target = context.file_target(&*mount_path(path, work)?, handle, work)?;
-        let chunk = target.file.0.read_up_to_with_meter(offset, maximum, work)?;
+        let chunk = target.0.0.read_up_to_with_meter(offset, maximum, work)?;
         source_bytes(chunk, work, |bytes| {
             if bytes.len() > maximum as usize {
                 return Err(driver_errno(libc::EIO));

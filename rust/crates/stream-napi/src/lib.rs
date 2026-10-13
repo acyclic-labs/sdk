@@ -713,7 +713,7 @@ async fn inspect_idempotency(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::InspectIdempotencyRequest>(&request, "inspect_idempotency")?;
-    let key = wire_codec::required_key(Some(request.idempotency_key))
+    let key = acyclic_stream::IdempotencyKey::new(request.idempotency_key)
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async {

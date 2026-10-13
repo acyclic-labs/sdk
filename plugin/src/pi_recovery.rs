@@ -222,7 +222,7 @@ where
         if let Some(preparation) = task.preparation {
             let mut admission = runtime
                 .task_host()
-                .observe_admission_with_native_work(preparation, work)
+                .observe_admission_with_native_work(preparation, work)?
                 .await?;
             let mut request = decode_recovery_value::<
                 acyclic_harness::resource_preparation::ResourcePreparationRequest,
@@ -322,7 +322,7 @@ where
                 WorkPull::Idle => {
                     let outcome = runtime
                         .task_host()
-                        .outcome_with_native_work(preparation, work)
+                        .outcome_with_native_work(preparation, work)?
                         .await?;
                     match outcome.0 {
                         None => "pending",
@@ -361,7 +361,7 @@ where
             WorkPull::Idle => {
                 let mut outcome = runtime
                     .task_host()
-                    .outcome_with_native_work(task_id, work)
+                    .outcome_with_native_work(task_id, work)?
                     .await?;
                 custody.absorb(&mut outcome.1)?;
                 match outcome.0 {
@@ -489,7 +489,7 @@ where
     )?;
     let mut admission = runtime
         .task_host()
-        .observe_admission_with_native_work(binding.task_id, work)
+        .observe_admission_with_native_work(binding.task_id, work)?
         .await?;
     let mut admitted = decode_recovery_value::<PiTaskInput>(
         std::mem::take(&mut admission.0.input),

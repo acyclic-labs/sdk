@@ -194,9 +194,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             if let Some(io) = quota.work().as_deref_mut() {
                 io.admit_output(output_bytes, reducer.revision() - start + 1)?;
             }
-            let (indexed, bytes) = effects::retirement_proof_with_work(
-                client,
-                reducer.authority(),
+            let (indexed, bytes) = crate::store::effect_heads::Tree {
+                client: client,
+                authority: reducer.authority(),
+            }
+            .retirement_proof_with_work(
                 &event,
                 &record,
                 maximum_bytes.saturating_sub(used),

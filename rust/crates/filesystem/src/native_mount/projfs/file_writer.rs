@@ -56,9 +56,7 @@ pub(super) fn staging_directory(
         ),
         &mut &*work,
         |name, work| {
-            crate::native_host::create_windows_wide_at(
-                &parent, name, true, false, false, false, work,
-            )
+            crate::native_host::open_windows_at(&parent, name, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE, windows::Wdk::Storage::FileSystem::FILE_CREATE, windows::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE | windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT, work)
         },
     )?;
     drop(parent);

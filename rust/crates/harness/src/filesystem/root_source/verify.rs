@@ -1,5 +1,5 @@
-use crate::executor::stock_boundary;
 use super::*;
+use crate::executor::stock_boundary;
 use crate::filesystem::fork_preparer_io;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
@@ -11,6 +11,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         snapshot: &ProjectSourceSnapshot,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<()> {
+        let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Unauthorized, reason);
         let check = || {
             context.cancellation.check().map_err(|_| {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -18,16 +19,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     .and_then(crate::filesystem::PreparationIo::original_native_work)
                     .is_some()
                 {
-                    return Error::NativeWork {
-                        cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                        custody: None,
-                    };
+                    return Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled);
                 }
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "project source operation cancelled",
-                )
+                reject("project source operation cancelled")
             })
         };
         if io.is_some() {
@@ -37,16 +31,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || context.graph_root != self.graph_root
             || !context.created_project_authenticated
         {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
+            return Err(reject(
                 "project source lacks this graph's authenticated creator",
             ));
         }
         if self.native_source(&snapshot.project).is_some() && snapshot.native_snapshot.is_none() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
+            return Err(reject(
                 "bound lazy project requires its original native snapshot",
             ));
         }
@@ -58,9 +48,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || snapshot.project.provider() != &self.host.provider
             || snapshot.generation.as_resource().provider() != &self.host.provider
         {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
+            return Err(reject(
                 "project source belongs to another namespace or provider",
             ));
         }
@@ -82,58 +70,45 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         };
         io.check_cancellation()?;
         if !io.contains_capability(&context.source.grants, &snapshot.project, "volume:read:")? {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
+            return Err(reject(
                 "selected source admission lacks original project read authority",
             ));
         }
-        let reference_hold;
         let before = io.owned_bytes()?;
         let reference =
             fork_preparer_io::content_workspace(&self.host.provider, &snapshot.project, Some(io))?;
-        reference_hold = io.guard_owned(
+        let hold = io.guard_owned(
             io.owned_bytes()?
                 .checked_sub(before)
                 .ok_or_else(|| io.invalid("source reference custody underflows"))?,
         )?;
-        let reference = (reference, reference_hold);
+        let reference = (reference, hold);
         let opened = fork_preparer_io::open(&self.host, &reference.0, io).await?;
-        #[cfg(not(target_arch = "wasm32"))]
         if io.original_native_work().is_none() {
             io.retain_owned(opened.name().as_str().len() as u64)?;
         }
-        #[cfg(target_arch = "wasm32")]
-        io.retain_owned(opened.name().as_str().len() as u64)?;
         let selected =
             fork_preparer_io::generation(&self.host, &opened, &snapshot.generation, io).await?;
-        let generation_id = selected.id();
+        let generation = selected.id();
         drop(selected);
         if let Some(value) = &snapshot.native_snapshot {
-            let lazy = self.native_source(&snapshot.project).ok_or_else(|| {
-                stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Unauthorized,
-                    "native source has no original provider binding",
-                )
-            })?;
+            let lazy = self
+                .native_source(&snapshot.project)
+                .ok_or_else(|| reject("native source has no original provider binding"))?;
             if lazy.backing.workspace_id() != opened.id() {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Unauthorized,
-                    "native source names another original workspace",
-                ));
+                return Err(reject("native source names another original workspace"));
             }
-            let bounds = JsonBounds {
-                maximum_bytes: context.maximum_bytes,
-                maximum_items: context.maximum_work,
-                maximum_depth: 32,
-            };
-            let (frozen, _frozen) = source_snapshot(value, bounds, io)?;
-            if frozen.workspace_id != opened.id() || frozen.authored_generation != generation_id {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Unauthorized,
+            let (frozen, _frozen) = source_snapshot(
+                value,
+                JsonBounds {
+                    maximum_bytes: context.maximum_bytes,
+                    maximum_items: context.maximum_work,
+                    maximum_depth: 32,
+                },
+                io,
+            )?;
+            if frozen.workspace_id != opened.id() || frozen.authored_generation != generation {
+                return Err(reject(
                     "native capture does not match the selected generation",
                 ));
             }

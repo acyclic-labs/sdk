@@ -78,7 +78,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(plan.preparation.task_id(), &self.work)
+            .observe_admission_with_native_work(plan.preparation.task_id(), &self.work)?
             .await?
             .0
             != plan.preparation
@@ -92,7 +92,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .outcome_with_native_work(plan.preparation.task_id(), &self.work)
+            .outcome_with_native_work(plan.preparation.task_id(), &self.work)?
             .await?
             .0
             .is_none()
@@ -158,7 +158,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .outcome_with_native_work(plan.preparation.task_id(), &self.work)
+            .outcome_with_native_work(plan.preparation.task_id(), &self.work)?
             .await?;
         let report: (ForkReport, acyclic_fs::NativeAllocation) = match &outcome.0 {
             Some(Outcome::Succeeded(value)) => self.decode_input_value(
@@ -235,7 +235,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(plan.request.child.task_id(), &self.work)
+            .observe_admission_with_native_work(plan.request.child.task_id(), &self.work)?
             .await?;
         if admission.0 != plan.request.child {
             return Err(Error::NativeBoundary {
@@ -336,9 +336,9 @@ impl<'a> PiForkCoordinator<'a> {
         let project = self
             .resources
             .fs
-            .open_workspace_with_native_work(&project_name.0, work, cancel)
+            .open_workspace(&project_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let generation = report
             .captures
             .iter()
@@ -372,7 +372,10 @@ impl<'a> PiForkCoordinator<'a> {
                 project,
                 GenerationId::new(Digest::from_bytes(generation)),
                 plan.project_creation,
-                &mut acyclic_fs::kernel::KernelAccounting::native(work, cancel),
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: cancel,
+                },
             )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
@@ -386,9 +389,9 @@ impl<'a> PiForkCoordinator<'a> {
         let scratch = self
             .resources
             .fs
-            .open_workspace_with_native_work(&scratch_name.0, work, cancel)
+            .open_workspace(&scratch_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let mut binding = self.native_copy::<PiTaskBinding, _>(
             &plan.commit.child,
             acyclic_harness::JsonValueSchema::None,
@@ -430,9 +433,9 @@ impl<'a> PiForkCoordinator<'a> {
         let results = self
             .resources
             .fs
-            .open_workspace_with_native_work(&result_name.0, work, cancel)
+            .open_workspace(&result_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let mut generation = self.native_copy::<acyclic_harness::resources::GenerationRef, _>(
             generation,
             acyclic_harness::JsonValueSchema::None,
@@ -450,7 +453,10 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let workspace = workspace
-            .into_arc_with_native_work(work)
+            .into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            })
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let mut prepared = PreparedPiFork {
             binding: binding.0,
@@ -483,7 +489,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(owner.task_id(), &self.work)
+            .observe_admission_with_native_work(owner.task_id(), &self.work)?
             .await?;
         let parent_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &admission.0.input,
@@ -507,7 +513,13 @@ impl<'a> PiForkCoordinator<'a> {
         let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
         let _seed_custody = seed_io.into_custody()?;
         source
-            .validate_snapshot_with_native_work(plan.frozen, work)
+            .validate_snapshot(
+                plan.frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
@@ -533,14 +545,26 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?
         .into_native_shared(work)?;
-        let parent = StreamAggregate::open_with_native_work(
-            &self.stream,
-            authority.0.0,
-            verifier.0,
-            SchemaRegistry::new(),
-            work,
-        )
-        .await?;
+        let parent = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            io.preflight()?;
+            let aggregate = StreamAggregate::open(
+                &self.stream,
+                authority.0.0,
+                verifier.0,
+                SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut io),
+            )
+            .await?;
+            io.return_staged_output()?;
+            (aggregate, io.into_custody()?)
+        };
         let mut parent_value = parent.0;
         parent_value.set_limits(context.scope().limits())?;
         parent_value = parent_value.with_fork_verifier(forks);
@@ -575,14 +599,26 @@ impl<'a> PiForkCoordinator<'a> {
             let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let child = StreamAggregate::open_with_native_work(
-            &self.stream,
-            child_authority.0.0,
-            child_verifier.0,
-            SchemaRegistry::new(),
-            work,
-        )
-        .await?;
+        let child = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            io.preflight()?;
+            let aggregate = StreamAggregate::open(
+                &self.stream,
+                child_authority.0.0,
+                child_verifier.0,
+                SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut io),
+            )
+            .await?;
+            io.return_staged_output()?;
+            (aggregate, io.into_custody()?)
+        };
         let mut child_value = child.0;
         child_value.set_limits(plan.request.child.limits)?;
         {

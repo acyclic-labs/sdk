@@ -66,17 +66,7 @@ async fn clone_range(
     destination_offset: u64,
     length: u64,
 ) -> Result<RegularCloneReceipt, RegularMutationFailure> {
-    (apply_regular_clone_async(
-        store,
-        source,
-        source_offset,
-        destination,
-        destination_offset,
-        length,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )).await
+    (async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); apply_regular_clone_with_accounting(store, source, source_offset, destination, destination_offset, length, config(), &mut accounting, cancellation).await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent())) }).await
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -693,17 +683,7 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
         bytes_copied: 3,
         ..WorkBudget::UNBOUNDED
     };
-    let failure = (apply_regular_clone_async(
-        &store,
-        source,
-        0,
-        destination,
-        0,
-        4,
-        config(),
-        budget,
-        &CancellationToken::new(),
-    )).await
+    let failure = (async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(budget, cancellation); apply_regular_clone_with_accounting(&store, source, 0, destination, 0, 4, config(), &mut accounting, cancellation).await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent())) }).await
     .err()
     .ok_or("over-budget clone unexpectedly succeeded")?;
     assert!(matches!(
@@ -718,17 +698,7 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = (apply_regular_clone_async(
-        &store,
-        source,
-        0,
-        destination,
-        0,
-        1,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancelled,
-    )).await
+    let failure = (async { let cancellation = &cancelled; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); apply_regular_clone_with_accounting(&store, source, 0, destination, 0, 1, config(), &mut accounting, cancellation).await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent())) }).await
     .err()
     .ok_or("cancelled clone unexpectedly succeeded")?;
     assert!(matches!(
@@ -1433,17 +1403,7 @@ async fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<d
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let clone_failure = (apply_regular_clone_async(
-        &store,
-        inline,
-        0,
-        inline,
-        0,
-        1,
-        dense,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let clone_failure = (async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); apply_regular_clone_with_accounting(&store, inline, 0, inline, 0, 1, dense, &mut accounting, cancellation).await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent())) }).await
     .err()
     .ok_or("clone unexpectedly succeeded in a dense volume")?;
     assert!(matches!(
@@ -1651,17 +1611,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
     assert!(matches!(nonregular.error, RegularMutationError::NotRegular));
     assert_eq!(*nonregular.work, WorkCounters::default());
     for (source, destination) in [(FilePayload::Empty, inline), (inline, FilePayload::Empty)] {
-        let failure = (apply_regular_clone_async(
-            &store,
-            source,
-            0,
-            destination,
-            0,
-            1,
-            config(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
+        let failure = (async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); apply_regular_clone_with_accounting(&store, source, 0, destination, 0, 1, config(), &mut accounting, cancellation).await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent())) }).await
         .err()
         .ok_or("nonregular clone unexpectedly succeeded")?;
         assert!(matches!(failure.error, RegularMutationError::NotRegular));
@@ -1670,17 +1620,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
     for (source_offset, destination_offset, length) in
         [(u64::MAX, 0, 1), (0, u64::MAX, 1), (0, 0, 0)]
     {
-        let failure = (apply_regular_clone_async(
-            &store,
-            inline,
-            source_offset,
-            inline,
-            destination_offset,
-            length,
-            config(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
+        let failure = (async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); apply_regular_clone_with_accounting(&store, inline, source_offset, inline, destination_offset, length, config(), &mut accounting, cancellation).await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent())) }).await
         .err()
         .ok_or("invalid clone unexpectedly succeeded")?;
         assert!(matches!(

@@ -19,7 +19,6 @@ use std::sync::{Arc, Mutex};
 struct Fixture {
     objects: MemoryObjects,
     calls: Arc<Mutex<std::collections::BTreeSet<String>>>,
-    get_calls: Arc<std::sync::atomic::AtomicU64>,
 }
 fn invalid() -> Error {
     wire::ErrorCode::InvalidArgument.into()
@@ -95,11 +94,7 @@ async fn operation(
                 }
             }
             framing.finish()?;
-            let bad_receipt = header.object_key == "native-bad-receipt";
-            let mut result = fixture.objects.put(header, body.freeze().into()).await?;
-            if bad_receipt {
-                result.size += 1;
-            }
+            let result = fixture.objects.put(header, body.freeze().into()).await?;
             Ok(("application/json", json::encode(output, &result)?))
         }
         "multipart/upload-part" => {
@@ -132,9 +127,6 @@ async fn operation(
             Ok(("application/json", json::encode(output, &result)?))
         }
         "objects/get" => {
-            fixture
-                .get_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let query: wire::GetObjectRequest = json::decode(input, bytes, 128 * 1024)?;
             let mode = query.object_key.clone();
             let selected = fixture.objects.get(query, 8 * 1024 * 1024).await?;
@@ -288,7 +280,6 @@ async fn start() -> Result<Server, Box<dyn std::error::Error + Send + Sync>> {
     let fixture = Fixture {
         objects: MemoryObjects::new(MemoryOptions::default())?,
         calls: Arc::default(),
-        get_calls: Arc::default(),
     };
     let app = Router::new()
         .route("/v1/objects/{*route}", post(handler))
@@ -337,13 +328,6 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
     .await?;
     super::tests::exercise_streaming(&client, |query, maximum| {
         Box::pin(client.get_stream(query, maximum))
-    })
-    .await?;
-    super::tests::exercise_native_transport(&client, || {
-        server
-            .fixture
-            .get_calls
-            .load(std::sync::atomic::Ordering::SeqCst)
     })
     .await?;
     let calls = server

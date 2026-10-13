@@ -284,12 +284,11 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
         &cancellation,
     )?);
     work.preflight()?;
-    let result = crate::store::effects::retirement_proof_for_event_with_work(
-        &provider,
-        &authority(),
-        terminal,
-        &mut Some(&mut work),
-    )
+    let result = crate::store::effect_heads::Tree {
+        client: &provider,
+        authority: &authority(),
+    }
+    .retirement_proof_for_event_with_work(terminal, &mut Some(&mut work))
     .await;
     let proof = work.finish(result).map_err(|failure| failure.error)?;
     assert!(proof.value);
@@ -307,12 +306,11 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
         &cancellation,
     )?);
     work.preflight()?;
-    let result = crate::store::effects::retirement_proof_for_event_with_work(
-        &provider,
-        &authority(),
-        terminal,
-        &mut Some(&mut work),
-    )
+    let result = crate::store::effect_heads::Tree {
+        client: &provider,
+        authority: &authority(),
+    }
+    .retirement_proof_for_event_with_work(terminal, &mut Some(&mut work))
     .await;
     let failure = work
         .finish(result)
