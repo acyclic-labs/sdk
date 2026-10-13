@@ -1,14 +1,10 @@
 //! Deterministic bounded fault simulator for storage backends.
-
-#[cfg(test)]
-use crate::ObjectResult;
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource};
-use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-use crate::performance::{WorkBudget, WorkCounters};
+use crate::performance::WorkCounters;
 use crate::storage::{
     AppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, ObjectId, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectStoreError, PublicationReservation, ReplayLimit,

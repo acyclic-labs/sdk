@@ -29,45 +29,22 @@ impl State {
             .ok_or(crate::WorkError::Overflow)?
             .max(1)
             .min(self.options.maximum_trace_entries);
-        let bytes = u64::try_from(
-            capacity
-                .checked_mul(std::mem::size_of::<SimulationTrace>())
-                .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
-        let copied = u64::try_from(
-            self.trace
-                .len()
-                .checked_mul(std::mem::size_of::<SimulationTrace>())
-                .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
+        let copied = self
+            .trace
+            .len()
+            .checked_mul(std::mem::size_of::<SimulationTrace>())
+            .ok_or(crate::WorkError::Overflow)? as u64;
         let delta = WorkCounters {
             bytes_copied: copied,
             ..WorkCounters::UNCHARGED
         };
         accounting.admit(delta)?;
-        let allocation = accounting.claim_owned(bytes, 1)?;
-        let mut replacement = (Vec::new(), allocation);
-        replacement
-            .0
-            .try_reserve_exact(capacity)
-            .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-        let actual = u64::try_from(
-            replacement
-                .0
-                .capacity()
-                .checked_mul(std::mem::size_of::<SimulationTrace>())
-                .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
-        accounting.reconcile_owned(&mut replacement.1, bytes, actual)?;
-        accounting.admit(delta)?;
-        replacement.0.extend_from_slice(&self.trace);
+        let mut replacement =
+            crate::kernel::Owned::<Vec<SimulationTrace>>::allocate(capacity, accounting)?;
+        replacement.value.extend_from_slice(&self.trace);
         accounting.record_completed(delta)?;
-        let (trace, allocation) = replacement;
-        self.trace = trace;
-        self.trace_allocation = allocation;
+        self.trace = replacement.value;
+        self.trace_allocation = replacement.allocation;
         Ok(())
     }
 

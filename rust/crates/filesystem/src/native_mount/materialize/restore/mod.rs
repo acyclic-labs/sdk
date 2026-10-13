@@ -255,7 +255,7 @@ pub(super) fn create_restore_stage(
         )?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}")
-            .expect("String formatting cannot fail");
+            .map_err(|_| MaterializeError::InvalidOptions)?;
         work.record(delta).map_err(MaterializeError::from)?;
         let name = (PathBuf::from(name), allocation);
         match {

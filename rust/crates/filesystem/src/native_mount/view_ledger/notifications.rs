@@ -45,7 +45,9 @@ impl ViewLedger {
         };
         let registered = (|| {
             let (mut next, custody) = storage::vector(count, carrier)?;
-            let custody = custody.expect("nonempty observer registry");
+            let custody = custody.ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
             carrier
                 .with_work(|work| {
                     custody.claim(
