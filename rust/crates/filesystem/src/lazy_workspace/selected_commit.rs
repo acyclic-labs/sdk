@@ -2,6 +2,20 @@ use super::*;
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
+    /// Returns the authenticated selected-import snapshot recorded by this operation.
+    pub async fn selected_import_snapshot(
+        &self,
+        operation: crate::OperationId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<LazySnapshotRef>, LazyWorkspaceError> {
+        let Some(generation) = self.operation_generation(
+            IdempotencyKey::from_bytes(operation.into_bytes()), ctx,
+        ).await? else {
+            return Ok(None);
+        };
+        self.selected_snapshot(operation, generation, ctx).await.map(|(snapshot, _)| Some(snapshot))
+    }
+
     pub(crate) async fn selected_snapshot(
         &self,
         operation: crate::OperationId,
