@@ -53,9 +53,9 @@ pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
 #[cfg(unix)]
-mod linux_metadata;
+mod unix_metadata;
 #[cfg(unix)]
-pub(crate) use linux_metadata::*;
+pub(crate) use unix_metadata::*;
 mod links;
 pub(crate) use links::*;
 mod unix_stat;
@@ -90,7 +90,7 @@ pub use reader::HostStatReader;
 pub use root::HostRoot;
 #[cfg(target_os = "macos")]
 pub use sparse::punch_hole;
-pub use stat::{HostDataRange, HostFileType, HostListedEntry, HostStat};
+pub use stat::{HostDataRange, HostListedEntry, HostStat};
 #[cfg(windows)]
 pub use yielding::{Yielded, YieldingFile};
 #[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]

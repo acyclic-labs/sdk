@@ -38,7 +38,8 @@ impl HostRoot {
         if stat.identity() != expected {
             return Err(DemandError::StaleVersion);
         }
-        let real_directory = stat.file_type().is_dir() && !stat.file_type().is_symlink();
+        let real_directory = (stat.file_type() == crate::demand::SourceNodeKind::Directory)
+            && (stat.file_type() != crate::demand::SourceNodeKind::SymbolicLink);
         #[cfg(windows)]
         let real_directory =
             real_directory && stat.raw.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 == 0;
@@ -84,6 +85,12 @@ impl HostRoot {
         #[cfg(unix)]
         return remove_leaf(&self.directory, name, real_directory, work);
         #[cfg(windows)]
-        remove_windows_leaf(&self.directory, name, stat.is_dir(), Some(expected), work)
+        remove_windows_leaf(
+            &self.directory,
+            name,
+            (stat.file_type() == crate::demand::SourceNodeKind::Directory),
+            Some(expected),
+            work,
+        )
     }
 }
