@@ -1,6 +1,5 @@
 use super::*;
-use crate::foundation::Digest;
-use crate::materializer::{NativeMaterializationWork, NativeTreeMaterializationError};
+use crate::materializer::NativeMaterializationWork;
 use crate::workspace_context::{WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
 
 pub(super) fn finite_budget() -> crate::WorkBudget {
