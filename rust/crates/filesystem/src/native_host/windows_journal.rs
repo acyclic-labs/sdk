@@ -208,8 +208,7 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     name: &[u16],
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
-    let volume = u32::try_from(directory_identity(parent, work)?.device)
-        .map_err(|_| W::invalid_request())?;
+    let volume = directory_identity(parent, work)?.device as u32;
     let file = open_windows_at(
         parent,
         name,
