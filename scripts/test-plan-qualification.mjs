@@ -485,7 +485,7 @@ test("full qualification reruns source-bound packages and runtime tests after a 
     marker: everywhere,
     retained: retainedAll,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "linux-runtime", "windows", "macos"]);
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "linux-runtime", "windows", "windows-rust", "macos"]);
   assert.equal(reused.linux, undefined);
   assert.equal(reused.gate.run_id, source.run_id);
 });
@@ -598,7 +598,7 @@ test("ARM native binding production runs independently and all original ARM chec
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
  assert.match(workflow,/name: Find linux-arm64-bindings marker/);assert.match(workflow,/name: Record linux-arm64-bindings/);
  assert.match(workflow,/needs: \[ plan, qualification \]/);assert.match(workflow,/test "\$RESULT" = success/);
- assert.ok(matrix.length<=16,"all ARM work fits in the simultaneous matrix");
+ assert.ok(matrix.length<=17,"all ARM work fits in the simultaneous matrix");
  const action=readFileSync(".github/actions/qualification-lane/action.yml","utf8");
  assert.match(action,/inputs\.lane == 'linux-arm64-bindings' && format\('sdk-sccache-v5-linux-arm64-/);
 });
@@ -614,8 +614,8 @@ test("the workspace gate, docs and generation run as independent required matrix
  const matrix=chooseLanes(lanes,{mainPush:false,force:true,marker:everywhere,retained:retainedAll}).matrix;
  for(const name of ["gate","docs","generation"])assert.equal(matrix.filter(lane=>lane.lane===name).length,1);
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
- assert.match(workflow,/max-parallel: 16/);
- assert.ok(matrix.length<=16,"all full lanes can start together");
+ assert.match(workflow,/max-parallel: 17/);
+ assert.ok(matrix.length<=17,"all full lanes can start together");
  for(const name of ["docs","generation"]){
   assert.match(workflow,new RegExp("name: Find "+name+" marker"));
   assert.match(workflow,new RegExp("name: Record "+name));
@@ -643,8 +643,8 @@ test("Windows native audits are independent required lanes without moving public
     assert.ok(script.includes(command), command);
   assert.match(script, /test-qualify-ci-windows\.ps1/);
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
-  assert.match(workflow, /max-parallel: 16/);
-  assert.ok(matrix.length <= 16);
+  assert.match(workflow, /max-parallel: 17/);
+  assert.ok(matrix.length <= 17);
   for (const name of names) {
     assert.ok(workflow.includes(`name: Find ${name} marker`));
     assert.ok(workflow.includes(`name: Record ${name}`));
@@ -730,8 +730,8 @@ test("Linux mount and fork/join qualification overlap packages on an independent
     assert.ok(workflow.includes(marker));
   assert.ok(workflow.includes("include: ${{ fromJSON(needs.plan.outputs.matrix) }}"));
   assert.ok(workflow.includes("lane: ${{ matrix.lane }}"));
-  assert.ok(matrix.length <= 16);
-  assert.ok(workflow.includes("max-parallel: 16"));
+  assert.ok(matrix.length <= 17);
+  assert.ok(workflow.includes("max-parallel: 17"));
   assert.ok(workflow.includes('test "$RESULT" = success'));
   const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
   assert.ok(action.includes("inputs.lane == 'linux-runtime' && format('sdk-sccache-v5-linux-"));

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy')]
+    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust')]
     [string] $Lane
 )
 
@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force -Path `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
 
 $clangDirectory = $null
-if ($Lane -in @('windows', 'windows-arm64')) {
+if ($Lane -in @('windows', 'windows-arm64', 'windows-rust')) {
     $clangDirectories = @()
     if ($env:LLVM_PATH) {
         $clangDirectories += Join-Path $env:LLVM_PATH 'bin'
@@ -44,6 +44,39 @@ cargo fetch --locked
 
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
 switch ($Lane) {
+    'windows-rust' {
+        if ($clangDirectory) {
+            $lldLink = Join-Path $clangDirectory 'lld-link.exe'
+            if (Test-Path -LiteralPath $lldLink) {
+                $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
+            }
+        }
+
+        # The workflow enables the Client-ProjFS optional feature before this lane, so
+        # the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
+        # from one build instead of separate portable, no-default, and link-only builds.
+        # This test also resolves the WASM crates and their web-sys dependency. Its
+        # generated feature cfg list is too large for sccache's Windows rustc spawn
+        # path (ERROR_FILENAME_EXCED_RANGE / OS error 206), so run this invocation
+        # directly through rustc while leaving the independent native builds cached.
+        $rustcWrapper = $env:RUSTC_WRAPPER
+        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+        try {
+            cargo test --workspace --all-features --locked
+        } finally {
+            if ($null -eq $rustcWrapper) {
+                Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+            } else {
+                $env:RUSTC_WRAPPER = $rustcWrapper
+            }
+        }
+        # Black-box fork/join conformance through hooks, the CLI and live ProjFS
+        # mounts. The shared test support module carries ignored tests of its own.
+        cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `
+            --ignored --test-threads=1 --skip support::
+
+        return
+    }
     'windows-napi' {
         cargo build -p acyclic-fs-napi --locked --target-dir "$CargoTargetDir-napi"
         return
@@ -111,28 +144,6 @@ if ($clangDirectory) {
     }
 }
 
-# The workflow enables the Client-ProjFS optional feature before this lane, so
-# the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
-# from one build instead of separate portable, no-default, and link-only builds.
-# This test also resolves the WASM crates and their web-sys dependency. Its
-# generated feature cfg list is too large for sccache's Windows rustc spawn
-# path (ERROR_FILENAME_EXCED_RANGE / OS error 206), so run this invocation
-# directly through rustc while leaving the independent native builds cached.
-$rustcWrapper = $env:RUSTC_WRAPPER
-Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-try {
-    cargo test --workspace --all-features --locked
-} finally {
-    if ($null -eq $rustcWrapper) {
-        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-    } else {
-        $env:RUSTC_WRAPPER = $rustcWrapper
-    }
-}
-# Black-box fork/join conformance through hooks, the CLI and live ProjFS
-# mounts. The shared test support module carries ignored tests of its own.
-cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `
-    --ignored --test-threads=1 --skip support::
 foreach ($family in @('actors')) {
   $clientBundle = Join-Path $StreamNativeRoot "$family-native/bundle"
   node "scripts/build-$family-native.mjs" build --target x86_64-pc-windows-msvc `

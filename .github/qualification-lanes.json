@@ -120,6 +120,16 @@
     "scope": "full"
   },
   {
+    "lane": "windows-rust",
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": true,
+    "scope": "full"
+  },
+  {
     "lane": "windows-napi",
     "runner": "blacksmith-4vcpu-windows-2025",
     "workers": 4,

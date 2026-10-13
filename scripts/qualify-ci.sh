@@ -344,7 +344,7 @@ case "$lane" in
     node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
     if [[ "$full_qualification" != true ]]; then
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs
+      node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs
       node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
       cargo fmt --all -- --check
       exit 0
@@ -363,7 +363,7 @@ case "$lane" in
     node --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/check-boundaries.test.mjs
     node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
     node --test scripts/test-typescript-qualification.mjs
-    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs
+    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check

@@ -18,8 +18,9 @@ foreach ($Lane in 'windows-napi', 'windows-clippy') {
     & ([scriptblock]::Create($clangSetup.Extent.Text))
 }
 if ($script:Probes) { throw 'native-only audit probed the ARM64 compiler' }
-$Lane = 'windows'
-& ([scriptblock]::Create($clangSetup.Extent.Text))
+foreach ($Lane in 'windows', 'windows-rust') {
+    & ([scriptblock]::Create($clangSetup.Extent.Text))
+}
 $Lane = 'windows-arm64'
 $missingCompiler = $false
 try { & ([scriptblock]::Create($clangSetup.Extent.Text)) } catch {
@@ -49,17 +50,22 @@ try {
     if ($process.ExitCode -eq 0 -or $output.Contains('AUDIT_CONTINUED')) { throw 'production settings ignored native failure' }
 } finally { $process.Dispose() }
 $CargoTargetDir = 'fixture-target'
+$clangDirectory = $null
 $script:Calls = [System.Collections.Generic.List[string]]::new()
-$script:FailCommand = $null
+$script:FailCall = 0
 function Record-Command([string] $Name, [object[]] $Arguments) {
     $script:Calls.Add("$Name $($Arguments -join ' ')")
-    if ($Name -eq $script:FailCommand) { throw 'simulated command failure' }
+    if ($script:Calls.Count -eq $script:FailCall) { throw 'simulated command failure' }
 }
 function cargo { Record-Command cargo $args }
 function node { Record-Command node $args }
 function rustup { Record-Command rustup $args }
 
 $expected = @{
+    'windows-rust' = @(
+        'cargo test --workspace --all-features --locked',
+        'cargo test -p acyclic-plugin --all-features --locked --test fork_join --ignored --test-threads=1 --skip support::'
+    )
     'windows-napi' = @('cargo build -p acyclic-fs-napi --locked --target-dir fixture-target-napi')
     'windows-arm64' = @(
         'rustup target add aarch64-pc-windows-msvc',
@@ -81,17 +87,18 @@ try {
         if ($name -eq 'windows-clippy' -and $text -notmatch '--locked -- -D warnings') { throw 'missing clippy warning gate' }
         $body = [scriptblock]::Create($text.Substring(1, $text.Length - 2))
         $script:Calls.Clear()
-        $script:FailCommand = $null
+        $script:FailCall = 0
         & $body
         if (($script:Calls -join "`n") -ne ($expected[$name] -join "`n")) { throw "audit commands changed: $name observed: $($script:Calls -join ';')" }
-        foreach ($command in @($expected[$name] | ForEach-Object { ($_ -split ' ')[0] } | Select-Object -Unique)) {
-            $script:FailCommand = $command
+        for ($index = 1; $index -le $expected[$name].Count; $index++) {
+            $script:Calls.Clear()
+            $script:FailCall = $index
             $rejected = $false
             try { & $body } catch {
                 if ($_.Exception.Message -ne 'simulated command failure') { throw }
                 $rejected = $true
             }
-            if (-not $rejected) { throw "audit failure ignored: $name $command" }
+            if (-not $rejected) { throw "audit failure ignored: $name command $index" }
         }
     }
     if ($dispatch.Clauses.Count -ne $expected.Count) { throw 'missing audit lane' }
