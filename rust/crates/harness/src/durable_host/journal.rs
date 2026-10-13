@@ -602,7 +602,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let workflow = tool.workflow_admission(context, invocation, io)?;
         let output_schema = crate::executor::with_history_io(io, |work| {
             crate::wire_codec::CodecQuota::produce(work, |quota| {
-                crate::core::copy_value(&tool.definition.output_schema, quota)
+                crate::core::copy(&tool.definition.output_schema, quota, |value, _| {
+                    crate::executor::json::json_value_logical_owned_bytes(value)
+                })
             })
             .map(|(schema, _)| schema)
         })?;
