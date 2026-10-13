@@ -354,11 +354,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let receipt;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(native) = proof_custody
-                .work()
-                .as_deref()
-                .and_then(|io| io.original_native_work())
-                .cloned()
+            if let Some((observer, native)) =
+                proof_custody.work().as_deref_mut().and_then(|observer| {
+                    observer
+                        .original_native_work()
+                        .cloned()
+                        .map(|native| (observer, native))
+                })
             {
                 let (verified, guard) = provider
                     .verify_with_native_work(&request, proof, &native)?
@@ -370,11 +372,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         custody: Some(guard),
                     });
                 }
-                proof_custody
-                    .work()
-                    .as_deref_mut()
-                    .expect("native proof observer")
-                    .absorb_native_custody(guard)?;
+                observer.absorb_native_custody(guard)?;
                 receipt = verified;
             } else {
                 receipt = provider.verify(&request, proof).await?;

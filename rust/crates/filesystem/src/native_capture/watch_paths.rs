@@ -13,15 +13,15 @@ pub(super) fn current_record(
     meter: &NativeMaterializationWork,
 ) -> Result<CurrentRecord, CaptureError> {
     Ok(match capture_position(rename_records, path, meter)? {
-        Ok(index) => CurrentRecord::Known(rename_records[index].1),
+        Ok(index) => CurrentRecord::Known(rename_records.get(index).ok_or(WorkError::Overflow)?.1),
         Err(_) => CurrentRecord::Lookup,
     })
 }
 
 pub(super) fn watch_ancestor_candidates<'a>(
     paths: impl Iterator<Item = &'a NamespacePath>,
-    ordinary: &Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
-    rename_records: &Vec<(NamespacePath, Option<FileRecord>)>,
+    ordinary: &[(NamespacePath, (CurrentRecord, CaptureIntent))],
+    rename_records: &[(NamespacePath, Option<FileRecord>)],
     renamed_paths: usize,
     policy: &CapturePolicy,
     maximum_paths: usize,
@@ -33,8 +33,14 @@ pub(super) fn watch_ancestor_candidates<'a>(
         for depth in (1..path.depth()).rev() {
             let parent = clone_capture_prefix(path, depth, limits, meter)?;
             if capture_position(ordinary, &parent, meter)?.is_err()
-                && !capture_position(rename_records, &parent, meter)?
-                    .is_ok_and(|index| rename_records[index].1.is_some())
+                && match capture_position(rename_records, &parent, meter)? {
+                    Ok(index) => rename_records
+                        .get(index)
+                        .ok_or(WorkError::Overflow)?
+                        .1
+                        .is_none(),
+                    Err(_) => true,
+                }
                 && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
@@ -94,10 +100,7 @@ fn below_replaced_parent(
     for (parent, record) in parents {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(1),
         )?;
         if record.is_some() {
             capture_charge(
@@ -118,7 +121,7 @@ fn below_replaced_parent(
 
 pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
-    ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
+    ordinary: &mut [(NamespacePath, (CurrentRecord, CaptureIntent))],
     ancestors: Vec<(NamespacePath, ())>,
     source_root: &HostRoot,
     epoch: u64,

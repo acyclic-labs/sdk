@@ -121,10 +121,7 @@ pub async fn capture_watch_batch<
             }
             capture_charge(
                 meter,
-                WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
+                crate::materializer::NativeResourceCredit::Items.delta(1),
             )?;
             let excluded = capture_excludes(policy, &path, meter)?;
             let (path, intent) = if let Some(to) = destination {
@@ -250,10 +247,7 @@ pub async fn capture_watch_batch<
         for (_, record) in &rename_records {
             capture_charge(
                 meter,
-                WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
+                crate::materializer::NativeResourceCredit::Items.delta(1),
             )?;
             renamed_paths += usize::from(record.is_some());
         }
@@ -325,7 +319,7 @@ pub async fn capture_watch_batch<
                 let Ok(index) = capture_position(&ordinary, &path, meter)? else {
                     return Err(CaptureError::InvalidOptions);
                 };
-                let (current, _) = &mut ordinary[index].1;
+                let (current, _) = &mut ordinary.get_mut(index).ok_or(WorkError::Overflow)?.1;
                 *current = CurrentRecord::Known(record);
                 capture_drop_path(path, meter)?;
             }
@@ -380,11 +374,9 @@ pub async fn capture_watch_batch<
         {
             capture_charge(
                 meter,
-                WorkCounters {
-                    bytes_copied: rename_mutations.len() as u64
-                        * std::mem::size_of::<AuthoredMutation>() as u64,
-                    ..WorkCounters::UNCHARGED
-                },
+                crate::materializer::NativeResourceCredit::Copy.delta(
+                    rename_mutations.len() as u64 * std::mem::size_of::<AuthoredMutation>() as u64,
+                ),
             )
         }?;
         mutations.extend(rename_mutations);

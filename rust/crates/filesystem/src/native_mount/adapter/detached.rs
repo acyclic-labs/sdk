@@ -76,7 +76,11 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             offset,
             length: u64::from(length),
         };
-        let original = carrier.original_native_work().expect("native SDK callback");
+        let original = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
         let read = state
             .file
             .read_range(range, &original, &cancellation)
@@ -525,7 +529,12 @@ where
             inputs
                 .carrier
                 .check(cancellation, Some(&self.cancellation))?;
-            Ok((page, inputs.retain().expect("native attribute page")))
+            Ok((
+                page,
+                inputs.retain().ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?,
+            ))
         })
     }
 

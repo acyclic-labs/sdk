@@ -11,18 +11,6 @@ pub struct OwnedSourceChunk {
 }
 
 impl OwnedSourceChunk {
-    /// Borrows the supplied bytes without detaching their native custody.
-    #[must_use]
-    pub fn bytes(&self) -> &acyclic_stream::OwnedBytes {
-        &self.bytes
-    }
-
-    /// Exact backing capacity reported by the physical source producer.
-    #[must_use]
-    pub const fn logical_owned_bytes(&self) -> u64 {
-        self.logical_owned_bytes
-    }
-
     /// Bytes whose retained capacity is accounted by the ordinary caller.
     pub fn claimed(bytes: acyclic_stream::OwnedBytes, logical_owned_bytes: u64) -> Self {
         Self {

@@ -64,7 +64,13 @@ where
                     .await?;
                 observation.ensure_publication_resolved()?;
                 let mut checkout = observation
-                    .observer(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())
+                    .observer(
+                        &mut crate::kernel::allocation::KernelAccounting::native(
+                            work,
+                            work.cancellation(),
+                        ),
+                        work.cancellation(),
+                    )
                     .map_err(mount_engine_error)?;
                 let (mut page, state, _page_allocation) = self
                     .lazy
@@ -84,11 +90,8 @@ where
                 let mut output_allocation =
                     output.retain().ok_or(MountSourceError::NativeUnsupported)?;
                 for entry in &page.entries {
-                    work.charge(crate::WorkCounters {
-                        items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    })
-                    .map_err(MountSourceError::NativeWork)?;
+                    work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                        .map_err(MountSourceError::NativeWork)?;
                     let (name, allocation) = adapter::native_mount_name(&entry.name, carrier)?;
                     if let Some(mut allocation) = allocation {
                         output_allocation

@@ -166,6 +166,7 @@ pub struct CoordinatorTaskHost<P> {
     machines: MachineRegistry,
     pub(crate) clock: Arc<dyn UnixMillisClock>,
     policy: Option<Arc<dyn ToolPolicy>>,
+    policy_binding: Option<ComponentIdentity>,
     effects: Option<Arc<dyn DurableEffectObserver>>,
     session_limits: Option<crate::scheduler::SessionLimits>,
     resource_creation: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,

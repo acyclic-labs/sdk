@@ -31,7 +31,9 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
                 .map_err(MountSourceError::NativeWork)?;
             self.allocation
                 .as_mut()
-                .expect("native inputs")
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?
                 .absorb(&mut allocation)
                 .map_err(MountSourceError::NativeWork)?;
             return Ok(values);
@@ -48,10 +50,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
     }
 
     pub(super) fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
-        let delta = crate::WorkCounters {
-            bytes_copied: bytes.len() as u64,
-            ..crate::WorkCounters::UNCHARGED
-        };
+        let delta = crate::materializer::NativeResourceCredit::Copy.delta(bytes.len() as u64);
         self.admit(delta)?;
         let mut owned = self.vec(bytes.len())?;
         owned.extend_from_slice(bytes);
@@ -140,10 +139,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
     }
 
     pub(super) fn items(&mut self, count: usize) -> Result<(), MountSourceError> {
-        self.charge(crate::WorkCounters {
-            items_examined: count as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })
+        self.charge(crate::materializer::NativeResourceCredit::Items.delta(count as u64))
     }
 
     pub(super) fn release(&mut self, bytes: u64) -> Result<(), MountSourceError> {
@@ -157,7 +153,10 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             self.carrier
                 .with_work(|work| work.release(bytes))
                 .map_err(super::lazy::mount_demand_error)?;
-            self.bytes = self.bytes.checked_sub(bytes).expect("owned input release");
+            self.bytes = self
+                .bytes
+                .checked_sub(bytes)
+                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
         }
         Ok(())
     }
@@ -176,7 +175,9 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .map_err(MountSourceError::NativeWork)?;
         self.allocation
             .as_mut()
-            .expect("native host input")
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?
             .absorb(&mut allocation)
             .map_err(MountSourceError::NativeWork)?;
         Ok(path)
