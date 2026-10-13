@@ -22,13 +22,14 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
     second.write_text("/b.rs", "b\n").await?;
 
     for (label, fork) in [("first", &first), ("second", &second)] {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = unbounded!(fork.join_into(&main), plan())?;
         let outcome = plan
             .apply(
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
                 },
+                std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted,
             )
             .await?;
@@ -80,7 +81,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     }
     let mut outcomes = Vec::new();
     for fork in &forks {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = unbounded!(fork.join_into(&main), plan())?;
         outcomes.push(
             match plan
                 .apply(
@@ -88,6 +89,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
                         if_target: plan.target_head(),
                         idempotency_key: IdempotencyKey::new(),
                     },
+                    std::collections::BTreeMap::new(),
                     crate::PublicationPermit::Unrestricted,
                 )
                 .await?
@@ -113,17 +115,19 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     )
     .await?;
     fork.write_text("/same.rs", "same\n").await?;
-    let plan = fork.join_into(&main).plan().await?;
+    let plan = unbounded!(fork.join_into(&main), plan())?;
     match plan
         .apply(
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
             },
+            std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted,
         )
         .await?
     {
+        // Folded into the file main already holds: nothing left to publish.
         JoinOutcome::NoChanges(_) => {}
         JoinOutcome::Conflicted { conflicts, .. } => {
             let described = plan.describe_conflicts(&conflicts, false).await?;

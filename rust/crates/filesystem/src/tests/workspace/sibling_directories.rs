@@ -23,13 +23,14 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         forks.push(fork);
     }
     for fork in &forks {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = unbounded!(fork.join_into(&main), plan())?;
         match plan
             .apply(
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
                 },
+                std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted,
             )
             .await?
@@ -82,8 +83,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     }
     let base = unbounded!(main, head())?;
     let fork = |name: &'static str, base: &Generation<_, _>| {
-        fork_workspace(
-            &main,
+        main.fork(
             name,
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
         )
@@ -97,13 +97,14 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         commit(&mut transaction).await?;
     }
     for fork in [&first, &second] {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = unbounded!(fork.join_into(&main), plan())?;
         let outcome = plan
             .apply(
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
                 },
+                std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted,
             )
             .await?;
@@ -124,6 +125,8 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         unbounded!(main, stat("/pkg"))?.metadata.modified_ns,
         Some(30)
     );
+
+    // Authored metadata changed both ways is a conflict, reported as such.
     let base = unbounded!(main, head())?;
     let third = fork("sibling-times-third", &base).await?;
     for (workspace, mode) in [(&main, 0o700), (&third, 0o770)] {
@@ -131,7 +134,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         unbounded!(transaction, set_metadata("/pkg", touch(40, mode)))?;
         commit(&mut transaction).await?;
     }
-    let plan = third.join_into(&main).plan().await?;
+    let plan = unbounded!(third.join_into(&main), plan())?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
@@ -141,6 +144,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
             },
+            std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted,
         )
         .await?

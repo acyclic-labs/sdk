@@ -66,6 +66,7 @@ async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 mod change_sets;
+mod discovery;
 mod fork_selection;
 mod generation;
 mod identity;
@@ -147,5 +148,6 @@ async fn generation_changes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &CancellationToken::new(),
     )
     .await
+    .map(|receipt| receipt.value.0)
     .map_err(|failure| failure.error)
 }
