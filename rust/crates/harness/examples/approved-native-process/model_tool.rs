@@ -11,7 +11,9 @@ use acyclic_harness::{
 use acyclic_stream::BoxProviderFuture;
 
 pub(super) struct Approved<P> {
-    pub recovery: Recovery<P>,
+    pub owner: Arc<TaskJournalOwner<P>>,
+    pub effects: Arc<ConversationEffectHost<P>>,
+    pub content: Arc<dyn ContentResidencyVerifier>,
     pub task: TaskId,
     pub command: OperationId,
     pub plan: TaskEffectPlan,
@@ -60,7 +62,6 @@ impl<P: StreamProvider> Transport<P> {
         let output: NativeProcessResult = serde_json::from_slice(
             &self
                 .approved
-                .recovery
                 .content
                 .read(&result, 1_000_000, None)?
                 .await?,
@@ -96,14 +97,8 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             let binding = &self.approved;
             self.result(
                 binding
-                    .recovery
                     .effects
-                    .run_task_effect(
-                        &binding.recovery.owner,
-                        binding.command,
-                        &binding.plan,
-                        None,
-                    )
+                    .run_task_effect(&binding.owner, binding.command, &binding.plan, None)
                     .await
                     .map(|result| result.0)?,
             )
@@ -124,14 +119,8 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             self.authorize(&context)?;
             let binding = &self.approved;
             match binding
-                .recovery
                 .effects
-                .reconcile_task_effect(
-                    &binding.recovery.owner,
-                    binding.command,
-                    &binding.plan,
-                    None,
-                )
+                .reconcile_task_effect(&binding.owner, binding.command, &binding.plan, None)
                 .await
                 .map(|result| result.0)
             {
@@ -170,7 +159,6 @@ pub(super) async fn run<P: StreamProvider>(
     journal: Arc<dyn ExecutionJournal>,
     replay: bool,
     completed: bool,
-    interrupted: bool,
 ) -> Result<()> {
     let descriptor = approved
         .request
@@ -217,25 +205,23 @@ pub(super) async fn run<P: StreamProvider>(
         }
     }
     let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
-    for _ in 0..if interrupted && !replay { 1 } else { 2 } {
-        let result = runner
-            .run(
-                task_id,
-                &definition,
-                &acyclic_harness::tool::ToolInvocation {
-                    operation_id: operation,
-                    call_id: operation.to_string(),
-                    name: definition.name.clone(),
-                    arguments: arguments.clone(),
-                },
-                &context,
-                None,
-                false,
-            )?
-            .await?
-            .0;
-        verify_result(result, &arguments, operation, completed)?;
-    }
+    let result = runner
+        .run(
+            task_id,
+            &definition,
+            &acyclic_harness::tool::ToolInvocation {
+                operation_id: operation,
+                call_id: operation.to_string(),
+                name: definition.name.clone(),
+                arguments: arguments.clone(),
+            },
+            &context,
+            None,
+            false,
+        )?
+        .await?
+        .0;
+    verify_result(result, &arguments, operation, completed)?;
     Ok(())
 }
 
