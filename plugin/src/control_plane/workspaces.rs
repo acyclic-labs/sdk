@@ -10,7 +10,7 @@ async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>
     while let Some(directory) = directories.pop() {
         let mut after = None;
         loop {
-            let page = head.list_directory(&directory, after.as_ref(), 1_024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+            let page = head.list_directory(&directory, after.as_ref(), 1_024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                 .map_err(display)?;
             for entry in &page.entries {
                 let name = entry
@@ -279,18 +279,25 @@ impl ControlPlane {
                 match checkout
                     .commit(
                         OperationId::new(),
+                        None,
+                        None,
+                        None,
+                        PublicationPermit::Unrestricted,
                         WorkBudget::UNBOUNDED,
                         &CancellationToken::new(),
+                        |_| std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                            acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED },
+                        )),
                     )
                     .await
-                    .map_err(display)?
+                    .map_err(|failure| display(failure.error))?
                     .value
                 {
-                    CheckoutCommitOutcome::Committed { .. }
-                    | CheckoutCommitOutcome::AlreadyCommitted { .. } => {}
-                    CheckoutCommitOutcome::Conflict { .. }
-                    | CheckoutCommitOutcome::Fenced { .. }
-                    | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                    acyclic_fs::LivePublicationObservation::Committed { .. }
+                    | acyclic_fs::LivePublicationObservation::AlreadyCommitted { .. } => {}
+                    acyclic_fs::LivePublicationObservation::Conflict { .. }
+                    | acyclic_fs::LivePublicationObservation::Fenced { .. }
+                    | acyclic_fs::LivePublicationObservation::IdempotencyConflict { .. } => {
                         return Err("physical root changed concurrently with reconciliation".to_owned());
                     }
                 }

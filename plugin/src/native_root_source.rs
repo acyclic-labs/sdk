@@ -40,7 +40,7 @@ fn admit(
     let next = work
         .checked_add(delta)
         .map_err(|error| rejected(error, *work))?;
-    next.verify_within(&budget)
+    next.remaining(budget)
         .map_err(|error| rejected(error, *work))?;
     *work = next;
     Ok(())
@@ -275,7 +275,7 @@ async fn acquire_engine<I: RootInstrumentation>(
         registration.pending_source = Some(Arc::clone(&source));
     }
     authenticate(instrumentation, root, admission, original).await?;
-    if source.inner().root_identity() != watched_identity
+    if source.root_identity() != watched_identity
         || source.reference().identity != reference.identity
     {
         return Err(instrumentation.rejection(ROOT_IDENTITY, &canonical.0));
@@ -301,7 +301,7 @@ async fn acquire_engine<I: RootInstrumentation>(
         .lock()
         .map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))? =
         source.reference();
-    let native_identity = source.inner().root_identity().to_bytes();
+    let native_identity = source.root_identity().to_bytes();
     let shared_custody = instrumentation.claim(std::mem::size_of::<SharedPhysicalRoot>())?;
     let shared = Arc::new(SharedPhysicalRoot {
         source,
@@ -380,7 +380,7 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
             self.budget,
         )?;
         let path = root.to_path_buf();
-        tokio::task::spawn_blocking(move || HostRoot::open(&path).map(|root| root.identity()))
+        tokio::task::spawn_blocking(move || acyclic_fs::native_capture::capture_root_identity(&path))
             .await
             .map_err(|error| {
                 rejected(
@@ -499,19 +499,13 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
             )
             .await,
         )?;
-        Ok(Arc::new(FilteredDemandSource::new(
-            source,
-            reserved_root_paths().map_err(|error| rejected(error, self.work))?,
-        )))
+        let excluded = reserved_root_paths().map_err(|error| rejected(error, self.work))?;
+        let remaining = self.work.remaining(self.budget).map_err(|error| rejected(error, self.work))?;
+        let source = combine(&mut self.work, source.exclude(excluded, remaining, self.cancellation))?;
+        Ok(Arc::new(source))
     }
     fn invalidate(&mut self, source: &LocalLazySource) -> Result<(), Self::Error> {
-        source
-            .inner()
-            .invalidate(&mut acyclic_fs::demand::DemandWork::new(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            ))
-            .map_err(|error| rejected(error, self.work))?;
+        source.invalidate();
         Ok(())
     }
     fn rejection(&self, rejection: (ErrorCode, &'static str), root: &Path) -> Self::Error {
@@ -708,7 +702,7 @@ where
     }
     fn copy_path(&mut self, root: &Path) -> RootResult<(PathBuf, Option<NativeAllocation>)> {
         self.work
-            .copy_path(root)
+            .path(root, None)
             .map(|(path, custody)| (path, Some(custody)))
             .map_err(native_work_error)
     }
@@ -736,11 +730,11 @@ where
         // Ordinary-created SDK source backing cannot be silently promoted.
         shared
             .source
-            .inner()
+
             .validate_root(
                 root,
                 expected,
-                &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(
+                &mut acyclic_fs::NativeMaterializationWork::clone(
                     self.work,
                 ),
             )
@@ -847,9 +841,9 @@ where
         .await
         .map_err(native_source_error)?;
         let excluded = native_reserved_paths(self.work)?;
-        let mut source =
-            FilteredDemandSource::new_with_native_work(source, excluded.0, excluded.1, self.work)
-                .map_err(native_work_error)?;
+        let mut source = source.exclude(excluded.0, self.work, self.work.cancellation())
+            .map_err(native_source_error)?;
+        drop(excluded.1);
         let mut owner = self
             .work
             .claim(
@@ -864,14 +858,8 @@ where
         Ok(Arc::new(source))
     }
     fn invalidate(&mut self, source: &LocalLazySource) -> RootResult<()> {
-        source
-            .inner()
-            .invalidate(
-                &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(
-                    self.work,
-                ),
-            )
-            .map_err(native_source_error)?;
+        self.work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
+        source.invalidate();
         Ok(())
     }
     fn rejection(&self, (code, reason): (ErrorCode, &'static str), _: &Path) -> RootError {
@@ -1152,7 +1140,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(first.source.inner().root_identity(), expected);
+        assert_eq!(first.source.root_identity(), expected);
         assert_eq!(first.source.reference().identity, original.identity);
         assert!(first.source.reference().epoch > original.epoch);
         assert!(work.receipt().backend_read_operations > before.backend_read_operations);
@@ -1175,7 +1163,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(reopened.source.inner().root_identity(), expected);
+        assert_eq!(reopened.source.root_identity(), expected);
         assert_eq!(reopened.source.reference().identity, original.identity);
         assert!(reopened.source.reference().epoch > retained_epoch);
         assert!(close_native_watch(&reopened, &query).unwrap());
@@ -1197,7 +1185,7 @@ mod tests {
         assert!(close_native_watch(&physical, &work).unwrap());
         drop(physical);
         let held = work.live_allocation_bytes();
-        assert_eq!(source.inner().root_identity(), expected);
+        assert_eq!(source.root_identity(), expected);
         assert_eq!(source.reference().identity, original.identity);
         drop(source);
         assert!(work.live_allocation_bytes() < held);
@@ -1331,7 +1319,7 @@ mod tests {
             cause: acyclic_fs::NativeTreeMaterializationError::AllocationChanged { expected: old, actual },
             ..
         } if old == expected && actual != expected));
-        assert_eq!(physical.source.inner().root_identity(), expected);
+        assert_eq!(physical.source.root_identity(), expected);
         assert_eq!(physical.source.reference().identity, original.identity);
         assert!(close_native_watch(&physical, &work).unwrap());
     }
@@ -1367,7 +1355,7 @@ mod tests {
         assert!(prefix.allocation_operations > 1);
         registry.prune().await;
         let slot = registry.roots.lock().await.get(path).cloned().unwrap();
-        assert!(slot.lock().await.pending_watcher.is_some());
+        assert!(slot.state.lock().await.pending_watcher.is_some());
         assert_eq!(registry.live_roots().await, 0);
         let cleanup = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
         assert!(
@@ -1378,7 +1366,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let state = slot.lock().await;
+        let state = slot.state.lock().await;
         assert!(state.pending_raw_watcher.is_none());
         assert!(state.pending_watcher.is_none());
         assert!(state.pending_source.is_none());
@@ -1584,7 +1572,9 @@ mod tests {
                 cancellation.cancel();
                 // Fail in the genuine native source invalidation, not an
                 // invented error or a facade around the numeric poll API.
-                physical.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work)).map(|_| ())
+                work.cancellation().check().map_err(|_| acyclic_fs::DemandError::Cancelled)?;
+                physical.source.invalidate();
+                Ok(())
             }).map_err(native_watch_error)?;
             drop(observed);
             Ok(())

@@ -324,7 +324,7 @@ impl PiSession {
             });
         }
         let relative_directory =
-            work.copy_path(relative_directory)
+            work.path(relative_directory, None)
                 .map_err(|cause| RootError::NativeWork {
                     cause,
                     custody: None,
@@ -682,7 +682,7 @@ impl PiSession {
                         original_native_work.cancellation(),
                     )
                     .await
-                    .map_err(|source| RootError::NativeFilesystem { source, custody: None })?;
+                    .map_err(|source| RootError::from(acyclic_fs::LazyWorkspaceError::NativeWorkspace(source, None)))?;
                 drop(workspace_name.0);
                 drop(workspace_name.1);
                 if workspace.id().into_bytes() != creation.repository_workspace_id {
@@ -837,14 +837,18 @@ impl PiSession {
                 .into_parts();
             drop(lineage.0);
             drop(lineage.1);
-            let mut workspace_name = binding
-                .project_volumes
-                .get(key)
-                .ok_or(RootError::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Invalid,
-                    reason: "Pi root lost its project volume",
-                })?
-                .storage_name_with_native_work(original_native_work)?;
+            let mut workspace_name = {
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(original_native_work)?,
+                );
+                let name = binding.project_volumes.get(key)
+                    .ok_or(RootError::NativeBoundary {
+                        code: acyclic_harness::wire::ErrorCode::Invalid,
+                        reason: "Pi root lost its project volume",
+                    })?
+                    .storage_name(&mut Some(&mut io))?;
+                (name, io.into_custody()?)
+            };
             context_roots.push(WorkspaceContextRoot {
                 root_id: WorkspaceRootId::from_bytes(root.root_id),
                 source_path: root.path.clone(),
@@ -1227,7 +1231,7 @@ impl PiSession {
         let context = self
             .runtime
             .runtime
-            .task_context(caller, fence.clone())
+            .task_context_with_native_work(caller, &fence, &work)
             .await?;
         let command = pi_mail::prepare_send(
             &context,

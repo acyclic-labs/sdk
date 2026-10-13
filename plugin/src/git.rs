@@ -612,12 +612,12 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
-                let plan = builder.plan().await.map_err(display)?;
+                let plan = builder.plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| display(failure.error))?;
                 let options = ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 };
-                let initial = plan.apply(options, self.permit).await.map_err(display)?;
+                let initial = plan.apply(options, BTreeMap::new(), self.permit).await.map_err(display)?;
                 let mut projected_conflicts = None;
                 let outcome = if let JoinOutcome::Conflicted {
                     conflicts,
@@ -1130,7 +1130,7 @@ impl RootMaterializingGitExecutor<'_> {
         self.store
             .remove_materialization_async(operation_id)
             .await
-            .map_err(|(cause, _)| display(cause))?;
+            .map_err(display)?;
         remove_tree_checked(
             &root_materialization_root(self.root).map_err(PluginGitError)?,
             &operation_directory,

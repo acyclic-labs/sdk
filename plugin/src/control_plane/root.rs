@@ -66,9 +66,10 @@ impl ControlPlane {
                     .open_workspace(&root_workspace_name(
                         &self.state.root_session_id,
                         &binding.path,
-                    ))
+                    ), WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(display)?;
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| display(failure.error))?;
                 if workspace.id().into_bytes() != binding.created()?.repository_workspace_id {
                     return Err("pending root workspace identity changed".to_owned());
                 }
