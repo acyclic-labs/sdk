@@ -232,11 +232,10 @@ impl<A, O> CheckoutMountSource<A, O> {
                 ))?;
                 credit
                     .0
-                    .loan(wait)
-                    .admit_completed(crate::WorkCounters {
+                    .partition_work(crate::WorkCounters {
                         items_examined: 1,
                         ..crate::WorkCounters::UNCHARGED
-                    })
+                    }, wait)
                     .map_err(MountSourceError::NativeWork)?
                     .record_completed(crate::WorkCounters {
                         items_examined: 1,

@@ -43,11 +43,11 @@ impl FuseSessionState {
         if self.is_retired() {
             return Ok(());
         }
-        let credit = self.cleanup.loan(None);
+        let credit = &self.cleanup;
         let started = |actual| -> Result<(), NativeMountError> {
             match work {
                 Some(work) => work.charge(actual)?,
-                None => credit.started_io(actual)?,
+                None => credit.started_io(actual, None)?,
             }
             Ok(())
         };
@@ -304,8 +304,7 @@ impl FuseSession {
         if self.invalidator.is_some() {
             state
                 .cleanup
-                .loan(None)
-                .started_io(ReadOperations.delta(1))?;
+                .started_io(ReadOperations.delta(1), None)?;
         }
         drop(state);
         if let Some(invalidator) = self.invalidator.take() {
