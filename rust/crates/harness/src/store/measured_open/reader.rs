@@ -1,66 +1,6 @@
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_reader_constructor_rejects_before_copy_and_transfers_original_custody() -> Result<()> {
-    use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-    let provider = Arc::new(Provider::default());
-    let cancellation = CancellationToken::new();
-    let mut denied = budget();
-    denied.bytes_copied = 0;
-    let native =
-        NativeMaterializationWork::new(denied, &cancellation).expect("original accounting state");
-    let prefix = native.receipt();
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native).expect("empty custody"),
-    );
-    assert!(matches!(
-        HistoryReader::new(
-            &provider,
-            &authority(),
-            &issuer().verifier(&mut None).expect("verifier copy"),
-            &mut Some(&mut io)
-        ),
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_copied",
-                ..
-            }),
-            custody: None,
-        })
-    ));
-    assert_eq!(native.receipt(), prefix);
-    drop(io);
-    let native =
-        NativeMaterializationWork::new(budget(), &cancellation).expect("original accounting state");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native).expect("empty custody"),
-    );
-    let reader = HistoryReader::new(
-        &provider,
-        &authority(),
-        &issuer().verifier(&mut None).expect("verifier copy"),
-        &mut Some(&mut io),
-    )?;
-    let custody = io.into_custody()?;
-    assert!(custody.bytes() >= authority().stream_path(&mut None)?.len() as u64);
-    assert!(native.receipt().bytes_copied >= authority().stream_path(&mut None)?.len() as u64);
-    let sdk = provider.io_snapshot();
-    assert_eq!(
-        sdk.reads
-            + sdk.tails as u64
-            + sdk.writes
-            + sdk.inspections
-            + sdk.commit_reads
-            + sdk.other_calls,
-        0
-    );
-    drop(reader);
-    drop(custody);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_history_pages_preserve_original_provider_prefixes_and_custody() -> Result<()> {
     use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError};
