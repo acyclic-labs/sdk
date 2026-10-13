@@ -180,6 +180,7 @@ async fn complete_generation_publishes_and_retries_exactly()
         &objects,
         &authority,
         request,
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -190,6 +191,7 @@ async fn complete_generation_publishes_and_retries_exactly()
         &objects,
         &authority,
         request,
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -207,6 +209,7 @@ async fn complete_generation_publishes_and_retries_exactly()
             },
             ..request
         },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -250,6 +253,7 @@ async fn complete_generation_publishes_and_retries_exactly()
         &objects,
         &authority,
         request,
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -269,6 +273,7 @@ async fn complete_generation_publishes_and_retries_exactly()
             },
             ..request
         },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -285,6 +290,7 @@ async fn complete_generation_publishes_and_retries_exactly()
             operation_id: OperationId::from_bytes([5; 16]),
             ..request
         },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -419,6 +425,7 @@ async fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::er
                 digest: Digest::from_bytes([8; 32]),
             },
         },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -472,6 +479,7 @@ async fn mismatched_authority_rejects_before_closure_or_authority_work()
                 digest: Digest::from_bytes([44; 32]),
             },
         },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -531,6 +539,7 @@ async fn authenticated_foreign_volume_never_reaches_authority_mutation()
             operation_id: OperationId::from_bytes([53; 16]),
             generation_root: root,
         },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -644,6 +653,7 @@ async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutati
             &objects,
             &authority,
             request,
+            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             limits(),
             budget,
             &CancellationToken::new(),
@@ -738,6 +748,7 @@ async fn pre_cancelled_publication_is_inert() -> Result<(), Box<dyn std::error::
             .value,
             ..request
         },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -892,7 +903,7 @@ async fn evidence_fixture() -> Result<
     let mut expected_objects = vec![metadata, extents, tree, table, root];
     expected_objects.sort_unstable();
     assert_eq!(proof.objects, expected_objects);
-    assert_eq!(proof.object_count, 5);
+    assert_eq!(u64::try_from(proof.objects.len()).unwrap_or(u64::MAX), 5);
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
     let cancellation = CancellationToken::new();
@@ -945,7 +956,7 @@ async fn publication_evidence_preserves_original_complete_closure_and_every_perm
             &encoded.bytes,
             &encoded.sha256,
             encoded.bytes.len() as u64,
-            proof.object_count,
+            u64::try_from(proof.objects.len()).unwrap_or(u64::MAX),
         )?;
         assert_eq!(decoded.request, request);
         assert_eq!(decoded.append, append);
@@ -991,7 +1002,7 @@ async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
             &encoded.bytes,
             &digest,
             64 * 1024,
-            proof.object_count
+            u64::try_from(proof.objects.len()).unwrap_or(u64::MAX)
         ),
         Err(PublicationEvidenceError::Mismatch)
     ));
@@ -1003,7 +1014,7 @@ async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
                 &altered,
                 &encoded.sha256,
                 64 * 1024,
-                proof.object_count,
+                u64::try_from(proof.objects.len()).unwrap_or(u64::MAX),
             ),
             Err(PublicationEvidenceError::Mismatch)
         ));
@@ -1022,7 +1033,7 @@ async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
             &changed.bytes,
             &encoded.sha256,
             64 * 1024,
-            proof.object_count,
+            u64::try_from(proof.objects.len()).unwrap_or(u64::MAX),
         ),
         Err(PublicationEvidenceError::Mismatch)
     ));
@@ -1036,12 +1047,12 @@ async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
                 &encoded.bytes,
                 &encoded.sha256,
                 bound,
-                proof.object_count,
+                u64::try_from(proof.objects.len()).unwrap_or(u64::MAX),
             ),
             Err(PublicationEvidenceError::TooLarge)
         ));
     }
-    for bound in [0, proof.object_count - 1] {
+    for bound in [0, u64::try_from(proof.objects.len()).unwrap_or(u64::MAX) - 1] {
         assert!(matches!(
             decode_generation_publication_evidence(
                 &encoded.bytes,
@@ -1095,12 +1106,6 @@ async fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append
             Err(PublicationEvidenceError::Mismatch)
         ));
     }
-    let mut changed = proof.clone();
-    changed.object_count += 1;
-    assert!(matches!(
-        encode_generation_publication_evidence(&request, &changed, &append, config, 64 * 1024),
-        Err(PublicationEvidenceError::Mismatch)
-    ));
     let mut changed = proof.clone();
     changed.root.volume_id = VolumeId::from_bytes([81; 16]);
     assert!(matches!(
@@ -1170,7 +1175,7 @@ async fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_wi
         &encoded.bytes,
         &encoded.sha256,
         64 * 1024,
-        proof.object_count,
+        u64::try_from(proof.objects.len()).unwrap_or(u64::MAX),
     )?;
     let manifest = encode_generation_export_manifest(&projection.manifest)?;
     let offset = encoded
@@ -1183,7 +1188,7 @@ async fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_wi
     unsorted[last_two_objects..last_two_objects + 66].rotate_left(33);
     let digest = Sha256::digest(&unsorted).into();
     assert!(matches!(
-        decode_generation_publication_evidence(&unsorted, &digest, 64 * 1024, proof.object_count),
+        decode_generation_publication_evidence(&unsorted, &digest, 64 * 1024, u64::try_from(proof.objects.len()).unwrap_or(u64::MAX)),
         Err(PublicationEvidenceError::Manifest(
             GenerationExportManifestError::NonCanonicalObjectOrder,
         ))
@@ -1195,7 +1200,7 @@ async fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_wi
     );
     let digest = Sha256::digest(&duplicate).into();
     assert!(matches!(
-        decode_generation_publication_evidence(&duplicate, &digest, 64 * 1024, proof.object_count),
+        decode_generation_publication_evidence(&duplicate, &digest, 64 * 1024, u64::try_from(proof.objects.len()).unwrap_or(u64::MAX)),
         Err(PublicationEvidenceError::Manifest(
             GenerationExportManifestError::NonCanonicalObjectOrder,
         ))
@@ -1204,7 +1209,7 @@ async fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_wi
     trailing.push(0);
     let digest = Sha256::digest(&trailing).into();
     assert!(matches!(
-        decode_generation_publication_evidence(&trailing, &digest, 64 * 1024, proof.object_count),
+        decode_generation_publication_evidence(&trailing, &digest, 64 * 1024, u64::try_from(proof.objects.len()).unwrap_or(u64::MAX)),
         Err(PublicationEvidenceError::Decode(
             CanonicalDecodeError::TrailingBytes
         ))
@@ -1212,7 +1217,7 @@ async fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_wi
     let truncated = &encoded.bytes[..encoded.bytes.len() - 1];
     let digest = Sha256::digest(truncated).into();
     assert!(matches!(
-        decode_generation_publication_evidence(truncated, &digest, 64 * 1024, proof.object_count),
+        decode_generation_publication_evidence(truncated, &digest, 64 * 1024, u64::try_from(proof.objects.len()).unwrap_or(u64::MAX)),
         Err(PublicationEvidenceError::Decode(_))
     ));
     Ok(())
@@ -1669,14 +1674,14 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
             decoded.original_evidence,
             Some(b"immutable original operation data".as_slice())
         );
-        assert_eq!(
-            publication_fingerprint(
-                request,
-                Some(intent.operation_context.ok_or("missing original context")?),
-                &commit.payload,
-            ),
-            commit.fingerprint
-        );
+        let (payload, fingerprint) = construct_publication_commit(
+            request,
+            Some(intent.operation_context.ok_or("missing original context")?),
+            decoded.original_evidence,
+            &mut accounting,
+        )?;
+        payload.retire(&mut accounting)?;
+        assert_eq!(fingerprint, commit.fingerprint);
     }
     let later = publish_generation_async_guarded_with_native_work(
         &objects,
@@ -1796,10 +1801,6 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     );
     assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
     assert_eq!(
-        decoded.evidence_digest,
-        Some(original_evidence_digest(evidence))
-    );
-    assert_eq!(
         decoded
             .original_evidence
             .ok_or("missing original data")?
@@ -1868,7 +1869,6 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     let decoded =
         decode_publication_evidence::<CanonicalDecodeError>(&legacy, u64::MAX, |_| Ok(()))?;
     assert_eq!(decoded.original_evidence, None);
-    assert_eq!(decoded.evidence_digest, None);
     assert_eq!(
         decoded.publication,
         PublishedGeneration {
