@@ -35,7 +35,7 @@ impl ConcurrentServiceControl {
     pub(crate) async fn open(
         data: PathBuf,
         configured: ServiceConfiguredInfrastructure,
-        private_state_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
+        private_state_root: PathBuf,
         original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Self> {
         let (resources, sessions) = ServiceResources::open(

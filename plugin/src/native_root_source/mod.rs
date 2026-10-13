@@ -153,10 +153,12 @@ mod tests {
             .project_volumes
             .first_key_value()
             .unwrap();
-        fixture
-            .context
-            .verify_original_volume_read_with_native_work(&fixture.journal, project, work)
-            .await?;
+        fixture.journal.require_volume_grant(
+            project, acyclic_harness::conversation::VolumeOperation::Read,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )?;
         fixture
             .journal
             .verify(

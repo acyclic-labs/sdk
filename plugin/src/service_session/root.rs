@@ -136,11 +136,14 @@ impl PiSession {
         {
             return Err(invalid("Pi original scratch creation was substituted"));
         }
-        let read = self
-            .runtime
-            .runtime
-            .readonly_task_context_with_native_work(binding.task_id, work)
-            .await?;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let read_context = self.runtime.runtime.harness().durable_context(
+            binding.task_id, OperationId::from_bytes(binding.task_id.into_bytes()), Some(&io),
+        ).await?;
+        let read_owner = self.runtime.runtime.task_host()
+            .readonly_journal_owner(binding.task_id, work).await?
+            .into_native_shared(work)?;
+        let read = (read_owner, read_context);
         let observer = self.root_observer(Some(Arc::clone(&read.1)), work).await?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
             work,
@@ -252,13 +255,8 @@ impl PiSession {
                 .ok_or_else(|| invalid("Pi allocated root disappeared"))?
                 .allocation = RootAllocation::Created(creation);
         }
-        self.slots.save_with_native_work(
-            &self.resources.private_state_root,
-            &self.relative_directory,
-            &self.state,
-            Survives::PowerLoss,
-            work,
-        )?;
+        self.slots.save(&self.directory, &self.state, Survives::PowerLoss)
+            .map_err(RootError::Storage)?;
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(invalid("Pi root binding changed during allocation"));
         };
@@ -278,7 +276,10 @@ impl PiSession {
                         work.cancellation(),
                     )
                     .await
-                    .map_err(|(source, custody)| RootError::NativeLineage { source, custody })?,
+                    .map_err(|(source, custody)| match source {
+                        acyclic_fs::WorkspaceLineageError::Workspace(source) => RootError::NativeWorkspace { source, custody },
+                        source => RootError::Storage(display(source)),
+                    })?,
             );
             let mut io = acyclic_harness::store::HistoryWork::new(
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
@@ -310,17 +311,15 @@ impl PiSession {
                     work.cancellation(),
                 )
                 .await
-                .map_err(|(source, custody)| RootError::NativeContext { source, custody })?,
+                .map_err(|(source, custody)| match source {
+                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => RootError::NativeFilesystem { source, custody },
+                    source => RootError::Storage(display(source)),
+                })?,
         );
         self.state.pending_root_registration = false;
         drop(allocation.0.0);
         drop(allocation.1);
-        self.slots.save_with_native_work(
-            &self.resources.private_state_root,
-            &self.relative_directory,
-            &self.state,
-            Survives::PowerLoss,
-            work,
-        )
+        self.slots.save(&self.directory, &self.state, Survives::PowerLoss)
+            .map_err(RootError::Storage)
     }
 }
