@@ -157,7 +157,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
         ..FileMetadata::default()
     };
     assert!(matches!(
-        apply_linux_metadata(
+        apply_metadata(
             &target,
             FileMetadata {
                 created_ns: MetadataField::Value(12),
@@ -171,7 +171,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
         std::fs::metadata(&moved)?.permissions().mode() & 0o7777,
         original_mode
     );
-    apply_linux_metadata(&target, representable, &mut work)?;
+    apply_metadata(&target, representable, &mut work)?;
     let old = std::fs::metadata(&moved)?;
     assert_eq!(old.permissions().mode() & 0o777, 0o600);
     assert_eq!(old.atime() * 1_000_000_000 + old.atime_nsec(), atime_ns);
@@ -201,7 +201,7 @@ fn held_linux_symlink_metadata_does_not_mutate_target() -> Result<(), Box<dyn st
     let root = test_root(&root_path)?;
     let target = root.open_linux_metadata_target(Path::new("link"), &mut work)?;
     let desired = 1_700_000_000_456_789_123_i64;
-    apply_linux_metadata(
+    apply_metadata(
         &target,
         FileMetadata {
             modified_ns: MetadataField::Value(desired),

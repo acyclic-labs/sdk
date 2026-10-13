@@ -91,7 +91,7 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
         .await?
         .value;
     let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate(&original, &cancel)?;
+    let mut candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancel), &cancel)?;
     candidate.bind_authored_operation(OperationId::new());
     let first = path("transaction-first")?;
     let second = path("transaction-second")?;
@@ -447,7 +447,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     metadata.modified_ns = MetadataField::Value(99);
     let original =
         crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
+    let mut candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
     let input = original_borrowed_path_changes(
         &source,
         &destination,

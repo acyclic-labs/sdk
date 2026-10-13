@@ -69,6 +69,7 @@ impl StreamProvider for MemoryStream {
         };
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
+        self.reserve_retained(&mut state)?;
         publish(&mut state, paths, histories, &envelope);
         state.decision = decision;
         retain(
@@ -91,13 +92,13 @@ impl StreamProvider for MemoryStream {
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
         }
-        let records = read_history(
-            path.history.as_ref(),
-            path.tail,
-            request.from,
-            usize::try_from(request.limit).map_err(|_| StreamError::LimitExceeded)?,
-        );
-        Ok(stream::iter(records.into_iter().map(Ok)).boxed())
+        let mut cursor = HistoryCursor::new(path.history.as_ref(), path.tail, request.from);
+        Ok(stream::iter(
+            std::iter::from_fn(move || cursor.next_record())
+                .take(request.limit as usize)
+                .map(Ok),
+        )
+        .boxed())
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
@@ -162,7 +163,7 @@ impl StreamProvider for MemoryStream {
         if request.after.as_ref().is_some_and(|after| {
             !request.parent.as_ref().map_or_else(
                 || !after.as_str().contains('/'),
-                |parent| is_direct_child(parent, after),
+                |parent| after.parent().as_ref() == Some(parent),
             )
         }) {
             return Err(StreamError::InvalidArgument);
@@ -199,7 +200,7 @@ impl StreamProvider for MemoryStream {
             .filter(|path| {
                 request.parent.as_ref().map_or_else(
                     || !path.as_str().contains('/'),
-                    |parent| is_direct_child(parent, path),
+                    |parent| path.parent().as_ref() == Some(parent),
                 )
             })
             .take(request.limit as usize + 1)
@@ -280,31 +281,29 @@ impl StreamProvider for MemoryStream {
             }
             windows.reverse();
             let cursor_meter = Arc::clone(&meter);
-            let records = windows
-                .into_iter()
-                .flat_map(|window| {
-                    (window.start..window.end)
-                        .map(move |index| (Arc::clone(&window.records), index))
-                })
-                .take(request.limit as usize);
-            let cursor = stream::try_unfold(records, move |mut records| {
+            let cursor = HistoryCursor {
+                root: None,
+                windows: windows.into(),
+                next: request.from,
+            };
+            let cursor = stream::try_unfold(cursor, move |mut cursor| {
                 let meter = Arc::clone(&cursor_meter);
                 async move {
-                    let Some((records_batch, index)) = records.next() else {
+                    let Some(window) = cursor.windows.front() else {
                         return Ok(None);
                     };
+                    let length = window.records.records[window.start].value.len();
                     meter.check()?;
-                    let source = &records_batch.records[index];
                     let mut bytes = NativeByteReservation::new(
                         Arc::clone(&meter),
                         NativeOperationKind::Read,
-                        source.value.len(),
+                        length,
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let record = source.clone();
+                    let record = cursor.next_record().expect("visible history record");
                     let examined = meter.record_examination(1, copied);
-                    let read = bytes.record(source.value.len());
+                    let read = bytes.record(length);
                     examined?;
                     read?;
                     Ok(Some((
@@ -312,7 +311,7 @@ impl StreamProvider for MemoryStream {
                             record,
                             ReadAllocation::empty(&meter),
                         )),
-                        records,
+                        cursor,
                     )))
                 }
             });
@@ -448,10 +447,7 @@ impl StreamProvider for MemoryStream {
                             continue;
                         }
                     };
-                    if !state
-                        .replays
-                        .contains_key(request.idempotency_key.as_bytes())
-                    {
+                    if state.replay(request.idempotency_key.as_bytes()).is_none() {
                         let bytes = request
                             .mutations
                             .iter()

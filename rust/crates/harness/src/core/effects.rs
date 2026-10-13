@@ -68,7 +68,7 @@ pub struct EffectAttestation {
 
 impl EffectAttestation {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| {
+        CodecQuota::produce(work, |quota| {
             copy(self, quota, |value: &EffectAttestation, work| {
                 if let EffectStatus::Succeeded { result } = &value.status {
                     result.validate(work)?;
@@ -123,7 +123,7 @@ pub(in crate::core) fn effect_request_digest_with_work(
     guarantee: EffectGuarantee,
     effect_kind: &str,
     request: &FileRef,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<[u8; 32]> {
     crate::executor::json::canonical_json_digest(
         &(provider, guarantee, effect_kind, request),

@@ -412,7 +412,9 @@ impl ProjectionState {
             return Ok(inode);
         }
         let inode = self.next_inode;
-        if inode <= ROOT_INODE {
+        if inode < ROOT_INODE
+            || (inode == ROOT_INODE && (!path.components().is_empty() || !self.by_inode.is_empty()))
+        {
             return Err(libc::EOVERFLOW.into());
         }
         let following = inode.checked_add(1).ok_or(libc::EOVERFLOW)?;

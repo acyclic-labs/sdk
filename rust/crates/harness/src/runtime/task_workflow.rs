@@ -3,14 +3,12 @@ use super::*;
 pub(super) fn validate_task_transition(
     output_schema: &Value,
     transition: &MachineTransition,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     if let MachineStatus::Completed { value } = &transition.status {
-        crate::executor::validate_json_schema_value(
-            output_schema,
-            value,
-            "task output",
-            &mut None,
-        )?;
+        crate::executor::with_history_io(io, |work| {
+            crate::executor::validate_json_schema_value(output_schema, value, "task output", work)
+        })?;
     }
     Ok(())
 }
@@ -106,15 +104,9 @@ pub(super) async fn verify_task_execution_owner(
     fence: &crate::scheduler::LeaseFence,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = task_original_work(io)? {
-        return host
-            .verify_execution_owner_with_native_work(task, fence, work)?
-            .await;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
-    host.verify_execution_owner(task, fence.clone()).await
+    #[cfg(not(feature = "filesystem"))]
+    let io = { let _ = io; None };
+    host.verify_execution_owner(task, fence, io)?.await
 }
 
 pub(super) async fn observe_task_open_admission(
@@ -188,21 +180,16 @@ pub(super) async fn validate_latest_task_transition(
     schema: &Value,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = task_original_work(io)? {
-        let (transition, custody) = workflow.latest_transition_with_native_work(work).await?;
-        let latest = native_task_open_value(transition, custody, work)?;
-        if let Some(transition) = &latest.0 {
-            if let MachineStatus::Completed { value } = &transition.status {
-                crate::executor::with_history_io(io, |work| {
-                    crate::executor::validate_json_schema_value(schema, value, "task output", work)
-                })?;
-            }
+    let latest = match task_original_work(io)? {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        Some(work) => {
+            let (value, custody) = workflow.latest_transition_with_native_work(work).await?;
+            native_task_open_value(value, custody, work)?
         }
-        return Ok(());
-    }
-    if let Some(transition) = workflow.latest_transition().await? {
-        validate_task_transition(schema, &transition)?;
+        _ => (workflow.latest_transition().await?, None::<NativeCustody>),
+    };
+    if let Some(transition) = &latest.0 {
+        validate_task_transition(schema, transition, io)?;
     }
     Ok(())
 }
@@ -280,17 +267,17 @@ impl ResumableTaskSession {
         input: Value,
     ) -> Result<MachineTransition> {
         self.host
-            .verify_dispatch_owner(self.task_id, self.fence.clone())
+            .verify_dispatch_owner(self.task_id, &self.fence, None)?
             .await?;
         let schema = self.definition.output_schema();
         let transition = self
             .workflow
             .step(operation_id, idempotency_key, input, |transition| {
-                validate_task_transition(schema, transition)
+                validate_task_transition(schema, transition, None)
             })
             .await?;
         self.host
-            .verify_dispatch_owner(self.task_id, self.fence.clone())
+            .verify_dispatch_owner(self.task_id, &self.fence, None)?
             .await?;
         Ok(transition)
     }
@@ -312,7 +299,7 @@ impl ResumableTaskSession {
                 .original_native_work()
                 .expect("original response allocation");
             self.host
-                .verify_dispatch_owner_with_native_work(self.task_id, &self.fence, work)?
+                .verify_dispatch_owner(self.task_id, &self.fence, Some(&io))?
                 .await?;
             let schema = self.definition.output_schema();
             let (transition, allocation) = self
@@ -322,24 +309,12 @@ impl ResumableTaskSession {
                     idempotency_key,
                     input,
                     work,
-                    |transition| {
-                        crate::executor::with_history_io(Some(&io), |observer| {
-                            if let MachineStatus::Completed { value } = &transition.status {
-                                crate::executor::validate_json_schema_value(
-                                    schema,
-                                    value,
-                                    "task output",
-                                    observer,
-                                )?;
-                            }
-                            Ok(())
-                        })
-                    },
+                    |transition| validate_task_transition(schema, transition, Some(&io)),
                 )
                 .await?;
             io.absorb_native_custody(allocation)?;
             self.host
-                .verify_dispatch_owner_with_native_work(self.task_id, &self.fence, work)?
+                .verify_dispatch_owner(self.task_id, &self.fence, Some(&io))?
                 .await?;
             Ok(transition)
         }

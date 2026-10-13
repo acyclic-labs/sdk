@@ -406,35 +406,35 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
-    fn reconcile<'a>(&'a self, effect_id: EffectId) -> BoxFuture<'a, Result<EffectStatus>> {
-        Box::pin(async move {
-            let aggregate = self.aggregate(&self.stream, &mut None).await?;
-            let effect = self
-                .effect_for_host(&aggregate.0, effect_id, &mut None)
-                .await?;
-            if !matches!(
-                effect.0.status,
-                EffectStatus::Dispatched | EffectStatus::Indeterminate
-            ) {
-                return clone_status(&effect.0.status, &mut None);
-            }
-            let Some(attestation) = self
-                .providers
-                .reconcile_and_attest(&self.issuer, effect_id, &effect.0, &mut None)
-                .await?
-            else {
-                return Ok(EffectStatus::Indeterminate);
-            };
-            self.settle(
-                effect_id,
-                &effect.0,
-                attestation,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await
-        })
+    async fn reconcile(&self, effect_id: EffectId) -> Result<EffectStatus> {
+        let aggregate = self.aggregate(&self.stream, &mut None).await?;
+        let effect = self
+            .effect_for_host(&aggregate.0, effect_id, &mut None)
+            .await?;
+        if !matches!(
+            effect.0.status,
+            EffectStatus::Dispatched | EffectStatus::Indeterminate
+        ) {
+            return clone_status(&effect.0.status, &mut None);
+        }
+        let Some(attestation) = self
+            .providers
+            .reconcile_and_attest(&self.issuer, effect_id, &effect.0, &mut None)
+            .await?
+        else {
+            return Ok(EffectStatus::Indeterminate);
+        };
+        self.settle(
+            effect_id,
+            &effect.0,
+            attestation,
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
+        .await
     }
 }

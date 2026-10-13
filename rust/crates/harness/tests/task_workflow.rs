@@ -413,22 +413,21 @@ impl ToolPolicy for RestartPolicy {
         &'a self,
         invocation: &'a ToolInvocation,
         _scope: &'a RuntimeScope,
-    ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
-        Box::pin(async move {
-            self.evaluated.fetch_add(1, Ordering::SeqCst);
-            Ok(
-                if invocation.arguments.get("denied") == Some(&json!(true)) {
-                    ToolPolicyDecision::Deny {
-                        reason: "pinned policy denied".into(),
-                    }
+        _io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_harness::NativeCustody)>> {
+        Ok(acyclic_harness::store::HistoryContentFuture::Ordinary {
+            future: Box::pin(async move {
+                self.evaluated.fetch_add(1, Ordering::SeqCst);
+                let decision = if invocation.arguments.get("denied") == Some(&json!(true)) {
+                    ToolPolicyDecision::Deny { reason: "pinned policy denied".into() }
                 } else if invocation.arguments.get("approval") == Some(&json!(true)) {
-                    ToolPolicyDecision::RequireApproval {
-                        prompt: "Approve this exact restore".into(),
-                    }
+                    ToolPolicyDecision::RequireApproval { prompt: "Approve this exact restore".into() }
                 } else {
                     ToolPolicyDecision::Allow
-                },
-            )
+                };
+                Ok((decision, None))
+            }),
+            frame_bytes: 0,
         })
     }
 }

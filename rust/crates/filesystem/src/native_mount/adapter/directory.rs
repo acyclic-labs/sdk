@@ -29,7 +29,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(work, cancellation)?;
+            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)?;
             let (page, source_allocation) = checkout
                 .list_directory_records(
                     &path,

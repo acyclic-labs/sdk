@@ -84,9 +84,7 @@ pub(super) fn fatal(error: &NativeMountError) -> bool {
                     crate::FsError::Cancelled(_) | crate::FsError::Work(_),
                 ) => true,
                 #[cfg(feature = "native-watch")]
-                MountSourceError::SourceWatchStartup(_)
-                | MountSourceError::NativeWatchStartupFailed { .. }
-                | MountSourceError::NativeWatchSourceStartupFailed { .. } => true,
+                MountSourceError::NativeWatchStartupFailed { .. } => true,
                 _ => false,
             }
         }
@@ -104,7 +102,6 @@ pub(super) fn context(address: usize) -> Result<&'static DarwinMountContext, i32
 
 pub(super) fn ffi<T: From<i32>>(
     address: usize,
-    span: &tracing::span::EnteredSpan,
     authored_write: bool,
     operation: impl FnOnce(&DarwinMountContext, &Work) -> Result<T, NativeMountError>,
 ) -> T {
@@ -115,10 +112,7 @@ pub(super) fn ffi<T: From<i32>>(
         context.run(authored_write, |work| operation(context, work))
     }))
     .unwrap_or(Err(libc::EIO))
-    .unwrap_or_else(|error| {
-        span.record("errno", error);
-        T::from(-error)
-    })
+    .unwrap_or_else(|error| T::from(-error))
 }
 
 impl DarwinMountContext {

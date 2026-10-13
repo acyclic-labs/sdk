@@ -22,9 +22,9 @@ pub(super) fn validate_model_content_scope(
     scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
+    with_history_io(io, |work| content.validate_limits(limits, work))?;
     if let Some(scope) = scope {
-        crate::executor::with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
+        with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
     }
     let schemas = scope.and_then(RuntimeScope::extension_schema_registry);
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
@@ -55,22 +55,6 @@ pub(super) fn validate_model_content_scope(
 }
 
 impl StockExecution<'_> {
-    pub(super) async fn verify_model_content(
-        &self,
-        journal: &dyn ExecutionJournal,
-        content: &ModelContent,
-    ) -> Result<()> {
-        verify_model_contents_scoped(
-            journal,
-            std::iter::once(content),
-            self.stock.limits,
-            self.original_context()
-                .map(crate::runtime::TaskContext::scope),
-            self.io,
-        )
-        .await
-    }
-
     pub(super) async fn verify_model_request_content(
         &self,
         journal: &dyn ExecutionJournal,
@@ -126,13 +110,12 @@ impl StockExecution<'_> {
                 .verify_selected_context(input.operation_id, selected, self.io)?
                 .await?;
             for message in &selected.messages {
-                crate::executor::with_history_io(self.io, |work| {
-                    message.content.validate_limits(self.stock.limits, work)
-                })?;
-                self.verify_model_content(journal, &message.content).await?;
+                journal
+                    .verify_model_content(&message.content, self.io)?
+                    .await?;
             }
         }
-        self.verify_model_content(journal, &input.input).await?;
+        journal.verify_model_content(&input.input, self.io)?.await?;
         Ok(())
     }
 }

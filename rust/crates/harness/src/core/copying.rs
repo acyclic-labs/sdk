@@ -1,40 +1,29 @@
 //! Funded copies of main reducer records.
 use super::*;
 /// Copies text into the supplied quota.
-pub(crate) fn copy_text(
-    source: &str,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<String> {
-    if quota.work().is_none() {
-        return Ok(source.to_owned());
-    }
-    let text = quota
-        .work()
-        .as_deref_mut()
-        .expect("component copy observer")
-        .clone_text(source)?;
+pub(crate) fn copy_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
+    let text = match quota.work().as_deref_mut() {
+        Some(work) => work.clone_text(source)?,
+        None => return Ok(source.to_owned()),
+    };
     quota.adopt(text.capacity() as u64)?;
     Ok(text)
 }
 pub(crate) fn copy_authority(
     source: &Authority,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Authority> {
-    if quota.work().is_none() {
-        return Ok(source.clone());
-    }
-    let authority = quota
-        .work()
-        .as_deref_mut()
-        .expect("component copy observer")
-        .clone_authority(source)?;
+    let authority = match quota.work().as_deref_mut() {
+        Some(work) => work.clone_authority(source)?,
+        None => return Ok(source.clone()),
+    };
     quota.adopt(authority.id.capacity() as u64)?;
     Ok(authority)
 }
 /// Copies the canonical three provider identity fields through the same quota.
 pub(crate) fn copy_provider(
     source: &crate::resources::ProviderRef,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<crate::resources::ProviderRef> {
     if quota.work().is_none() {
         return Ok(source.clone());
@@ -47,7 +36,7 @@ pub(crate) fn copy_provider(
 
 pub(crate) fn copy_resource(
     source: &crate::resources::ResourceRef,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<crate::resources::ResourceRef> {
     crate::resources::ResourceRef::new(
         source.kind(),
@@ -63,8 +52,8 @@ pub(crate) fn copy_resource(
 
 pub(crate) fn copy_vector<T>(
     source: &[T],
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    mut copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    quota: &mut CodecQuota<'_, '_>,
+    mut copy: impl FnMut(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<Vec<T>> {
     let mut values = reserve_copy_vector(source.len(), quota)?;
     for value in source {
@@ -74,7 +63,7 @@ pub(crate) fn copy_vector<T>(
 }
 pub(crate) fn reserve_copy_vector<T>(
     count: usize,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Vec<T>> {
     if quota.work().is_none() {
         return Ok(Vec::with_capacity(count));
@@ -103,7 +92,7 @@ pub(crate) fn reserve_copy_vector<T>(
 }
 pub(crate) fn copy_copy_vector<T: Copy>(
     source: &[T],
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Vec<T>> {
     if quota.work().is_none() {
         return Ok(source.to_vec());
@@ -125,7 +114,7 @@ pub(crate) fn copy_copy_vector<T: Copy>(
 }
 pub(crate) fn copy<T: Clone + Serialize>(
     source: &T,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
     owned: impl FnOnce(&T, &mut Option<&mut dyn HistoryIo>) -> Result<u64>,
 ) -> Result<T> {
     if quota.work().is_none() {
@@ -149,7 +138,7 @@ pub(crate) fn copy<T: Clone + Serialize>(
 
 impl crate::resource_preparation::ResourceCreationProofRef {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| {
+        CodecQuota::produce(work, |quota| {
             copy(self, quota, |proof, work| {
                 proof.provider.validate(work)?;
                 proof.resource.validate(work)?;
@@ -164,7 +153,7 @@ impl crate::resource_preparation::ResourceCreationProofRef {
     }
 }
 
-impl<'a, 'w> crate::wire_codec::CodecQuota<'a, 'w> {
+impl<'a, 'w> CodecQuota<'a, 'w> {
     pub(crate) fn produce<T>(
         work: &'a mut Option<&'w mut dyn HistoryIo>,
         copy: impl FnOnce(&mut Self) -> Result<T>,
@@ -179,16 +168,13 @@ impl<'a, 'w> crate::wire_codec::CodecQuota<'a, 'w> {
 
 pub(crate) fn copy_boxed<T>(
     source: &T,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    copy: impl FnOnce(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    quota: &mut CodecQuota<'_, '_>,
+    copy: impl FnOnce(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<Box<T>> {
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
 }
-pub(crate) fn copy_event(
-    source: &Event,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<Event> {
+pub(crate) fn copy_event(source: &Event, quota: &mut CodecQuota<'_, '_>) -> Result<Event> {
     copy(source, quota, |value, work| {
         match &value.payload {
             EventPayload::Custom { record }
@@ -244,9 +230,7 @@ pub(crate) fn copy_event(
     })
 }
 /// Logical inline map/set payload, never an estimate of opaque allocator nodes.
-pub(in crate::core) fn retain_entry<T>(
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<()> {
+pub(in crate::core) fn retain_entry<T>(quota: &mut CodecQuota<'_, '_>) -> Result<()> {
     if quota.work().is_some() {
         quota.replace(owned_sum([
             quota.retained(),

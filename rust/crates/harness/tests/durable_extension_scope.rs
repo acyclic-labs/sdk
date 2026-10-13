@@ -11,28 +11,26 @@ use std::sync::Arc;
 
 struct ResumedScope(RuntimeScope);
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl TaskStateProvider for ResumedScope {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
         None
     }
-    fn observe_admission<'a>(
-        &'a self,
+    async fn observe_admission(
+        &self,
         _: TaskId,
-    ) -> BoxProviderFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async { Err(Error::Unsupported("scope boundary fixture".into())) })
+    ) -> Result<TaskAdmissionRecord> { Err(Error::Unsupported("scope boundary fixture".into()))
     }
-    fn resume_scope<'a>(
-        &'a self,
+    async fn resume_scope(
+        &self,
         _: TaskId,
         _: OperationId,
-    ) -> BoxProviderFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    ) -> Result<RuntimeScope> { Ok(self.0.clone())
     }
-    fn outcome<'a>(&'a self, _: TaskId) -> BoxProviderFuture<'a, Result<Option<Outcome<Value>>>> {
-        Box::pin(async { Err(Error::Unsupported("scope boundary fixture".into())) })
+    async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> { Err(Error::Unsupported("scope boundary fixture".into()))
     }
-    fn cancel<'a>(&'a self, _: TaskId) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("scope boundary fixture".into())) })
+    async fn cancel(&self, _: TaskId) -> Result<()> { Err(Error::Unsupported("scope boundary fixture".into()))
     }
 }
 

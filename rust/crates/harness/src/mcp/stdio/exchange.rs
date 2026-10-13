@@ -93,7 +93,7 @@ impl McpStdioExchange {
             let body = &self.line[..end];
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
-            let (message, mut frame_custody) = decode_value(body, self.maximum_bytes, work)?;
+            let (message, mut frame_custody) = decode_value(body, work)?;
             self.line.advance(end + 1);
             scanned = 0;
             if message.get("id").is_none() {
@@ -110,7 +110,7 @@ impl McpStdioExchange {
                 let value = rpc_result(message, self.operation, work)?;
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(guard) = frame_custody.as_mut() {
-                    let retained = value_storage(&value, work)?;
+                    let retained = crate::executor::json::json_value_logical_owned_bytes(&value)?;
                     guard
                         .release(guard.bytes().checked_sub(retained).ok_or(
                             acyclic_fs::NativeTreeMaterializationError::Work(

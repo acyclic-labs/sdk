@@ -3,8 +3,6 @@
 mod config;
 pub use config::NativePublicationConfig;
 #[cfg(feature = "native-execution")]
-mod apply;
-#[cfg(feature = "native-execution")]
 mod approval;
 #[cfg(feature = "native-execution")]
 mod approval_frame;
@@ -61,6 +59,7 @@ use acyclic_harness::{
     executor::ExecutionJournal,
     filesystem::{FilesystemExecutionJournal, FilesystemInteractionHost},
     interaction::{Interaction, InteractionOutcome},
+    runtime::DurableTaskHost as _,
     scheduler::LeaseFence,
     store::StreamAggregate,
     tool::ToolApprovalVerifier,

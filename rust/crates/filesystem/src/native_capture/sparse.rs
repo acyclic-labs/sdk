@@ -7,7 +7,6 @@ pub(super) async fn settled_sparse_ranges(
     metadata: &HostStat,
     reported: Vec<HostDataRange>,
     maximum_ranges: u32,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<HostDataRange>, CaptureError> {
     use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
@@ -29,7 +28,7 @@ pub(super) async fn settled_sparse_ranges(
             .ok_or(WorkError::Overflow)?;
         let mut position = range.offset;
         while position < end {
-            cancellation.check()?;
+            meter.cancellation().check()?;
             let wanted = (CHUNK - position % CHUNK).min(end - position);
             meter.admit(WorkCounters {
                 source_bytes_read: wanted,

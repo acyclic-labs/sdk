@@ -45,7 +45,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .source
             .as_ref()
             .expect("authorized source")
-            .merge(context, &merge.arguments, Some(merge), cancellation, io)?
+            .merge(context, &merge.arguments, Some(merge), cancellation, io)
             .await?;
         validate_merge_binding(context, merge.arguments.source, &binding, io)?;
         let controller = ParentProjectController::new(
@@ -196,7 +196,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .source
             .as_ref()
             .expect("authorized source")
-            .merge(context, &merge.arguments, Some(merge), cancellation, io)?
+            .merge(context, &merge.arguments, Some(merge), cancellation, io)
             .await?;
         validate_merge_binding(context, merge.arguments.source, &binding, io)?;
         let receipt = receipt.ok_or_else(|| {

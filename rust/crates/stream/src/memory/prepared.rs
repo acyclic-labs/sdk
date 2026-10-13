@@ -26,7 +26,7 @@ pub(crate) struct PreparedCommit {
     plan: CommitPlan,
     conflicts: [(Vec<CommitConflict>, Allocation); 2],
     capacity: Option<CapacityReservation>,
-    inventory: Option<(VecDeque<Retained>, Allocation)>,
+    inventory: Option<(Vec<Retained>, Allocation)>,
 }
 
 impl MemoryStream {
@@ -107,7 +107,7 @@ impl MemoryStream {
         };
         let needed = state.retained.len() + reserved(&state).0 + 1;
         let inventory = if needed > state.retained.capacity() {
-            Some(self.retention_buffer(needed.next_power_of_two())?)
+            Some(self.vector(needed.next_power_of_two())?)
         } else {
             None
         };
@@ -121,8 +121,7 @@ impl MemoryStream {
         }
         history_record(&mut plan.histories[0]).sequence = expected;
         let conflict = self.vector(2)?;
-        let (cached_conflicts, mut conflict_claim) = self.vector(2)?;
-        self.absorb(&mut conflict_claim, self.retained_claim(true, false)?)?;
+        let (cached_conflicts, conflict_claim) = self.vector(2)?;
         let prototype = self.copy_commit(&plan.result)?;
         let recovery_conflicts = self.vector(2)?;
         let conditions: [CommitCondition; 2] = request
@@ -307,7 +306,7 @@ impl PreparedCommit {
                     );
                     state
                         .retained
-                        .back_mut()
+                        .last_mut()
                         .expect("retained conflict")
                         ._allocation = resident;
                     Ok((value, output_claim))

@@ -123,7 +123,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(T, u64)> {
     use crate::executor::json::{JsonCodecCharge, JsonValueSchema};
-    let result_value = matches!(schema, JsonValueSchema::Root);
+    let result_value = schema == JsonValueSchema::Root;
     let code = if result_value {
         wire::ErrorCode::Invalid
     } else {

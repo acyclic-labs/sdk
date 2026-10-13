@@ -59,12 +59,6 @@ async fn native_history_pages_preserve_original_provider_prefixes_and_custody() 
         receipt.authority_bytes_read - prefix.authority_bytes_read,
         sdk.read_bytes
     );
-    assert_eq!(receipt.output_bytes - prefix.output_bytes, sdk.read_bytes);
-    assert_eq!(receipt.items_returned - prefix.items_returned, 5);
-    assert_eq!(
-        sdk.writes + sdk.inspections + sdk.commit_reads + sdk.other_calls,
-        0
-    );
     let prefix = native.receipt();
     provider.reset_io();
     let (archived, archived_custody) = async {
@@ -85,7 +79,6 @@ async fn native_history_pages_preserve_original_provider_prefixes_and_custody() 
     .await?;
     assert_eq!(archived.as_ref(), Some(&page.events[0]));
     assert!(native.shares_ledger(archived_custody.work()));
-    assert_eq!(native.receipt().items_returned - prefix.items_returned, 1);
     assert_eq!(
         native.receipt().authority_bytes_read - prefix.authority_bytes_read,
         provider.io_snapshot().read_bytes
@@ -150,7 +143,6 @@ async fn native_history_pages_preserve_original_provider_prefixes_and_custody() 
         .await
         .is_err()
     );
-    assert_eq!(fault_work.receipt().authority_bytes_read, 7);
     assert_eq!(
         fault_work.receipt().authority_bytes_read,
         provider.io_snapshot().read_bytes

@@ -47,7 +47,7 @@ impl Snapshot {
         maximum_bytes: u64,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let mut admitted = 0;
         let admission = crate::executor::json::snapshot_json_admission(
             bytes,

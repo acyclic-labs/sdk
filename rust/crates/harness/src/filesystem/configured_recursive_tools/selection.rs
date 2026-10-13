@@ -37,25 +37,13 @@ where
                 )
             })
             .transpose()?;
-        let references = 'references: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(observer) = &reference_io {
-                break 'references crate::conversation::BoundedContentFuture::new(
-                    Some(observer),
-                    || {
-                        source
-                            .preparer
-                            .required_reference_grants(&source.request, Some(observer))
-                    },
-                )?
-                .await?;
-            }
-            source
-                .preparer
-                .required_reference_grants(&source.request, None)
-                .await?
-        };
-        let mut grants = BTreeSet::new();
+        #[cfg(target_arch = "wasm32")]
+        let reference_io: Option<PreparationIo> = None;
+        let references = source
+            .preparer
+            .required_reference_grants(&source.request, reference_io.as_ref())
+            .await?;
+        let mut grants = std::mem::take(&mut child.grants).0;
         let mut scoped = BTreeSet::new();
         let append = |values: &mut BTreeSet<String>, grant: &str| -> Result<()> {
             crate::model::charge_items(io, 1)?;
@@ -68,9 +56,6 @@ where
             }
             Ok(())
         };
-        for grant in child.grants.iter() {
-            append(&mut grants, grant)?;
-        }
         for grant in allocation.child.scope.capabilities().iter() {
             append(&mut scoped, grant)?;
         }
@@ -90,36 +75,29 @@ where
                 drop((grant, hold));
             }
         }
-        for file in &allocation.input_files {
-            self.delegate_file(context, file, io).await?;
-            let grant = match io {
-                Some(io) => io.capability(file, "file:read:"),
-                None => file.read_capability(&mut None),
-            }?;
-            let hold = io
-                .map(|io| io.guard_owned(grant.capacity() as u64))
-                .transpose()?;
-            append(&mut grants, &grant)?;
-            append(&mut scoped, &grant)?;
-            drop((grant, hold));
-        }
-        for reference in &references {
-            if reference.reader != arguments.id {
+        let files = allocation
+            .input_files
+            .iter()
+            .map(|file| (arguments.id, file, None))
+            .chain(references.iter().map(|reference| {
+                (
+                    reference.reader,
+                    &reference.file,
+                    reference.attachment_manifest.as_ref(),
+                )
+            }));
+        for (reader, file, manifest) in files {
+            if reader != arguments.id {
                 return Err(failure(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "inherited reference targets another child reader",
                 ));
             }
-            for file in
-                std::iter::once(&reference.file).chain(reference.attachment_manifest.as_ref())
-            {
-                self.delegate_file(context, file, io).await?;
+            for file in std::iter::once(file).chain(manifest) {
+                drop(context.read_file(file, io).await?);
             }
-            let grant = match io {
-                Some(io) => io.capability(&reference.file, "file:read:"),
-                None => reference.file.read_capability(&mut None),
-            }?;
+            let grant = crate::executor::with_history_io(io, |work| file.read_capability(work))?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
@@ -127,17 +105,11 @@ where
             append(&mut scoped, &grant)?;
             drop((grant, hold));
         }
-        let old_bytes = if io.is_some() {
-            child.grants.logical_owned_bytes()?
-        } else {
-            0
-        };
-        let old = std::mem::replace(&mut child.grants, Capabilities(grants));
-        drop(old);
-        if let Some(io) = io {
-            io.release(old_bytes)?;
-        }
+        child.grants = Capabilities(grants);
         let scoped = Capabilities(scoped);
+        let scoped_hold = io
+            .map(|io| io.guard_owned(scoped.logical_owned_bytes()?))
+            .transpose()?;
         let scope = crate::executor::with_history_io(io, |work| {
             allocation.child.issuer.issue(
                 allocation.child.scope.id(),
@@ -147,65 +119,22 @@ where
                 work,
             )
         })?;
-        let temporary = if io.is_some() {
-            scoped.logical_owned_bytes()?
-        } else {
-            0
-        };
-        drop(scoped);
-        if let Some(io) = io {
-            io.release(temporary)?;
-        }
+        drop((scoped, scoped_hold));
         crate::executor::with_history_io(io, |work| child.validate(work))?;
         Ok((child, scope))
     }
-    async fn delegate_file(
-        &self,
-        context: &ToolContext,
-        file: &crate::conversation::FileRef,
-        io: Option<&crate::filesystem::PreparationIo>,
-    ) -> Result<()> {
-        if !crate::executor::with_history_io(io, |work| {
-            crate::runtime::read_granted_with_work(context.scope().grants(), file, work)
-        })? {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "current tool scope cannot delegate this file",
-            ));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            drop(
-                context
-                    .task()
-                    .read_file(file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
-                    .await?,
-            );
-            return Ok(());
-        }
-        drop(context.task().read_file(file, None).await?);
-        Ok(())
-    }
-    pub(super) async fn select_source(
+    pub(in crate::filesystem) async fn select(
         &self,
         context: &ToolContext,
         arguments: &ForkToolArguments,
         cancellation: &CancellationToken,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<RecursiveForkSourceIntent> {
+        native_io(io)?;
         use crate::executor::stock_boundary as failure;
-        use crate::filesystem::fork_preparer_io;
         use crate::wire::ErrorCode;
         let caller = self
-            .authenticate(
-                context,
-                arguments
-                    .source
-                    .is_none_or(|source| Some(source) == context.durable_task_id()),
-                cancellation,
-                io,
-            )
+            .authenticate(context, None, true, cancellation, io)
             .await?;
         let allocation = self.allocation(caller.task, arguments, io)?;
         let parent = self.open(&caller.owner, None, io).await?;
@@ -248,11 +177,21 @@ where
                 .await?;
             Some(
                 owner
-                    .authorize_project_source(context.task(), issuer, provider.as_ref(), selected, context.operation_id(), &(ProjectSourceSnapshot {
+                    .authorize_project_source(
+                        context.task(),
+                        issuer,
+                        provider.as_ref(),
+                        selected,
+                        context.operation_id(),
+                        &(ProjectSourceSnapshot {
                             project: chosen.project.clone(),
                             generation,
                             native_snapshot: chosen.native_snapshot.clone(),
-                        }), allocation.limits.work, allocation.limits.bytes, None)
+                        }),
+                        allocation.limits.work,
+                        allocation.limits.bytes,
+                        None,
+                    )
                     .await?,
             )
         } else {
@@ -280,27 +219,6 @@ where
                 "fork source is not the admitted caller agent",
             ));
         }
-        // Authentication already checked Private and the current caller's Project.
-        if io.is_none() && selected != caller.task {
-            let read = caller
-                .project
-                .capability(VolumeOperation::Read, &mut None)?;
-            if !context.scope().grants().contains(&read) {
-                return Err(failure(
-                    None,
-                    ErrorCode::Unauthorized,
-                    "caller lacks its source read",
-                ));
-            }
-            ContentGrant::authorize_volume(
-                &verifier(&caller.owner)?,
-                &caller.owner.scope,
-                &caller.project,
-                VolumeOperation::Read,
-                u64::MAX,
-                &mut None,
-            )?;
-        }
         let config = crate::executor::with_history_io(io, |work| {
             Ok::<_, Error>(RecursiveForkConfig {
                 child: match work.as_deref_mut() {
@@ -321,24 +239,6 @@ where
                 history_limits: self.config.history_limits,
             })
         })?;
-        if let Some(source_read) = &source_read {
-            let authorization = source_read.authorization();
-            if authorization.caller_task != caller.task {
-                return Err(failure(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "selected source approval belongs to another caller",
-                ));
-            }
-            source_read.require_selection(
-                context.operation_id(),
-                selected,
-                &authorization.project,
-                &authorization.generation,
-                authorization.native_snapshot.as_ref(),
-                None,
-            )?;
-        }
         check_cancellation(cancellation, io)?;
         let authorization = source_read
             .as_ref()

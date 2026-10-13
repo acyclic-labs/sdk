@@ -175,7 +175,9 @@ impl NativeWorkReservation {
     pub(crate) fn partition_work(
         &self,
         maximum: WorkCounters,
+        wait: Option<&crate::CancellationToken>,
     ) -> Result<Self, NativeTreeMaterializationError> {
+        self.check_wait(wait)?;
         if maximum.allocation_operations != 0 || maximum.peak_allocation_bytes != 0 {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
@@ -206,11 +208,26 @@ impl NativeWorkReservation {
         *incoming = WorkCounters::UNCHARGED;
         Ok(())
     }
-    pub(crate) fn loan<'a>(
-        &'a mut self,
-        wait: Option<&'a crate::CancellationToken>,
-    ) -> NativeCleanupLoan<'a> {
-        NativeCleanupLoan { credit: self, wait }
+    pub(crate) fn check_wait(
+        &self,
+        wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        wait.map_or(Ok(()), |wait| {
+            wait.check()
+                .map_err(|_| NativeTreeMaterializationError::Cancelled)
+        })
+    }
+    pub(crate) fn started_io(
+        &self,
+        actual: WorkCounters,
+        wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        self.check_wait(wait)?;
+        self.begin(&mut self.state.lock(), actual)
+            .map_err(|error| match error {
+                DemandError::InvalidRequest => NativeTreeMaterializationError::InvalidLayout,
+                error => native_materialization_work_error(error),
+            })
     }
     pub(crate) fn into_runtime_credit(
         mut self,
@@ -231,15 +248,17 @@ impl NativeWorkReservation {
     }
     pub(super) fn start_transfer(
         &self,
-        operation: NativeResourceCredit,
-        bytes: NativeResourceCredit,
+        kind: acyclic_native_runtime::NativeOperationKind,
         maximum: u64,
     ) -> std::io::Result<()> {
+        let actual = crate::demand::DemandWork::operation_credit(kind).delta(1);
+        let bytes = if maximum == 0 {
+            WorkCounters::UNCHARGED
+        } else {
+            crate::demand::DemandWork::byte_credit(kind)?.delta(maximum)
+        };
         self.edit(|state| {
-            let actual = operation.delta(1);
-            actual
-                .checked_add(bytes.delta(maximum))?
-                .remaining(state.available()?)?;
+            actual.checked_add(bytes)?.remaining(state.available()?)?;
             self.begin(state, actual)
         })
     }
@@ -262,42 +281,5 @@ pub(super) fn io_work(actual: WorkCounters) -> WorkCounters {
         backend_write_operations: actual.backend_write_operations,
         durability_operations: actual.durability_operations,
         ..WorkCounters::UNCHARGED
-    }
-}
-pub(crate) struct NativeCleanupLoan<'a> {
-    pub(crate) credit: &'a NativeWorkReservation,
-    pub(crate) wait: Option<&'a crate::CancellationToken>,
-}
-impl NativeCleanupLoan<'_> {
-    pub(crate) fn check_wait(&self) -> Result<(), NativeTreeMaterializationError> {
-        self.wait.map_or(Ok(()), |wait| {
-            wait.check()
-                .map_err(|_| NativeTreeMaterializationError::Cancelled)
-        })
-    }
-    pub(crate) fn admit_completed(
-        &self,
-        maximum: WorkCounters,
-    ) -> Result<NativeWorkReservation, NativeTreeMaterializationError> {
-        self.check_wait()?;
-        self.credit.partition_work(maximum)
-    }
-    pub(crate) fn started_io(
-        &self,
-        actual: WorkCounters,
-    ) -> Result<(), NativeTreeMaterializationError> {
-        self.check_wait()?;
-        self.credit
-            .begin(&mut self.credit.state.lock(), actual)
-            .map_err(|error| match error {
-                DemandError::InvalidRequest => NativeTreeMaterializationError::InvalidLayout,
-                error => native_materialization_work_error(error),
-            })
-    }
-    pub(crate) fn record_completed(
-        &self,
-        actual: WorkCounters,
-    ) -> Result<(), NativeTreeMaterializationError> {
-        self.credit.record_completed(actual)
     }
 }

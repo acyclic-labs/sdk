@@ -105,12 +105,9 @@ impl DemandWork {
         )
     }
     pub(crate) fn live_allocation_bytes(&self) -> u64 {
-        self.allocations
-            .live_bytes()
-            .checked_sub(self.roots.freed_bytes())
-            .and_then(|live| live.checked_add(self.roots.unrecorded_bytes()))
-            .expect("balanced retained bytes")
+        self.roots.live_bytes(self.allocations.live_bytes())
     }
+
     pub(crate) fn receipt(&mut self) -> WorkCounters {
         self.reconcile_native_controls()
             .expect("balanced native retirement");

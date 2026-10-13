@@ -8,7 +8,6 @@ pub(super) async fn capture_observed_paths_from_root<
     observed: (Vec<Option<HostStat>>, Vec<NamespacePath>),
     maximum_extent_spans: u32,
     source_root: &HostRoot,
-    cancellation: &CancellationToken,
     baseline: Option<&NativeViewBaseline>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
@@ -20,7 +19,6 @@ pub(super) async fn capture_observed_paths_from_root<
         &mut host_links,
         maximum_extent_spans,
         source_root,
-        cancellation,
         baseline,
         meter,
     )
@@ -42,15 +40,12 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
     host_links: &mut Vec<([u8; 16], NamespacePath)>,
     maximum_extent_spans: u32,
     source_root: &HostRoot,
-    cancellation: &CancellationToken,
     baseline: Option<&NativeViewBaseline>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
-    cancellation.check()?;
     meter.clone().check().map_err(capture_demand_error)?;
     let mut receipt = CaptureReceipt::default();
-    let cancellation = meter.cancellation().clone();
     let mut mutations = Vec::new();
     for (observation, path, current) in states {
         prepare_final_path(
@@ -66,7 +61,6 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
             &mut mutations,
             &mut receipt,
             maximum_extent_spans,
-            &cancellation,
             meter,
         )
         .await?;
@@ -187,28 +181,22 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
     mutations: &mut Vec<AuthoredMutation>,
     receipt: &mut CaptureReceipt,
     maximum_extent_spans: u32,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    cancellation.check()?;
+    meter.cancellation().check()?;
     let host_path = namespace_to_host_path_measured(&path, meter)?;
     let observation = match observation {
         Some(observation) => Some(observation),
-        None => {
-            let observed = observe_host_path(source_root, &host_path, meter);
-            observed?
-        }
+        None => observe_host_path(source_root, &host_path, meter)?,
     };
     match observation {
-        Some(observation) => {
-            let metadata = observation;
+        Some(metadata) => {
             let host_kind = host_kind(&metadata)?;
-            let snapshot = HostSnapshot::from_metadata(&metadata);
             let linked_regular = host_kind == FileKind::Regular
                 && checkout.volume_config().hard_links
                 && metadata.nlink() > 1;
             if linked_regular {
-                let identity = snapshot.identity.to_bytes();
+                let identity = metadata.identity().to_bytes();
                 let mut source = None;
                 for (node, path) in host_links.iter() {
                     capture_charge(
@@ -224,23 +212,21 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                     }
                 }
                 if let Some(source) = source {
-                    ensure_current_host_node(
-                        source_root,
-                        &host_path,
-                        &snapshot,
-                        cancellation,
-                        meter,
-                    )?;
+                    ensure_current_host_node(source_root, &host_path, &metadata, meter)?;
                     receipt.changed_paths = checked_increment(receipt.changed_paths)?;
                     receipt.examined_paths = checked_increment(receipt.examined_paths)?;
                     capture_drop_host_path(host_path, meter)?;
-                    append_hard_link(
-                        clone_capture_path(source, meter)?,
-                        path,
-                        current,
-                        mutations,
-                        meter,
-                    )?;
+                    capture_reserve(mutations, 1 + usize::from(current.is_some()), meter)?;
+                    if let Some(record) = current {
+                        mutations.push(AuthoredMutation::Remove {
+                            path: clone_capture_path(&path, meter)?,
+                            expected_file_id: Some(record.file_id),
+                        });
+                    }
+                    mutations.push(AuthoredMutation::HardLink {
+                        source: clone_capture_path(source, meter)?,
+                        destination: path,
+                    });
                     return Ok(());
                 }
                 if let Some(epoch) = watch_epoch {
@@ -272,13 +258,11 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
             let mut canonical_metadata = if host_kind == FileKind::SymbolicLink && cfg!(unix) {
                 FileMetadata::default()
             } else {
-                snapshot.metadata
+                capture_metadata(&metadata)
             };
             let mut prior_metadata = None;
-            if let Some(record) = current.filter(|record| {
-                exists_with_kind
-                    && record.kind == host_kind
-                    && (host_kind != FileKind::SymbolicLink || cfg!(windows))
+            if let Some(record) = current.filter(|_| {
+                exists_with_kind && (host_kind != FileKind::SymbolicLink || cfg!(windows))
             }) {
                 let lookup_cancellation =
                     meter.with_original_leaf(|work| work.cancellation().clone());
@@ -314,7 +298,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                 None
             };
             if intent == CaptureIntent::MetadataOnly && exists_with_kind {
-                ensure_current_host_node(source_root, &host_path, &snapshot, cancellation, meter)?;
+                ensure_current_host_node(source_root, &host_path, &metadata, meter)?;
                 capture_reserve(mutations, 1, meter)?;
                 mutations.push(AuthoredMutation::SetMetadata {
                     path,
@@ -327,42 +311,124 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                     checkout,
                     source_root,
                     &host_path,
-                    &snapshot,
+                    &metadata,
                     maximum_extent_spans,
-                    cancellation,
                     meter,
                     &mut receipt.staged_file_bytes,
                 )
                 .await?;
                 capture_drop_host_path(host_path, meter)?;
-                append_staged_regular_state(
+                let logical_bytes = metadata.len();
+                let ranges = staged;
+                let ranges_bytes = ranges.capacity() as u64
+                    * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
+                let count = ranges
+                    .len()
+                    .checked_add(2 + usize::from(logical_bytes != 0))
+                    .ok_or(CaptureError::from(WorkError::Overflow))?;
+                capture_reserve(mutations, count, meter)?;
+                if exists_with_kind {
+                    mutations.push(AuthoredMutation::Resize {
+                        path: clone_capture_path(&path, meter)?,
+                        logical_bytes: 0,
+                    });
+                } else {
+                    mutations.push(AuthoredMutation::CreateFile {
+                        path: clone_capture_path(&path, meter)?,
+                        bytes: acyclic_stream::OwnedBytes::new(),
+                        metadata: canonical_metadata,
+                    });
+                }
+                if logical_bytes != 0 {
+                    mutations.push(AuthoredMutation::Resize {
+                        path: clone_capture_path(&path, meter)?,
+                        logical_bytes,
+                    });
+                }
+                for (range, content) in ranges {
+                    mutations.push(AuthoredMutation::WriteFromContent {
+                        path: clone_capture_path(&path, meter)?,
+                        offset: range.offset,
+                        content,
+                    });
+                }
+                meter
+                    .clone()
+                    .release(ranges_bytes)
+                    .map_err(capture_demand_error)?;
+                mutations.push(AuthoredMutation::SetMetadata {
                     path,
-                    snapshot.length,
-                    exists_with_kind,
-                    canonical_metadata,
-                    staged,
-                    mutations,
-                    meter,
-                )?;
+                    metadata: canonical_metadata,
+                });
             } else {
-                append_final_state(
-                    path,
-                    source_root,
-                    &host_path,
-                    &metadata,
-                    snapshot,
-                    host_kind,
-                    exists_with_kind,
-                    canonical_metadata,
-                    mutations,
-                    meter,
-                )?;
+                capture_reserve(mutations, if exists_with_kind { 2 } else { 1 }, meter)?;
+                match host_kind {
+                    FileKind::Regular => unreachable!("regular files are staged after preparation"),
+                    FileKind::Directory => mutations.push(if exists_with_kind {
+                        AuthoredMutation::SetMetadata {
+                            path,
+                            metadata: canonical_metadata,
+                        }
+                    } else {
+                        AuthoredMutation::CreateDirectory {
+                            path,
+                            metadata: canonical_metadata,
+                        }
+                    }),
+                    FileKind::SymbolicLink => {
+                        let target = read_link_bytes(source_root, &host_path, meter)?;
+                        if exists_with_kind {
+                            mutations.push(AuthoredMutation::Remove {
+                                path: clone_capture_path(&path, meter)?,
+                                expected_file_id: None,
+                            });
+                        }
+                        let target = capture_link_target(target, meter)?;
+                        mutations.push(AuthoredMutation::CreateSymbolicLink {
+                            path,
+                            target: target.into(),
+                            metadata: canonical_metadata,
+                        });
+                    }
+                    FileKind::Fifo | FileKind::Socket => mutations.push(if exists_with_kind {
+                        AuthoredMutation::SetMetadata {
+                            path,
+                            metadata: canonical_metadata,
+                        }
+                    } else {
+                        AuthoredMutation::CreateEmptySpecial {
+                            path,
+                            kind: host_kind,
+                            metadata: canonical_metadata,
+                        }
+                    }),
+                    FileKind::CharacterDevice | FileKind::BlockDevice => {
+                        let (major, minor) = host_device_identity(&metadata)?;
+                        if exists_with_kind {
+                            mutations.push(AuthoredMutation::Remove {
+                                path: clone_capture_path(&path, meter)?,
+                                expected_file_id: None,
+                            });
+                        }
+                        mutations.push(AuthoredMutation::CreateDevice {
+                            path,
+                            kind: host_kind,
+                            major,
+                            minor,
+                            metadata: canonical_metadata,
+                        });
+                    }
+                    FileKind::ReparsePoint | FileKind::MountBoundary => {
+                        return Err(CaptureError::UnsupportedKind);
+                    }
+                }
+                ensure_current_host_node(source_root, &host_path, &metadata, meter)?;
                 capture_drop_host_path(host_path, meter)?;
             };
             receipt.changed_paths = checked_increment(receipt.changed_paths)?;
             if let Some(linked_path) = linked_path {
                 capture_reserve(host_links, 1, meter)?;
-                host_links.push((snapshot.identity.to_bytes(), linked_path));
+                host_links.push((metadata.identity().to_bytes(), linked_path));
             }
             receipt.examined_paths = checked_increment(receipt.examined_paths)?;
             return Ok(());

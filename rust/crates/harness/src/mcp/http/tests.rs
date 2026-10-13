@@ -1,14 +1,10 @@
 use super::*;
-use std::sync::{
-    Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Mutex;
 
 struct Fixture {
     status: u16,
     sse: bool,
     split: usize,
-    calls: AtomicUsize,
     requests: Mutex<Vec<McpHttpRequest>>,
 }
 fn message(operation: OperationId) -> String {
@@ -20,7 +16,6 @@ impl McpHttpProvider for Fixture {
         operation: OperationId,
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             self.requests
                 .lock()
@@ -62,14 +57,27 @@ impl McpHttpProvider for Fixture {
         Box::pin(async { Ok(None) })
     }
 }
-fn provider(status: u16, sse: bool, split: usize) -> Arc<Fixture> {
-    Arc::new(Fixture {
+fn provider(
+    status: u16,
+    sse: bool,
+    split: usize,
+    session: Option<&str>,
+) -> Result<(Arc<Fixture>, HttpMcpTransport)> {
+    let provider = Arc::new(Fixture {
         status,
         sse,
         split,
-        calls: AtomicUsize::new(0),
         requests: Mutex::new(vec![]),
-    })
+    });
+    let transport = HttpMcpTransport::new(
+        provider.clone(),
+        "http://localhost/mcp".into(),
+        session.map(str::to_owned),
+        4096,
+        100,
+        None,
+    )?;
+    Ok((provider, transport))
 }
 
 #[tokio::test]
@@ -77,16 +85,8 @@ async fn json_and_every_sse_chunk_width_preserve_session_identity() -> Result<()
     let operation = OperationId::from_bytes([7; 16]);
     for sse in [false, true] {
         for width in 1..=message(operation).len() + 50 {
-            let provider = provider(200, sse, width);
-            let transport = HttpMcpTransport::new(
-                provider.clone(),
-                "http://localhost/mcp".into(),
-                Some("session".into()),
-                4096,
-                100,
-                None,
-            )?;
-            assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+            let (provider, transport) = provider(200, sse, width, Some("session"))?;
+            assert!(provider.requests.lock().unwrap().is_empty());
             let result = transport.call(operation, "echo", json!({}), None).await?;
             assert_eq!(result["content"][0]["text"], "hello 🦀");
             let requests = provider
@@ -110,21 +110,13 @@ async fn json_and_every_sse_chunk_width_preserve_session_identity() -> Result<()
 #[tokio::test]
 async fn expired_session_and_receipt_absence_never_repost() -> Result<()> {
     let operation = OperationId::from_bytes([1; 16]);
-    let provider = provider(404, false, 1);
-    let transport = HttpMcpTransport::new(
-        provider.clone(),
-        "http://localhost/mcp".into(),
-        Some("session".into()),
-        4096,
-        100,
-        None,
-    )?;
+    let (provider, transport) = provider(404, false, 1, Some("session"))?;
     assert!(matches!(
         transport.call(operation, "echo", json!({}), None).await,
         Err(Error::Indeterminate(_))
     ));
     assert!(transport.reconcile(operation, None).await?.is_none());
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
     Ok(())
 }
 #[tokio::test]
@@ -150,15 +142,7 @@ async fn envelope_and_callback_negative_controls() -> Result<()> {
 async fn initialization_pins_negotiated_session_and_rejects_foreign_version() -> Result<()> {
     let operation = OperationId::from_bytes([4; 16]);
     for version in [PROTOCOL_VERSION, "unknown"] {
-        let provider = provider(200, false, 1);
-        let transport = HttpMcpTransport::new(
-            provider.clone(),
-            "http://localhost/mcp".into(),
-            None,
-            4096,
-            100,
-            None,
-        )?;
+        let (provider, transport) = provider(200, false, 1, None)?;
         let request = transport.initialization_request(operation, "fixture", "1")?;
         assert!(!request.headers.contains_key("mcp-session-id"));
         let input: Value =
@@ -194,7 +178,7 @@ async fn initialization_pins_negotiated_session_and_rejects_foreign_version() ->
         } else {
             assert!(matches!(initialized, Err(Error::Unsupported(_))));
         }
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        assert!(provider.requests.lock().unwrap().is_empty());
     }
     Ok(())
 }

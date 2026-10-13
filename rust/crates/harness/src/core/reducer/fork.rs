@@ -3,7 +3,7 @@ impl Reducer {
     pub(in crate::core) fn require_fresh_fork_with_work(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let mut owned = crate::fork::CodecQuota::observed(work)?;
         let mut child_project = None;
@@ -48,7 +48,7 @@ impl Reducer {
         &self,
         seed: &mut ForkSeed,
         history: &ConversationState,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
@@ -249,7 +249,7 @@ impl Reducer {
     pub(in crate::core) fn validate_extension_fork_with_work(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         for capture in &seed.resources {
             if let crate::fork::ResourceRevision::Extension {

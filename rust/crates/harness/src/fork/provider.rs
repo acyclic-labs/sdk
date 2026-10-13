@@ -102,7 +102,7 @@ where
 }
 
 pub(crate) fn boundary_error(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &Option<&mut dyn HistoryIo>,
     code: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {
@@ -189,24 +189,4 @@ pub(in crate::fork) async fn acquire_fork_fence(
         }
     }
     Ok(guard)
-}
-
-pub(in crate::fork) async fn read_fork_manifest(
-    verifier: &dyn ForkSeedVerifier,
-    seed: &ForkSeed,
-    manifest: &FileRef,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(acyclic_stream::OwnedBytes, u64)> {
-    let future = verifier.read_manifest(seed, manifest, work)?;
-    let frame = frame_bytes(&future);
-    let result = future.await;
-    let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
-    let result = release_frame(result, frame, work);
-    if result.is_err() && retained != 0 {
-        let _ = work
-            .as_deref_mut()
-            .expect("retained manifest observer")
-            .release_owned(retained);
-    }
-    result
 }

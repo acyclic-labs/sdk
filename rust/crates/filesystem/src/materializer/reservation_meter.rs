@@ -122,25 +122,13 @@ impl NativeReadMeter for NativeWorkReservation {
         self.record_examination(items, copied)
     }
     fn admit_read(&self, maximum: usize) -> io::Result<()> {
-        self.start_transfer(
-            NativeResourceCredit::ReadOperations,
-            NativeResourceCredit::ReadBytes,
-            maximum as u64,
-        )
+        self.start_transfer(NativeOperationKind::Read, maximum as u64)
     }
     fn admit_write(&self, maximum: usize) -> io::Result<()> {
-        self.start_transfer(
-            NativeResourceCredit::WriteOperations,
-            NativeResourceCredit::WriteBytes,
-            maximum as u64,
-        )
+        self.start_transfer(NativeOperationKind::Write, maximum as u64)
     }
     fn admit_durability(&self) -> io::Result<()> {
-        self.start_transfer(
-            NativeResourceCredit::DurabilityOperations,
-            NativeResourceCredit::Copy,
-            0,
-        )
+        self.start_transfer(NativeOperationKind::Durability, 0)
     }
     fn reserve_cleanup_write(&self) -> io::Result<u64> {
         self.reserve(NativeResourceCredit::WriteOperations.delta(1))?;

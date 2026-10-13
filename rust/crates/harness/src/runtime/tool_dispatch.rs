@@ -53,10 +53,7 @@ impl TaskContext {
         if let Some(operation) = self.authorize_tool(tool, &invocation).await? {
             return Err(Error::Indeterminate(operation));
         }
-        let result = binding
-            .executor
-            .execute(invocation, Some(context))
-            .await?;
+        let result = binding.executor.execute(invocation, Some(context)).await?;
         crate::executor::validate_json_schema_value(
             &tool.output_schema,
             &result.value,
@@ -156,7 +153,7 @@ impl TaskContext {
                 .into_iter()
                 .chain(self.stock_tool_policy_overrides())
             {
-                policy.supports_native_policy(work)?;
+                policy.identity_with_native_work(work)?;
             }
         }
         if self.harness.policy.is_some() && self.harness.policy_identity.is_none() {
@@ -192,7 +189,7 @@ impl TaskContext {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
                         let (value, custody) = self
-                            .interact_with_native_work_and_router(
+                            .route_native_interaction(
                                 approval_id,
                                 request,
                                 custody.expect("native approval retains its prompt"),
@@ -221,42 +218,7 @@ impl TaskContext {
         Ok(None)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn stock_policy_approval(
-        &self,
-        policy: &dyn ToolPolicy,
-        scope: &RuntimeScope,
-        definition: &ToolDefinition,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<((OperationId, Interaction), acyclic_fs::NativeAllocation)>> {
-        self.require_original_native_work(work)?;
-        self.require_native_scope_restriction(scope, work)?;
-        let expected = self
-            .stock_tool_policy_binding()
-            .into_iter()
-            .chain(self.stock_tool_policy_overrides())
-            .find_map(|(identity, original)| {
-                std::ptr::eq(original.as_ref(), policy).then_some(identity)
-            })
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "policy is not an original task binding",
-            })?;
-        Ok(self
-            .policy_approval(
-                policy,
-                Some(expected),
-                definition,
-                invocation,
-                Some(work),
-                scope,
-            )
-            .await?
-            .map(|paid| (paid.0, paid.1.expect("native approval retains its prompt"))))
-    }
-
-    pub(super) async fn policy_approval(
+    pub(crate) async fn policy_approval(
         &self,
         policy: &dyn ToolPolicy,
         expected: Option<&ComponentIdentity>,
@@ -268,7 +230,6 @@ impl TaskContext {
         let identity: (ComponentIdentity, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
-                policy.supports_native_policy(work)?;
                 let (value, custody) = policy.identity_with_native_work(work)?;
                 check_policy_metadata(&value, &custody, work)?;
                 (value, Some(custody))
@@ -282,23 +243,28 @@ impl TaskContext {
                 "policy identity changed after binding",
             ));
         }
-        let decision: (ToolPolicyDecision, Option<NativeCustody>) = match work {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Some(work) => {
-                let future = policy.evaluate_with_native_work(invocation, scope, work)?;
-                if !future.work().shares_ledger(work) {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Conflict,
-                        reason: "policy evaluator belongs to another ledger",
-                    });
-                }
-                let (value, custody) = future.await?;
-                let paid = (value, Some(custody));
-                validate_native_policy_decision(&paid, work)?;
-                paid
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io = None;
+        let future = policy.evaluate(invocation, scope, io.as_ref())?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            if !matches!(&future, crate::store::HistoryContentFuture::Native(future) if future.work().shares_ledger(work))
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "policy evaluator belongs to another ledger",
+                });
             }
-            _ => (policy.evaluate(invocation, scope).await?, None),
-        };
+        }
+        let decision = future.await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            validate_native_policy_decision(&decision, work)?;
+        }
         let after: (ComponentIdentity, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
