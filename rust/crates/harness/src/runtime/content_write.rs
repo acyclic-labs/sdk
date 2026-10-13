@@ -21,10 +21,7 @@ impl TaskContext {
     ) -> Result<FileRef> {
         let binding = self.content_binding(volume);
         if let Some(volume) = volume
-            && self
-                .bound_content_writer(binding, &self.scope, None)?
-                .volume()
-                != volume
+            && bound_content_writer(binding, &self.scope, None)?.volume() != volume
         {
             return Err(Error::Unauthorized(
                 "selected volume is not the bound destination".into(),
@@ -69,32 +66,9 @@ impl TaskContext {
         .await
     }
 
-    pub(super) fn bound_content_writer<'a>(
-        &self,
-        binding: Option<&'a ContentBindings>,
-        scope: &RuntimeScope,
-        io: Option<&ContentIo>,
-    ) -> Result<&'a Arc<dyn ContentPublisher>> {
-        let content =
-            binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-        let writer = content
-            .writer
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
-        let capability = crate::executor::with_history_io(io, |work| {
-            writer.volume().capability(VolumeOperation::Write, work)
-        })?;
-        if !scope.grants.contains(&capability) {
-            return Err(Error::Unauthorized(
-                "task scope cannot write this volume".into(),
-            ));
-        }
-        Ok(writer)
-    }
-
     /// Checks the original content destination without reading or publishing bytes.
     pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
-        let writer = self.bound_content_writer(
+        let writer = bound_content_writer(
             self.content_binding(source.map(FileRef::volume)),
             &self.scope,
             None,
@@ -137,7 +111,7 @@ impl TaskContext {
         let content = binding.ok_or_else(|| {
             content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
         })?;
-        let writer = self.bound_content_writer(Some(content), scope, io)?;
+        let writer = bound_content_writer(Some(content), scope, io)?;
         if !content.reader.supports_read(writer.volume(), io)? {
             return Err(content_error(
                 io,
@@ -216,5 +190,58 @@ impl TaskContext {
         #[cfg(not(feature = "filesystem"))]
         let _ = hold;
         Ok((file, retained))
+    }
+}
+
+pub(super) fn bound_content_writer<'a>(
+    binding: Option<&'a ContentBindings>,
+    scope: &RuntimeScope,
+    io: Option<&ContentIo>,
+) -> Result<&'a Arc<dyn ContentPublisher>> {
+    let content = binding.ok_or_else(|| {
+        content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
+    })?;
+    let writer = content.writer.as_ref().ok_or_else(|| {
+        content_error(
+            io,
+            ErrorCode::Unauthorized,
+            "task has no owner-bound content writer",
+        )
+    })?;
+    if !crate::executor::with_history_io(io, |work| {
+        contains_content_grant_with_work(&scope.grants, writer.volume(), "volume:write:", work)
+    })? {
+        return Err(content_error(
+            io,
+            ErrorCode::Unauthorized,
+            "task scope cannot write this volume",
+        ));
+    }
+    Ok(writer)
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unbound_native_writer_returns_a_static_failure() -> Result<()> {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(16, 1_024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| Error::NativeWork {
+            cause,
+            custody: None,
+        })?;
+        let io = crate::executor::PreparationIo::from_native_work(&work)?;
+        assert!(matches!(
+            bound_content_writer(None, &RuntimeScope::default(), Some(&io)),
+            Err(Error::NativeBoundary {
+                code: ErrorCode::Unsupported,
+                ..
+            })
+        ));
+        Ok(())
     }
 }

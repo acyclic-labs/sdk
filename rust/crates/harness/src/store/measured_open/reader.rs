@@ -4,7 +4,7 @@ use super::*;
 #[tokio::test]
 async fn native_history_pages_preserve_original_provider_prefixes_and_custody() -> Result<()> {
     use acyclic_fs::NativeMaterializationWork;
-    let provider = fixture().await?;
+    let provider = projection_fixture(69).await?;
     let cancellation = CancellationToken::new();
     let native =
         NativeMaterializationWork::new(budget(), &cancellation).expect("original finite ledger");

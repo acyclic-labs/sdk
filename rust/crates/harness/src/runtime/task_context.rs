@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
@@ -20,20 +21,8 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         &'a self,
         receive_operation: OperationId,
         item: &'a InboxItem,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_received_with_native_work<'a>(
-        &'a self,
-        _receive_operation: OperationId,
-        _item: &'a InboxItem,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "owned mailbox has no original native-ledger received parcel reader",
-        })
-    }
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
 }
 
 /// Capability-scoped context passed to live task code.
@@ -90,7 +79,7 @@ impl TaskContext {
         let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
             Error::Unauthorized("output volume has no admitted creation binding".into())
         })?;
-        self.bound_content_writer(Some(binding), &self.scope, None)?;
+        bound_content_writer(Some(binding), &self.scope, None)?;
         let mut context = self.as_ref().clone();
         context.output_content = Some(binding.clone());
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -385,16 +374,11 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
     )?;
-    let digest = blake3::Hash::from(digest).to_hex();
-    let mut capability = [0; "directory:read:".len() + 64];
-    let end = prefix.len() + digest.len();
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-        io.copy_bytes(end as u64)?;
+        io.copy_bytes((prefix.len() + 64) as u64)?;
     }
-    capability[..prefix.len()].copy_from_slice(prefix.as_bytes());
-    capability[prefix.len()..end].copy_from_slice(digest.as_bytes());
-    let capability = std::str::from_utf8(&capability[..end])
-        .expect("canonical capability prefixes and hash are ASCII");
-    Ok(grants.contains(capability))
+    Ok(crate::conversation::contains_content_label(
+        grants, prefix, digest,
+    ))
 }

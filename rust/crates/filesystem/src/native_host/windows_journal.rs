@@ -220,41 +220,30 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     stat_windows_file(&file, volume, work)
 }
 
-pub(crate) fn create_windows_directory<W: NativeHostWork>(
-    parent: &Dir,
-    name: &[u16],
-    work: &mut W,
-) -> Result<File, W::Error> {
-    let file = open_windows_at(
-        parent,
-        name,
-        fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE,
-        nt::FILE_OPEN_IF,
-        nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
-        work,
-    )?;
-    if windows_stat_information(&file, work)?.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
-        != 0
-    {
-        return Err(W::invalid_request());
-    }
-    Ok(file)
-}
-
 pub(crate) fn open_windows_directory<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
+    create: bool,
     work: &mut W,
 ) -> Result<(Dir, NativeRootIdentity), W::Error> {
-    let file = open_windows_at(
+    let access = if create {
+        fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE
+    } else {
+        fs::FILE_GENERIC_READ
+    };
+    let disposition = if create {
+        nt::FILE_OPEN_IF
+    } else {
+        nt::FILE_OPEN
+    };
+    let directory = Dir::from_std_file(open_windows_at(
         parent,
         name,
-        fs::FILE_GENERIC_READ,
-        nt::FILE_OPEN,
-        nt::FILE_SYNCHRONOUS_IO_NONALERT | nt::FILE_DIRECTORY_FILE,
+        access,
+        disposition,
+        nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
         work,
-    )?;
-    let directory = Dir::from_std_file(file);
+    )?);
     let identity = directory_identity(&directory, work)?;
     Ok((directory, identity))
 }

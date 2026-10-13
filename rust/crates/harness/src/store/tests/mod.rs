@@ -27,9 +27,9 @@ use crate::{
 
 use acyclic_stream::MemoryStream;
 
-use serde_json::json;
+use serde_json::{Value, json};
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 fn interaction_file(path: &str, bytes: &[u8]) -> Result<FileRef> {
     FileRef::new(
@@ -93,12 +93,6 @@ fn content() -> Result<FileRef> {
 
 struct TestContent;
 
-struct TestPublisher {
-    pub(super) volume: VolumeRef,
-    pub(super) stages: std::sync::atomic::AtomicUsize,
-    pub(super) files: MigrationContentStore,
-}
-
 #[derive(Clone, Default)]
 pub(super) struct MigrationContentStore(
     pub(super) Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>>,
@@ -112,15 +106,6 @@ impl MigrationContentStore {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             reference.path()
         ))
-    }
-
-    fn insert(&self, reference: &FileRef, bytes: &[u8]) -> Result<()> {
-        reference.descriptor().verify(bytes, &mut None)?;
-        self.0
-            .lock()
-            .map_err(|_| Error::Storage("migration content lock poisoned".into()))?
-            .insert(Self::key(reference)?, bytes.to_vec());
-        Ok(())
     }
 }
 
@@ -154,46 +139,6 @@ impl ContentResidencyVerifier for MigrationContentStore {
             }
             reference.descriptor().verify(&bytes, &mut None)?;
             Ok(bytes.into())
-        })
-    }
-}
-
-impl ContentPublisher for TestPublisher {
-    fn volume(&self) -> &VolumeRef {
-        &self.volume
-    }
-
-    fn stage<'a>(
-        &'a self,
-        _operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-        io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (FileRef, Option<crate::conversation::ContentHold<'a>>),
-        >,
-    > {
-        self.supports_stage(io)?;
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            if bytes != EXTENSION_BYTES || media_type != "application/json" {
-                return Err(Error::Invalid("unexpected migration output".into()));
-            }
-            self.stages
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let reference = FileRef::new(
-                self.volume.clone(),
-                path.into(),
-                "generation-1".into(),
-                FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
-                display_name.into(),
-                &mut None,
-            )?;
-            self.files.insert(&reference, bytes)?;
-            Ok((reference, None))
         })
     }
 }
@@ -260,4 +205,4 @@ fn schemas() -> SchemaRegistry {
     schemas
 }
 
-use projections::projection_command;
+use projections::{projection_command, projection_fixture};

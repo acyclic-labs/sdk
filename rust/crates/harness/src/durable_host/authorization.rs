@@ -415,18 +415,3 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease for TaskJo
         })
     }
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<P: StreamProvider> TaskJournalOwner<P> {
-    pub(crate) fn same_original_root_output_owner(&self, other: &Self) -> bool {
-        self.root()
-            && other.root()
-            && self.read_proof.is_none()
-            && other.read_proof.is_none()
-            && Arc::ptr_eq(&self.host.coordinator, &other.host.coordinator)
-            && self.task_id() == other.task_id()
-            && self.workflow.request_digest == other.workflow.request_digest
-            && self.fence == other.fence
-            && self.input_agent == other.input_agent
-    }
-}

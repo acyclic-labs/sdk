@@ -1,10 +1,6 @@
 use super::*;
 
-use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
-
 use crate::model::{ModelContent, ModelContentPart};
-
-use crate::resources::ProviderRef;
 
 use std::collections::BTreeSet;
 
@@ -24,8 +20,76 @@ pub(super) fn dependency_fixture(requirements: &[(&str, &[&str])]) -> Result<Bin
     Ok(bindings)
 }
 
+pub(super) fn admission_fixture() -> Result<TaskAdmissionRecord> {
+    Ok(TaskAdmissionRecord::from_canonical_value(
+        serde_json::from_str(include_str!("../../../fixtures/v2/task-admission.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        &mut None,
+    )?
+    .0)
+}
+
+pub(super) fn local_runtime(
+    tasks: TaskRegistry,
+    grants: &[&str],
+    concurrency: usize,
+) -> Result<Arc<AgentHarness>> {
+    Bindings {
+        tasks,
+        scope: RuntimeScope::new(Capabilities::new(grants.iter().copied()), Limits::default())?,
+        concurrency,
+        ..Bindings::local()
+    }
+    .build(None)
+}
+
+pub(super) fn test_context(harness: Arc<AgentHarness>) -> Result<TaskContext> {
+    Ok(TaskContext {
+        task_id: OperationId::new(),
+        durable_task: None,
+        descendants: TaskGroup::new(harness.concurrency, None)?,
+        scope: harness.scope.clone(),
+        harness,
+        policy_overrides: Vec::new(),
+        owned_interactions: None,
+        owned_mailbox: None,
+        output_content: None,
+        model_steps: Arc::new((AtomicUsize::new(0), None)),
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        native_purpose: None,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        native_custody: None,
+    })
+}
+
+pub(super) fn resumable_fixture(
+    name: &str,
+    digest: [u8; 32],
+) -> Result<TaskDefinition<Value, u32>> {
+    TaskDefinition::resumable(
+        Arc::new(TestMachine {
+            identity: MachineIdentity {
+                name: name.into(),
+                version: "1".into(),
+                digest,
+            },
+            state_schema: serde_json::json!({"type":"object"}),
+        }),
+        serde_json::json!({"type":"object"}),
+        serde_json::json!({"type":"integer"}),
+    )
+}
+
+pub(super) fn file_fixture(path: &str, media_type: &str) -> Result<FileRef> {
+    let mut value: Value = serde_json::from_str(include_str!("../../../fixtures/v2/file-ref.json"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    value["path"] = path.into();
+    value["descriptor"]["media_type"] = media_type.into();
+    FileRef::from_value(value, &mut None)
+}
+
 pub(super) struct CompletedModel {
-    pub(super) requests: std::sync::Mutex<Vec<(crate::model::ModelDispatch, ModelRequest)>>,
+    pub(super) requests: std::sync::Mutex<Vec<ModelRequest>>,
 }
 
 impl ModelProvider for CompletedModel {
@@ -54,19 +118,17 @@ impl ModelProvider for CompletedModel {
         dispatch: crate::model::ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
         assert_eq!(dispatch.request_digest, request.request_digest());
-        let request = request.request().clone();
-        let Ok(mut requests) = self.requests.lock() else {
-            return Box::pin(futures::stream::iter([Err(Error::Storage(
-                "test model lock poisoned".into(),
-            ))]));
-        };
-        requests.push((dispatch, request));
+        self.requests
+            .lock()
+            .expect("model fixture")
+            .push(request.request().clone());
         Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
             metadata: Value::Null,
         })]))
     }
 }
 
+#[derive(Clone)]
 pub(super) struct FixedPolicy {
     pub(super) identity: ComponentIdentity,
     pub(super) decision: ToolPolicyDecision,
@@ -143,7 +205,6 @@ pub(super) fn native_fixture_policy_identity(
     ))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, ToolInvocation) {
     let policy = FixedPolicy {
         identity: ComponentIdentity {

@@ -159,18 +159,29 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ToolExecutor for RecursiveExecutor<P, A, O>
 {
-    fn authorize(&self, _: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
-        Err(Error::Unauthorized(
-            "recursive tools require the original durable context".into(),
-        ))
-    }
-    fn authorize_with_context(
+        fn authorize(
         &self,
-        context: &ToolContext,
+        _scope: Option<&RuntimeScope>,
+        context: Option<&ToolContext>,
         invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
+        let context = context.ok_or_else(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_some() {
+                return Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "recursive tools require the original durable context" };
+            }
+            Error::Unauthorized("recursive tools require the original durable context".into())
+        })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            return self.check_authority(context, invocation, Some(&PreparationIo::from_native_work(work)?));
+        }
+        let _ = work;
         self.check_authority(context, invocation, None)
     }
+
+
 
     fn execute<'a>(
         &'a self,
@@ -230,19 +241,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             "recursive source has no original native callbacks",
         )
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn authorize_with_native_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.check_authority(
-            context,
-            invocation,
-            Some(&PreparationIo::from_native_work(work)?),
-        )
-    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(
         &'a self,
@@ -251,7 +250,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.supports_native_execution(work)?;
-        self.authorize_with_native_context(context, invocation, work)?;
+        self.authorize(None, Some(context), invocation, Some(work))?;
         crate::NativeFutureBundle::new(work, || async move {
             let (result, custody) = self.native_run(context, invocation, work).await?;
             Ok((
@@ -269,7 +268,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
         self.supports_native_execution(work)?;
-        self.authorize_with_native_context(context, invocation, work)?;
+        self.authorize(None, Some(context), invocation, Some(work))?;
         crate::NativeFutureBundle::new(work, || self.native_run(context, invocation, work))
     }
 }

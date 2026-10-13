@@ -172,17 +172,19 @@ impl<P: StreamProvider> StreamAggregate<P> {
             returned_custody.transfer();
             return Ok((value, returned_owned));
         }
-        let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
-            && self
-                .reducer
-                .operation_revision(command.operation_id)
-                .is_none();
+        if matches!(command.action, Action::MigrateExtensionState { .. }) {
+            return Err(guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "extension migration executor is not installed",
+            ));
+        }
         let mut transient = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let (planned, planned_quota) = if transient.work().is_some() {
             self.reducer
                 .plan_indexed_with_retained_quota(&command, false, transient.work())?
         } else {
-            (self.plan_command(&command, fresh_migration).await?, 0)
+            (self.plan_command(&command).await?, 0)
         };
         transient.adopt(planned_quota)?;
         let ApplyResult::Applied { event } = planned else {
@@ -190,9 +192,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok((planned, planned_quota));
         };
         if transient.work().is_none() {
-            if !fresh_migration {
-                self.validate_admission_content(&command.action).await?;
-            }
+            self.validate_admission_content(&command.action).await?;
         } else {
             #[cfg(feature = "filesystem")]
             {

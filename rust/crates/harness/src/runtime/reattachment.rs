@@ -24,15 +24,6 @@ impl AgentHarness {
             ));
         }
         self.validate_observed_admission(&admission, None).await?;
-        let identity = admission.task.clone();
-        let registered = self
-            .tasks
-            .find(&identity.name, &identity.version, &mut None)?;
-        if *registered.identity() != identity || registered.machine().is_none() {
-            return Err(Error::Conflict(
-                "reconciled task implementation changed".into(),
-            ));
-        }
         match host.observe_admission(task_id).await {
             Ok(observed) if observed == admission => {
                 self.validate_observed_admission(&observed, None).await?
@@ -45,7 +36,7 @@ impl AgentHarness {
             Err(Error::NotFound(_)) => return Err(Error::Indeterminate(operation_id)),
             Err(error) => return Err(error),
         }
-        Ok(Some((task_id, identity)))
+        Ok(Some((task_id, admission.task)))
     }
 
     /// Reattaches only to an admission pinned to this registered resumable definition.
@@ -73,9 +64,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let observed = host.observe_admission(task_id).await?;
         self.validate_observed_admission(&observed, None).await?;
-        if observed.task != definition.identity
-            || observed.output_schema != definition.output_schema
-        {
+        if observed.task != definition.identity {
             return Err(Error::Conflict(
                 "durable task differs from the pinned definition".into(),
             ));
@@ -89,119 +78,75 @@ impl AgentHarness {
         })
     }
 
-    /// Opens an admitted registered task from its retained input and workflow.
-    pub async fn open_task<I: 'static, O: 'static>(
-        self: &Arc<Self>,
-        task_id: TaskId,
-        definition: &Arc<TaskDefinition<I, O>>,
-        fence: crate::scheduler::LeaseFence,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> Result<ResumableTaskSession> {
-        let state = self
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
-        let retained = state.observe_admission(task_id).await?;
-        let context = self
-            .durable_context(task_id, retained.operation_id, None)
-            .await?;
-        definition.open(context, &fence, journal)?.await
-    }
-
-    /// Builds the stock child request from the existing registered metadata.
+    /// Builds a registered admission using the caller's IO and optional parent scope.
     #[cfg(feature = "filesystem")]
-    pub fn registered_child_admission(
-        &self,
-        operation: OperationId,
-        name: &str,
-        version: &str,
-        input: Value,
-        parent: TaskId,
-        scope: &RuntimeScope,
-    ) -> Result<TaskAdmissionRecord> {
-        self.assert_durable_policy_bindings(None)?;
-        self.tasks.registered_admission(
-            operation,
-            name,
-            version,
-            input,
-            Some(parent),
-            None,
-            scope,
-            &mut None,
-        )
-    }
-
-    /// Builds a registered admission from guarded input and an optional parent scope.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn registered_admission(
         &self,
         operation: OperationId,
         name: &str,
         version: &str,
-        input: (Value, acyclic_fs::NativeAllocation),
+        input: Value,
         parent: Option<(TaskId, &RuntimeScope)>,
         expected_digest: Option<[u8; 32]>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        if parent.is_none() {
-            work.charge(Default::default())?;
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(TaskAdmissionRecord, u64)> {
+        let native = task_original_work(io)?;
+        if native.is_some() && parent.is_none() {
+            crate::model::charge_items(io, 0)?;
             if expected_digest.is_none() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "root admission requires its pinned task digest",
-                });
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "root admission requires its pinned task digest",
+                ));
+            }
+            if self.execution.is_some() {
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "native root admission requires the configured local durable host",
+                ));
             }
         }
-        if !input.1.work().shares_allocation_context(work) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "admission input belongs to another original metadata ledger",
-            });
-        }
-        self.assert_durable_policy_bindings(Some(work))?;
-        if parent.is_none() && self.execution.is_some() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native root admission requires the configured local durable host",
-            });
-        }
-        use crate::store::history::HistoryIo as _;
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        );
-        io.absorb_native_custody(input.1)?;
-        let mut record = self.tasks.registered_admission(
-            operation,
-            name,
-            version,
-            input.0,
-            parent.map(|(task, _)| task),
-            expected_digest,
-            parent.map_or(&self.scope, |(_, scope)| scope),
-            &mut Some(&mut io),
-        )?;
-        if parent.is_none() {
-            record.policy = self
-                .policy_identity
-                .as_ref()
-                .map(|identity| -> Result<ComponentIdentity> {
-                    Ok(ComponentIdentity {
-                        name: io.clone_text(&identity.name)?,
-                        version: io.clone_text(&identity.version)?,
-                        digest: identity.digest,
+        self.assert_durable_policy_bindings(native)?;
+        crate::executor::with_history_io(io, |work| {
+            let mut record = self.tasks.registered_admission(
+                operation,
+                name,
+                version,
+                input,
+                parent.map(|(task, _)| task),
+                expected_digest,
+                parent.map_or(&self.scope, |(_, scope)| scope),
+                work,
+            )?;
+            if parent.is_none() {
+                record.policy = self
+                    .policy_identity
+                    .as_ref()
+                    .map(|identity| {
+                        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                        let copied = task_copy_component(identity, &mut quota)?;
+                        quota.transfer();
+                        Ok::<_, Error>(copied)
                     })
-                })
-                .transpose()?;
-            record.validate(&mut Some(&mut io))?;
-        }
-        let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
-            .checked_add(record.logical_owned_bytes()?)
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native admission metadata overflows",
-            })?;
-        Ok((record, io.take_native_custody(bytes)?))
+                    .transpose()?;
+            }
+            let bytes = if native.is_some() {
+                (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+                    .checked_add(record.logical_owned_bytes()?)
+                    .ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "native admission metadata overflows",
+                        )
+                    })?
+            } else {
+                0
+            };
+            Ok((record, bytes))
+        })
     }
 
     /// Reopens the exact registered task definition under its current context.
@@ -217,26 +162,18 @@ impl AgentHarness {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(context) = context {
             let work = context.native_work()?;
+            let error = |code, reason| Error::NativeBoundary { code, reason };
             if !Arc::ptr_eq(&context.harness, self)
                 || !context.original_task_binding_matches(task_id, fence)
                 || journal.task_binding() != Some((task_id, fence))
             {
-                return Err(task_workflow_error(
-                    Some(work),
+                return Err(error(
                     crate::wire::ErrorCode::Unauthorized,
                     "native workflow context or journal owner differs",
                 ));
             }
-            if !journal.supports_native_work() {
-                return Err(task_workflow_error(
-                    Some(work),
-                    crate::wire::ErrorCode::Unsupported,
-                    "workflow journal has no native callbacks",
-                ));
-            }
             let identity = journal.original_machine_identity().ok_or_else(|| {
-                task_workflow_error(
-                    Some(work),
+                error(
                     crate::wire::ErrorCode::Unsupported,
                     "native workflow journal has no original admitted identity",
                 )
@@ -252,8 +189,7 @@ impl AgentHarness {
                     .transpose()?
                     != Some(identity)
                 {
-                    return Err(task_workflow_error(
-                        Some(work),
+                    return Err(error(
                         crate::wire::ErrorCode::Conflict,
                         "original native task definition changed",
                     ));

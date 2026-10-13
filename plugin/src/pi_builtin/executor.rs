@@ -45,15 +45,22 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
         Ok(())
     }
 
-    fn authorize_with_native_context(
+    fn authorize(
         &self,
-        context: &acyclic_harness::runtime::ToolContext,
+        _scope: Option<&acyclic_harness::runtime::RuntimeScope>,
+        context: Option<&acyclic_harness::runtime::ToolContext>,
         invocation: &acyclic_harness::tool::ToolInvocation,
-        work: &NativeMaterializationWork,
+        work: acyclic_harness::NativeWork<'_>,
     ) -> Result<()> {
+        if let Some(work) = work {
+            let context = context.ok_or_else(|| denied("builtin IO requires the original accepted native tool callback"))?;
+            return {
         let decoded = decoded_tool_request(context, invocation, work)?;
         drop(decoded.0);
         drop(decoded.1);
+        Ok(())
+    };
+        }
         Ok(())
     }
 

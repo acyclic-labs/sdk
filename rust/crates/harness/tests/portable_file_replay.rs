@@ -68,16 +68,20 @@ struct FileExecutorSpy {
 }
 
 impl ToolExecutor for FileExecutorSpy {
-    fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
-        self.inner.authorize(scope, invocation)
-    }
-    fn authorize_with_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-    ) -> Result<()> {
-        self.inner.authorize_with_context(context, invocation)
-    }
+    fn authorize(&self, scope: Option<&acyclic_harness::runtime::RuntimeScope>, context: Option<&acyclic_harness::runtime::ToolContext>, invocation: &acyclic_harness::tool::ToolInvocation, work: acyclic_harness::NativeWork<'_>) -> acyclic_harness::Result<()> {
+let _ = (scope, context, invocation, work);
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+if work.is_some() {
+ return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported, reason: "tool executor has no native authorization producer" });
+}
+if let Some(context) = context { return {
+        self.inner.authorize(None, Some(context), invocation, None)
+    }; }
+
+        self.inner.authorize(scope, None, invocation, None)
+
+}
+
 
     fn execute<'a>(
         &'a self,
@@ -468,11 +472,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             let reads = journal.reads.load(Ordering::SeqCst);
             let writes = journal.writes.load(Ordering::SeqCst);
             assert!(matches!(
-                tool.executor.authorize(Some(context.scope()), &invocation),
+                tool.executor.authorize(Some(context.scope()), None, &invocation, None),
                 Err(Error::Unauthorized(_))
             ));
-            tool.executor
-                .authorize_with_context(&original, &invocation)?;
+            tool.executor.authorize(None, Some(&original), &invocation, None)?;
             for wrong in [
                 ToolContext::new(
                     context.clone(),
@@ -483,7 +486,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 ToolContext::new(context.clone(), operation, "different-call", None)?,
             ] {
                 assert!(matches!(
-                    tool.executor.authorize_with_context(&wrong, &invocation),
+                    tool.executor.authorize(None, Some(&wrong), &invocation, None),
                     Err(Error::Unauthorized(_))
                 ));
             }

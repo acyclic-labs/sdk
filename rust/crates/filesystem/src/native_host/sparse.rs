@@ -303,3 +303,8 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     }
     Ok(())
 }
+
+#[cfg(windows)]
+pub(super) fn clonable_windows_length(length: u64) -> bool {
+    length >= 4 * 1024 && i64::try_from(length).is_ok()
+}
