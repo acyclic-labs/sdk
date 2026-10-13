@@ -7,7 +7,6 @@ pub(super) struct NativeFaultRecordCursor {
     pub(super) fault: u8,
     pub(super) index: u64,
     pub(super) previous: Option<acyclic_stream::Record>,
-    pub(super) finished: bool,
 }
 
 fn native_fixture_value(
@@ -52,11 +51,11 @@ impl futures::Stream for NativeFaultRecordCursor {
     ) -> std::task::Poll<Option<Self::Item>> {
         use std::task::Poll;
         let this = self.get_mut();
-        if this.finished || this.fault == 3 {
+        if this.fault == 3 {
             return Poll::Ready(None);
         }
         if this.fault == 6 && this.index != 0 {
-            this.finished = true;
+            this.fault = 3;
             return Poll::Ready(Some(Ok(Err(StreamError::Unavailable))));
         }
         let mut output = match this.source.value_mut().as_mut().poll_next(context) {
@@ -64,8 +63,7 @@ impl futures::Stream for NativeFaultRecordCursor {
             Poll::Ready(Some(Ok(Ok(output)))) => output,
             Poll::Ready(Some(error)) => return Poll::Ready(Some(error)),
             Poll::Ready(None) => {
-                this.finished = true;
-                return Poll::Ready(if this.fault == 2 {
+                let final_record = if this.fault == 2 {
                     this.previous.take().map(|record| {
                         Ok(Ok(acyclic_stream::NativeStreamOutput::new(
                             record,
@@ -74,7 +72,9 @@ impl futures::Stream for NativeFaultRecordCursor {
                     })
                 } else {
                     None
-                });
+                };
+                this.fault = 3;
+                return Poll::Ready(final_record);
             }
         };
         if this.index == 0 {

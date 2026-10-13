@@ -97,21 +97,6 @@ impl<P> LostSessionAck<P> {
             other_calls: self.io.other_calls.load(Ordering::SeqCst),
         }
     }
-    pub(super) fn measure_commit_request(&self, request: &acyclic_stream::CommitRequest) {
-        self.io
-            .writes
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        for mutation in &request.mutations {
-            if let acyclic_stream::CommitMutation::Append { records, .. } = mutation {
-                self.measure_write(records);
-            }
-        }
-    }
-    pub(super) fn measure_committed(&self, outcome: &acyclic_stream::CommitOutcome) {
-        if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
-            self.measure_received(envelope);
-        }
-    }
     pub(super) fn measure_received(&self, envelope: &acyclic_stream::CommittedEnvelope) {
         let bytes = envelope
             .mutations

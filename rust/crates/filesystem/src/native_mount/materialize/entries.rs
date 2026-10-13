@@ -277,7 +277,9 @@ where
                     let meter = receipt.custody.work().runtime_meter();
                     let control = file
                         .control_async(
-                            |file, meter| mark_sparse(file, meter.expect("metered control")),
+                            |file, meter| {
+                                mark_sparse(file, meter.ok_or(std::io::ErrorKind::InvalidInput)?)
+                            },
                             Some(meter),
                         )
                         .map_err(MaterializeError::from)?;
