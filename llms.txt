@@ -131,6 +131,7 @@ lists organizations. These commands refresh expiring access tokens automatically
 `acyclic-plugin refresh --json` explicitly rotates the stored refresh token.
 `acyclic-plugin logout --json` revokes the OAuth session and clears its local tokens,
 preserving agent keys. Failed revocation retains credentials for retry.
+`acyclic-plugin bearer --org ID --output NEW_FILE --json` writes a short-lived organization bearer to a new private file. Its JSON result contains only account, expiry and filename. Never read the token file into a model.
 Commands exit nonzero on errors. Never read or expose the credential file to a
 model. If refresh fails, sign in again instead of replaying the old refresh token.
 

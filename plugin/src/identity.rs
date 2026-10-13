@@ -20,7 +20,7 @@ const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub(crate) fn is_command(command: &str) -> bool {
     matches!(
         command,
-        "login" | "logout" | "signup" | "whoami" | "orgs" | "refresh" | "identity-mcp"
+        "login" | "logout" | "signup" | "whoami" | "orgs" | "refresh" | "bearer" | "identity-mcp"
     )
 }
 
@@ -735,17 +735,33 @@ impl Identity {
     }
 
     async fn get(&self, store: &Store, path: &str) -> Result<Value, Error> {
+        self.authenticated_json(store, reqwest::Method::GET, path)
+            .await
+    }
+
+    async fn authenticated_json(
+        &self,
+        store: &Store,
+        method: reqwest::Method,
+        path: &str,
+    ) -> Result<Value, Error> {
         let mut session = store.read(&self.endpoint)?;
         let refreshed = session.expires_at <= now()?.saturating_add(30);
         if refreshed {
             session = self.refresh(store, &session).await?;
         }
-        let request = || {
-            self.client
-                .get(format!("{}{path}", self.endpoint))
-                .bearer_auth(&session.access_token)
+        let request = |session: &Session| {
+            let request = self
+                .client
+                .request(method.clone(), format!("{}{path}", self.endpoint))
+                .bearer_auth(&session.access_token);
+            if method == reqwest::Method::POST {
+                request.json(&json!({}))
+            } else {
+                request
+            }
         };
-        let response = request()
+        let response = request(&session)
             .send()
             .await
             .map_err(|_| Error::new("transport_error", "identity request failed"))?;
@@ -757,14 +773,65 @@ impl Identity {
                 ));
             }
             session = self.refresh(store, &session).await?;
-            return Self::response(
-                self.client
-                    .get(format!("{}{path}", self.endpoint))
-                    .bearer_auth(&session.access_token),
-            )
-            .await;
+            return Self::response(request(&session)).await;
         }
         Self::decode(response).await
+    }
+
+    async fn bearer(&self, store: &Store, org: &str, output: &Path) -> Result<Value, Error> {
+        let name = output
+            .file_name()
+            .ok_or_else(|| Error::new("usage_error", "bearer output needs a filename"))?
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        if name.ends_with([' ', '.'])
+            || [".lock", ".next"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        {
+            return Err(Error::new(
+                "usage_error",
+                "bearer output must not use reserved credential sidecar names",
+            ));
+        }
+        let mut url = Url::parse(&self.endpoint)
+            .map_err(|_| Error::new("configuration_error", "invalid API endpoint"))?;
+        url.path_segments_mut()
+            .map_err(|()| Error::new("configuration_error", "invalid API endpoint"))?
+            .extend(["v1", "identity", "orgs", org, "bearer"]);
+        let value = self
+            .authenticated_json(store, reqwest::Method::POST, url.path())
+            .await?;
+        let bearer = value
+            .get("bearer")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && !value.chars().any(char::is_whitespace));
+        let account = value
+            .get("account_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
+        let time = now()?;
+        let expires = value
+            .get("expires_at")
+            .and_then(Value::as_u64)
+            .filter(|expires| *expires > time && *expires <= time.saturating_add(3600));
+        let (Some(bearer), Some(account), Some(expires)) = (bearer, account, expires) else {
+            return Err(Error::new(
+                "invalid_response",
+                "invalid organization bearer response",
+            ));
+        };
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(output)?;
+        file.write_all(bearer.as_bytes())?;
+        file.sync_all()?;
+        Ok(json!({"account_id": account, "expires_at": expires, "bearer_file": output}))
     }
 }
 
@@ -774,6 +841,8 @@ struct Options {
     endpoint: String,
     credentials: PathBuf,
     agent: bool,
+    org: Option<String>,
+    output: Option<PathBuf>,
 }
 
 impl Options {
@@ -787,10 +856,26 @@ impl Options {
         let mut credentials = std::env::var_os("ACYCLIC_IDENTITY_FILE").map(PathBuf::from);
         let mut json = false;
         let mut agent = false;
+        let mut org = None;
+        let mut output = None;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--json" => json = true,
                 "--agent" if command == "signup" => agent = true,
+                "--org" if command == "bearer" => {
+                    org = Some(
+                        arguments
+                            .next()
+                            .ok_or_else(|| Error::new("usage_error", "--org needs a value"))?
+                            .clone(),
+                    );
+                }
+                "--output" if command == "bearer" => {
+                    output =
+                        Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                            Error::new("usage_error", "--output needs a value")
+                        })?));
+                }
                 "--endpoint" => {
                     endpoint = Some(
                         arguments
@@ -818,6 +903,12 @@ impl Options {
                 "signup requires --agent; use login for browser approval",
             ));
         }
+        if command == "bearer" && (org.as_ref().is_none_or(String::is_empty) || output.is_none()) {
+            return Err(Error::new(
+                "usage_error",
+                "bearer requires --org ID and --output NEW_FILE",
+            ));
+        }
         let credentials = credentials
             .or_else(|| {
                 std::env::var_os("USERPROFILE")
@@ -842,6 +933,8 @@ impl Options {
             endpoint,
             credentials,
             agent,
+            org,
+            output,
         })
     }
 }
@@ -918,6 +1011,21 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
         "whoami" => identity.get(&store, "/v1/identity/session").await,
         "orgs" => identity.get(&store, "/v1/identity/orgs").await,
         "logout" => identity.logout(&store).await,
+        "bearer" => {
+            identity
+                .bearer(
+                    &store,
+                    options
+                        .org
+                        .as_deref()
+                        .ok_or_else(|| Error::new("usage_error", "missing organization"))?,
+                    options
+                        .output
+                        .as_deref()
+                        .ok_or_else(|| Error::new("usage_error", "missing bearer output"))?,
+                )
+                .await
+        }
         _ => Err(Error::new("usage_error", "unsupported identity command")),
     }
 }

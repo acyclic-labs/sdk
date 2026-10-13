@@ -164,6 +164,115 @@ fn session(access: &str, refresh: &str, expires_at: u64) -> Session {
     }
 }
 
+fn organization_bearer(response: Value) -> Expected {
+    let mut expected = Expected::get("/v1/identity/orgs/org-1/bearer", "access", response);
+    expected.method = "POST";
+    expected
+}
+
+#[tokio::test]
+async fn bearer_is_private_redacted_and_never_overwrites_an_existing_file() {
+    let expires = now().expect("time") + 900;
+    let fake = Fake::start(vec![
+        organization_bearer(json!({"bearer": "private.token.signature", "account_id": "account-1", "expires_at": expires})),
+        organization_bearer(json!({"bearer": "replacement.token.signature", "account_id": "account-1", "expires_at": expires})),
+    ]).await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    store
+        .write(
+            &fake.identity.endpoint,
+            session("access", "refresh", expires),
+        )
+        .expect("session");
+    let before = fs::read(&store.path).expect("credentials");
+    let output = directory.path().join("bearer.txt");
+    let result = fake
+        .identity
+        .bearer(&store, "org-1", &output)
+        .await
+        .expect("bearer");
+    assert_eq!(result["account_id"], "account-1");
+    assert!(!result.to_string().contains("private.token.signature"));
+    assert_eq!(
+        fs::read_to_string(&output).expect("output"),
+        "private.token.signature"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(&output)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    assert!(
+        fake.identity
+            .bearer(&store, "org-1", &output)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(&output).expect("unchanged"),
+        "private.token.signature"
+    );
+    assert_eq!(
+        fs::read(&store.path).expect("unchanged credentials"),
+        before
+    );
+    fake.done();
+}
+
+#[tokio::test]
+async fn bearer_rejects_incomplete_or_unbounded_receipts_without_creating_output() {
+    let time = now().expect("time");
+    let fake = Fake::start(vec![
+        organization_bearer(json!({"account_id": "account-1", "expires_at": time + 900})),
+        organization_bearer(json!({"bearer": "private.token.signature", "account_id": "", "expires_at": time + 900})),
+        organization_bearer(json!({"bearer": "private.token.signature", "account_id": "account-1", "expires_at": 0})),
+        organization_bearer(json!({"bearer": "private.token.signature", "account_id": "account-1", "expires_at": time + 7200})),
+    ]).await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    store
+        .write(
+            &fake.identity.endpoint,
+            session("access", "refresh", time + 900),
+        )
+        .expect("session");
+    let output = directory.path().join("bearer.txt");
+    for _ in 0..4 {
+        let error = fake
+            .identity
+            .bearer(&store, "org-1", &output)
+            .await
+            .expect_err("invalid receipt");
+        assert_eq!(error.code, "invalid_response");
+        assert!(!output.exists());
+    }
+    fake.done();
+}
+
+#[tokio::test]
+async fn bearer_refuses_sidecar_paths_before_contacting_global() {
+    let fake = Fake::start(vec![]).await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    for suffix in [".lock", ".next", ".LOCK", ".NEXT"] {
+        let error = fake
+            .identity
+            .bearer(&store, "org-1", &sidecar(&store.path, suffix))
+            .await
+            .expect_err("reserved path");
+        assert_eq!(error.code, "usage_error");
+    }
+    fake.done();
+}
+
 #[tokio::test]
 async fn device_login_pending_slowdown_then_approval() {
     let fields = vec![

@@ -91,6 +91,7 @@ acyclic-plugin whoami [--json]
 acyclic-plugin orgs [--json]
 acyclic-plugin refresh [--json]
 acyclic-plugin logout [--json]
+acyclic-plugin bearer --org ID --output NEW_FILE [--json]
 acyclic-plugin identity-mcp
 ```
 
@@ -107,6 +108,8 @@ contains one JSON result or error; device approval instructions on stderr are
 also JSON. Identity results never include access or refresh tokens.
 `acyclic-plugin logout` revokes the OAuth session and clears local session tokens,
 preserving agent keys. Failed revocation retains credentials for retry.
+
+Use `bearer --org ID --output NEW_FILE` after login to mint a short-lived organization bearer. The new output file contains the token; stdout contains only its account, expiry and filename. Existing files and credential sidecar names are refused. Unix output has mode 0600; on Windows use a private directory with its inherited ACL.
 
 The credential file defaults to `~/.acyclic/identity.json`. Override it with
 `ACYCLIC_IDENTITY_FILE` or `--credentials PATH`. Filenames ending in `.lock` or

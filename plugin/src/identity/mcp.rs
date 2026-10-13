@@ -393,6 +393,8 @@ mod tests {
             endpoint: "https://example.test".to_owned(),
             credentials: path,
             agent: false,
+            org: None,
+            output: None,
         })
         .expect("server")
     }
