@@ -33,7 +33,7 @@ impl SelectedImportPlan {
             if let Some((record, _)) = entry.record {
                 let bytes = record_logical_bytes(record).unwrap_or(0);
                 total = total.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
-                if record.kind == FileKind::RegularFile {
+                if record.kind == FileKind::Regular {
                     regular = regular.max(bytes);
                 }
             }
