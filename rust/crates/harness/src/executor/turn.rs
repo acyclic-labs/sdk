@@ -45,13 +45,13 @@ impl StockExecution<'_> {
                         name,
                         arguments,
                     } => {
-                        let invocation = stock_model_call(
+                        let invocation = ToolInvocation::for_model_call(
                             input.operation_id,
                             step,
                             call_id,
                             name,
                             arguments,
-                            self.io,
+                            self.native_work(),
                         )?;
                         stock_vec_push(&mut calls, invocation, self.io)?;
                     }

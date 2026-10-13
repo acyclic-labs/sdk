@@ -51,7 +51,9 @@ impl StockExecution<'_> {
             ),
             self.io,
         )?;
-        let source = stock_context_prefix(&context, through, self.io)?;
+        let (source, _) = with_history_io(self.io, |work| {
+            crate::context::clone_context(&context, Some(through), work)
+        })?;
         let instruction = ModelContent::Text(with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!(
