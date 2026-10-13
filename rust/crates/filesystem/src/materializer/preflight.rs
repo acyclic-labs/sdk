@@ -365,19 +365,19 @@ fn source_metadata_matches(
     {
         if authored.changed_ns.is_some_and(|expected| {
             i128::from(expected)
-                != i128::from(observed.ctime()) * 1_000_000_000 + i128::from(observed.ctime_nsec())
+                != i128::from((observed.raw.st_ctime as i64)) * 1_000_000_000 + i128::from((observed.raw.st_ctime_nsec as i64))
         }) {
             return Ok(false);
         }
         if authored
             .posix_mode
-            .is_some_and(|value| value & 0o7777 != observed.mode() & 0o7777)
+            .is_some_and(|value| value & 0o7777 != (observed.raw.st_mode as u32) & 0o7777)
             || authored
                 .posix_uid
-                .is_some_and(|value| value != observed.uid())
+                .is_some_and(|value| value != (observed.raw.st_uid as u32))
             || authored
                 .posix_gid
-                .is_some_and(|value| value != observed.gid())
+                .is_some_and(|value| value != (observed.raw.st_gid as u32))
         {
             return Ok(false);
         }
@@ -385,7 +385,7 @@ fn source_metadata_matches(
     #[cfg(windows)]
     if authored
         .windows_attributes
-        .is_some_and(|value| value & 0x2137 != observed.file_attributes() & 0x2137)
+        .is_some_and(|value| value & 0x2137 != observed.raw.FileAttributes & 0x2137)
     {
         return Ok(false);
     }

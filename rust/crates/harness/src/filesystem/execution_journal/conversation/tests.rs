@@ -1,5 +1,6 @@
 //! Real local Stream/Filesystem persistence through the same canonical loop.
 use super::*;
+use crate::contract::capability;
 use crate::{
     AgentId, Capabilities,
     bundle::{HarnessBuilder, HarnessBundle},
@@ -87,9 +88,10 @@ async fn open(
     )?;
     let volume = VolumeRef::new(
         provider.clone(),
-        "conversation",
+        "conversation".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     let host = FilesystemHost::new(
         acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.join("filesystem")))

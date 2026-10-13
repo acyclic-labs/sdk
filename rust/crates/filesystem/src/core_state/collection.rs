@@ -44,46 +44,6 @@ impl LocalCoreStateStore {
         })
         .await
     }
-
-    /// Exact generations retained by original forks and completed selected imports.
-    pub(crate) async fn lazy_retained_generations(
-        &self,
-    ) -> Result<Vec<(crate::GenerationId, crate::model::VolumeConfig)>, LocalCoreStateStoreError>
-    {
-        self.transaction(|root| {
-            let root = &root;
-            root.with_log(|log| {
-                let mut workspaces = log
-                    .resident_keys(|key| match key {
-                        RecordKey::LazyWorkspace(id) => Some(id),
-                        _ => None,
-                    })
-                    .into_iter()
-                    .collect::<BTreeSet<_>>();
-                for stem in family_stems(root, LAZY_WORKSPACE_FAMILY)? {
-                    if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
-                        workspaces.insert(WorkspaceId::from_bytes(bytes));
-                    }
-                }
-                let mut generations = Vec::new();
-                for workspace in workspaces {
-                    let Some(state) = log.get::<LazyWorkspaceState>(root, workspace, None)? else {
-                        continue;
-                    };
-                    if let Some(origin) = state.fork_origin {
-                        generations.push((origin.snapshot.authored_generation, origin.config));
-                    }
-                    if let Some(roots) = state.selected_import_roots {
-                        generations.extend(
-                            roots.map(|(snapshot, config)| (snapshot.authored_generation, config)),
-                        );
-                    }
-                }
-                Ok(generations)
-            })
-        })
-        .await
-    }
 }
 
 impl LocalCoreStateStore {
@@ -151,35 +111,6 @@ impl LocalCoreStateStore {
                 }
                 Ok(recorded)
             })
-        })
-        .await
-    }
-
-    /// Forgets every record of a deleted workspace: its lineage, its lazy binding, and its Git-compatibility state.
-    pub(crate) async fn forget_workspace(
-        &self,
-        workspace: WorkspaceId,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        self.transaction(move |root| {
-            let root = &root;
-            root.with_log(|log| {
-                let mut change = Change::default();
-                change.put((RecordKey::Lineage(workspace), None).into())?;
-                change.put((RecordKey::LazyWorkspace(workspace), None).into())?;
-                log.commit(root, change)
-            })?;
-            // Unsynchronized: a removal a crash undoes is found again by the
-            // next collection.
-            let paths = root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes())?;
-            for path in [
-                &paths.temporary,
-                &paths.previous,
-                &paths.current,
-                &paths.lock,
-            ] {
-                remove_if_present(path)?;
-            }
-            Ok(())
         })
         .await
     }

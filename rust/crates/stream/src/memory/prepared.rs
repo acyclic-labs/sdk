@@ -161,49 +161,48 @@ impl MemoryStream {
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_new(&meter, async move {
             let state = state.read().await;
-            let (stored, mut observed) = read.attempt(|| state.replay(recovery_key.as_bytes()));
-            let result = match stored {
-                None => Ok((None, None)),
-                Some(stored) => match copy_outcome(
+            let (stored, observed) = read.attempt(|| state.replay(recovery_key.as_bytes()));
+            let mut observed = observed.err();
+            let result = (|| {
+                let Some(stored) = stored else {
+                    return Ok((None, None));
+                };
+                let (value, claim) = copy_outcome(
                     &stored.result,
                     &recovery_conditions,
                     maximum,
                     prototype,
                     recovery_conflicts,
-                ) {
-                    Err(error) => Err(error),
-                    Ok((value, claim)) => {
-                        observed = observed.and(bytes.record(envelope_payload_bytes(&value)));
-                        observed =
-                            observed.and(recovery_meter.record_codec(0, copied_bytes(&value), 0));
-                        let authenticated = if let CommitOutcome::Committed(_) = &value {
-                            let append = append(&value);
-                            let (digest, hashed) = digest(
-                                &recovery_conditions,
-                                &append.path,
-                                &append.records[0].value,
-                            );
-                            observed = observed.and(recovery_meter.record_codec(0, 0, hashed));
-                            digest == stored.digest
-                        } else {
-                            true
-                        };
-                        if authenticated {
-                            Ok((
-                                Some(IdempotencyObservation {
-                                    idempotency_key: recovery_key,
-                                    request_digest: stored.digest,
-                                    outcome: IdempotencyOutcome::Commit(value),
-                                }),
-                                claim,
-                            ))
-                        } else {
-                            Err(StreamError::IdempotencyMismatch)
-                        }
+                )?;
+                observed = observed
+                    .take()
+                    .or(bytes.record(envelope_payload_bytes(&value)).err());
+                observed = observed.take().or(recovery_meter
+                    .record_codec(0, copied_bytes(&value), 0)
+                    .err());
+                if let CommitOutcome::Committed(_) = &value {
+                    let append = append(&value);
+                    let (digest, hashed) =
+                        digest(&recovery_conditions, &append.path, &append.records[0].value);
+                    observed = observed
+                        .take()
+                        .or(recovery_meter.record_codec(0, 0, hashed).err());
+                    if digest != stored.digest {
+                        return Err(StreamError::IdempotencyMismatch);
                     }
-                },
-            };
-            observed.and(recovery_meter.record_examination(8, 0))?;
+                }
+                Ok((
+                    Some(IdempotencyObservation {
+                        idempotency_key: recovery_key,
+                        request_digest: stored.digest,
+                        outcome: IdempotencyOutcome::Commit(value),
+                    }),
+                    claim,
+                ))
+            })();
+            if let Some(error) = observed.or(recovery_meter.record_examination(8, 0).err()) {
+                return Err(error);
+            }
             Ok(result.map(|(value, claim)| {
                 crate::NativeStreamOutput::new(
                     value,

@@ -184,19 +184,7 @@ pub(super) type NativeWork = acyclic_fs::NativeMaterializationWork;
 pub(super) type NativeWork = ();
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn validate_native_policy_identity(
-    paid: &(ComponentIdentity, Option<NativeCustody>),
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    let custody = paid.1.as_ref().ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Conflict,
-        reason: "policy identity does not retain its original ledger",
-    })?;
-    validate_policy_identity_custody_with_native_work(&paid.0, custody, work)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn validate_policy_identity_custody_with_native_work(
+pub(super) fn check_policy_metadata(
     identity: &ComponentIdentity,
     custody: &acyclic_fs::NativeAllocation,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -212,18 +200,6 @@ pub(super) fn validate_policy_identity_custody_with_native_work(
     }
     work.remaining()?;
     Ok(())
-}
-
-/// Shared SDK startup boundary for already-owned policy metadata.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn validate_policy_identity_with_native_work(
-    identity: &ComponentIdentity,
-    custody: &acyclic_fs::NativeAllocation,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    validate_policy_identity_custody_with_native_work(identity, custody, work)?;
-    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    validate_policy_identity(identity, Some(&io))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

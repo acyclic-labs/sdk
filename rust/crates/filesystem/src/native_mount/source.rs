@@ -465,17 +465,6 @@ impl MountPath {
     }
 }
 
-/// Retains a source failure and its semantic classification.
-pub trait MountSourceFailureCause: Send + Sync {
-    /// Returns the retained semantic failure.
-    fn semantic_error(&self) -> &MountSourceError;
-}
-
-impl std::fmt::Debug for dyn MountSourceFailureCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(self.semantic_error(), formatter)
-    }
-}
 /// Errors returned by the canonical checkout callback bridge.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MountSourceError {
@@ -613,26 +602,17 @@ pub enum MountSourceError {
     /// Original service-start cause already owned by explicit bootstrap.
     #[error("native mount service startup failed: {0}")]
     ServiceUnavailable(#[source] Arc<std::io::Error>),
-    /// Original cause in an already admitted pending/completion owner.
-    #[error("{}", .0.semantic_error())]
-    Retained(Arc<dyn MountSourceFailureCause>),
 }
 
 impl MountSourceError {
     /// Returns the underlying source failure.
     pub fn semantic_error(&self) -> &Self {
         let mut error = self;
-        loop {
-            match error {
-                Self::Retained(cause) => error = cause.semantic_error(),
-                Self::MutationFinalization { primary, .. } if primary.is_some() => {
-                    error = primary
-                        .as_ref()
-                        .as_ref()
-                        .expect("a completed mutation has its original primary")
-                }
-                _ => break,
-            }
+        while let Self::MutationFinalization { primary, .. } = error {
+            let Some(primary) = primary.as_ref() else {
+                break;
+            };
+            error = primary;
         }
         error
     }

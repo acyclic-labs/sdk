@@ -16,7 +16,7 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
         })
     });
     let first_only = RuntimeScope::new(
-        Capabilities::new([first.read_capability()?]),
+        Capabilities::new([first.read_capability(&mut None)?]),
         Limits::default(),
     )?;
     assert!(matches!(
@@ -31,7 +31,7 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
         Err(Error::Unauthorized(_))
     ));
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
-    let grants = Capabilities::new([first.read_capability()?, second.read_capability()?]);
+    let grants = Capabilities::new([first.read_capability(&mut None)?, second.read_capability(&mut None)?]);
     let narrow = RuntimeScope::new(
         grants.clone(),
         Limits {

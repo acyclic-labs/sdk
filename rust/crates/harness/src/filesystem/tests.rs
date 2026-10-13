@@ -310,11 +310,13 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         )?;
         let io = PreparationIo::from_native_work(&work)?;
         let binding = native.native_binding.as_ref().unwrap();
-        binding.require_file(&first, &io)?;
+        binding.require_native_work(&work)?;
+        super::content_verifier::require_file_read(&binding.scope, &first, &io)?;
         let bytes = host.read_pinned_io(&first, 16, Some(&io)).await?;
         assert_eq!(bytes.as_ref(), b"one");
         drop(bytes);
-        binding.require_file(&second, &io)?;
+        binding.require_native_work(&work)?;
+        super::content_verifier::require_file_read(&binding.scope, &second, &io)?;
         let bytes = host.read_pinned_io(&second, 16, Some(&io)).await?;
         assert_eq!(bytes.as_ref(), b"two");
         drop(bytes);
@@ -347,12 +349,10 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             )),
         )?;
         let before = work.receipt().backend_read_operations;
+        let denied_binding = denied.native_binding.as_ref().unwrap();
+        denied_binding.require_native_work(&work)?;
         assert!(matches!(
-            denied
-                .native_binding
-                .as_ref()
-                .unwrap()
-                .require_file(&first, &io),
+            super::content_verifier::require_file_read(&denied_binding.scope, &first, &io),
             Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 ..
@@ -361,7 +361,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         assert_eq!(work.receipt().backend_read_operations, before);
         let before = work.receipt();
         cancellation.cancel();
-        assert!(binding.authenticate(&work).is_err());
+        assert!(binding.require_native_work(&work).is_err());
         assert_eq!(
             work.receipt().allocation_operations,
             before.allocation_operations
@@ -667,7 +667,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
         )
         .await?;
     let verifier = FilesystemContentVerifier::new(
-        Arc::new(host),
+        host,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         4_096,

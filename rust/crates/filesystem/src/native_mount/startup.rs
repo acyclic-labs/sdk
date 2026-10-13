@@ -4,7 +4,6 @@ use super::*;
 pub struct NativeMountStartupFailure {
     pub(super) error: NativeMountError,
     pub(super) owner: NativeMountSession,
-    pub(super) retired: Option<NativeMountSession>,
     pub(super) custody: crate::NativeAllocation,
 }
 
@@ -22,29 +21,6 @@ impl NativeMountStartupFailure {
     /// Retains the original owner for a bounded cleanup retry.
     pub fn owner_mut(&mut self) -> &mut NativeMountSession {
         &mut self.owner
-    }
-    /// Original warm-continuation owner, including all unresolved DATA.
-    #[must_use]
-    pub fn retired_owner(&self) -> Option<&NativeMountSession> {
-        self.retired.as_ref()
-    }
-    /// Moves the original cause, new source owner, and complete old outcome.
-    #[must_use]
-    pub fn into_parts(
-        self: Box<Self>,
-    ) -> (
-        NativeMountError,
-        NativeMountSession,
-        Option<NativeMountSession>,
-    ) {
-        let Self {
-            error,
-            owner,
-            retired,
-            custody,
-        } = *self;
-        drop(custody);
-        (error, owner, retired)
     }
 }
 
@@ -70,7 +46,6 @@ impl std::error::Error for NativeMountStartupFailure {
 /// Actual preadmitted failure storage.
 pub struct PreparedNativeMountStart {
     pub(super) buffer: Box<std::mem::MaybeUninit<NativeMountStartupFailure>>,
-    pub(super) retired: Option<NativeMountSession>,
     pub(super) custody: crate::NativeAllocation,
 }
 impl PreparedNativeMountStart {
@@ -84,7 +59,6 @@ impl PreparedNativeMountStart {
         )?;
         Ok(Self {
             buffer: Box::new(std::mem::MaybeUninit::uninit()),
-            retired: None,
             custody,
         })
     }
@@ -93,17 +67,12 @@ impl PreparedNativeMountStart {
         error: NativeMountError,
         owner: NativeMountSession,
     ) -> Box<NativeMountStartupFailure> {
-        let Self {
-            buffer,
-            retired,
-            custody,
-        } = self;
+        let Self { buffer, custody } = self;
         Box::write(
             buffer,
             NativeMountStartupFailure {
                 error,
                 owner,
-                retired,
                 custody,
             },
         )
@@ -135,98 +104,6 @@ impl PreparedNativeMountStart {
             work,
             self,
             destination_custody,
-        )
-    }
-
-    /// Continues only this SDK owner's retired Windows namespace with a freshly constructed stock source.
-    pub fn restart_with_meter(
-        mut self,
-        retired: NativeMountSession,
-        source: Arc<dyn MountFilesystem>,
-        work: &NativeMaterializationWork,
-    ) -> Result<NativeMountSession, NativeMountError> {
-        let mut next = NativeMountSession::new(
-            NativeMountRequest {
-                destination: PathBuf::new(),
-                ..retired.request
-            },
-            Some(source.clone()),
-            None,
-        );
-        self.retired = Some(retired);
-        let admitted = (|| -> Result<(), NativeMountError> {
-            let original = work.clone();
-            let storage_work = self.custody.work();
-            if !storage_work.shares_ledger(&original)
-                || !storage_work.shares_resource_allowance(&original)
-            {
-                return Err(NativeMountError::Lifecycle(
-                    "restart differs from its preborn original work",
-                ));
-            }
-            original.admit(crate::WorkCounters::UNCHARGED)?;
-            let old = self.retired.as_ref().expect("complete original owner");
-            if !old.cleanup_state().cleanup_complete() {
-                return Err(NativeMountError::ControlPending);
-            }
-            #[cfg(not(windows))]
-            return Err(NativeMountError::UnsupportedTarget);
-            #[cfg(windows)]
-            {
-                let outcome = old
-                    .namespace_outcome
-                    .as_ref()
-                    .ok_or(NativeMountError::Lifecycle(
-                        "restart has no original SDK namespace outcome",
-                    ))?;
-                if outcome.qualification().is_none() || !outcome.continuation_ready() {
-                    return Err(NativeMountError::Lifecycle(
-                        "original namespace capture DATA is not settled",
-                    ));
-                }
-                let lineage =
-                    source
-                        .native_namespace_lineage()
-                        .ok_or(NativeMountError::Lifecycle(
-                            "restart source has no sealed stock lineage",
-                        ))?;
-                if !adapter::namespace_gate_is_fresh(&lineage)
-                    || !old
-                        .namespace_binding
-                        .as_ref()
-                        .is_some_and(|binding| binding.matches(&lineage))
-                {
-                    return Err(NativeMountError::Lifecycle(
-                        "restart requires fresh capture gate on original checkout/root/work",
-                    ));
-                }
-                if old
-                    .retired_callback_failure
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .is_some()
-                {
-                    return Err(NativeMountError::Lifecycle(
-                        "original callback outcome is not settled",
-                    ));
-                }
-                let (destination, custody) =
-                    crate::native_host::clone_path(&old.request.destination, &mut &original)?;
-                next.request.destination = destination;
-                next._destination_custody = Some(custody);
-                Ok(())
-            }
-        })();
-        if let Err(error) = admitted {
-            return Err(NativeMountError::StartupFailed(self.failed(error, next)));
-        }
-        start_native_mount_prepared_with_meter(
-            next.request,
-            source,
-            true,
-            work,
-            self,
-            next._destination_custody,
         )
     }
 

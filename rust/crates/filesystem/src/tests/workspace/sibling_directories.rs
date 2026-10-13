@@ -23,17 +23,21 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         forks.push(fork);
     }
     for fork in &forks {
-        let plan = fork.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let plan = unbounded!(fork.join_into(&main), plan())?;
         match plan
-            .apply(ApplyOptions {
+            .apply(
+                ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+                },
+                std::collections::BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
             .await?
         {
             JoinOutcome::Applied(_) => {}
             JoinOutcome::Conflicted { conflicts, .. } => {
-                let described = plan.describe_conflicts(&conflicts, false).await?;
+                let described = plan.describe_conflicts(conflicts, false).await?;
                 panic!("join conflicted: {:?}", described.conflicts);
             }
             _ => panic!("join did not apply"),
@@ -94,15 +98,19 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         commit(&mut transaction).await?;
     }
     for fork in [&first, &second] {
-        let plan = fork.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let plan = unbounded!(fork.join_into(&main), plan())?;
         let outcome = plan
-            .apply(ApplyOptions {
+            .apply(
+                ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+                },
+                std::collections::BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
             .await?;
         if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
-            let described = plan.describe_conflicts(&conflicts, false).await?;
+            let described = plan.describe_conflicts(conflicts, false).await?;
             panic!("sibling join conflicted: {:?}", described.conflicts);
         }
     }
@@ -118,6 +126,8 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         unbounded!(main, stat("/pkg"))?.metadata.modified_ns,
         Some(30)
     );
+
+    // Authored metadata changed both ways is a conflict, reported as such.
     let base = unbounded!(main, head())?;
     let third = fork("sibling-times-third", &base).await?;
     for (workspace, mode) in [(&main, 0o700), (&third, 0o770)] {
@@ -125,20 +135,24 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         unbounded!(transaction, set_metadata("/pkg", touch(40, mode)))?;
         commit(&mut transaction).await?;
     }
-    let plan = third.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let plan = unbounded!(third.join_into(&main), plan())?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
     } = plan
-        .apply(ApplyOptions {
+        .apply(
+            ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+            },
+            std::collections::BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted,
+        )
         .await?
     else {
         return Err("a mode conflict on the shared directory was not reported".into());
     };
-    let described = plan.describe_conflicts(&conflicts, truncated).await?;
+    let described = plan.describe_conflicts(conflicts, truncated).await?;
     assert_eq!(described.conflicts.len(), 1);
     assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Metadata);
     Ok(())

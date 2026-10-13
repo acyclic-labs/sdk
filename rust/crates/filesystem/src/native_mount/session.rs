@@ -17,8 +17,6 @@ pub struct NativeMountSession {
     // a source, context, root handle, or provider callback.
     #[cfg(windows)]
     pub(super) namespace_outcome: Option<projfs::ProjFsNamespaceOutcome>,
-    #[cfg(windows)]
-    pub(super) namespace_binding: Option<NativeMountNamespaceBinding>,
     // Destination data and all native owners physically drop before its guard.
     pub(super) _destination_custody: Option<crate::NativeAllocation>,
 }
@@ -41,8 +39,6 @@ impl NativeMountSession {
             retired_callback_failure: std::sync::Mutex::new(None),
             #[cfg(windows)]
             namespace_outcome: None,
-            #[cfg(windows)]
-            namespace_binding: None,
             _destination_custody: destination_custody,
         }
     }
