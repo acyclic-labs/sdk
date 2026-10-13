@@ -100,8 +100,7 @@ impl ToolApprovalVerifier for CatalogApproval {
 }
 
 #[tokio::test]
-async fn catalog_installation_requires_signed_namespace_and_exact_complete_approval() -> Result<()>
-{
+async fn scoped_catalog_installation_and_replacement_require_exact_approval() -> Result<()> {
     use crate::core::{AggregateKind, Authority, AuthorityIssuer};
     let authority = Authority {
         kind: AggregateKind::Conversation,
@@ -217,35 +216,8 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
     ));
     assert_eq!(registry.definitions(None)?.len(), 2);
     assert_eq!(transport.0.load(Ordering::SeqCst), 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result<()> {
-    use crate::core::{AggregateKind, Authority, AuthorityIssuer};
-    let issuer = AuthorityIssuer::new(
-        "catalog",
-        [8; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "catalog".into(),
-        },
-    );
-    let scope = issuer.issue(
-        "installer",
-        &Capabilities::new(["mcp:install:fixture"]),
-        None,
-        None,
-        &mut None,
-    )?;
-    let verifier = issuer.verifier(&mut None).expect("verifier copy");
-    let original = catalog("1", &["a", "b"]);
     let mut replacement = catalog("2", &["a"]);
     replacement.schema_exposure = McpSchemaExposure::Selected { names: vec![] };
-    let bound: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
-    let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
-    let mut registry = ToolRegistry::default();
-    original.install(&mut registry, None, &bound, &projection, 8, 8192)?;
     let approval = CatalogApproval {
         operation: OperationId::from_bytes([50; 16]),
         interaction: InteractionId::from_bytes([51; 16]),
@@ -297,12 +269,9 @@ fn context_result(context: &ToolContext, structured_content: Value) -> Value {
 
 async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let operation = OperationId::from_bytes([17; 16]);
-    let context = ToolContext::new(
-        std::sync::Arc::new(task.clone()),
-        operation,
-        "provider-call",
-        None,
-    )?;
+    let denied = Arc::new(task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?);
+    let task = Arc::new(task);
+    let context = ToolContext::new(Arc::clone(&task), operation, "provider-call", None)?;
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: "provider-call".into(),
@@ -322,21 +291,15 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
         .await?
         .ok_or_else(|| Error::NotFound("context result".into()))?;
     assert_eq!(recovered.value["_meta"], expected);
-    let denied = task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?;
     for wrong in [
         ToolContext::new(
-            std::sync::Arc::new(task.clone()),
+            Arc::clone(&task),
             OperationId::from_bytes([18; 16]),
             "provider-call",
             None,
         )?,
-        ToolContext::new(std::sync::Arc::new(task), operation, "different-call", None)?,
-        ToolContext::new(
-            std::sync::Arc::new(denied),
-            operation,
-            "provider-call",
-            None,
-        )?,
+        ToolContext::new(task, operation, "different-call", None)?,
+        ToolContext::new(denied, operation, "provider-call", None)?,
     ] {
         assert!(matches!(
             tool.executor
