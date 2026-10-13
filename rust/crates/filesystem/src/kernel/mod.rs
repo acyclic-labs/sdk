@@ -161,7 +161,6 @@ pub use mutation::{
     FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{
     NamespacePath, NamespacePathError};
-pub(crate) use path_access::observe_path_edges_async;
 pub(crate) use path_access::{
     lookup_path_async_with_accounting, lookup_paths_async_with_accounting, lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting, observe_path_refs_async_with_accounting, observe_paths_async_with_accounting};
 pub use path_access::{
@@ -175,7 +174,7 @@ pub(crate) use publication::encode_publication_payload;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation};
 pub(crate) use publication::{
-    PublicationIntent, permit_context_with_accounting, publish_generation_async_guarded, publish_generation_async_with_permit, decode_publication_evidence_with_accounting, contextual_publication_fingerprint_from_payload_with_accounting};
+    PublicationIntent, permit_context_with_accounting, publish_generation_async_guarded, publish_generation_async_with_permit, decode_publication_evidence_with_accounting};
 pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent};
 pub(crate) use range::seek_extent_with_accounting;

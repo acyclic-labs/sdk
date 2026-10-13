@@ -12,6 +12,7 @@ use super::{
     ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::materializer::NativeResourceCredit::{Copy, Items};
 use crate::model::AccessMode;
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
@@ -107,14 +108,10 @@ use state::*;
 mod core;
 pub use core::NativeMountWorkScope;
 use core::*;
-mod retirement;
-use retirement::*;
 mod errors;
 use errors::*;
 mod lookup;
 use lookup::*;
-mod mount;
-use mount::*;
 mod session;
 pub(super) use session::FuseSession;
 use session::*;

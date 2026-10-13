@@ -325,7 +325,7 @@ pub(super) fn read_link_bytes(
     #[cfg(windows)]
     {
         let (units, allocation) = root
-            .read_link_wide(path, maximum, &mut meter.native.clone())
+            .read_link(path, maximum, &mut meter.native.clone())
             .map_err(capture_demand_error)?;
         let length = units
             .len()

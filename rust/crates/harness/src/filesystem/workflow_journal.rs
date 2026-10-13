@@ -158,7 +158,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             if !owner.native_shared_work_matches(work) {
-                return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
                     "workflow owner belongs to another native ledger"));
             }
         }
@@ -787,10 +787,8 @@ where
                 io.preflight(step)?;
                 io.charge(step)?;
             }
-            if let Some(owner) = &self.owner
-                && owner.verify_created_input_with_io(&command.payload, io).await?
-            {
-                continue;
+            if let Some(owner) = &self.owner {
+                owner.validate_input_file(&command.payload, io)?;
             }
             if command.payload.volume() != &self.volume {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,

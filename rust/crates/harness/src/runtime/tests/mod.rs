@@ -6,32 +6,22 @@ use crate::model::{ModelContent, ModelContentPart};
 
 use crate::resources::ProviderRef;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub(super) fn serialized_object_fields(value: &Value) -> BTreeSet<String> {
-    value
-        .as_object()
-        .map(|fields| fields.keys().cloned().collect())
-        .unwrap_or_default()
-}
-
-pub(super) fn dependency_fixture(
-    requirements: &[(&str, &[&str])],
-) -> BTreeMap<(String, String), BTreeSet<String>> {
-    requirements
-        .iter()
-        .map(|(name, requirements)| {
-            (
-                (String::from(*name), String::from("1")),
-                requirements
-                    .iter()
-                    .map(|value| String::from(*value))
-                    .collect(),
-            )
-        })
-        .collect()
+pub(super) fn dependency_fixture(requirements: &[(&str, &[&str])]) -> Result<Bindings> {
+    let mut bindings = Bindings::local();
+    for (name, requirements) in requirements {
+        let mut definition = TaskDefinition::live(*name, "1", |_context, _input: ()| async {
+            Ok::<(), Error>(())
+        })?;
+        for requirement in *requirements {
+            definition = definition.requires(*requirement)?;
+        }
+        bindings.tasks.register(definition)?;
+    }
+    Ok(bindings)
 }
 
 pub(super) struct CompletedModel {
