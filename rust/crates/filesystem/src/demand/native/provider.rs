@@ -201,7 +201,7 @@ impl NativeDemandSource {
         let (bytes, allocation) = self.inner.root.read_link(relative, maximum, context)?;
         #[cfg(windows)]
         let (bytes, allocation) = {
-            let (units, allocation) = self.inner.root.read_link_wide(relative, maximum, context)?;
+            let (units, allocation) = self.inner.root.read_link(relative, maximum, context)?;
             let result = (|| {
                 let copying = WorkCounters {
                     bytes_copied: units.len() as u64 * 2,

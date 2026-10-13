@@ -41,7 +41,7 @@ pub(super) trait Backend: Send + Sync {
 struct Mount<P: StreamProvider, A, O, D, S> {
     mount: Arc<LazyMount<A, O, D, S>>,
     owner: Arc<TaskJournalOwner<P>>,
-    callback: Arc<dyn crate::runtime::NativeVolumePublicationGuard>,
+    callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
 }
 
 impl NativeExistingLazyVolume {
@@ -69,15 +69,17 @@ impl NativeExistingLazyVolume {
             let NativeVolumeNamespace::LazyMount { snapshot } = binding.namespace else {
                 return Err(invalid());
             };
-            let workspace = binding
-                .host
-                .open_volume_with_native_work(binding.volume, work)
-                .await?;
-            let generation = binding
-                .host
-                .generation_with_native_work(&workspace, binding.generation, work)
-                .await?;
-            let actual = mount.snapshot_with_work(work, work.cancellation()).await?;
+            let io = PreparationIo::from_native_work(work)?;
+            let reference = super::super::fork_preparer::bounded_io::content_workspace(
+                &binding.host.provider, binding.volume, Some(&io),
+            )?;
+            let workspace = super::super::fork_preparer::bounded_io::open(
+                binding.host, &reference, &io,
+            ).await?;
+            let generation = super::super::fork_preparer::bounded_io::generation(
+                binding.host, &workspace, binding.generation, &io,
+            ).await?;
+            let actual = mount.snapshot(work, work.cancellation()).await?;
             if &actual != snapshot
                 || actual.workspace_id != workspace.id()
                 || actual.authored_generation != generation.id()
@@ -87,8 +89,7 @@ impl NativeExistingLazyVolume {
             }
             let io = PreparationIo::from_native_work(work)?;
             let callback = guard
-                .for_volume(owner, binding.volume, binding.writable, work)?
-                .1;
+                .for_volume(owner, binding.volume, binding.writable, work)?;
             let (path, path_custody) = work.path(mount.path(), None)?;
             io.absorb_native_custody(path_custody)?;
             let mapping = NativeVolumeMapping {
@@ -148,7 +149,7 @@ where
             self.callback.check(work)?.await?;
             let snapshot = self
                 .mount
-                .snapshot_with_work(work, work.cancellation())
+                .snapshot(work, work.cancellation())
                 .await?;
             self.callback.check(work)?.await?;
             Ok(snapshot)
@@ -169,14 +170,13 @@ where
             let callback = Arc::clone(&self.callback);
             Ok(self
                 .mount
-                .sync_with_permit_work_guarded(
+                .sync_with_permit(
                     permit,
                     work,
-                    work.cancellation(),
                     move |actual: &NativeMaterializationWork| {
                         let actual = actual.clone();
                         let callback = Arc::clone(&callback);
-                        async move { callback.check(&actual)?.await }
+                        async move { callback.check(&actual).map_err(Error::from)?.await.map_err(Error::from) }
                     },
                 )
                 .await)
@@ -195,7 +195,7 @@ where
             self.callback.check(work)?.await?;
             let snapshot = match self
                 .mount
-                .publication_snapshot_with_work(work, work.cancellation())
+                .publication_snapshot(work, work.cancellation())
                 .await
             {
                 Ok(snapshot) => snapshot,
@@ -208,7 +208,7 @@ where
                     }));
                 }
             };
-            if let Err(cause) = async { self.callback.check(work)?.await }.await {
+            if let Err(cause) = async { self.callback.check(work).map_err(Error::from)?.await.map_err(Error::from) }.await {
                 return Ok(Err(NativeMountPublicationFailure {
                     cause,
                     accounting_failure: None,

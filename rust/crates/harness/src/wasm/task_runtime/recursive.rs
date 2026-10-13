@@ -191,7 +191,7 @@ impl WasmTaskRuntime {
         let owner = Arc::new(
             self.runtime
                 .task_host()
-                .journal_owner(caller, context.owned_task_fence().map_err(js_error)?)
+                .journal_owner(caller, &(context.owned_task_fence().map_err(js_error)?), None)
                 .await
                 .map_err(js_error)?
                 .with_invocation_cancellation(&cancellation),
@@ -351,7 +351,7 @@ impl WasmTaskRuntime {
         let owner = Arc::new(
             self.runtime
                 .task_host()
-                .journal_owner(caller, context.owned_task_fence().map_err(js_error)?)
+                .journal_owner(caller, &(context.owned_task_fence().map_err(js_error)?), None)
                 .await
                 .map_err(js_error)?
                 .with_invocation_cancellation(&cancellation),
@@ -376,17 +376,17 @@ impl WasmTaskRuntime {
         let binding = restore_recursive_fork_source(
             self.filesystem.clone(),
             &self.stream,
-            &original_owner.reducer,
-            original_owner
+            (original_owner.reducer, None),
+            &original_owner
                 .issuer
                 .verifier(&mut None)
                 .expect("verifier copy"),
-            signed,
-            source.project,
-            from_js(stream_provider)?,
+            &signed,
+            &source.project,
+            &from_js(stream_provider)?,
             request,
             history_limits,
-            source_read,
+            source_read.as_ref(),
             resolver,
             &cancellation,
         )

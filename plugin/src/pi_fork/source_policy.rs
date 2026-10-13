@@ -87,7 +87,13 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             self.source
-                .validate_snapshot_with_native_work(self.frozen, work)
+                .validate_snapshot(
+                    self.frozen,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             self.caller_owner

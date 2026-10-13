@@ -57,8 +57,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok((schemas, expected))
     }
 
-    /// Verifies options against the original authenticated admission and linked code.
-    /// This is read authority, so it remains valid during original-fence settlement.
+    /// Verifies options against the original admission and linked implementation.
     pub(crate) async fn verify_native_configuration(
         &self,
         binding: &crate::model::NativeConfigurationBinding,
@@ -101,11 +100,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) fn require_interaction_grant(
         &self,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
-        crate::executor::with_history_io(io, |work| {
-            crate::core::inspect_metadata(&self.admission.grants, work)
-        })?;
+        crate::core::inspect_metadata(&self.admission.grants, work)?;
         if !self
             .admission
             .grants
@@ -128,14 +125,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         tail: u64,
         revision: u64,
         command: OperationId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         self.host
-            .suspend_workflow_command_guarded(
+            .suspend_workflow(
                 self.task_id(),
-                self.fence.clone(),
+                &self.fence,
                 revision,
                 Some(command),
                 Some((execution, tail)),
+                None,
+                work,
             )
             .await
     }
@@ -159,8 +159,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    /// Returns the initial workflow identity derived from the retained task
-    /// admission and its registered machine, rather than caller-selected state.
+    /// Returns the workflow pinned by the retained admission.
     #[must_use]
     pub const fn workflow_admission(&self) -> &crate::workflow::WorkflowAdmission {
         &self.workflow
@@ -181,7 +180,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             std::borrow::Cow::Borrowed(&record.input),
             io,
         )?;
-        if next != record.next || transition != record.transition {
+        if record.checkpoint()? != (&next.machine, next.revision, &next.state) || transition != record.transition {
             return Err(Error::Conflict(
                 "workflow transition differs from pinned machine".into(),
             ));
@@ -212,6 +211,23 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
+        if !matches!(write, crate::distributed::JournalWrite::Settlement)
+            && self
+                .invocation_cancellation
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
+        {
+            return Err(Error::Indeterminate(self.operation_id()));
+        }
+        if !matches!(write, crate::distributed::JournalWrite::Settlement)
+            && self
+                .admission
+                .run_limits
+                .deadline_epoch_ms
+                .is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
+        {
+            return Err(Error::Indeterminate(self.operation_id()));
+        }
         self.host
             .coordinator
             .lock()
@@ -277,8 +293,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
-        self.condition(Self::execution_write(operation, event)?, &mut None)
+        self.condition(Self::execution_write(operation, event)?, work)
             .await
             .map(|_| ())
     }
@@ -320,36 +337,79 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         publication: &crate::store::operations::IndexedPublication,
         key: &StreamKey,
         write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+        phase: Option<&mut crate::distributed::CommitPhase>,
     ) -> Result<bool> {
-        let request = self
-            .prepare_append(
-                &publication.path,
+        let owner = self.condition(write, work).await?;
+        let acyclic_stream::CommitCondition::Tail { expected, .. } = &owner else {
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "coordinator tail condition required",
+            ));
+        };
+        if let Some(io) = work.as_deref_mut() {
+            io.hashed_bytes(publication.bytes.len() as u64)?;
+        }
+        let payload = blake3::hash(&publication.bytes);
+        let digest = crate::contract::canonical_json_digest(
+            &(
+                "harness/v2/owned-publication",
+                key.as_bytes(),
+                self.task_id(),
+                &self.fence,
+                expected,
+                publication.path.as_str(),
                 publication.expected_tail,
-                key,
-                &publication.bytes,
-                write,
-            )
-            .await?;
-        let mut work = None;
-        let mut request = (request, crate::wire_codec::CodecQuota::new(&mut work, 0)?);
-        publication.add_index(&mut request)?;
-        match crate::distributed::commit(
+                payload.as_bytes(),
+            ),
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            work,
+        )?;
+        let (key, _) = crate::distributed::digest_key(&digest, work)?;
+        let mut request = publication.request(&self.host.stream, key, work).await?;
+        crate::distributed::add_condition(&mut request, owner)?;
+        if !matches!(write, crate::distributed::JournalWrite::Settlement)
+            && self
+                .invocation_cancellation
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
+        {
+            return Err(Error::Indeterminate(self.operation_id()));
+        }
+        if !matches!(write, crate::distributed::JournalWrite::Settlement)
+            && self
+                .admission
+                .run_limits
+                .deadline_epoch_ms
+                .is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
+        {
+            return Err(Error::Indeterminate(self.operation_id()));
+        }
+        let (outcome, retained) = crate::distributed::commit(
             request,
             &self.host.stream,
             Some(publication.operation_id),
-            None,
+            phase,
         )
-        .await?
-        .0
-        {
+        .await?;
+        let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
+        let result = match &outcome {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
-            acyclic_stream::CommitOutcome::Committed(envelope) => {
-                publication
-                    .verify(&envelope, &mut None)
-                    .map_err(|_| Error::Indeterminate(publication.operation_id))?;
-                Ok(true)
-            }
-        }
+            acyclic_stream::CommitOutcome::Committed(envelope) => publication
+                .verify(envelope, received.work())
+                .map(|()| true)
+                .map_err(|error| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if error.is_native_failure() {
+                        return error;
+                    }
+                    Error::Indeterminate(publication.operation_id)
+                }),
+        };
+        drop(outcome);
+        drop(received);
+        result
     }
 
     pub(crate) async fn append_execution(
@@ -359,14 +419,20 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         key: &StreamKey,
         bytes: OwnedBytes,
         event: &crate::executor::ExecutionEvent,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
-        let path = crate::distributed::execution_path(operation, &mut None)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let path = crate::distributed::execution_path(operation, quota.work())?;
+        if quota.work().is_some() {
+            quota.adopt(path.as_str().len() as u64)?;
+        }
         self.append(
             path,
             expected_tail,
             key,
             bytes,
             Self::execution_write(operation, event)?,
+            quota.work(),
         )
         .await
     }
@@ -377,70 +443,30 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         expected_tail: u64,
         key: &StreamKey,
         bytes: OwnedBytes,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
         let class = if admission {
             "workflow-admissions"
         } else {
             "workflows"
         };
-        let path =
-            acyclic_stream::StreamPath::new(format!("harness/v2/{class}/{}", self.operation_id()))?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let path = acyclic_stream::StreamPath::new(crate::contract::preparation_format(
+            format_args!("harness/v2/{class}/{}", self.operation_id()),
+            quota.work(),
+        )?)?;
+        if quota.work().is_some() {
+            quota.adopt(path.as_str().len() as u64)?;
+        }
         self.append(
             path,
             expected_tail,
             key,
             bytes,
             crate::distributed::JournalWrite::Fresh,
+            quota.work(),
         )
         .await
-    }
-
-    pub(super) async fn prepare_append(
-        &self,
-        path: &acyclic_stream::StreamPath,
-        expected_tail: u64,
-        key: &StreamKey,
-        bytes: &OwnedBytes,
-        write: crate::distributed::JournalWrite,
-    ) -> Result<acyclic_stream::CommitRequest> {
-        use acyclic_stream::{CommitCondition, CommitMutation};
-        let owner = self.condition(write, &mut None).await?;
-        let target = match self.host.stream.bounds(path.clone()).await {
-            Ok(_) => CommitCondition::Tail {
-                path: path.clone(),
-                expected: expected_tail,
-            },
-            Err(StreamError::NotFound) if expected_tail == 0 => {
-                CommitCondition::Absent { path: path.clone() }
-            }
-            Err(error) => return Err(error.into()),
-        };
-        // Conflicting transactions are retained by Stream too. A refreshed owner
-        // revision gets its own recovery key; the journal's CAS and retry index
-        // still prevent duplicate logical records.
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"harness/v2/owned-journal\0");
-        hash.update(key.as_bytes());
-        hash.update(&self.task_id().into_bytes());
-        hash.update(&crate::contract::canonical_json_bytes(&self.fence)?);
-        let CommitCondition::Tail { expected, .. } = &owner else {
-            return Err(Error::Invalid("coordinator tail condition required".into()));
-        };
-        hash.update(&expected.to_le_bytes());
-        hash.update(path.as_str().as_bytes());
-        hash.update(&expected_tail.to_le_bytes());
-        hash.update(&[u8::from(matches!(target, CommitCondition::Absent { .. }))]);
-        hash.update(blake3::hash(bytes).as_bytes());
-        let transaction_key =
-            StreamKey::new(OwnedBytes::copy_from_slice(hash.finalize().as_bytes()))?;
-        Ok(acyclic_stream::CommitRequest {
-            conditions: vec![owner, target],
-            mutations: vec![CommitMutation::Append {
-                path: path.clone(),
-                records: vec![bytes.clone()],
-            }],
-            idempotency_key: transaction_key,
-        })
     }
 
     pub(crate) async fn append(
@@ -450,38 +476,77 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         key: &StreamKey,
         bytes: OwnedBytes,
         write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
-        use acyclic_stream::{CommitOutcome, CommittedMutation};
-        let request = self
-            .prepare_append(&path, expected_tail, key, &bytes, write)
-            .await?;
-        let mut work = None;
-        let request = (request, crate::wire_codec::CodecQuota::new(&mut work, 0)?);
-        let outcome =
+        use acyclic_stream::{CommitCondition, CommitOutcome, CommittedMutation};
+        let owner = self.condition(write, work).await?;
+        let target =
+            match crate::store::operations::bounds_with_work(&self.host.stream, &path, work).await?
+            {
+                Ok(_) => CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: expected_tail,
+                },
+                Err(error)
+                    if *crate::distributed::sdk_source(&error) == StreamError::NotFound
+                        && expected_tail == 0 =>
+                {
+                    CommitCondition::Absent { path: path.clone() }
+                }
+                Err(error) => return Err(crate::distributed::sdk_error(error, work)),
+            };
+        let CommitCondition::Tail { expected, .. } = &owner else {
+            return Err(Error::Invalid("coordinator tail condition required".into()));
+        };
+        if let Some(io) = work.as_deref_mut() {
+            io.hashed_bytes(bytes.len() as u64)?;
+        }
+        let digest = crate::contract::canonical_json_digest(
+            &(
+                "harness/v2/owned-journal",
+                key.as_bytes(),
+                self.task_id(),
+                &self.fence,
+                expected,
+                path.as_str(),
+                expected_tail,
+                matches!(target, CommitCondition::Absent { .. }),
+                blake3::hash(&bytes).as_bytes(),
+            ),
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            work,
+        )?;
+        let (key, held) = crate::distributed::digest_key(&digest, work)?;
+        let mut request = crate::distributed::commit_request(key, held, work);
+        crate::distributed::add_condition(&mut request, owner)?;
+        crate::distributed::add_condition(&mut request, target)?;
+        crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
+        let (outcome, retained) =
             crate::distributed::commit(request, &self.host.stream, Some(self.operation_id()), None)
-                .await?
-                .0;
-        match outcome {
+                .await?;
+        let received = crate::wire_codec::CodecQuota::from_retained(work, retained);
+        let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(envelope) => {
-                let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
-                    return Err(Error::Storage("invalid owned journal envelope".into()));
+                let valid = match envelope.mutations.as_slice() {
+                    [CommittedMutation::Append(append)] => {
+                        append.path == path
+                            && append.start == expected_tail
+                            && expected_tail.checked_add(1) == Some(append.end)
+                            && append.tail == append.end
+                            && matches!(append.records.as_slice(), [record] if record.sequence == expected_tail && record.value == bytes && record.commit_id == envelope.commit_id)
+                    }
+                    _ => false,
                 };
-                if append.path != path
-                    || append.start != expected_tail
-                    || append.end != expected_tail + 1
-                    || append.tail != append.end
-                    || append.records.len() != 1
-                    || append.records.first().is_none_or(|record| {
-                        record.sequence != expected_tail
-                            || record.value != bytes
-                            || record.commit_id != envelope.commit_id
-                    })
-                {
-                    return Err(Error::Storage("invalid owned journal append".into()));
+                if valid {
+                    Ok(true)
+                } else {
+                    Err(Error::Indeterminate(self.operation_id()))
                 }
-                Ok(true)
             }
-        }
+        };
+        drop(outcome);
+        drop(received);
+        result
     }
 }

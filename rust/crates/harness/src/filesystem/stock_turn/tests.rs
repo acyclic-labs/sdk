@@ -139,7 +139,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
             .is_err()
         );
         assert_eq!(host.checkpoint().revision, 2);
-        assert_eq!(journal.replay(0, 8).await?.len(), 2);
+        assert_eq!(journal.replay(0, 8, None)?.await?.0.len(), 2);
     }
     let completed = host
         .step(
@@ -159,7 +159,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
     drop(host);
     let host = DurableWorkflowHost::open(registry, initial, journal.clone()).await?;
     assert_eq!(host.latest_transition().await?, Some(completed));
-    assert_eq!(journal.replay(0, 8).await?.len(), 3);
+    assert_eq!(journal.replay(0, 8, None)?.await?.0.len(), 3);
     Ok(())
 }
 

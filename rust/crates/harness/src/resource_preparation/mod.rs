@@ -20,8 +20,6 @@ pub use access::CreatedResourceAccess;
 pub(crate) use creation::CreatedTaskLease;
 pub use creation::ResourceCreationOrigin;
 #[cfg(feature = "filesystem")]
-pub(crate) use creation::ResourcePreparationLease;
-#[cfg(feature = "filesystem")]
 pub use creation::TaskResourcePreparation;
 pub use helpers::created_resource_capability;
 use helpers::*;

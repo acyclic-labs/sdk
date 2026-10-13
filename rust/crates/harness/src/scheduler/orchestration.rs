@@ -158,7 +158,7 @@ impl Scheduler {
                         let mut digits = [0; 20];
                         let slot = text_copy(decimal_slot(index, &mut digits), quota.work())?;
                         quota.adopt(slot.capacity() as u64)?;
-                        let file = crate::core::copy_file(file, &mut quota)?;
+                        let file = file.clone_in_quota(&mut quota)?;
                         push(&mut values, (slot, file), &mut value_slots, quota.work())?;
                     }
                 }
@@ -169,7 +169,7 @@ impl Scheduler {
                         };
                         let slot = text_copy(slot, quota.work())?;
                         quota.adopt(slot.capacity() as u64)?;
-                        let file = crate::core::copy_file(file, &mut quota)?;
+                        let file = file.clone_in_quota(&mut quota)?;
                         push(&mut values, (slot, file), &mut value_slots, quota.work())?;
                     }
                 }

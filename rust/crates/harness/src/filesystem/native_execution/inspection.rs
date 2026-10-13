@@ -29,7 +29,7 @@ pub fn observe_preparation<'a, P: StreamProvider>(
             original,
             crate::wire::ErrorCode::Storage,
         )?)?;
-        intent.manifest.validate_with_io(Some(&io))?;
+        intent.manifest.validate(Some(&io))?;
         if intent.task != witness.task() || selection.len() != intent.manifest.volumes.len()
             || journal.plan.edits.iter().any(|edit| !matches!(edit, acyclic_fs::MaterializationEdit::Install { image, .. } if image.as_slice() == acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX)) {
             return Err(invalid());

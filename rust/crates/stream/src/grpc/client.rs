@@ -1,46 +1,22 @@
 use super::*;
 
-const DELIVERY_ACK_TIMEOUT: Duration = Duration::from_millis(500);
-const DELIVERY_ACK_QUEUE: usize = 16;
-
 impl Client {
-    /// Disables automatic transport receipts for translating clients.
-    #[must_use]
-    pub fn without_delivery_acknowledgements(mut self) -> Self {
-        self.acknowledge_deliveries = false;
-        self
-    }
-
-    /// Reports a hosted transport receipt.
-    pub async fn acknowledge_delivery(
-        &self,
-        delivery_token: impl AsRef<[u8]>,
-    ) -> Result<(), StreamError> {
-        let delivery_token = delivery_token.as_ref();
-        if delivery_token.len() != 32 {
-            return Err(StreamError::InvalidArgument);
-        }
-        let request = self.request(wire::AcknowledgeDeliveryRequest {
-            delivery_token: Bytes::copy_from_slice(delivery_token),
-        });
-        tokio::time::timeout(
-            DELIVERY_ACK_TIMEOUT,
-            self.service().acknowledge_delivery(request),
-        )
-        .await
-        .map_err(|_| StreamError::Unavailable)?
-        .map_err(|error| match error.code() {
-            Code::Unimplemented => StreamError::Unsupported,
-            _ => status(&error),
-        })?;
-        Ok(())
-    }
-
     fn records(&self, path: StreamPath, from: u64, limit: Option<u32>) -> RecordStream {
         let span = if limit.is_some() {
-            tracing::info_span!("acyclic.stream.grpc.read", rev = from, items = limit, outcome = Empty, error.kind = Empty)
+            tracing::info_span!(
+                "acyclic.stream.grpc.read",
+                rev = from,
+                items = limit,
+                outcome = Empty,
+                error.kind = Empty
+            )
         } else {
-            tracing::info_span!("acyclic.stream.grpc.follow", rev = from, outcome = Empty, error.kind = Empty)
+            tracing::info_span!(
+                "acyclic.stream.grpc.follow",
+                rev = from,
+                outcome = Empty,
+                error.kind = Empty
+            )
         };
         let completion = Completion::new(span);
         let context = completion.span.clone();
@@ -52,7 +28,6 @@ impl Client {
             active: None,
             buffered: Vec::new().into_iter(),
             completion,
-            acknowledgements: None,
         };
         context
             .scope(stream::unfold(cursor, |mut cursor| async move {
@@ -78,7 +53,10 @@ impl StreamProvider for Client {
             })
             .await?;
         decode_response(response, |response| {
-            let observation = response.observation.map(observation_from_wire).transpose()?;
+            let observation = response
+                .observation
+                .map(observation_from_wire)
+                .transpose()?;
             // A response for another retry identity is not this request's outcome.
             if observation
                 .as_ref()
@@ -174,7 +152,11 @@ impl StreamProvider for Client {
             let child = item
                 .child
                 .ok_or(StreamError::Unavailable)
-                .and_then(|child| Ok(Child { path: path(child.path)? }))
+                .and_then(|child| {
+                    Ok(Child {
+                        path: path(child.path)?,
+                    })
+                })
                 .inspect_err(|_| completion.invalid_response())?;
             children.push(child);
         }
@@ -205,7 +187,11 @@ impl StreamProvider for Client {
                 children: response
                     .children
                     .into_iter()
-                    .map(|child| Ok(Child { path: path(child.path)? }))
+                    .map(|child| {
+                        Ok(Child {
+                            path: path(child.path)?,
+                        })
+                    })
                     .collect::<Result<_, StreamError>>()?,
                 next_after: response.next_after.map(path).transpose()?,
             })
@@ -245,10 +231,8 @@ impl Client {
         deadline_unix_millis: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
         let body = wire::CommitRequest {
-            conditions: request.conditions.into_iter().map(condition_wire).collect(),
-            mutations: request.mutations.into_iter().map(mutation_wire).collect(),
-            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
             deadline_unix_millis,
+            ..commit_to_wire(&request)
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -273,10 +257,12 @@ struct RecordCursor {
     path: StreamPath,
     next: u64,
     remaining: Option<u32>,
-    active: Option<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, Completion)>,
+    active: Option<(
+        obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
+        Completion,
+    )>,
     buffered: std::vec::IntoIter<Record>,
     completion: Completion,
-    acknowledgements: Option<DeliveryAcknowledgements>,
 }
 
 impl RecordCursor {
@@ -316,25 +302,11 @@ impl RecordCursor {
                 Some(Ok(_)) => {}
             }
             match response {
-                Some(Ok(mut response)) => {
-                    let token = response.delivery_token.take();
+                Some(Ok(response)) => {
                     let records = match read_response(response, self.next, self.remaining) {
                         Ok(records) => records,
                         Err(error) => return self.invalid(error),
                     };
-                    if let Some(token) = token {
-                        if token.len() != 32 {
-                            return self.invalid(StreamError::Unavailable);
-                        }
-                        if self.client.acknowledge_deliveries && records.len() != 0 {
-                            let client = &self.client;
-                            let _ = self
-                                .acknowledgements
-                                .get_or_insert_with(|| DeliveryAcknowledgements::new(client.clone()))
-                                .queue
-                                .try_send(token);
-                        }
-                    }
                     self.buffered = records;
                 }
                 Some(Err(error)) if !retryable(&error) => return self.fail(status(&error)),
@@ -363,18 +335,27 @@ impl RecordCursor {
         self.completion.finish(Some(error.code()), None);
         self.active = None;
         self.buffered = Vec::new().into_iter();
-        self.acknowledgements = None;
         self.remaining = Some(0);
         Some(Err(error))
     }
 
     async fn open(
         &self,
-    ) -> Result<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, Completion), StreamError> {
+    ) -> Result<
+        (
+            obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
+            Completion,
+        ),
+        StreamError,
+    > {
         let path = self.path.to_string();
         let (body, completion) = match self.remaining {
             Some(limit) => {
-                let body = wire::ReadRequest { path, from: self.next, limit };
+                let body = wire::ReadRequest {
+                    path,
+                    from: self.next,
+                    limit,
+                };
                 self.client
                     .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
                         Box::pin(async move { service.read(request).await })
@@ -382,7 +363,10 @@ impl RecordCursor {
                     .await?
             }
             None => {
-                let body = wire::FollowRequest { path, from: self.next };
+                let body = wire::FollowRequest {
+                    path,
+                    from: self.next,
+                };
                 self.client
                     .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
                         Box::pin(async move { service.follow(request).await })
@@ -409,36 +393,13 @@ fn read_response(
         .iter()
         .enumerate()
         .all(|(offset, record)| Some(record.sequence) == first.checked_add(offset as u64));
-    let fresh = records.iter().filter(|record| record.sequence >= next).count();
-    if first > next
-        || !contiguous
-        || remaining.is_some_and(|remaining| fresh > remaining as usize)
+    let fresh = records
+        .iter()
+        .filter(|record| record.sequence >= next)
+        .count();
+    if first > next || !contiguous || remaining.is_some_and(|remaining| fresh > remaining as usize)
     {
         return Err(StreamError::Unavailable);
     }
     Ok(records.into_iter())
-}
-
-/// One bounded receipt worker per logical reader, including reconnects.
-struct DeliveryAcknowledgements {
-    queue: tokio::sync::mpsc::Sender<Bytes>,
-    worker: tokio::task::JoinHandle<()>,
-}
-
-impl DeliveryAcknowledgements {
-    fn new(client: Client) -> Self {
-        let (queue, mut pending) = tokio::sync::mpsc::channel::<Bytes>(DELIVERY_ACK_QUEUE);
-        let worker = tokio::spawn(async move {
-            while let Some(token) = pending.recv().await {
-                let _ = client.acknowledge_delivery(token).await;
-            }
-        });
-        Self { queue, worker }
-    }
-}
-
-impl Drop for DeliveryAcknowledgements {
-    fn drop(&mut self) {
-        self.worker.abort();
-    }
 }

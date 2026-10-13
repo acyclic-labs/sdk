@@ -116,6 +116,7 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
     )?;
     let mut detach = DirectDetach {
         task,
+        started: false,
         original: original.allocation_work(),
     };
     let mut credit = original.reserve_work(WorkCounters {

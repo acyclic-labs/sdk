@@ -90,7 +90,7 @@ impl TextTool {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
         let file = self.preflight_with_context(&context, &invocation)?;
         let task = context.task();
-        let bytes = task.read_file(&file).await?;
+        let bytes = task.read_file(&file, None).await?;
         let source = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid("text tool requires UTF-8 content".into()))?;
         let maximum = self
@@ -288,7 +288,7 @@ impl TextTool {
             TextKind::Read(options) => {
                 let input = super::decode::<ReadInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file_with_native_work(&input.0.file, work)
+                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
@@ -310,7 +310,7 @@ impl TextTool {
             TextKind::Search(options) => {
                 let input = super::decode::<SearchInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file_with_native_work(&input.0.file, work)
+                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;

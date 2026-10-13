@@ -44,7 +44,6 @@ pub struct BrowserDirectoryRecordPageResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Returns one bounded ordered directory page.
     #[wasm_bindgen(js_name = listDirectory)]
     pub async fn list_directory(
         &mut self,
@@ -80,7 +79,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Returns one bounded directory page with records and metadata fetched in batches.
     #[wasm_bindgen(js_name = listDirectoryRecords)]
     pub async fn list_directory_records(
         &mut self,

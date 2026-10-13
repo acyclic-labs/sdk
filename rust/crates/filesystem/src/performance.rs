@@ -364,24 +364,6 @@ impl WorkCounters {
         self.peak_allocation_bytes = self.peak_allocation_bytes.max(delta.peak_allocation_bytes);
     }
 
-    /// Emits this receipt as one `acyclic.work` debug event whose fields carry the counter names; a disabled callsite costs one interest check.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn emit(&self, span: &tracing::Span, op: &'static str, outcome: &'static str) {
-        macro_rules! event {
-            ($($field:ident),*) => {
-                tracing::debug!(
-                    target: "acyclic.work",
-                    parent: span,
-                    op,
-                    outcome,
-                    $($field = self.$field,)*
-                    peak_allocation_bytes = self.peak_allocation_bytes,
-                )
-            };
-        }
-        additive_counters!(event);
-    }
-
     /// Verifies every counter against `budget` by reference: exactly [`Self::verify`], without copying either counter set.
     #[inline]
     pub(crate) fn verify_ref(&self, budget: &WorkBudget) -> Result<(), WorkError> {

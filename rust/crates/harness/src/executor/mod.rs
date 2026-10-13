@@ -68,11 +68,11 @@ pub use checkpoint_selection::{canonical_checkpoint_for_operation, load_canonica
 mod checkpoint_projection;
 pub use checkpoint_projection::{load_canonical_checkpoint, load_canonical_checkpoint_through};
 mod payload;
+#[cfg(feature = "filesystem")]
+pub(crate) use payload::reserve_preparation_workspace;
 pub(crate) use payload::{
     decode_json, load_json, load_model_request, preparation_digest, retain_preparation,
 };
-#[cfg(feature = "filesystem")]
-pub(crate) use payload::{receive_preparation, reserve_preparation_workspace};
 mod admission;
 
 /// Internal replay batch size; callers may request any positive page allowance.

@@ -3,7 +3,7 @@ use crate::foundation::Digest;
 use crate::materializer::{NativeMaterializationWork, NativeTreeMaterializationError};
 use crate::workspace_context::{WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
 
-fn finite_budget() -> crate::WorkBudget {
+pub(super) fn finite_budget() -> crate::WorkBudget {
     let mut budget = serde_json::to_value(crate::WorkBudget::UNBOUNDED).expect("budget encoding");
     for value in budget
         .as_object_mut()
@@ -78,92 +78,66 @@ fn context(
 
 #[tokio::test]
 async fn stock_native_lineage_preserves_original_resource_and_durable_restart() {
-    let directory = tempfile::tempdir().expect("original namespace");
+    let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xd2; 16]);
-    let cancellation = crate::CancellationToken::new();
-    let original =
-        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("finite original");
-    let work = original
-        .native_volume_work(finite_budget())
-        .expect("actual resource view");
+    let cxl = crate::CancellationToken::new();
+    let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
+    let work = original.native_volume_work(finite_budget()).unwrap();
     let value = lineage(id);
-    let store = LocalCoreStateStore::open_owned(directory.path()).expect("real owner");
-    assert!(
-        WorkspaceLineageStore::compare_and_swap_with_native_work(
-            &store,
-            id,
-            0,
-            paid_lineage(&value, &work, &cancellation),
-            &work,
-            &cancellation,
-        )
-        .await
-        .expect("stock original CAS")
-    );
-    let loaded = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cancellation)
-        .await
-        .expect("stock original load")
-        .expect("exact record");
-    assert_eq!((&loaded.0), &value);
-    let parts = loaded;
-    assert!(parts.1.work().shares_allocation_context(&work));
-    drop(parts);
-    assert!(
-        !WorkspaceLineageStore::compare_and_swap_with_native_work(
-            &store,
-            id,
-            0,
-            paid_lineage(&value, &work, &cancellation),
-            &work,
-            &cancellation,
-        )
-        .await
-        .expect("actual CAS miss")
-    );
-    drop(store);
-    let restarted = LocalCoreStateStore::new(directory.path());
-    let loaded = WorkspaceLineageStore::load_with_native_work(&restarted, id, &work, &cancellation)
-        .await
-        .expect("cold canonical WAL replay")
-        .expect("durable record");
-    assert_eq!((&loaded.0), &value);
-    assert_eq!(
-        WorkspaceLineageStore::load(&restarted, id)
+    let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
+    for expected in [true, false] {
+        assert_eq!(
+            WorkspaceLineageStore::compare_and_swap_with_native_work(
+                &store,
+                id,
+                0,
+                paid_lineage(&value, &work, &cxl),
+                &work,
+                &cxl,
+            )
             .await
-            .expect("ordinary consumer"),
+            .unwrap(),
+            expected,
+        );
+        if expected {
+            let loaded = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cxl)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded.0, value);
+            assert!(loaded.1.work().shares_allocation_context(&work));
+        }
+    }
+    drop(store);
+    let reopened = LocalCoreStateStore::new(directory.path());
+    let loaded = WorkspaceLineageStore::load_with_native_work(&reopened, id, &work, &cxl)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.0, value);
+    assert_eq!(
+        WorkspaceLineageStore::load(&reopened, id).await.unwrap(),
         Some(value)
     );
-    work.receipt()
-        .verify(finite_budget())
-        .expect("same finite original receipt");
+    work.receipt().verify(finite_budget()).unwrap();
 }
 
 #[tokio::test]
 async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
-    let directory = tempfile::tempdir().expect("original namespace");
+    let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xd3; 16]);
-    let cancellation = crate::CancellationToken::new();
-    let original =
-        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("finite original");
-    let work = original
-        .native_volume_work(finite_budget())
-        .expect("first resource");
-    let other = original
-        .native_volume_work(finite_budget())
-        .expect("distinct same-ledger resource");
+    let cxl = crate::CancellationToken::new();
+    let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
+    let work = original.native_volume_work(finite_budget()).unwrap();
+    let other = original.native_volume_work(finite_budget()).unwrap();
     let store = LocalCoreStateStore::new(directory.path().join("not-created"));
-    let foreign = paid_lineage(&lineage(id), &other, &cancellation);
+    let foreign = paid_lineage(&lineage(id), &other, &cxl);
     let before = work.receipt();
     let error = WorkspaceLineageStore::compare_and_swap_with_native_work(
-        &store,
-        id,
-        0,
-        foreign,
-        &work,
-        &cancellation,
+        &store, id, 0, foreign, &work, &cxl,
     )
     .await
-    .expect_err("resource substitution");
+    .unwrap_err();
     assert!(matches!(
         error.0,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
@@ -173,32 +147,23 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     assert_eq!(work.receipt(), before);
     let forged = (
         lineage(id),
-        work.claim(0, 0, crate::WorkCounters::UNCHARGED)
-            .expect("zero-byte caller guard"),
+        work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap(),
     );
     let error = WorkspaceLineageStore::compare_and_swap_with_native_work(
-        &store,
-        id,
-        0,
-        forged,
-        &work,
-        &cancellation,
+        &store, id, 0, forged, &work, &cxl,
     )
     .await
-    .expect_err("unfunded caller payload");
+    .unwrap_err();
     assert!(matches!(
         error.0,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::Integrity)
     ));
-    assert!(
-        !store.root().exists(),
-        "neither denial creates or opens the namespace"
-    );
-    cancellation.cancel();
+    assert!(!store.root().exists());
+    cxl.cancel();
     let before = work.receipt();
-    let error = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cancellation)
+    let error = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cxl)
         .await
-        .expect_err("original cancellation");
+        .unwrap_err();
     assert!(matches!(
         error.0,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
@@ -211,76 +176,64 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
 
 #[tokio::test]
 async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_limit() {
-    let directory = tempfile::tempdir().expect("original namespace");
+    let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceContextId::from_bytes([0xd4; 16]);
     let value = context(id, None, directory.path());
     let store = LocalCoreStateStore::new(directory.path());
     assert!(
         WorkspaceContextStore::compare_and_swap(&store, id, 0, value.clone())
             .await
-            .expect("legacy canonical fixture")
+            .unwrap()
     );
-    let cancellation = crate::CancellationToken::new();
-    let mut tight = finite_budget();
-    tight.source_bytes_read = 7;
-    let tight_original =
-        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("original");
-    let tight_work = tight_original
-        .native_volume_work(tight)
-        .expect("finite exact read view");
-    let error =
-        WorkspaceContextStore::load_with_native_work(&store, id, &tight_work, &cancellation)
-            .await
-            .expect_err("real original read boundary");
+    let cxl = crate::CancellationToken::new();
+    let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
+    let tight = original
+        .native_volume_work(crate::WorkBudget {
+            source_bytes_read: 7,
+            ..finite_budget()
+        })
+        .unwrap();
+    let error = WorkspaceContextStore::load_with_native_work(&store, id, &tight, &cxl)
+        .await
+        .unwrap_err();
     assert!(matches!(
         error.0,
         crate::workspace_context::WorkspaceContextError::Store(LocalCoreStateStoreError::LazyWork(
             crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
         ))
     ));
-    assert_eq!(tight_work.receipt().source_bytes_read, 7);
-    let original =
-        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("original");
-    let work = original
-        .native_volume_work(finite_budget())
-        .expect("resource view");
-    let loaded = WorkspaceContextStore::load_with_native_work(&store, id, &work, &cancellation)
+    assert_eq!(tight.receipt().source_bytes_read, 7);
+    let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
+    let work = original.native_volume_work(finite_budget()).unwrap();
+    let mut loaded = WorkspaceContextStore::load_with_native_work(&store, id, &work, &cxl)
         .await
-        .expect("funded deep projection")
-        .expect("context");
-    assert_eq!((&loaded.0), &value);
-    let mut parts = loaded;
-    assert!(parts.1.work().shares_allocation_context(&work));
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.0, value);
+    assert!(loaded.1.work().shares_allocation_context(&work));
     assert_eq!(
-        parts.1.bytes(),
-        native_records::native_context_owned_bytes(&parts.0, &work).expect("actual capacities")
+        loaded.1.bytes(),
+        native_records::native_context_owned_bytes(&loaded.0, &work).unwrap()
     );
-    parts.0.revision += 1;
-    parts.0.state = WorkspaceContextState::Frozen;
+    loaded.0.revision += 1;
+    loaded.0.state = WorkspaceContextState::Frozen;
     assert!(
         WorkspaceContextStore::compare_and_swap_with_native_work(
-            &store,
-            id,
-            1,
-            (parts.0, parts.1),
-            &work,
-            &cancellation,
+            &store, id, 1, loaded, &work, &cxl,
         )
         .await
-        .expect("same canonical context CAS")
+        .unwrap()
     );
     drop(store);
     let reopened = LocalCoreStateStore::new(directory.path());
-    let actual = WorkspaceContextStore::load_with_native_work(&reopened, id, &work, &cancellation)
+    let loaded = WorkspaceContextStore::load_with_native_work(&reopened, id, &work, &cxl)
         .await
-        .expect("reopened original context")
-        .expect("context");
-    assert_eq!((&actual.0).revision, 2);
-    assert_eq!((&actual.0).state, WorkspaceContextState::Frozen);
-    assert_eq!((&actual.0).roots, value.roots);
-    work.receipt()
-        .verify(finite_budget())
-        .expect("finite root resource");
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.0.revision, 2);
+    assert_eq!(loaded.0.state, WorkspaceContextState::Frozen);
+    assert_eq!(loaded.0.roots, value.roots);
+    work.receipt().verify(finite_budget()).unwrap();
 }
 
 async fn assert_bucket(
@@ -288,61 +241,47 @@ async fn assert_bucket(
     parent: WorkspaceContextId,
     expected: BTreeSet<WorkspaceContextId>,
 ) {
-    let children: Option<ContextChildren> =
-        store.load_logged(parent).await.expect("canonical children");
-    let count: Option<ContextChildCount> =
-        store.load_logged(parent).await.expect("canonical count");
+    let children: Option<ContextChildren> = store.load_logged(parent).await.unwrap();
+    let count: Option<ContextChildCount> = store.load_logged(parent).await.unwrap();
     if expected.is_empty() {
-        assert!(children.is_none(), "empty affected bucket must be retired");
-        assert!(count.is_none(), "its cached count must retire with it");
+        assert!(children.is_none());
+        assert!(count.is_none());
     } else {
-        assert_eq!(children.expect("bucket").0, expected);
-        assert_eq!(count.expect("count").0, expected.len() as u64);
+        assert_eq!(children.unwrap().0, expected);
+        assert_eq!(count.unwrap().0, expected.len() as u64);
     }
 }
 
 #[tokio::test]
 async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
-    let directory = tempfile::tempdir().expect("canonical namespace");
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
-    let namespace = store.namespace().expect("fixture namespace");
-    let paths = &namespace
-        .record(CORE_LOG_FAMILY, &[0; 16])
-        .expect("record paths");
-    std::fs::create_dir_all(&paths.directory).expect("fixture log family");
-    let payload = b"{}";
-    let frame = format!(
-        "{} {}\n",
-        blake3::hash(payload).to_hex(),
-        std::str::from_utf8(payload).expect("fixture")
-    );
-    std::fs::write(&paths.current, frame).expect("intact malformed canonical frame");
-    let cancellation = crate::CancellationToken::new();
-    let original =
-        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("original");
-    let work = original
-        .native_volume_work(finite_budget())
-        .expect("actual original resource");
+    let namespace = store.namespace().unwrap();
+    let paths = namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap();
+    std::fs::create_dir_all(&paths.directory).unwrap();
+    let frame = format!("{} {{}}\n", blake3::hash(b"{}").to_hex());
+    std::fs::write(&paths.current, frame).unwrap();
+    let cxl = crate::CancellationToken::new();
+    let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
+    let work = original.native_volume_work(finite_budget()).unwrap();
     let error = WorkspaceLineageStore::load_with_native_work(
         &store,
         WorkspaceId::from_bytes([0xd5; 16]),
         &work,
-        &cancellation,
+        &cxl,
     )
     .await
-    .expect_err("intact frame must not be ignored");
-    match error.0 {
-        crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
-            crate::LazyWorkspaceError::NativeRecordCorrupt(path, Some(allocation)),
-        )) => {
-            let owned = (path, allocation);
-            assert_eq!(owned.1.bytes(), owned.0.capacity() as u64);
-            assert!(owned.1.work().shares_allocation_context(&work));
-            assert_eq!(owned.0, paths.current);
-            drop(owned);
-        }
-        error => panic!("original typed path cause was lost: {error:?}"),
-    }
+    .unwrap_err();
+    let crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
+        crate::LazyWorkspaceError::NativeRecordCorrupt(path, Some(allocation)),
+    )) = error.0
+    else {
+        panic!("corrupt log lost its typed path");
+    };
+    let owned = (path, allocation);
+    assert_eq!(owned.1.bytes(), owned.0.capacity() as u64);
+    assert!(owned.1.work().shares_allocation_context(&work));
+    assert_eq!(owned.0, paths.current);
 }
 
 proptest::proptest! {

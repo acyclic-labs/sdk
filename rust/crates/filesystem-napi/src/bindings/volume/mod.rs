@@ -10,20 +10,17 @@ pub struct NativeVolume {
 
 #[napi]
 impl NativeVolume {
-    /// Returns the canonical 16-byte volume identity.
     #[must_use]
     #[napi(getter)]
     pub fn id(&self) -> Buffer {
         Buffer::from(self.inner.id().into_bytes().to_vec())
     }
 
-    /// Returns exact bounded work used to acquire this volume handle.
     #[napi(getter)]
     pub fn acquisition_work_json(&self) -> Result<String> {
         work_json(&self.acquisition_work)
     }
 
-    /// Computes one bounded Merkle-aware semantic generation diff.
     #[napi]
     pub async fn diff_generations(
         &self,
@@ -55,7 +52,6 @@ impl NativeVolume {
         encode_generation_diff(receipt.value, receipt.work)
     }
 
-    /// Opens a head checkout with explicit consistency and access semantics.
     #[napi]
     pub async fn checkout(&self, options: NativeCheckoutOptions) -> Result<NativeCheckout> {
         let consistency = ConsistencyMode::from_public_str(&options.consistency)

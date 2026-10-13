@@ -281,7 +281,7 @@ where
         self: &Arc<Self>,
     ) -> Result<adapter::NativeSourceIoLease, MountSourceError> {
         self.authored
-            .native_source_io_lease_for_owner(Arc::clone(self) as Arc<dyn Send + Sync>)
+            .native_source_io_lease(Arc::clone(self) as Arc<dyn Send + Sync>)
     }
 
     /// Advances the authored checkout after an external publication.

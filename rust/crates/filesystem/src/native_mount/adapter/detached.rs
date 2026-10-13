@@ -58,10 +58,6 @@ pub(super) struct CheckoutDetachedFile<A, O> {
 }
 
 impl<A, O> CheckoutDetachedFile<A, O> {
-    pub(super) fn mutation_epoch(&self) -> Option<u64> {
-        self.state.try_lock().ok().map(|state| state.mutation_epoch)
-    }
-
     pub(super) async fn read_bytes(
         &self,
         offset: u64,
