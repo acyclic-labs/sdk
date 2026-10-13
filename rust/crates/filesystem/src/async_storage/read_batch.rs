@@ -6,63 +6,45 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
     requests: &[ObjectReadRequest],
     context: &mut AuthorityWork<'_>,
 ) -> Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError> {
-    let cancellation = context.cancellation;
-    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+    let mut batch = AuthorityWork::new(
         context.work.remaining(context.budget)?,
-        cancellation,
+        context.cancellation,
     );
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = context.original {
-        accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+    {
+        batch.original = context.original;
     }
     let result = async {
-        let accounting = &mut accounting;
-        accounting.check()?;
+        batch.check().map_err(authority_object_error)?;
         if requests.is_empty() {
-            return Err(crate::storage::ObjectStoreError::EmptyReadBatch.into());
+            return Err(crate::ObjectStoreError::EmptyReadBatch);
         }
-        let item_count =
-            u64::try_from(requests.len()).map_err(|_| crate::performance::WorkError::Overflow)?;
-        let requested_bytes = requests
-            .len()
-            .checked_mul(size_of::<ObjectRead>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(crate::performance::WorkError::Overflow)?;
-        accounting.admit(crate::performance::WorkCounters {
-            items_examined: item_count,
-            items_returned: item_count,
-            ..crate::performance::WorkCounters::UNCHARGED
-        })?;
-        accounting.charge(crate::performance::WorkCounters {
-            items_examined: item_count,
-            ..crate::performance::WorkCounters::UNCHARGED
-        })?;
-        let allocation = accounting.claim_owned(requested_bytes, 1)?;
-        let mut values = (Vec::new(), allocation);
-        values
-            .0
-            .try_reserve_exact(requests.len())
-            .map_err(crate::storage::ObjectStoreError::MemoryTableAllocationFailed)?;
-        let actual_bytes = values
-            .0
-            .capacity()
-            .checked_mul(size_of::<ObjectRead>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(crate::performance::WorkError::Overflow)?;
-        accounting.reconcile_owned(&mut values.1, requested_bytes, actual_bytes)?;
+        let count = u64::try_from(requests.len()).map_err(|_| crate::WorkError::Overflow)?;
+        batch
+            .admit(WorkCounters {
+                items_examined: count,
+                items_returned: count,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(authority_object_error)?;
+        batch
+            .charge(WorkCounters {
+                items_examined: count,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(authority_object_error)?;
+        let mut values = batch
+            .vec_owned(requests.len())
+            .map_err(authority_object_error)?;
         for request in requests {
-            accounting.check()?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut read_work = match accounting.native_work() {
-                Some(original) => AuthorityWork::native(original, cancellation),
-                None => AuthorityWork::new(accounting.remaining()?, cancellation),
-            };
-            #[cfg(target_arch = "wasm32")]
-            let mut read_work = AuthorityWork::new(accounting.remaining()?, cancellation);
+            let mut read_work = batch.operation().map_err(authority_object_error)?;
             let read = store
                 .read(request.object_id, request.maximum_bytes, &mut read_work)
                 .await;
-            if accounting.standalone_parts().is_some() {
+            if !batch.is_native() {
+                batch.work = batch
+                    .work
+                    .with_backend(read_work.spent(), batch.allocations.live_bytes())?;
                 let retained = match &read {
                     Ok(ObjectRead {
                         retention: crate::storage::ObjectReadRetention::Owned { logical_bytes },
@@ -70,30 +52,40 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
                     }) => *logical_bytes,
                     _ => 0,
                 };
-                merge_completed_object_read(accounting, read_work.spent(), retained)?;
+                batch
+                    .allocations
+                    .record_owned_bytes(retained, &mut batch.work)
+                    .map_err(|error| {
+                        error.into_work_or(crate::ObjectStoreError::SdkAllocationFailed)
+                    })?;
+                batch.work.verify(batch.budget)?;
             }
             values.0.push(read?);
         }
-        accounting.charge(crate::performance::WorkCounters {
-            items_returned: item_count,
-            ..crate::performance::WorkCounters::UNCHARGED
-        })?;
+        batch.check().map_err(authority_object_error)?;
+        batch
+            .charge(WorkCounters {
+                items_returned: count,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(authority_object_error)?;
         Ok(values)
     }
-    .await
-    .map_err(object_error)
-    .and_then(|(values, allocation)| match allocation {
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-            Ok::<_, crate::ObjectStoreError>((values, allocation))
-                .map(|(values, allocation)| (values, Some(allocation)))
-        }
-        crate::kernel::allocation::KernelOwnedAllocation::Standalone => Ok((values, None)),
-    });
+    .await;
     if !context.is_native() {
-        context.work.try_add_assign(&accounting.spent())?;
+        context.work.try_add_assign(&batch.spent())?;
     }
     result
+}
+
+fn authority_object_error(error: crate::AuthorityStoreError) -> crate::ObjectStoreError {
+    match error {
+        crate::AuthorityStoreError::Work(error) => crate::ObjectStoreError::Work(error),
+        crate::AuthorityStoreError::Cancelled => crate::ObjectStoreError::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::AuthorityStoreError::NativeOriginal(error) => crate::ObjectStoreError::Native(error),
+        _ => crate::ObjectStoreError::SdkAllocationFailed,
+    }
 }
 
 pub(crate) fn merge_completed_object_read(
@@ -104,13 +96,7 @@ pub(crate) fn merge_completed_object_read(
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
         .ok_or(crate::storage::ObjectStoreError::Corrupt)?;
-    let peak = allocations
-        .live_bytes()
-        .checked_add(completed.peak_allocation_bytes)
-        .ok_or(crate::performance::WorkError::Overflow)?;
-    let mut combined = work.checked_add(completed)?;
-    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(peak);
-    *work = combined;
+    *work = work.with_backend(completed, allocations.live_bytes())?;
     allocations
         .record_owned_bytes(retained, work)
         .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
