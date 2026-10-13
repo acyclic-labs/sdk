@@ -17,7 +17,7 @@ fn driver<W: SourceDemandReadWork>(
     sink: Arc<dyn HostChangeSink>,
     work: &mut W,
 ) -> Result<NativeSourceWatch, DemandError> {
-    let delivery = Arc::new(Delivery::new_with_work(sink, work)?);
+    let delivery = Arc::new(Delivery::new(sink, work)?);
     NativeSourceWatch::start_driver(held, delivery, work)
 }
 
@@ -110,7 +110,7 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
             root: PathBuf::from("/root"),
             held: (0, 0),
             stream_bytes: AtomicU64::new(0),
-            delivery: Arc::new(Delivery::new_with_work(sink.clone(), &mut original)?),
+            delivery: Arc::new(Delivery::new(sink.clone(), &mut original)?),
             ownership: SourcePayloadOwnership::default(),
         };
         if precancel {
@@ -124,13 +124,19 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
         if precancel || cancel_in_sink {
             assert!(matches!(result, Err(DemandError::Cancelled)));
             if precancel {
-                assert_eq!(callback.receipt_work(), WorkCounters::UNCHARGED);
+                assert_eq!(
+                    callback.with_original_leaf(|work| work.work),
+                    WorkCounters::UNCHARGED
+                );
             }
         } else if copy_limit == 0 {
             let error = result.err().ok_or("callback copied a denied path")?;
             assert!(matches!(error, DemandError::Work(_)));
             assert_eq!(sink.calls.load(Ordering::Relaxed), 0);
-            assert_eq!(callback.receipt_work().bytes_copied, 0);
+            assert_eq!(
+                callback.with_original_leaf(|work| work.work).bytes_copied,
+                0
+            );
             shared.delivery.failed_with_work(error, &mut callback);
             let mut next = DemandWork::new(finite_budget(), &cancellation);
             assert!(matches!(
@@ -141,7 +147,10 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
         } else {
             result?;
             assert_eq!(sink.calls.load(Ordering::Relaxed), 1);
-            assert_eq!(callback.receipt_work().items_returned, 1);
+            assert_eq!(
+                callback.with_original_leaf(|work| work.work).items_returned,
+                1
+            );
         }
         assert_eq!(
             callback.with_original_leaf(|work| work.live_allocation_bytes()),
@@ -261,7 +270,7 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
             &root_cancellation,
         ))));
         let mut startup = crate::NativeMaterializationWork::from_meter((&birth).clone());
-        let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut startup)?);
+        let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut startup)?);
         let watch = NativeSourceWatch::start_driver(&held, delivery, &mut startup)?;
         let owned = watch.platform_owned_bytes();
         let before = birth.with_original_leaf(|work| work.work);
@@ -439,7 +448,11 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
         #[cfg(feature = "native-mount")]
         original: OnceLock::new(),
     });
-    let watch = Arc::new(NativeSourceWatch::start(&directory, gate.clone())?);
+    let watch = Arc::new(NativeSourceWatch::start(
+        &directory,
+        gate.clone(),
+        &mut ordinary_work(),
+    )?);
     let mut release = Release(Some(release));
     gate.watch
         .set(Arc::downgrade(&watch))
@@ -531,7 +544,7 @@ fn cancelled_start_admits_no_root_conversion() -> TestResult {
     let (_root, directory) = held()?;
     let cancellation = CancellationToken::new();
     let mut work = DemandWork::new(finite_budget(), &cancellation);
-    let delivery = Delivery::new_with_work(Arc::new(Ignored), &mut work)?;
+    let delivery = Delivery::new(Arc::new(Ignored), &mut work)?;
     cancellation.cancel();
     let error = NativeSourceWatch::start_driver(&directory, Arc::new(delivery), &mut work)
         .err()
@@ -596,10 +609,7 @@ fn a_fence_reports_everything() -> TestResult {
     let recorded = Arc::new(Recorded(Mutex::new(Vec::new())));
     let watch = NativeSourceWatch::start_driver(
         &HostRoot::open(root.path(), &mut ordinary_work()).map_err(ordinary_error)?,
-        Arc::new(Delivery::new_with_work(
-            recorded.clone(),
-            &mut ordinary_work(),
-        )?),
+        Arc::new(Delivery::new(recorded.clone(), &mut ordinary_work())?),
         &mut ordinary_work(),
     )?;
     watch.fence()?;
@@ -680,7 +690,7 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
         invoked: AtomicBool::new(false),
     });
     let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
-    let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
+    let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
     let completion = Arc::clone(&watch.shared);
     let funded_live = original.with_original_leaf(|work| work.live_allocation_bytes());

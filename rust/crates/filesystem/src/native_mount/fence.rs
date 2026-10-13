@@ -217,10 +217,14 @@ impl MountDestinationGuard {
             work.record(hashed)?;
             let hex = identity.finalize().to_hex();
             let mut name = [0u8; NATIVE_FENCE_NAME_BYTES];
-            name[..NATIVE_FENCE_PREFIX.len()].copy_from_slice(NATIVE_FENCE_PREFIX.as_bytes());
-            name[NATIVE_FENCE_PREFIX.len()..NATIVE_FENCE_PREFIX.len() + 64]
-                .copy_from_slice(hex.as_bytes());
-            name[NATIVE_FENCE_PREFIX.len() + 64..].copy_from_slice(NATIVE_FENCE_SUFFIX.as_bytes());
+            for (destination, byte) in name.iter_mut().zip(
+                NATIVE_FENCE_PREFIX
+                    .bytes()
+                    .chain(hex.bytes())
+                    .chain(NATIVE_FENCE_SUFFIX.bytes()),
+            ) {
+                *destination = byte;
+            }
             Ok::<_, NativeMountError>(name)
         })();
         let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> =
@@ -290,7 +294,7 @@ impl MountDestinationGuard {
         let file = crate::native_host::open_leaf(
             &parent_directory,
             Path::new(
-                std::str::from_utf8(&name).expect("literal prefix, hex and suffix are UTF-8"),
+                std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
             ),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,
@@ -312,13 +316,16 @@ impl MountDestinationGuard {
                 guard
                     .as_ref()
                     .and_then(|guard| guard.file.as_ref())
-                    .expect("actual opened administrative fence"),
+                    .ok_or(NativeMountError::ControlPending)?,
                 false,
                 work,
             )?;
         } else {
             lock_mount_file_with_work(
-                admitted.file.as_ref().expect("actual destination fence"),
+                admitted
+                    .file
+                    .as_ref()
+                    .ok_or(NativeMountError::ControlPending)?,
                 false,
                 work,
             )?;
@@ -327,7 +334,7 @@ impl MountDestinationGuard {
         let registry = guard
             .as_ref()
             .and_then(|guard| guard.registry_file.as_ref())
-            .expect("the admitted fence retains its actual registry owner");
+            .ok_or(NativeMountError::ControlPending)?;
         work.attempt_io(
             crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
             || fs2::FileExt::unlock(registry),
@@ -476,7 +483,7 @@ impl MountDestinationGuard {
         };
         let lock_name = match self.fence_name.as_ref() {
             Some(name) => Path::new(
-                std::str::from_utf8(name).expect("literal prefix, hex and suffix are UTF-8"),
+                std::str::from_utf8(name).map_err(|_| NativeMountError::InvalidDestination)?,
             ),
             None => Path::new(
                 self.lock_path

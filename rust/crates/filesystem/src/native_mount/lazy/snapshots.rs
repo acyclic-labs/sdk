@@ -115,8 +115,7 @@ where
             .map_err(mount_demand_error);
         match (result, accounting) {
             (Ok(snapshot), Ok(())) => Ok(snapshot),
-            (Ok(_), Err(error)) => Err((error, None)),
-            (Err(error), Ok(())) => Err((error, None)),
+            (Ok(_), Err(error)) | (Err(error), Ok(())) => Err((error, None)),
             (Err(error), Err(accounting)) => Err((error, Some(accounting))),
         }
     }

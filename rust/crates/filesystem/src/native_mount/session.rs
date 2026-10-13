@@ -219,34 +219,15 @@ impl NativeMountSession {
             self.measured_cleanup_failed = true;
             return Err(error.into());
         }
-        self.stop_measured(
+        let work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .map(|receipt| receipt.value)
-        .map_err(|(error, _work)| error)
-    }
-
-    /// Detaches through the existing platform driver and destination-fence machinery, admitting every actual native leaf on one original ledger.
-    pub fn stop_measured(
-        &mut self,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
-        let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
-            Ok(work) => work,
-            Err((error, work)) => {
-                self.measured_cleanup_failed = true;
-                return Err((error.into(), work));
-            }
-        };
-        match self.stop_with_meter(&work) {
-            Ok(value) => Ok(crate::OperationReceipt {
-                value,
-                work: work.receipt(),
-            }),
-            Err(error) => Err((error, work.receipt())),
-        }
+        .map_err(|(error, _)| {
+            self.measured_cleanup_failed = true;
+            NativeMountError::from(error)
+        })?;
+        self.stop_with_meter(&work)
     }
 
     /// Continues the same physical cleanup engine on the original shared Arc.

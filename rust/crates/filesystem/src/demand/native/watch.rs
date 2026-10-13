@@ -63,7 +63,7 @@ impl NativeDemandSource {
             + crate::source_watch::arc_control_bytes::<crate::source_watch::NativeSourceWatch>();
         let claim = context.claim(bytes)?;
         ownership.retain(claim, context)?;
-        let watch = Arc::new(crate::source_watch::NativeSourceWatch::start_with_work(
+        let watch = Arc::new(crate::source_watch::NativeSourceWatch::start(
             &self.inner.root,
             Arc::new(NativeChanges {
                 inner: Arc::downgrade(&self.inner),
