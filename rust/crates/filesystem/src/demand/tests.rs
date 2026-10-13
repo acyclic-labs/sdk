@@ -234,7 +234,14 @@ async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dy
     assert_eq!(node.logical_bytes, Some(6));
     assert_eq!(
         source
-            .read_link(reference, &path("/link")?, node.version, &cancellation)
+            .read_link(
+                reference,
+                &path("/link")?,
+                node.version,
+                6,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?
             .value
             .as_ref(),
