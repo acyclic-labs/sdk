@@ -1,0 +1,54 @@
+use super::*;
+
+#[tokio::test]
+async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_work() -> Result<()>
+{
+    for stale in [true, false] {
+        let fixture = Fixture::new().await?;
+        fixture.machine.native.store(true, Ordering::SeqCst);
+        fixture.tool.native.store(true, Ordering::SeqCst);
+        let runtime = fixture.runtime().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::default(),
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
+        let (mut lease, custody) = fixture.native_lease(&runtime, &work).await?;
+        if stale {
+            lease.reservation.id.replace_range(0..1, "x");
+        } else {
+            fixture.clock.0.store(20, Ordering::SeqCst);
+        }
+        let original = lease.clone();
+        let (attempt, custody) = runtime
+            .resume_task_with_native_work(lease, custody, &runtime.commands(), 2, &work)
+            .await?;
+        match attempt {
+            TaskWorkerAttempt::Unresolved { lease, error } => {
+                assert_eq!(lease, original);
+                if stale {
+                    assert!(error.is_native_failure());
+                } else {
+                    assert!(matches!(error, Error::Indeterminate(_)));
+                }
+                drop(lease);
+                drop(error);
+            }
+            _ => {
+                return Err(Error::Invalid(
+                    "native stale or expired work escaped original attempt".into(),
+                ));
+            }
+        }
+        assert!(custody.work().shares_ledger(&work));
+        assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+        drop(custody);
+    }
+    Ok(())
+}

@@ -350,22 +350,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     break;
                 }
             }
-            let mut record = match record {
-                Some(record) => record,
-                None => {
-                    let (record, allocation) = lookup_file_record_async_with_accounting(
-                        &self.inner.objects,
-                        root.file_table,
-                        id,
-                        limits,
-                        accounting,
-                        cancellation,
-                        None,
-                    )
-                    .await?;
-                    drop(allocation);
-                    record.ok_or(WorkspaceError::NotFound)?
-                }
+            let mut record = if let Some(record) = record { record } else {
+                let (record, allocation) = lookup_file_record_async_with_accounting(
+                    &self.inner.objects,
+                    root.file_table,
+                    id,
+                    limits,
+                    accounting,
+                    cancellation,
+                    None,
+                )
+                .await?;
+                drop(allocation);
+                record.ok_or(WorkspaceError::NotFound)?
             };
             record.link_count = 1;
             selection_push(&mut records, record, maximum, accounting)?;

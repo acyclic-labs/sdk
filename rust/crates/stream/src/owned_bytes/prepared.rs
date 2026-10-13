@@ -10,7 +10,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
     pub fn new(
         mut data: Vec<u8>,
         guard: G,
-        meter: Arc<dyn NativeReadMeter>,
+        meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
         if data.len() != data.capacity() {
             return Err(PreparedOwnedBytesFailure {
@@ -20,12 +20,17 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
             });
         }
         let mut guard = Some(guard);
-        GuardBundle::new(&mut data, &mut guard, &meter)
+        GuardBundle::new(&mut data, &mut guard, meter)
             .map(|guard| Self { guard })
-            .map_err(|error| PreparedOwnedBytesFailure {
-                data,
-                original_guard: guard.expect("rejected preparation retains its owner"),
-                error: PreparedOwnedBytesError::Admission(error),
+            .map_err(|error| {
+                let Some(original_guard) = guard else {
+                    unreachable!("rejected preparation retains its owner")
+                };
+                PreparedOwnedBytesFailure {
+                    data,
+                    original_guard,
+                    error: PreparedOwnedBytesError::Admission(error),
+                }
             })
     }
     /// Initialized writable bound.
@@ -34,10 +39,14 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
         self.guard.data.len()
     }
     /// Borrows the exclusively owned initialized bytes.
+    ///
+    /// # Panics
+    /// Panics if unpublished storage has been shared.
     pub fn writable(&mut self) -> &mut [u8] {
-        &mut Arc::get_mut(&mut self.guard)
-            .expect("unpublished storage is unique")
-            .data
+        let Some(guard) = Arc::get_mut(&mut self.guard) else {
+            unreachable!("unpublished storage is unique")
+        };
+        &mut guard.data
     }
     /// Publishes a checked prefix without allocating.
     pub fn freeze(self, actual_len: usize) -> Result<OwnedBytes, Self> {

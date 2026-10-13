@@ -550,5 +550,5 @@ impl MemoryHarnessStorage {
 mod tests;
 
 #[cfg(test)]
-#[path = "memory_summary_tests.rs"]
+#[path = "memory_summary_tests/mod.rs"]
 mod summary_tests;

@@ -199,7 +199,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
                 }),
             )
             .ok()?;
-        publish(&mut state, paths, histories, envelope);
+        publish(&mut state, paths, histories, envelope).ok()?;
     }
     state.retained = inventory;
     state.decision = decision;

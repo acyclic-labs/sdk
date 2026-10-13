@@ -294,11 +294,10 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
             },
         work,
     )?;
-    if let Some(expected) = expected {
-        if file_identity_and_length(&file, work)?.0 != expected {
+    if let Some(expected) = expected
+        && file_identity_and_length(&file, work)?.0 != expected {
             return Err(io::Error::other("held deletion target identity changed").into());
         }
-    }
     work.attempt_io(WRITE, || {
         windows_set_information(
             &file,

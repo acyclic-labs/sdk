@@ -111,6 +111,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         };
         let completed = work.record_completed(WorkCounters {
             object_bytes_read: observed,
+            source_bytes_read: observed,
             ..WorkCounters::UNCHARGED
         });
         let value = result?;
@@ -194,7 +195,9 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             drop(incoming);
             release(work, custody, request_bytes)?;
             for request in requests {
-                let (read, allocation) = self.fetch(request.object_id, request.maximum_bytes, work).await?;
+                let (read, allocation) = self
+                    .fetch(request.object_id, request.maximum_bytes, work)
+                    .await?;
                 drop(allocation);
                 values.push(read);
             }
@@ -327,6 +330,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         }
         let completed = work.record_completed(WorkCounters {
             object_bytes_read: observed,
+            source_bytes_read: observed,
             ..WorkCounters::UNCHARGED
         });
         if !count_valid {

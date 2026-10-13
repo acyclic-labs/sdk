@@ -477,6 +477,18 @@ async fn exercise_transfer_deadlines(
         .code,
         wire::ErrorCode::NotFound
     );
+    exercise_multipart_deadlines(&short, &extended, &bucket).await?;
+    exercise_download_deadline(client, &long, &bucket).await?;
+
+    Ok(())
+}
+
+async fn exercise_multipart_deadlines(
+    short: &GrpcObjects,
+    extended: &GrpcObjects,
+    bucket: &wire::BucketRef,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
     let upload = extended
         .create_multipart(wire::CreateMultipartRequest {
             bucket: Some(bucket.clone()),
@@ -537,6 +549,14 @@ async fn exercise_transfer_deadlines(
             mutation: None,
         })
         .await?;
+    Ok(())
+}
+async fn exercise_download_deadline(
+    client: &GrpcObjects,
+    long: &GrpcObjects,
+    bucket: &wire::BucketRef,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
     let bytes = Bytes::from(vec![41; 2 * 65536 + 1]);
     let info = long
         .put(

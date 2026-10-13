@@ -136,9 +136,8 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     let standalone = original.is_none();
     #[cfg(target_arch = "wasm32")]
     let standalone = true;
-    if standalone {
-        if let Some(owner) = data_custody { owner.record_completed_leaf_work(PAGE_READ)?; }
-    }
+    if standalone
+        && let Some(owner) = data_custody { owner.record_completed_leaf_work(PAGE_READ)?; }
     #[cfg(not(target_arch = "wasm32"))]
     let cached = match original {
         Some(work) => {
@@ -210,10 +209,10 @@ async fn read_cold_object<S: AsyncObjectStore>(
                 let __object_args = (page, maximum, original, cancellation);
                 let mut __object_work =
                     crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                let __object_result = store
+
+                store
                     .read(__object_args.0, __object_args.1, &mut __object_work)
-                    .await;
-                __object_result
+                    .await
             },
         )?;
         let read = future.as_mut().await;
@@ -267,15 +266,14 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
     work.verify(budget)?;
     let retained = retained_bytes(&receipt.value);
     claim_read_allocation(retained, 0, allocations, work, budget, data_custody, 0)?;
-    if let Some(owner) = data_custody {
-        if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
+    if let Some(owner) = data_custody
+        && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             peak_allocation_bytes: allocations.live_bytes(), ..WorkCounters::UNCHARGED
         }) {
             drop(receipt.value);
             allocations.release(retained)?;
             return Err(error.into());
         }
-    }
     Ok((receipt.value, retained))
 }
 
@@ -508,15 +506,14 @@ where
     #[cfg(target_arch = "wasm32")]
     let native = false;
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        if let Err(error) = original.charge(WorkCounters {
+    if let Some(original) = accounting.native_work()
+        && let Err(error) = original.charge(WorkCounters {
             page_reads: usize_to_u64(plan.sources.len()),
             ..WorkCounters::UNCHARGED
         }) {
             release_batch_plan(plan, accounting)?;
             return Err(error.into());
         }
-    }
     // Keep the existing single read_many frontier and cold-only heap frame.
     let cold = if plan.cold_requests.is_empty() {
         if let Some((_, work, _, _)) = accounting.standalone_parts() {
@@ -753,11 +750,11 @@ async fn read_cold_pages<S: AsyncObjectStore>(
         let batch = {
             let __object_args = (requests, original, context.cancellation);
             let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store
+
+            store
                 .read_many(__object_args.0, &mut __object_work)
                 .await
-                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-            __object_result
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
         }
         .map_err(batch_storage_error)?;
         if batch.0.len() != requests.len() {
@@ -1174,8 +1171,8 @@ pub(super) fn decode_read_with_custody<F: Format>(
     })();
     let (shape, logical_bytes) = prepared?;
     claim_read_allocation(logical_bytes, u64::from(logical_bytes != 0), allocations, work, budget, data_custody, cached_local_bytes)?;
-    if let Some(owner) = data_custody {
-        if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
+    if let Some(owner) = data_custody
+        && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             allocation_operations: u64::from(logical_bytes != 0),
             peak_allocation_bytes: allocations.live_bytes().checked_sub(cached_local_bytes)
                 .ok_or(WorkError::Overflow)?, ..WorkCounters::default()
@@ -1183,7 +1180,6 @@ pub(super) fn decode_read_with_custody<F: Format>(
             allocations.release(logical_bytes)?;
             return Err(error.into());
         }
-    }
     let copied = match work.checked_add(WorkCounters {
         bytes_copied: shape.nested_bytes,
         ..WorkCounters::default()
@@ -1199,14 +1195,13 @@ pub(super) fn decode_read_with_custody<F: Format>(
         return Err(error.into());
     }
     *work = copied;
-    if let Some(owner) = data_custody {
-        if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
+    if let Some(owner) = data_custody
+        && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             bytes_copied: shape.nested_bytes, ..WorkCounters::default()
         }) {
             allocations.release(logical_bytes)?;
             return Err(error.into());
         }
-    }
     let decoded = match F::decode(read, limits, &mut |_| Ok::<_, CanonicalDecodeError>(())) {
         Ok(decoded) => decoded,
         Err(error) => {

@@ -27,8 +27,11 @@ pub(super) fn validate_segment_publication(
         if read == 0 {
             break;
         }
+        let bytes = buffer
+            .get(..read)
+            .ok_or_else(|| native_write_error(PhysicalError::Corrupt))?;
         publication.codec(0, 0, read, || {
-            hasher.update(&buffer[..read]);
+            hasher.update(bytes);
         })?;
     }
     if hasher.finalize().as_bytes() != expected_id {

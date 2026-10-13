@@ -929,7 +929,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
                 acyclic_stream::PreparedOwnedBytes::new(
                     owned.value,
                     owned.custody,
-                    original.runtime_meter(),
+                    &original.runtime_meter(),
                 )
                 .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
@@ -1194,11 +1194,11 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
                     let __object_args = (&writes.value, original, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result = self
+
+                    self
                         .inner
                         .put_many(__object_args.0, &mut __object_work)
-                        .await;
-                    __object_result
+                        .await
                 }
                 .map_err(FsError::from)
             }

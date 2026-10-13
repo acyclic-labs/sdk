@@ -147,7 +147,7 @@ impl StoredBody {
         )?;
         data._allocation
             .as_mut()
-            .expect("native parts retain their original allocation")
+            .ok_or(std::io::Error::from(std::io::ErrorKind::InvalidData))?
             .absorb(&mut metadata)?;
         Ok(Self::Composite {
             parts: Arc::new(data),
@@ -223,7 +223,19 @@ impl StoredBody {
         end: usize,
         mode: BodyReadMode,
     ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send {
-        async move {
+        if let Self::Memory(body) = self {
+            return futures::future::Either::Left(async move {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let BodyReadMode::Native(meter) = &mode {
+                    meter.check().map_err(crate::v1::NativeObjectsError::from)?;
+                }
+                if start > end || end > body.len() {
+                    return Err(Error::from(Unavailable).into());
+                }
+                Ok(body.slice(start..end))
+            });
+        }
+        futures::future::Either::Right(async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let BodyReadMode::Native(meter) = &mode {
                 meter.check().map_err(crate::v1::NativeObjectsError::from)?;
@@ -232,7 +244,7 @@ impl StoredBody {
                 return Err(Error::from(Unavailable).into());
             }
             match self {
-                Self::Memory(body) => Ok(body.slice(start..end)),
+                Self::Memory(_) => unreachable!("memory reads use the direct path"),
                 Self::Composite { parts, .. } => {
                     let mut offset = 0usize;
                     for part in parts.value.iter() {
@@ -288,7 +300,7 @@ impl StoredBody {
                         .await
                 }
             }
-        }
+        })
     }
 }
 
@@ -308,7 +320,7 @@ pub(crate) fn prepare_native_bytes(
         .map_err(|error| meter.allocation_failed(error))?;
     allocation.reconcile_capacity(data.capacity())?;
     data.resize(data.capacity(), 0);
-    PreparedOwnedBytes::new(data, allocation, Arc::clone(meter))
+    PreparedOwnedBytes::new(data, allocation, meter)
         .map_err(|failure| crate::v1::native_preparation_error(failure.into_error()))
 }
 
@@ -351,7 +363,13 @@ pub(crate) mod tests {
         assert_eq!(full.retained_capacity(), Some(capacity));
         assert_eq!(selected.retained_capacity(), Some(capacity));
         assert_eq!(empty.retained_capacity(), Some(capacity));
-        assert_eq!(selected.as_slice().as_ptr(), full.as_slice()[2..].as_ptr());
+        assert_eq!(
+            selected.as_slice().as_ptr(),
+            full.as_slice()
+                .get(2..)
+                .unwrap_or_else(|| unreachable!())
+                .as_ptr()
+        );
         drop(body);
         drop(full);
         assert_eq!(selected.as_slice(), b"cd");

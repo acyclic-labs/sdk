@@ -33,6 +33,7 @@ function durableRename(from, to, helper, replace) {
   if (process.platform === "win32" && process.env.NODE_ENV !== "test") {
     const result = spawnSync(helper, ["__installer-rename", from, to, replace ? "replace" : "no-replace"], {
       stdio: "inherit",
+      windowsHide: true,
     });
     if (result.error || result.status !== 0) {
       throw new Error(`durable Acyclic rename failed${result.error ? `: ${result.error.message}` : ""}`);
@@ -112,7 +113,7 @@ function installCertification(packageVersion, helper) {
   const testBypass = process.env.NODE_ENV === "test"
     && process.env.ACYCLIC_INSTALL_TEST_CERTIFICATION === "1";
   if (!testBypass) {
-    const verified = spawnSync(helper, ["__verify-certification", source], { stdio: "inherit" });
+    const verified = spawnSync(helper, ["__verify-certification", source], { stdio: "inherit", windowsHide: true });
     if (verified.error || verified.status !== 0) {
       throw new Error(`Acyclic platform certification does not match the installed binary${verified.error ? `: ${verified.error.message}` : ""}`);
     }
@@ -140,6 +141,7 @@ function processStartedAt(pid) {
     : ["ps", ["-o", "lstart=", "-p", String(pid)]];
   const result = spawnSync(command, args, {
     encoding: "utf8",
+    windowsHide: true,
     env: { ...process.env, LC_ALL: "C" },
     timeout: 10_000,
   });

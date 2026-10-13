@@ -193,13 +193,15 @@ pub(super) async fn prepare_case(
                 None,
             )
             .await?;
-        artifact_grants.push(file.read_capability(&mut None)?);
         let command = WorkflowCommand {
             operation_id: OperationId::new(),
             kind: MODEL_TASK_COMMAND_KIND.into(),
             payload: file,
         };
-        planned_commands.insert(label.to_owned(), command);
+        let commands = crate::native::stock_turn_commands(&files, &owner, command).await?;
+        artifact_grants.push(commands.0.payload.read_capability(&mut None)?);
+        artifact_grants.push(commands.1.payload.read_capability(&mut None)?);
+        planned_commands.insert(label.to_owned(), commands);
     }
     owner.scope = issuer
         .issue(
@@ -218,14 +220,19 @@ pub(super) async fn prepare_case(
     );
     let runtime =
         crate::native::runtime(&config, stream.clone(), files.clone(), owner.verifier()?).await?;
-    let definition: Arc<TaskDefinition<WorkflowCommand, TurnOutput>> =
+    let definition: Arc<TaskDefinition<Value, TurnOutput>> =
         runtime.harness().task("acyclic.stock_turn@1")?;
     let operation = OperationId::new();
-    let command = planned_commands["bootstrap"].clone();
+    let (receive, model) = &planned_commands["bootstrap"];
     let seed_task = admitted_task(
         runtime
             .harness()
-            .admit(operation, &definition, command, None)
+            .admit(
+                operation,
+                &definition,
+                json!({"receive": receive, "model": model}),
+                None,
+            )
             .await?,
     )?;
     config.project_source_root = Some(seed_task);
