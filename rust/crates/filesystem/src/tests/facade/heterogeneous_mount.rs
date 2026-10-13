@@ -1,9 +1,7 @@
 use super::*;
-use crate::foundation::{AuthorityId, Epoch, Head, OperationId, ProposedCommit, Sequence};
 use crate::model::VolumeLimits;
 use crate::storage::{
-    AppendOutcome, AuthorityResult, CreateAuthorityOutcome, FenceOutcome, ObjectId, ObjectRead,
-    ObjectReadRequest, ObjectResult, ObjectWrite, ReplayLimit,
+    ObjectId, ObjectRead, ObjectReadRequest, ObjectWrite,
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, EmbeddedCapabilities, LocalFs, LocalOptions, MemoryFs,

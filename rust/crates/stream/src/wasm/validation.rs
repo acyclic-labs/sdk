@@ -560,6 +560,7 @@ mod http {
             .iter()
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {
+            Some("empty") => Ok(JsValue::UNDEFINED),
             Some("sequence") => bigint_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),

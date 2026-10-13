@@ -1,6 +1,6 @@
 const KINDS = new Set([
   "observation", "sequence", "append", "fork",
-  "records", "children", "children_page", "commit", "envelope", "token",
+  "records", "children", "children_page", "commit", "envelope", "token", "empty",
 ]);
 
 export const rust = [["acyclic-stream", "bin", "stream-http-contract"]];
@@ -32,6 +32,7 @@ ${routes}
 export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
 
 type HttpResponseByKind = {
+  empty: void;
   observation: IdempotencyObservation | undefined;
   sequence: Sequence;
   append: AppendResult;

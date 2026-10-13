@@ -19,7 +19,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState};
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread,
+    THREAD_SUSPEND_RESUME,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
@@ -195,7 +196,7 @@ pub(super) fn spawn_controlled(
     }
     initialized?;
     let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
-    command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
+    command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         tree.child = Some(command.spawn()?);
         Ok(())
@@ -511,7 +512,7 @@ fn denied_admission_still_observes_unassigned_child_exit() {
         ..Guard::empty(true)
     };
     let mut command = super::tests::command("child", temporary.path());
-    command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
+    command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     let mut child = command.spawn().expect("spawn suspended child");
     // SAFETY: live handles; this real assignment must fail for lack of rights.
     let assigned =
