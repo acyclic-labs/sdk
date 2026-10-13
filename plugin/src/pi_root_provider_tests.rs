@@ -300,7 +300,7 @@ impl Fixture {
                 self.provider.preparation.command.operation_id,
                 &self.provider.preparation.plan,
                 Some(&self.startup),
-            )
+             false)
             .await
     }
 

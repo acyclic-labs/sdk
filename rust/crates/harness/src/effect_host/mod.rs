@@ -1,8 +1,8 @@
-//! Conversation-owned effect admission, dispatch and reconciliation.
-
-use crate::contract::capability;
+//! Conversation-owned effect admission and reconciliation.
+#[cfg(feature = "filesystem")]
+use crate::store::HistoryWork;
 use crate::{
-    EffectId, Error, IdempotencyKey, OperationId, Result,
+    EffectId, Error, IdempotencyKey, NativeCustody, NativeWork, OperationId, Result,
     conversation::ContentResidencyVerifier,
     core::{
         Action, Authority, AuthorityIssuer, Command, EffectAttestation, EffectState, EffectStatus,
@@ -11,20 +11,49 @@ use crate::{
     effects::EffectRegistry,
     runtime::DurableEffectObserver,
     store::{
-        DEFAULT_TERMINAL_EFFECTS, HistoryReadLimits, StreamAggregate,
-        default_projection_read_limits,
+        DEFAULT_TERMINAL_EFFECTS, StreamAggregate, default_projection_read_limits,
+        guarded_boundary as boundary, history::HistoryIo,
     },
+    wire_codec::CodecQuota,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
+use crate::{
+    contract::capability,
+    wire::ErrorCode::{Conflict, Invalid, NotFound, Unauthorized},
+};
 use acyclic_stream::StreamProvider;
 use std::sync::Arc;
-
 mod plan;
 pub use plan::TaskEffectPlan;
 #[cfg(feature = "filesystem")]
 pub use plan::task_effect_id;
 mod host;
 pub use host::ConversationEffectHost;
-pub(crate) use host::effect_error;
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests;
+#[cfg(feature = "filesystem")]
+fn history(work: NativeWork<'_>) -> Result<Option<HistoryWork>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        work.map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()
+            .map(|io| io.map(HistoryWork::new))
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        if work.is_some() {
+            return Err(Error::Invalid("native effects are unavailable".into()));
+        }
+        Ok(None)
+    }
+}
+fn original<'a>(work: &'a Option<&mut dyn HistoryIo>) -> NativeWork<'a> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        work.as_deref().and_then(HistoryIo::original_native_work)
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        let _ = work;
+        None
+    }
+}

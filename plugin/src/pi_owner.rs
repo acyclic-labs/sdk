@@ -611,8 +611,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
         providers,
         Some(custody),
         Some(work),
-    )?
-    .into_arc(work)
+    )
 }
 
 // Drop tuple payloads before their allocation guards.
