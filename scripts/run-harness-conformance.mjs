@@ -2,7 +2,7 @@ import { verifyNativeConsumerTranscript, verifyPackageProvenance, verifyQualific
 import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harness-conformance-cases.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compatibilityArtifacts } from "./generated-bindings.mjs";
@@ -203,5 +203,7 @@ const checksumPath = resolve(artifactDirectory, "SHA256SUMS");
 const checksumLines = [reportPath, receiptPath].map(path =>
   `${createHash("sha256").update(readFileSync(path)).digest("hex")}  ${basename(path)}`,
 );
-writeFileSync(checksumPath, `${readFileSync(checksumPath, "utf8").trimEnd()}\n${checksumLines.join("\n")}\n`);
+const checksumTemporary = `${checksumPath}.${process.pid}.tmp`;
+writeFileSync(checksumTemporary, `${packageChecksums.trimEnd()}\n${checksumLines.join("\n")}\n`, { flag: "wx" });
+renameSync(checksumTemporary, checksumPath);
 console.log(`qualified ${parsedReceipt.passed}/${parsedReceipt.total} executed Harness cases for ${basename(artifactDirectory)}`);

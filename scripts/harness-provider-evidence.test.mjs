@@ -215,9 +215,63 @@ test("a qualified aggregate from another report, source or artifact is rejected"
 
 // Exercise the actual CLI preflight with real Git and files, before any build.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, renameSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
+
+test("checksum publication keeps concurrent readers on a complete inventory", () => {
+  const source = readFileSync(new URL("./run-harness-conformance.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("const checksumPath =");
+  const end = source.indexOf("console.log(`qualified", start);
+  assert.ok(start > 0 && end > start);
+  const publication = source.slice(start, end);
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/harness-checksums-");
+  assert.match(root, /^\.tools[\\/]harness-checksums-[A-Za-z0-9]+$/);
+  try {
+    for (const failure of ["none", "write", "rename"]) {
+      const directory = join(root, failure);
+      mkdirSync(directory);
+      const checksumPath = join(directory, "SHA256SUMS");
+      const reportPath = join(directory, "runner-report.json");
+      const receiptPath = join(directory, "qualification-receipt.json");
+      const old = "a".repeat(64) + "  acyclic-harness.tgz\n";
+      writeFileSync(checksumPath, old);
+      writeFileSync(reportPath, "report");
+      writeFileSync(receiptPath, "receipt");
+      const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+      const expected = `${old}${digest("report")}  runner-report.json\n${digest("receipt")}  qualification-receipt.json\n`;
+      let reads = 0;
+      const execute = () => runInNewContext(publication, {
+        artifactDirectory: directory, reportPath, receiptPath, packageChecksums: old,
+        createHash, basename: path => path.split(/[\\/]/).pop(),
+        resolve: (...paths) => join(process.cwd(), ...paths), process: { pid: process.pid }, readFileSync,
+        writeFileSync: (path, bytes, options) => {
+          writeFileSync(path, bytes.slice(0, Math.floor(bytes.length / 2)), options);
+          assert.equal(readFileSync(checksumPath, "utf8"), old);
+          reads++;
+          if (failure === "write") throw new Error("injected write failure");
+          appendFileSync(path, bytes.slice(Math.floor(bytes.length / 2)));
+          assert.equal(readFileSync(checksumPath, "utf8"), old);
+          reads++;
+        },
+        renameSync: (from, to) => {
+          if (failure === "rename") throw new Error("injected rename failure");
+          renameSync(from, to);
+          assert.equal(readFileSync(checksumPath, "utf8"), expected);
+          reads++;
+        },
+      });
+      if (failure === "none") { execute(); assert.equal(reads, 3); }
+      else { assert.throws(execute, new RegExp(`injected ${failure} failure`)); assert.equal(readFileSync(checksumPath, "utf8"), old); }
+    }
+  } finally {
+    const absolute = join(process.cwd(), root);
+    assert.ok(absolute.startsWith(join(process.cwd(), ".tools") + (process.platform === "win32" ? "\\" : "/")));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("runner rejects stale source and substituted package inputs before qualification", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-conformance-provenance-"));
