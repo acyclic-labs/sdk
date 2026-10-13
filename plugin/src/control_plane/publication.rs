@@ -305,9 +305,6 @@ impl ControlPlane {
         }
     }
 
-        }
-        }
-
     pub(crate) async fn agent_merge_transition(
             &mut self,
             caller: &str,
