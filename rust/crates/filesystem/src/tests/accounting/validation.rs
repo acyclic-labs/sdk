@@ -1,210 +1,62 @@
 use super::*;
 
-#[tokio::test]
-async fn accounting_requires_original_objects_and_authoritative_time_not_offline_defaults()
--> Result<(), Box<dyn Error>> {
-    let (fs, authority, objects) = fixture();
-    let workspace = fs
-        .create_workspace(
-            "fail-closed-accounting",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    workspace.write_text("/file", "original").await?;
-    workspace
-        .write_text("/file", "different current head")
-        .await?;
-    let authority_id = volume_authority_id(workspace.id().volume_id());
-    let cancellation = CancellationToken::new();
-    // A different actual Objects provider has none of the original closure.
-    let (absent, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let absent = crate::LogicalObjectStore::new(Arc::new(absent), bucket);
-    assert!(matches!(
-        accounting_page(
-            &authority,
-            &absent,
-            authority_id,
-            AccountingCursor::genesis(),
-            2,
-            BUDGET,
-            &cancellation,
-        )
-        .await,
-        Err(AccountingError::Proof(_))
-    ));
-    // Simulate collection of old closures while preserving the complete current
-    // closure in an actual independent Objects provider.
-    let latest = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .id();
-    let current = crate::kernel::prove_generation_closure(
-        &objects,
-        root(latest),
-        crate::kernel::ClosureLimits {
-            decode: crate::kernel::DecodeLimits::default(),
-            maximum_objects: 4096,
-            maximum_files: 4096,
-            maximum_object_bytes: 16 * 1024 * 1024,
-            profile: crate::model::FilesystemProfile::Portable,
-            symbolic_links: true,
-            hard_links: true,
-            sparse_files: true,
-        },
-        BUDGET,
-        &cancellation,
-    )
-    .await?;
-    for object in current.objects {
-        let bytes = {
-            crate::AsyncObjectStore::read(
-                &objects,
-                object,
-                16 * 1024 * 1024,
-                &mut crate::AuthorityWork::new(BUDGET, &cancellation),
-            )
-            .await
-        }?
-        .bytes;
-        crate::AsyncObjectStore::put(
-            &absent,
-            object,
-            bytes,
-            &mut crate::AuthorityWork::new(BUDGET, &cancellation),
-        )
-        .await?;
+#[derive(Clone, Copy)]
+enum Damage {
+    Digest,
+    Operation,
+    MissingTime,
+    ZeroTime,
+    RegressingTime(u64),
+}
+
+struct DamagedReplay<'a> {
+    inner: &'a StreamAuthorityStore<acyclic_stream::MemoryStream>,
+    damage: Damage,
+}
+
+impl AsyncAuthorityStore for DamagedReplay<'_> {
+    async fn head(
+        &self,
+        id: AuthorityId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Head, AuthorityStoreError> {
+        self.inner.head(id, work).await
     }
-    let durable = records(&authority, authority_id).await?;
-    let cursor = |record: &DurableCommit| -> Result<AccountingCursor, Box<dyn Error>> {
-        Ok(AccountingCursor {
-            sequence: record.sequence,
-            digest: record.digest,
-            settled_at_micros: record.settled_at_micros.ok_or("Stream timestamp missing")?,
-        })
-    };
-    let present = accounting_page(
-        &authority,
-        &absent,
-        authority_id,
-        cursor(&durable[1])?,
-        1,
-        BUDGET,
-        &cancellation,
-    )
-    .await?;
-    assert!(present.complete);
-    assert_eq!(
-        present.facts[0].transition,
-        AccountingTransition::Published {
-            volume_id: workspace.id().volume_id(),
-            generation_root: root(latest),
-            logical_regular_file_bytes: 22,
+    async fn replay(
+        &self,
+        id: AuthorityId,
+        after: Sequence,
+        limit: ReplayLimit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        let (mut records, allocation) = self.inner.replay(id, after, limit, work).await?;
+        for record in &mut records {
+            match self.damage {
+                Damage::Digest => record.digest = Digest::ZERO,
+                Damage::Operation => record.operation_id = OperationId::from_bytes([121; 16]),
+                Damage::MissingTime => record.settled_at_micros = None,
+                Damage::ZeroTime => record.settled_at_micros = Some(0),
+                Damage::RegressingTime(later) if record.sequence == Sequence::new(1) => {
+                    record.settled_at_micros = Some(later)
+                }
+                Damage::RegressingTime(_) => (),
+            }
         }
-    );
-    assert!(matches!(
-        accounting_page(
-            &authority,
-            &absent,
-            authority_id,
-            cursor(&durable[0])?,
-            1,
-            BUDGET,
-            &cancellation,
-        )
-        .await,
-        Err(AccountingError::Proof(_))
-    ));
-    let initial = records(&authority, authority_id).await?.remove(0);
-    let offline = MemoryAuthorityStore::default();
-    let CreateAuthorityOutcome::Created(head) = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        AsyncAuthorityStore::create_authority(
-            &offline,
-            authority_id,
-            initial.epoch,
-            &mut crate::AuthorityWork::new(BUDGET, authority_cancellation),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))
-    })?
-    else {
-        return Err("offline fixture authority already existed".into());
-    };
-    let AppendOutcome::Committed(committed) = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        AsyncAuthorityStore::compare_and_append(
-            &offline,
-            crate::GuardedAppend {
-                authority_id: authority_id,
-                epoch: initial.epoch,
-                expected: head,
-                commit: ProposedCommit {
-                    operation_id: initial.operation_id,
-                    fingerprint: initial.fingerprint,
-                    payload: initial.payload,
-                },
-                permit: crate::PublicationPermit::Unrestricted,
-            },
-            &mut crate::AuthorityWork::new(BUDGET, authority_cancellation),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))
-    })?
-    else {
-        return Err("offline actual Memory authority did not commit".into());
-    };
-    assert_eq!(committed.settled_at_micros, None);
-    assert!(matches!(
-        accounting_page(
-            &offline,
-            &objects,
-            authority_id,
-            AccountingCursor::genesis(),
-            1,
-            BUDGET,
-            &cancellation,
-        )
-        .await,
-        Err(AccountingError::MissingTime)
-    ));
-    Ok(())
+        Ok((records, allocation))
+    }
 }
 
 #[tokio::test]
-async fn accounting_rejects_malformed_cursor_and_unbounded_admission() -> Result<(), Box<dyn Error>>
-{
+async fn cursor_history_time_and_admission_fail_closed() -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
+    let cancel = CancellationToken::new();
     let workspace = fs
-        .create_workspace(
-            "cursor-accounting",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("validated-accounting", B, &cancel)
         .await?
         .value;
-    workspace.write_text("/file", "a").await?;
-    let authority_id = volume_authority_id(workspace.id().volume_id());
-    let cancellation = CancellationToken::new();
-    let first = accounting_page(
-        &authority,
-        &objects,
-        authority_id,
-        AccountingCursor::genesis(),
-        1,
-        BUDGET,
-        &cancellation,
-    )
-    .await?;
+    workspace.write_text("/file", "actual").await?;
+    let id = volume_authority_id(workspace.id().volume_id());
+    let first = page(&authority, &objects, id, AccountingCursor::genesis(), 1).await?;
     for cursor in [
         AccountingCursor {
             digest: Digest::ZERO,
@@ -220,16 +72,7 @@ async fn accounting_rejects_malformed_cursor_and_unbounded_admission() -> Result
         },
     ] {
         assert!(matches!(
-            accounting_page(
-                &authority,
-                &objects,
-                authority_id,
-                cursor,
-                1,
-                BUDGET,
-                &cancellation,
-            )
-            .await,
+            page(&authority, &objects, id, cursor, 1).await,
             Err(AccountingError::InvalidHistory)
         ));
     }
@@ -244,29 +87,18 @@ async fn accounting_rejects_malformed_cursor_and_unbounded_admission() -> Result
         },
     ] {
         assert!(matches!(
-            accounting_page(
-                &authority,
-                &objects,
-                authority_id,
-                cursor,
-                1,
-                BUDGET,
-                &cancellation,
-            )
-            .await,
+            page(&authority, &objects, id, cursor, 1).await,
             Err(AccountingError::InvalidBounds)
         ));
     }
     for maximum in [0, 257] {
         assert!(matches!(
-            accounting_page(
+            page(
                 &authority,
                 &objects,
-                authority_id,
+                id,
                 AccountingCursor::genesis(),
-                maximum,
-                BUDGET,
-                &cancellation,
+                maximum
             )
             .await,
             Err(AccountingError::InvalidBounds)
@@ -276,79 +108,124 @@ async fn accounting_rejects_malformed_cursor_and_unbounded_admission() -> Result
         accounting_page(
             &authority,
             &objects,
-            authority_id,
+            id,
             AccountingCursor::genesis(),
             1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
+            B,
+            &cancel
         )
         .await,
         Err(AccountingError::InvalidBounds)
     ));
+    let later = records(&authority, id)
+        .await?
+        .last()
+        .ok_or("records missing")?
+        .settled_at_micros
+        .ok_or("settlement time missing")?
+        + 1;
+    for damage in [
+        Damage::Digest,
+        Damage::Operation,
+        Damage::RegressingTime(later),
+        Damage::MissingTime,
+        Damage::ZeroTime,
+    ] {
+        let failed = page(
+            &DamagedReplay {
+                inner: &authority,
+                damage,
+            },
+            &objects,
+            id,
+            AccountingCursor::genesis(),
+            2,
+        )
+        .await;
+        if matches!(damage, Damage::MissingTime | Damage::ZeroTime) {
+            assert!(matches!(failed, Err(AccountingError::MissingTime)));
+        } else {
+            assert!(matches!(failed, Err(AccountingError::InvalidHistory)));
+        }
+    }
     Ok(())
 }
 
 #[tokio::test]
-async fn accounting_checks_actual_replayed_digest_operation_and_time_before_producing_facts()
+async fn current_objects_and_offline_authority_cannot_substitute_for_original_proof()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
+    let cancel = CancellationToken::new();
     let workspace = fs
-        .create_workspace(
-            "damaged-accounting",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("original-proof", B, &cancel)
         .await?
         .value;
-    workspace.write_text("/file", "actual").await?;
-    let authority_id = volume_authority_id(workspace.id().volume_id());
-    let durable = records(&authority, authority_id).await?;
-    let later = durable
-        .last()
-        .ok_or("actual records missing")?
-        .settled_at_micros
-        .ok_or("Stream timestamp missing")?
-        + 1;
-    let cancellation = CancellationToken::new();
-    for damage in [
-        ReplayDamage::Digest,
-        ReplayDamage::Operation,
-        ReplayDamage::RegressingTime(later),
-    ] {
-        assert!(matches!(
-            accounting_page(
-                &DamagedReplay {
-                    inner: &authority,
-                    damage
-                },
-                &objects,
-                authority_id,
-                AccountingCursor::genesis(),
-                2,
-                BUDGET,
-                &cancellation,
+    workspace.write_text("/file", "original").await?;
+    workspace
+        .write_text("/file", "different current head")
+        .await?;
+    let id = volume_authority_id(workspace.id().volume_id());
+    let (empty, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let current_only = crate::LogicalObjectStore::new(Arc::new(empty), bucket);
+    assert!(matches!(
+        page(
+            &authority,
+            &current_only,
+            id,
+            AccountingCursor::genesis(),
+            2
+        )
+        .await,
+        Err(AccountingError::Proof(_))
+    ));
+    let latest = root(workspace.head(B, &cancel).await?.value.id());
+    let proof = super::archive::prove(&objects, latest, workspace.volume_config()).await?;
+    for object in proof.objects {
+        let bytes = objects
+            .read(
+                object,
+                16 * 1024 * 1024,
+                &mut AuthorityWork::new(BUDGET, &cancel),
             )
-            .await,
-            Err(AccountingError::InvalidHistory)
-        ));
+            .await?
+            .bytes;
+        current_only
+            .put(object, bytes, &mut AuthorityWork::new(BUDGET, &cancel))
+            .await?;
     }
-    for damage in [ReplayDamage::MissingTime, ReplayDamage::ZeroTime] {
-        assert!(matches!(
-            accounting_page(
-                &DamagedReplay {
-                    inner: &authority,
-                    damage
-                },
-                &objects,
-                authority_id,
-                AccountingCursor::genesis(),
-                2,
-                BUDGET,
-                &cancellation,
-            )
-            .await,
-            Err(AccountingError::MissingTime)
-        ));
-    }
+    let durable = records(&authority, id).await?;
+    let present = page(&authority, &current_only, id, cursor(&durable[1])?, 1).await?;
+    assert!(present.complete);
+    assert_eq!(
+        present.facts[0].transition,
+        AccountingTransition::Published {
+            volume_id: workspace.id().volume_id(),
+            generation_root: latest,
+            logical_regular_file_bytes: 22
+        }
+    );
+    assert!(matches!(
+        page(&authority, &current_only, id, cursor(&durable[0])?, 1).await,
+        Err(AccountingError::Proof(_))
+    ));
+    let initial = &durable[0];
+    let offline = crate::memory::MemoryAuthorityStore::default();
+    offline
+        .create_first_record(
+            id,
+            ProposedCommit {
+                operation_id: initial.operation_id,
+                fingerprint: initial.fingerprint,
+                payload: initial.payload.clone(),
+            },
+            &mut AuthorityWork::new(BUDGET, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    assert!(matches!(
+        page(&offline, &objects, id, AccountingCursor::genesis(), 1).await,
+        Err(AccountingError::MissingTime)
+    ));
     Ok(())
 }
