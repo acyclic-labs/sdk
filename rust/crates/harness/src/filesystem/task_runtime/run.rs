@@ -110,6 +110,14 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "worker context requires original native work",
                 })?;
+                self.host
+                    .start_task(
+                        lease,
+                        &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::executor::PreparationIo::from_native_work(work)?,
+                        )),
+                    )
+                    .await?;
                 WorkerContext::Native(
                     self.task_context_with_native_work(task, fence, work)
                         .await?,
@@ -135,14 +143,6 @@ where
                             code: crate::wire::ErrorCode::Unsupported,
                             reason: "native worker lost its original observer",
                         })?;
-                self.host
-                    .start_task(
-                        lease,
-                        &mut Some(&mut crate::store::HistoryWork::new(
-                            crate::executor::PreparationIo::from_native_work(work)?,
-                        )),
-                    )
-                    .await?;
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {

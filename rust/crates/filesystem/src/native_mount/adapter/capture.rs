@@ -65,7 +65,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         let _producer = self.capture_producer(self.reserve_capture_poll()?)?;
         for _ in 0..3 {
             let mut carrier = NativeDemandCarrier::Native(work);
-            let (mut candidate, epoch, stamp) = self
+            let mut candidate = self
                 .checkout
                 .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
                 .await?;
@@ -103,7 +103,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 }
             };
             if self
-                .install_capture(candidate, epoch, stamp, scope, &mut carrier, cancellation)
+                .install_capture(candidate, scope, &mut carrier, cancellation)
                 .await?
             {
                 return Ok(());
@@ -115,8 +115,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
     async fn install_capture(
         &self,
         candidate: CheckoutCandidate<A, O>,
-        epoch: u64,
-        stamp: ViewStamp,
         scope: InstallScope<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
@@ -133,8 +131,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
             .checkout
             .install_candidate(
                 candidate,
-                epoch,
-                stamp,
                 carrier,
                 cancellation,
                 Some(&self.cancellation),

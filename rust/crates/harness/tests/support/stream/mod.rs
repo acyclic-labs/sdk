@@ -6,7 +6,7 @@
 use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, StreamProvider};
 mod controls;
 use controls::COORDINATOR_PATH;
-pub use controls::{ExecutionFaultMode, LostSessionAck, StreamIo, StreamIoSnapshot};
+pub use controls::{ExecutionFaultMode, LostSessionAck};
 mod append;
 mod commit;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

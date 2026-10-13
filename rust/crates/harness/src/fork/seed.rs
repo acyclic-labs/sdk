@@ -480,8 +480,4 @@ impl ForkSeed {
         }
         Ok(Capabilities::new(values))
     }
-
-    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| copy_seed(self, quota))
-    }
 }

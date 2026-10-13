@@ -2,23 +2,13 @@
 
 use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, ForkOptions, GenerationId, IdempotencyKey, Workspace,
-    WorkspaceError, WorkspaceId,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, GenerationId,
+    IdempotencyKey, WorkBudget, Workspace, WorkspaceError, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::future::Future;
 use thiserror::Error;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn lineage_filesystem_failure<E: std::error::Error + 'static>(
-    error: crate::FsError,
-) -> (WorkspaceLineageError<E>, Option<crate::NativeAllocation>) {
-    (
-        WorkspaceLineageError::from(WorkspaceError::from(error)),
-        None,
-    )
-}
 
 const LINEAGE_VERSION: u32 = 1;
 
@@ -56,8 +46,8 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
             parent_id != record.workspace_id
                 && crate::WorkspaceName::new(
                     parent_name,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
                 )
                 .is_ok()
         }
@@ -67,8 +57,8 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
         && record.revision > 0
         && crate::WorkspaceName::new(
             &record.workspace_name,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
         .is_ok()
         && parent_shape
@@ -92,69 +82,6 @@ pub trait WorkspaceLineageStore: Send + Sync {
         expected_revision: u64,
         replacement: WorkspaceLineageRecord,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
-    /// Loads actual metadata with its producer-funded original allocation custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn load_with_native_work(
-        &self,
-        workspace_id: WorkspaceId,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> impl Future<
-        Output = Result<
-            Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
-            (
-                WorkspaceLineageError<Self::Error>,
-                Option<crate::NativeAllocation>,
-            ),
-        >,
-    > + Send {
-        async move {
-            crate::kernel::allocation::KernelAccounting::native(original, cancellation)
-                .check()
-                .map_err(lineage_filesystem_failure)?;
-            original.cancellation().check().map_err(|error| {
-                (
-                    WorkspaceLineageError::from(WorkspaceError::Cancelled(error)),
-                    None,
-                )
-            })?;
-            let _ = workspace_id;
-            Err((WorkspaceLineageError::NativeOriginalUnsupported, None))
-        }
-    }
-
-    /// Transfers an original-funded replacement into the canonical revision CAS.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn compare_and_swap_with_native_work(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> impl Future<
-        Output = Result<
-            bool,
-            (
-                WorkspaceLineageError<Self::Error>,
-                Option<crate::NativeAllocation>,
-            ),
-        >,
-    > + Send {
-        async move {
-            crate::kernel::allocation::KernelAccounting::native(original, cancellation)
-                .check()
-                .map_err(lineage_filesystem_failure)?;
-            original.cancellation().check().map_err(|error| {
-                (
-                    WorkspaceLineageError::from(WorkspaceError::Cancelled(error)),
-                    None,
-                )
-            })?;
-            let _ = (workspace_id, expected_revision, replacement);
-            Err((WorkspaceLineageError::NativeOriginalUnsupported, None))
-        }
-    }
 }
 
 /// Failure while recording or authenticating workspace lineage.
@@ -165,7 +92,7 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     Store(E),
     /// The workspace operation failed.
     #[error(transparent)]
-    Workspace(#[from] Box<WorkspaceError>),
+    Workspace(#[from] WorkspaceError),
     /// Persisted state uses an unsupported version or mismatched identity.
     #[error("workspace-lineage state is incompatible")]
     IncompatibleState,
@@ -181,16 +108,6 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     /// A lineage walk encountered a cycle or exceeded the caller's bound.
     #[error("workspace lineage traversal exceeded its safe bound")]
     TraversalLimit,
-    /// A custom adapter cannot fund metadata in the original work.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error("workspace-lineage store does not support original native work")]
-    NativeOriginalUnsupported,
-}
-
-impl<E: std::error::Error + 'static> From<WorkspaceError> for WorkspaceLineageError<E> {
-    fn from(error: WorkspaceError) -> Self {
-        Self::Workspace(Box::new(error))
-    }
 }
 
 /// Core recursive-workspace graph over one durable lineage adapter.
@@ -236,13 +153,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             return Err(WorkspaceLineageError::ConflictingRegistration);
         }
         let generation = workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| failure.error)?
+            .value;
         self.register(WorkspaceLineageRecord {
             version: LINEAGE_VERSION,
             revision: 1,
@@ -275,19 +189,16 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             crate::obs::in_span(&span, async move {
                 let destination = crate::WorkspaceName::new(
                     destination.as_ref(),
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
                 )
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+                .map_err(|failure| WorkspaceError::from(failure.error))?
+                .value;
                 let generation = parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?;
+                    .map_err(|failure| failure.error)?
+                    .value;
                 let child_id = parent
                     .volume
                     .fs
@@ -306,12 +217,12 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 };
                 let planned = self.register(planned).await?;
                 let child = parent
-                    .fork::<_, _, crate::WorkspaceError>(
+                    .fork::<_, _, WorkspaceError>(
                         destination.as_str(),
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
                         crate::PublicationPermit::Unrestricted,
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
                         &mut |_| {
                             std::future::ready(Ok(crate::OperationReceipt {
                                 value: (),
@@ -320,16 +231,13 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                         },
                     )
                     .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?;
+                    .map_err(|failure| failure.error)?
+                    .value;
                 let initial_generation = child
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?;
+                    .map_err(|failure| failure.error)?
+                    .value;
                 if child.id() != child_id {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
                 }
@@ -354,13 +262,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         fork_generation: crate::GenerationId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         let initial_generation = child
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?
+            .value
             .id();
         self.register_existing_child_at_generation(
             parent,
@@ -371,7 +276,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         .await
     }
 
-    /// Registers a child while authenticating its exact initial fork generation.
+    /// Registers an existing child after it has advanced beyond its initial
     pub async fn register_existing_child_at_generation<
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
@@ -388,21 +293,21 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         parent
             .generation(
                 fork_generation,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| failure.error)?
+            .value;
         let initial = child
             .generation(
                 initial_generation,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| failure.error)?
+            .value;
         let expected_child = parent
             .volume
             .fs
@@ -412,13 +317,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
         if initial
-            .parents(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?
+            .value
             .as_slice()
             != [fork_generation]
         {
@@ -457,26 +359,6 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         workspace: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         self.required(workspace).await
-    }
-
-    /// Reopens one durable workspace and checks its exact identity.
-    pub async fn workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &self,
-        fs: &crate::Fs<A, O>,
-        workspace_id: WorkspaceId,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
-        let record = self.resolve(workspace_id).await?;
-        let workspace = fs
-            .open_workspace(&record.workspace_name, budget, cancellation)
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
-        if workspace.id() != workspace_id {
-            return Err(WorkspaceLineageError::IncompatibleState);
-        }
-        Ok(workspace)
     }
 
     /// Returns the direct-parent chain, nearest parent first.
