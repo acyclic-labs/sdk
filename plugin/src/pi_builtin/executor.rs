@@ -53,13 +53,10 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
         work: acyclic_harness::NativeWork<'_>,
     ) -> Result<()> {
         if let Some(work) = work {
-            let context = context.ok_or_else(|| denied("builtin IO requires the original accepted native tool callback"))?;
-            return {
-        let decoded = decoded_tool_request(context, invocation, work)?;
-        drop(decoded.0);
-        drop(decoded.1);
-        Ok(())
-    };
+            let context = context.ok_or_else(|| denied(
+                "builtin IO requires the original accepted native tool callback",
+            ))?;
+            decoded_tool_request(context, invocation, work)?;
         }
         Ok(())
     }
@@ -93,12 +90,9 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
     > {
         acyclic_harness::NativeFutureBundle::new(work, || async move {
             let decoded = decoded_tool_request(context, invocation, work)?;
-            let admission = context.original_admission_with_native_work(work)?.await?;
-            context.native_working_manifest_with_native_work(work)?;
+            context.validate_native_mcp_reconciliation_context(work)?;
             drop(decoded.0);
             drop(decoded.1);
-            drop(admission.0);
-            drop(admission.1);
             let custody = work.claim(
                 std::mem::size_of::<Option<acyclic_harness::tool::ToolResult>>() as u64,
                 0,
