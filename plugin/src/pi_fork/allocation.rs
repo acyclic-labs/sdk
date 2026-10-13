@@ -134,7 +134,9 @@ impl<'a> PiForkCoordinator<'a> {
                 work,
             )?;
             let parent_verifier = {
-                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                );
                 let value = parent_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody()?)
             };
@@ -145,7 +147,9 @@ impl<'a> PiForkCoordinator<'a> {
                 work,
             )?;
             let child_verifier = {
-                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                );
                 let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody()?)
             };
@@ -204,10 +208,14 @@ impl<'a> PiForkCoordinator<'a> {
         owner: &TaskJournalOwner<LocalStream>,
         plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>,
-        cancel: &CancellationToken,
     ) -> Result<()> {
         (owner)
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
+            )
             .await?;
         {
             let work = &self.work;
@@ -217,7 +225,9 @@ impl<'a> PiForkCoordinator<'a> {
                 FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
             )?;
             let name = {
-                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                );
                 let value = request
                     .0
                     .preparation
@@ -232,7 +242,7 @@ impl<'a> PiForkCoordinator<'a> {
                     plan.project_creation,
                     &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                         work,
-                        cancellation: cancel,
+                        cancellation: work.cancellation(),
                     },
                 )
                 .await
@@ -244,25 +254,23 @@ impl<'a> PiForkCoordinator<'a> {
                 });
             }
             (owner)
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                    )),
+                )
                 .await?;
             return Ok(());
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "original native owner, source cut, and invocation work stay distinct"
-    )]
     pub(super) async fn native_preparer(
         &self,
         shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>,
-        budget: WorkBudget,
-        cancel: &CancellationToken,
-        work: &NativeMaterializationWork,
     ) -> Result<
         Arc<
             acyclic_harness::filesystem::FilesystemForkPreparer<
@@ -272,6 +280,7 @@ impl<'a> PiForkCoordinator<'a> {
         >,
     > {
         let context = shared.as_ref();
+        let work = &self.work;
         let admission = self
             .runtime
             .runtime
@@ -307,16 +316,24 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let checkpoint = context
-            .read_file(plan.request
+            .read_file(
+                plan.request
                     .source_checkpoint
                     .as_ref()
                     .ok_or(Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Unauthorized,
                         reason: "Pi fork plan lacks its original source checkpoint",
-                    })?, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
+                    })?,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )
             .await?;
         (owner)
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
+            )
             .await?;
         let snapshot = Snapshot::decode_with_native_work(
             checkpoint.as_ref(),
@@ -331,7 +348,9 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         let verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -339,8 +358,13 @@ impl<'a> PiForkCoordinator<'a> {
         let source_read = match &request.0.authorized_source {
             Some(authorization) => {
                 let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-                let handle = owner.restore_project_source_authorization(context, authorization, Some(&io)).await?;
-                Some((handle, acyclic_harness::store::HistoryWork::new(io).into_custody()?))
+                let handle = owner
+                    .restore_project_source_authorization(context, authorization, Some(&io))
+                    .await?;
+                Some((
+                    handle,
+                    acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+                ))
             }
             None => None,
         };
@@ -350,7 +374,9 @@ impl<'a> PiForkCoordinator<'a> {
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -360,7 +386,10 @@ impl<'a> PiForkCoordinator<'a> {
         let restored = acyclic_harness::filesystem::restore_recursive_fork_source(
             self.filesystem.clone(),
             &self.stream,
-            (reducer, Some(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
+            (
+                reducer,
+                Some(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            ),
             &verifier.0,
             &authority.0.2,
             caller_project,
@@ -369,7 +398,7 @@ impl<'a> PiForkCoordinator<'a> {
             plan.history_limits(),
             source_read.as_ref().map(|pair| &pair.0),
             resolver,
-            cancel,
+            work.cancellation(),
         )
         .await?;
         source
@@ -390,7 +419,12 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         (owner)
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
+            )
             .await?;
         Ok(preparer)
     }

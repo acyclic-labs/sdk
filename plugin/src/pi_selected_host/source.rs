@@ -45,19 +45,9 @@ impl PiControlHost<'_> {
             let (snapshot, custody) = self.native()?.selection_snapshot(task, work).await?;
             (snapshot, Some(custody))
         } else if owner.task_id() == task {
-            let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
-                Arc::clone(&self.protected),
-                self.resources,
-                Arc::clone(&self.filesystem),
-                self.stream.clone(),
-                context,
-                owner,
-                &input.0,
-                &key.0,
-                &self.roots[&key.0],
-                work,
-            )
-            .await?;
+            let (snapshot, custody) = self
+                .freeze_root_source(context, owner, &input.0, &key.0, &self.roots[&key.0], work)
+                .await?;
             (snapshot, Some(custody))
         } else {
             (

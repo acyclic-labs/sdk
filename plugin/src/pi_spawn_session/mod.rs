@@ -1,6 +1,6 @@
 //! Durable Pi spawn through the existing SDK fork host.
 use super::*;
-use crate::pi_selected_host::invalid;
+use crate::pi_host::invalid;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness::{
     Error, OperationId, Result,

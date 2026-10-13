@@ -2,9 +2,10 @@
 use super::*;
 use crate::{
     AdapterState, PluginTaskBinding,
+    pi_host::{denied, invalid},
     pi_owner::PiOwnerConfig,
     pi_root_provider::PiRootHandle,
-    pi_selected_host::{denied, invalid, native_workspace_error},
+    pi_selected_host::native_workspace_error,
 };
 use acyclic_harness::{
     conversation::{ContentGrant, VolumeOperation},

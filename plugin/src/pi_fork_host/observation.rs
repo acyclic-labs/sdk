@@ -25,7 +25,7 @@ impl crate::pi_host::PiControlHost<'_> {
             || input.sdk_operation.is_empty()
             || command.operation_id != derived(original, "observe-root-source", &work)?
         {
-            return Err(unauthorized(
+            return Err(denied(
                 "Pi Root observer changed its actual owner or original SDK operation",
             ));
         }
@@ -43,33 +43,26 @@ impl crate::pi_host::PiControlHost<'_> {
             .roots
             .get(&input.root_key)
             .ok_or_else(|| invalid("Pi observed root has no actual lazy producer"))?;
-        if let Some(reference) = crate::pi_root_provider::observe_pi_input(
-            &self.protected,
-            &self.filesystem,
-            command.operation_id,
-            "root-source-observation",
-            &work,
-        )
-        .await?
-        {
-            let bytes = context
-                .read_file(&reference.0, Some(&PreparationIo::from_native_work(work)?))
-                .await?;
-            let decoded: (ObservedSource, _) = crate::pi_root_provider::guarded_pi_decode(
-                bytes.as_ref(),
+        let observed = if let Some(decoded) =
+            crate::pi_root_provider::read_pi_input_with_native_work::<ObservedSource>(
+                &self.protected,
+                &self.filesystem,
+                command.operation_id,
+                "root-source-observation",
                 self.protected.policy().maximum_payload_bytes,
-                self.protected.policy().maximum_payload_bytes,
-                acyclic_harness::wire::ErrorCode::Invalid,
                 acyclic_harness::JsonValueSchema::None,
                 OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES,
-                &work,
-            )?;
+                context,
+                work,
+            )
+            .await?
+        {
             let observed = &decoded.0;
             if observed.caller != input.caller
                 || observed.sdk_operation != input.sdk_operation
                 || observed.root_key != input.root_key
             {
-                return Err(unauthorized(
+                return Err(denied(
                     "Pi original Root observation retry changed its source request",
                 ));
             }
@@ -84,63 +77,49 @@ impl crate::pi_host::PiControlHost<'_> {
                 )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
-            return ready(
-                &PiRootSource {
-                    snapshot: observed.snapshot,
-                    root_key: &observed.root_key,
-                },
+            decoded
+        } else {
+            let frozen = self
+                .freeze_root_source(shared, owner, caller, &input.root_key, actual, work)
+                .await?;
+            let snapshot = frozen.0;
+            owner
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                    )),
+                )
+                .await?;
+            let observed = ObservedSource {
+                caller: input.caller,
+                sdk_operation: input.sdk_operation,
+                root_key: input.root_key,
+                snapshot,
+            };
+            let _published = crate::pi_root_provider::stage_pi_input(
+                &self.protected,
+                &self.filesystem,
+                command.operation_id,
+                "root-source-observation",
+                &observed,
                 &work,
-            );
-        }
-        let frozen = freeze_created_root_source(
-            self.protected.clone(),
-            self.resources,
-            self.filesystem.clone(),
-            self.stream.clone(),
-            shared,
-            owner,
-            caller,
-            &input.root_key,
-            actual,
-            work,
-        )
-        .await?;
-        let snapshot = frozen.0;
-        owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
-                )),
             )
             .await?;
-        let observed = ObservedSource {
-            caller: input.caller,
-            sdk_operation: input.sdk_operation,
-            root_key: input.root_key,
-            snapshot,
+            owner
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                    )),
+                )
+                .await?;
+            (observed, frozen.1)
         };
-        let _published = crate::pi_root_provider::stage_pi_input(
-            &self.protected,
-            &self.filesystem,
-            command.operation_id,
-            "root-source-observation",
-            &observed,
-            &work,
-        )
-        .await?;
-        owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
-                )),
-            )
-            .await?;
         ready(
             &PiRootSource {
-                snapshot: observed.snapshot,
-                root_key: &observed.root_key,
+                snapshot: observed.0.snapshot,
+                root_key: &observed.0.root_key,
             },
             &work,
         )

@@ -20,7 +20,6 @@ impl crate::pi_host::PiControlHost<'_> {
             .environment
             .retain(|key, _| !crate::pi_caller::is_environment_key(key));
         let input = supplied.0;
-        let cancel = work.cancellation().clone();
         let actual = self.context(shared, &fence, work).await?;
         let (shared, owner, caller, _) = &actual;
         let context = shared.as_ref();
@@ -35,7 +34,7 @@ impl crate::pi_host::PiControlHost<'_> {
             || input.commit.caller != owner.task_id()
             || input.commit.launch.source.parent_session_id != caller.binding.native_session_id
         {
-            return Err(unauthorized(
+            return Err(denied(
                 "Pi fork control changed its original caller/SDK operation",
             ));
         }
@@ -61,53 +60,11 @@ impl crate::pi_host::PiControlHost<'_> {
         let (source, frozen, _source_custody) = self
             .source(shared, owner, caller, &input, existing.as_ref(), work)
             .await?;
-        let conversation = self.protected.conversation_authority_with_native_work(
-            owner.task_id(),
-            caller.binding.agent_id,
-            context.scope().grants(),
-            work,
-        )?;
-        let mut authority = (conversation.0, conversation.1);
-        let mut verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody()?)
-        };
-        let parent = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            io.preflight()?;
-            let aggregate = StreamAggregate::open(
-                &self.stream,
-                authority.0.0,
-                verifier.0,
-                SchemaRegistry::new(),
-                None,
-                acyclic_harness::store::default_projection_read_limits(),
-                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-                None,
-                &mut Some(&mut io),
-            )
-            .await?;
-            io.return_staged_output()?;
-            (aggregate, io.into_custody()?)
-        };
-        let mut parent_custody = parent.1;
-        drop(authority.0.1);
-        drop(authority.0.2);
-        parent_custody.absorb(&mut authority.1)?;
-        parent_custody.absorb(&mut verifier.1)?;
-        let mut parent = parent.0;
-        parent.set_limits(context.scope().limits())?;
         let plan = coordinator
             .begin(
                 shared,
                 owner,
                 &fence,
-                parent,
                 source.clone(),
                 frozen,
                 input.commit,
@@ -116,8 +73,6 @@ impl crate::pi_host::PiControlHost<'_> {
                     work: 1_000_000,
                     bytes: self.protected.policy().maximum_payload_bytes,
                 },
-                work.remaining()?,
-                cancel.clone(),
             )
             .await?;
         let saved = self
@@ -127,9 +82,7 @@ impl crate::pi_host::PiControlHost<'_> {
             .find(|pending| pending.fork_key == operations.fork.into_bytes());
         if let Some(saved) = saved {
             let PluginTaskBinding::Pi(binding) = &saved.task_binding else {
-                return Err(unauthorized(
-                    "Pi pending substituted host-managed admission",
-                ));
+                return Err(denied("Pi pending substituted host-managed admission"));
             };
             let (root, paths, workspace) = self.reservation_coordinates(&plan, work)?;
             if crate::pi_native_host::validate_child_binding(binding, &plan.commit.child).is_err()
@@ -143,7 +96,7 @@ impl crate::pi_host::PiControlHost<'_> {
                 || !matches!(&saved.lifecycle, PendingSpawnLifecycle::Preparing)
                 || saved.expires_at_millis <= crate::now_millis()
             {
-                return Err(unauthorized(
+                return Err(denied(
                     "Pi pending changed or expired its original preparation identity",
                 ));
             }
@@ -154,7 +107,7 @@ impl crate::pi_host::PiControlHost<'_> {
             .find(|route| route.agent_id == plan.commit.alias)
         {
             let PluginTaskBinding::Pi(binding) = &route.task_binding else {
-                return Err(unauthorized(
+                return Err(denied(
                     "Pi existing route is not its original admitted child",
                 ));
             };
@@ -162,7 +115,7 @@ impl crate::pi_host::PiControlHost<'_> {
                 || route.turn_id != plan.commit.sdk_operation
                 || route.parent_agent_id != self.parent_alias(plan.commit.caller)?
             {
-                return Err(unauthorized(
+                return Err(denied(
                     "Pi existing route changed its original preparation identity",
                 ));
             }
@@ -178,28 +131,19 @@ impl crate::pi_host::PiControlHost<'_> {
             return Ok(TaskCommandProgress::Pending);
         }
         let Some(prepared) = coordinator
-            .advance(
-                shared,
-                &owner,
-                &fence,
-                &plan,
-                source,
-                work.remaining()?,
-                cancel,
-            )
+            .advance(shared, &owner, &fence, &plan, source)
             .await?
         else {
             return Ok(TaskCommandProgress::Pending);
         };
         let task = prepared.binding.task_id;
-        let result = ready(
+        ready(
             &PiPreparedReply {
                 task,
                 binding: &prepared.binding,
                 state: "prepared",
             },
             &work,
-        )?;
-        Ok(result)
+        )
     }
 }

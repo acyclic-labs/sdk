@@ -36,11 +36,16 @@ impl crate::pi_host::PiControlHost<'_> {
             work,
         )
         .await?;
-        let source = if command.commit.source_task == self.protected.policy().root_task {
-            let actual = self
-                .roots
-                .get(root_key)
-                .ok_or_else(|| invalid("Pi original selected root has no actual lazy handle"))?;
+        let root = command.commit.source_task == self.protected.policy().root_task;
+        let actual =
+            if root {
+                Some(self.roots.get(root_key).ok_or_else(|| {
+                    invalid("Pi original selected root has no actual lazy handle")
+                })?)
+            } else {
+                None
+            };
+        let source = if let Some(actual) = actual {
             Arc::clone(&actual.workspace)
         } else {
             self.native()?
@@ -49,7 +54,6 @@ impl crate::pi_host::PiControlHost<'_> {
                     invalid("Pi selected child has no actual reopened creator workspace")
                 })?
         };
-        let root = command.commit.source_task == self.protected.policy().root_task;
         if let Some(frozen) = plan
             .map(|plan| plan.frozen)
             .or(command.root_source.filter(|_| root))
@@ -66,39 +70,19 @@ impl crate::pi_host::PiControlHost<'_> {
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok((source, frozen, None));
         }
-        let mut source_custody = None;
-        let frozen = if root {
-            if owner.task_id() == self.protected.policy().root_task {
-                let actual = self
-                    .roots
-                    .get(root_key)
-                    .ok_or_else(|| invalid("Pi selected root handle missing"))?;
-                let (snapshot, custody) = freeze_created_root_source(
-                    self.protected.clone(),
-                    self.resources,
-                    self.filesystem.clone(),
-                    self.stream.clone(),
-                    shared,
-                    owner,
-                    caller,
-                    root_key,
-                    actual,
-                    work,
-                )
-                .await?;
-                source_custody = Some(custody);
-                snapshot
-            } else {
+        let (frozen, custody) = if let Some(actual) = actual {
+            if owner.task_id() != self.protected.policy().root_task {
                 return Err(invalid(
                     "Pi selected Root requires its real original Root observe control receipt",
                 ));
             }
+            self.freeze_root_source(shared, owner, caller, root_key, actual, work)
+                .await?
         } else {
-            let (snapshot, custody) = self
+            let frozen = self
                 .native()?
                 .selection_snapshot(command.commit.source_task, work)
                 .await?;
-            source_custody = Some(custody);
             owner
                 .verify(
                     false,
@@ -107,8 +91,8 @@ impl crate::pi_host::PiControlHost<'_> {
                     )?)),
                 )
                 .await?;
-            snapshot
+            frozen
         };
-        Ok((source, frozen, source_custody))
+        Ok((source, frozen, Some(custody)))
     }
 }

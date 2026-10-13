@@ -2,13 +2,6 @@
 use super::*;
 
 impl<'a> PiForkCoordinator<'a> {
-    pub(super) fn remaining(&self, fallback: WorkBudget) -> Result<WorkBudget> {
-        self.work
-            .remaining()
-            .map(|remaining| remaining.intersect_budget(fallback))
-            .map_err(acyclic_harness::Error::from)
-    }
-
     pub(super) async fn authenticate(
         &self,
         context: &acyclic_harness::runtime::TaskContext,
@@ -21,7 +14,12 @@ impl<'a> PiForkCoordinator<'a> {
             self.runtime
                 .verify_owner_with_native_work(&self.owner, work)?;
             owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    )),
+                )
                 .await?;
             let (value, allocation) = host
                 .observe_admission_with_native_work(owner.task_id(), work)?
@@ -93,7 +91,9 @@ impl<'a> PiForkCoordinator<'a> {
         )?;
         let mut project = None;
         for volume in original.0.binding.project_volumes.values() {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             if volume.storage_name(&mut Some(&mut io))? == source.workspace().name().as_str() {
                 project = Some(volume);
                 break;
@@ -122,8 +122,23 @@ impl<'a> PiForkCoordinator<'a> {
             native_snapshot,
         };
         let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-        let handle = owner.authorize_project_source(context, &self.runtime.authority.issuer, &policy, source_task, operation, &selected.0, maximum_work, maximum_bytes, Some(&io)).await?;
-        Ok((handle, acyclic_harness::store::HistoryWork::new(io).into_custody()?))
+        let handle = owner
+            .authorize_project_source(
+                context,
+                &self.runtime.authority.issuer,
+                &policy,
+                source_task,
+                operation,
+                &selected.0,
+                maximum_work,
+                maximum_bytes,
+                Some(&io),
+            )
+            .await?;
+        Ok((
+            handle,
+            acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+        ))
     }
 
     pub(super) async fn selected_graph(
@@ -228,7 +243,9 @@ impl<'a> PiForkCoordinator<'a> {
             .verify_original_volume_read_with_native_work(owner, volume, work)
             .await?;
         let name = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -239,14 +256,24 @@ impl<'a> PiForkCoordinator<'a> {
             .await
             .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
+            )
             .await?;
         let head = workspace
             .head(work, work.cancellation())
             .await
             .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
+            )
             .await?;
         acyclic_harness::resources::GenerationRef::new_with_native_work(
             volume.provider(),

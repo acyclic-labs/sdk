@@ -1,6 +1,6 @@
 //! Pi hook dispatch and bounded session replies.
 use super::*;
-use crate::pi_selected_host::invalid;
+use crate::pi_host::invalid;
 
 impl PiSession {
     pub(super) async fn dispatch(

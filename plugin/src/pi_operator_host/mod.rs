@@ -2,6 +2,7 @@
 use crate::{
     PiTaskBinding,
     pi_fork::{derived, original_operation},
+    pi_host::{denied, ready},
     pi_native_host::PiNativeFilesystem,
     pi_operator::{
         self, PiOperatorBody, PiOperatorDecision, PiOperatorRequest, PiPreparedApproval,
@@ -97,12 +98,6 @@ type ApprovalRef<'a> = PiPreparedApproval<
     &'a [String],
     &'a acyclic_fs::MaterializationJournal,
 >;
-fn denied(reason: &'static str) -> Error {
-    Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Unauthorized,
-        reason,
-    }
-}
 mod approval;
 mod dispatch;
 mod inspection;

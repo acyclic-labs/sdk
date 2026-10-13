@@ -5,7 +5,7 @@ use crate::{
     pi_owner::PiOwnerConfig,
     pi_root_provider::PiRootHandle,
     pi_runtime::PiTaskRuntime,
-    pi_selected_host::{SELECTED_DIAGNOSTIC_LABEL_BYTES, denied, invalid},
+    pi_selected_host::SELECTED_DIAGNOSTIC_LABEL_BYTES,
     pi_task::{PiTaskExecution, PiTaskInput},
 };
 use acyclic_harness::runtime::TaskStateProvider;
@@ -17,6 +17,32 @@ use acyclic_harness::{
 use acyclic_stream::LocalStream;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
+
+pub(crate) fn invalid(reason: &'static str) -> Error {
+    Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Invalid,
+        reason,
+    }
+}
+
+pub(crate) fn denied(reason: &'static str) -> Error {
+    Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Unauthorized,
+        reason,
+    }
+}
+
+pub(crate) fn ready<T: serde::Serialize>(
+    value: &T,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<TaskCommandProgress> {
+    let (value, custody) = crate::pi_root_provider::guarded_pi_value(
+        value,
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
+        work,
+    )?;
+    Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
+}
 
 pub(crate) struct PiControlHost<'a> {
     pub(crate) directory: &'a std::path::Path,

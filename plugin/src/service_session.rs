@@ -1,7 +1,7 @@
 //! Session ownership behind the service's existing actor and catalog.
 
 use super::*;
-use crate::pi_selected_host::invalid;
+use crate::pi_host::invalid;
 use acyclic_harness::{
     Error as RootError, Outcome, TaskId,
     conversation::FileRef,

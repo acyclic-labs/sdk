@@ -67,14 +67,8 @@ pub(super) async fn observe_writeback(
     descriptor: &PiPreparedApproval,
     work: &NativeMaterializationWork,
 ) -> Result<(&'static str, Option<acyclic_fs::MaterializationJournal>)> {
-    let journal = conversation_journal(filesystem, stream, protected, &descriptor.into(), work)?;
-    let io = PreparationIo::from_native_work(work)?;
-    let id = acyclic_harness::durable_host::task_interaction_id(
-        protected.policy().root_task,
-        descriptor.operation,
-        &mut Some(&mut &io),
-    )?;
-    let outcome = journal.interaction_outcome(id, Some(&io))?.await?;
+    let (journal, id) =
+        conversation_journal(filesystem, stream, protected, &descriptor.into(), work)?;
     let operation = acyclic_fs::OperationId::from_bytes(descriptor.operation.into_bytes());
     let store = resources.store.materialization_with_work(work.clone());
     let native = acyclic_fs::MaterializationJournalStore::load(&store, operation)
@@ -116,17 +110,19 @@ pub(super) async fn observe_writeback(
         )?
         .await?;
         "published"
-    } else if matches!(outcome, Some(InteractionOutcome::Declined)) {
-        "declined"
-    } else if matches!(outcome, Some(InteractionOutcome::Approved)) {
-        "pending"
-    } else if native
-        .as_ref()
-        .is_some_and(|journal| journal.phase == MaterializationPhase::Prepared)
-    {
-        "prepared"
     } else {
-        "pending"
+        let io = PreparationIo::from_native_work(work)?;
+        match journal.interaction_outcome(id, Some(&io))?.await? {
+            Some(InteractionOutcome::Declined) => "declined",
+            Some(InteractionOutcome::Approved) => "pending",
+            _ if native
+                .as_ref()
+                .is_some_and(|journal| journal.phase == MaterializationPhase::Prepared) =>
+            {
+                "prepared"
+            }
+            _ => "pending",
+        }
     };
     Ok((status, native))
 }

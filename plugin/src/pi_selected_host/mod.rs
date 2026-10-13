@@ -2,7 +2,7 @@
 use crate::{
     PiTaskBinding,
     pi_fork::{derived, original_operation},
-    pi_host::PiControlHost,
+    pi_host::{PiControlHost, denied, invalid, ready},
     pi_inspection::*,
     pi_task::PiTaskExecution,
 };
@@ -32,18 +32,6 @@ mod publication;
 mod source;
 mod writeback;
 
-pub(crate) fn invalid(reason: &'static str) -> Error {
-    Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Invalid,
-        reason,
-    }
-}
-pub(crate) fn denied(reason: &'static str) -> Error {
-    Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Unauthorized,
-        reason,
-    }
-}
 pub(crate) fn native_workspace_error(
     (source, custody): (
         acyclic_fs::WorkspaceError,
@@ -54,16 +42,4 @@ pub(crate) fn native_workspace_error(
         source: acyclic_fs::NativeWorkspacePublicationError::Workspace(source),
         custody,
     }
-}
-
-fn ready<T: Serialize>(
-    value: &T,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<TaskCommandProgress> {
-    let (value, custody) = crate::pi_root_provider::guarded_pi_value(
-        value,
-        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
-        work,
-    )?;
-    Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
 }

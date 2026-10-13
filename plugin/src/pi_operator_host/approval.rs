@@ -33,7 +33,7 @@ pub(super) fn conversation_journal(
     protected: &PiOwnerConfig,
     descriptor: &ApprovalRef<'_>,
     work: &NativeMaterializationWork,
-) -> Result<Journal> {
+) -> Result<(Journal, acyclic_harness::InteractionId)> {
     validate_descriptor(protected, descriptor, work)?;
     let io = PreparationIo::from_native_work(work)?;
     let authority = protected.conversation_authority_with_native_work(
@@ -43,7 +43,7 @@ pub(super) fn conversation_journal(
         work,
     )?;
     let verifier = authority.0.1.verifier(&mut Some(&mut &io))?;
-    Journal::new(
+    let journal = Journal::new(
         stream.clone(),
         Arc::clone(filesystem),
         descriptor.private_volume,
@@ -52,7 +52,13 @@ pub(super) fn conversation_journal(
         &authority.0.2,
         protected.policy().maximum_payload_bytes,
         Some(&io),
-    )
+    )?;
+    let id = acyclic_harness::durable_host::task_interaction_id(
+        protected.policy().root_task,
+        descriptor.operation,
+        &mut Some(&mut &io),
+    )?;
+    Ok((journal, id))
 }
 
 pub(crate) async fn open_prepared_approval(
@@ -149,13 +155,7 @@ pub(crate) async fn require_resolved_approval(
     descriptor: &ApprovalRef<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
-    let io = PreparationIo::from_native_work(work)?;
-    let id = acyclic_harness::durable_host::task_interaction_id(
-        protected.policy().root_task,
-        descriptor.operation,
-        &mut Some(&mut &io),
-    )?;
+    let (journal, id) = conversation_journal(filesystem, stream, protected, descriptor, work)?;
     ToolApprovalVerifier::verify_with_native_work(
         &journal,
         id,

@@ -10,7 +10,7 @@ use crate::{
     pi_task::{NATIVE_LAUNCH_TASK_COMMAND_KIND, PiTaskExecution, PiTaskInput},
 };
 use acyclic_fs::{
-    CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork, WorkBudget,
+    CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork,
 };
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::filesystem::TaskWorkerAttempt;

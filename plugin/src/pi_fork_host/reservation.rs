@@ -14,7 +14,7 @@ impl crate::pi_host::PiControlHost<'_> {
                 }
                 _ => None,
             })
-            .ok_or_else(|| unauthorized("Pi original caller has no actual persisted route alias"))
+            .ok_or_else(|| denied("Pi original caller has no actual persisted route alias"))
     }
 
     pub(super) fn reservation_coordinates(
@@ -49,7 +49,7 @@ impl crate::pi_host::PiControlHost<'_> {
         if paths.0.cwd != plan.commit.launch.invocation.cwd
             || paths.0.session_file != plan.commit.launch.invocation.session_file
         {
-            return Err(unauthorized(
+            return Err(denied(
                 "Pi SDK retained native paths differ from its original planned namespace",
             ));
         }

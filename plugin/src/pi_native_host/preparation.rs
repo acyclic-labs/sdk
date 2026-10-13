@@ -112,7 +112,8 @@ impl PiNativeCommandHost {
                     None
                 };
                 let scratch_context = Arc::clone(&shared)
-                    .with_output_volume_with_native_work(&prepared.binding.scratch.volume, work)?;
+                    .with_output_volume(&prepared.binding.scratch.volume)
+                    .await?;
                 if handles.session.is_none() {
                     handles.session = Some(
                         intent
@@ -387,8 +388,7 @@ impl PiNativeCommandHost {
             .as_ref()
             .ok_or_else(|| unauthorized("Pi result selection vanished"))?
             .volume;
-        let result_context =
-            Arc::clone(&shared).with_output_volume_with_native_work(result_volume, work)?;
+        let result_context = Arc::clone(&shared).with_output_volume(result_volume).await?;
         let request = intent.request_with_work(
             self.protected.native_runtime()?,
             &prepared.binding,

@@ -120,19 +120,8 @@ impl PiControlHost<'_> {
                 .await?
             } else {
                 let input = self.admission_input(input.caller, work).await?;
-                crate::pi_fork_host::freeze_created_root_source(
-                    Arc::clone(&self.protected),
-                    self.resources,
-                    Arc::clone(&self.filesystem),
-                    self.stream.clone(),
-                    context,
-                    owner,
-                    &input.0,
-                    key,
-                    &self.roots[key],
-                    work,
-                )
-                .await?
+                self.freeze_root_source(context, owner, &input.0, key, &self.roots[key], work)
+                    .await?
             };
             owner.verify(false, &mut Some(&mut io)).await?;
             let intent = SelectedImportIntent {

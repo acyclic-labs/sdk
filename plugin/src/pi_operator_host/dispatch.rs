@@ -37,10 +37,7 @@ impl crate::pi_host::PiControlHost<'_> {
         drop(request.operator);
         drop(request.session_id);
         let root = self.protected.policy().root_task;
-        let caller = self.caller(&context, &fence, work).await?;
-        let owner = &caller.0;
-        let admitted = &caller.1;
-        if owner.task_id() != root
+        if context.durable_task_id() != Some(root)
             || prepared.command.caller != root
             || command.operation_id
                 != derived(
@@ -53,14 +50,9 @@ impl crate::pi_host::PiControlHost<'_> {
                 "operator control changed its Root, lease or SDK operation",
             ));
         }
+        let actual = self.context(context, &fence, work).await?;
+        let (context, owner, admitted, _) = &actual;
         self.protected.validate_root(&admitted.binding, work)?;
-        let crate::pi_task::PiTaskExecution::Host {
-            root: original_root,
-            ..
-        } = &admitted.execution
-        else {
-            return Err(denied("operator Root became a child admission"));
-        };
         if admitted.binding.native_session_id != prepared.session
             || admitted.binding.scratch.volume != prepared.private_volume
         {
@@ -68,31 +60,14 @@ impl crate::pi_host::PiControlHost<'_> {
                 "operator approval changed its Root private allocation",
             ));
         }
-        let context = crate::pi_root_provider::bind_root_output_context_with_native_work(
-            context,
-            owner,
-            Arc::clone(&self.protected),
-            self.resources,
-            Arc::clone(&self.filesystem),
-            self.stream.clone(),
-            &admitted.binding,
-            original_root,
-            work,
-        )
-        .await?;
         let io = PreparationIo::from_native_work(work)?;
         let mut history = &io;
-        let journal = conversation_journal(
+        let (journal, id) = conversation_journal(
             &self.filesystem,
             &self.stream,
             &self.protected,
             &(&prepared).into(),
             work,
-        )?;
-        let id = acyclic_harness::durable_host::task_interaction_id(
-            root,
-            prepared.operation,
-            &mut Some(&mut history),
         )?;
         if !reconcile {
             let capability = work.display(&format_args!("interaction:respond:{id}"))?;
@@ -121,12 +96,7 @@ impl crate::pi_host::PiControlHost<'_> {
             if !matches!(outcome, Some(InteractionOutcome::Declined)) {
                 return Ok(TaskCommandProgress::Pending);
             }
-            let (value, custody) = crate::pi_root_provider::guarded_pi_value(
-                &status_response(&prepared, "declined", None),
-                crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
-                work,
-            )?;
-            return Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody });
+            return ready(&status_response(&prepared, "declined", None), work);
         }
         ToolApprovalVerifier::verify_with_native_work(
             &journal,
@@ -150,7 +120,7 @@ impl crate::pi_host::PiControlHost<'_> {
         )?;
         prepared.command.approval_digest = None;
         match self
-            .run_selected(context, fence, publish, payload, reconcile, work)
+            .run_selected(context.clone(), fence, publish, payload, reconcile, work)
             .await?
         {
             TaskCommandProgress::Ready(value) => drop(value),
@@ -174,11 +144,6 @@ impl crate::pi_host::PiControlHost<'_> {
         if status != "published" {
             return Ok(TaskCommandProgress::Pending);
         }
-        let (value, custody) = crate::pi_root_provider::guarded_pi_value(
-            &status_response(&prepared, status, native.as_ref()),
-            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
-            work,
-        )?;
-        Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
+        ready(&status_response(&prepared, status, native.as_ref()), work)
     }
 }

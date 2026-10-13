@@ -29,14 +29,9 @@ impl PiNativeCommandHost {
                 .runtime
                 .run_operation(&worker, task, self, 8, Some(&io))
                 .await?;
-            let PreparationIo::Native { custody, .. } = io else {
-                unreachable!()
-            };
             Ok::<_, acyclic_harness::Error>((
                 value,
-                custody
-                    .into_inner()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                acyclic_harness::store::HistoryWork::new(io).into_custody()?,
             ))
         }
         .await;
