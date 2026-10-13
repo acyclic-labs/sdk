@@ -863,7 +863,7 @@ pub struct NativeWatch {
     root_identity: NativeRootIdentity,
     complete: bool,
     original_work: Option<crate::NativeMaterializationWork>,
-    root_allocation: Option<crate::NativeAllocation>,
+    _root_allocation: Option<crate::NativeAllocation>,
     pending_source_watch: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
     owner_allocation: Option<crate::NativeAllocation>,
 }
@@ -1286,7 +1286,7 @@ impl NativeWatch {
             epoch: 0, next_sequence: 0,
             rescan_in_progress: false, root_identity, complete,
             original_work: original.map(crate::NativeMaterializationWork::allocation_work),
-            root_allocation, owner_allocation: None,
+            _root_allocation: root_allocation, owner_allocation: None,
             pending_source_watch: None,
         };
         if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {

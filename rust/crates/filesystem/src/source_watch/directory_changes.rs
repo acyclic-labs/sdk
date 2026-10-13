@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
-use crate::performance::{WorkBudget, WorkCounters};
+use crate::performance::WorkCounters;
 use windows::Win32::Foundation::{
     ERROR_INVALID_FUNCTION, ERROR_IO_INCOMPLETE, ERROR_NOT_FOUND, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
     CloseHandle, HANDLE, WAIT_OBJECT_0,
@@ -164,14 +164,6 @@ fn create_reader<W: SourceDemandReadWork>(reader: &Arc<Shared>, work: &mut W) ->
 unsafe impl Send for Reads {}
 
 impl NativeSourceWatch {
-    pub(crate) fn start_platform(
-        directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>,
-    ) -> io::Result<Self> {
-        let cancellation = crate::cancellation::CancellationToken::new();
-        Self::start_driver(directory, delivery,
-            &mut DemandWork::new(WorkBudget::UNBOUNDED, &cancellation)).map_err(ordinary_error)
-    }
-
     pub(crate) fn start_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>, work: &mut W,
     ) -> Result<Self, DemandError> {
