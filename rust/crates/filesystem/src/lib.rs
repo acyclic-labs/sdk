@@ -225,7 +225,7 @@ pub use kernel::{
 };
 pub use lazy_workspace::{
     LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay,
-    LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
+    LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
     LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore, SelectedImportPlan,
     NativePublicationSnapshot,

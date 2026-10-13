@@ -53,9 +53,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let mut changes = Owned::allocate(paths.value.len() + plan.entries.len(), ctx)?;
         let result = async {
             for path in &paths.value {
-                self.stage_selected_path(&mut baseline.checkout, destination, path, ctx)
+                self.stage_selected_path(&mut baseline, destination, path, ctx)
                     .await?;
-                self.stage_selected_path(&mut transaction.checkout, current, path, ctx)
+                self.stage_selected_path(&mut transaction, current, path, ctx)
                     .await?;
                 let before = self
                     .authored_record(&mut baseline.checkout, path, ctx)
@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         continue;
                     }
                     if !self
-                        .stage_selected_path(&mut transaction.checkout, current, parent, ctx)
+                        .stage_selected_path(&mut transaction, current, parent, ctx)
                         .await?
                         .is_some_and(|(record, _)| record.kind == FileKind::Directory)
                     {
@@ -211,12 +211,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     #[cfg(feature = "native-mount")]
     async fn stage_selected_path(
         &self,
-        checkout: &mut crate::Checkout<A, O>,
+        transaction: &mut crate::Transaction<A, O>,
         cut: LazySnapshotRef,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<(FileRecord, FileMetadata)>, LazyWorkspaceError> {
-        if let Some(record) = self.authored_record(checkout, path, ctx).await? {
+        if let Some(record) = self
+            .authored_record(&mut transaction.checkout, path, ctx)
+            .await?
+        {
             return Ok(Some(record));
         }
         let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
@@ -228,11 +231,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             if matches!(&lookup,LazyLookup::Authored { path: original,.. } if original == path) {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            let expected = self.stable_file_id_for_lookup(path, &lookup, ctx).await?;
             let maximum = ctx.remaining()?.source_bytes_read;
-            self.stage_into_checkout(checkout, Some(cut), path, expected, maximum, ctx)
+            if let Some(parent) = parent_path(path) {
+                accounted!(ctx, |work, cancel| transaction
+                    .create_dir_all(parent, work, cancel))?;
+            }
+            self.apply_resolved_promotion(transaction, path, &lookup, maximum, ctx)
                 .await?;
-            self.authored_record(checkout, path, ctx).await
+            self.authored_record(&mut transaction.checkout, path, ctx)
+                .await
         }
         .await;
         self.retire_lookup((lookup, guard), ctx)?;

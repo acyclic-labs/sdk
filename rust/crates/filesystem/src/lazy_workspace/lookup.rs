@@ -28,8 +28,10 @@ pub enum LazyLookup {
     Authored {
         /// Exact binding path.
         path: String,
-        /// Authenticated scalar facts.
-        stat: WorkspaceStat,
+        /// Authenticated immutable file record.
+        record: FileRecord,
+        /// Authenticated scalar metadata.
+        metadata: crate::WorkspaceMetadata,
     },
     /// Latest authored data shared by unresolved aliases.
     Shadow {
@@ -50,18 +52,10 @@ pub enum LazyLookup {
 }
 
 impl LazyLookup {
-    /// Retained heap backing.
-    pub fn logical_owned_bytes(&self) -> u64 {
-        match self {
-            Self::Authored { path, .. } => path.capacity() as u64,
-            _ => 0,
-        }
-    }
     /// Scalar classification.
     pub fn stat(&self) -> LazyStat {
         let (kind, logical_bytes, authored) = match self {
-            Self::Authored { stat, .. } => (source_kind(stat.kind), stat.logical_bytes, true),
-            Self::Shadow { record, .. } => (
+            Self::Authored { record, .. } | Self::Shadow { record, .. } => (
                 source_kind(record.kind),
                 record_logical_bytes(*record),
                 true,
@@ -77,8 +71,7 @@ impl LazyLookup {
     /// Scalar metadata without following symbolic links.
     pub fn metadata(&self) -> crate::WorkspaceMetadata {
         match self {
-            Self::Authored { stat, .. } => stat.metadata,
-            Self::Shadow { metadata, .. } => *metadata,
+            Self::Authored { metadata, .. } | Self::Shadow { metadata, .. } => *metadata,
             Self::Source { node, .. } => {
                 crate::WorkspaceMetadata::from_engine(source_file_metadata(node.metadata))
             }
@@ -206,7 +199,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 return Ok((
                     Some(LazyLookup::Authored {
                         path: path.value,
-                        stat: authored_stat(authored.record, authored.metadata),
+                        record: authored.record,
+                        metadata: crate::WorkspaceMetadata::from_engine(authored.metadata),
                     }),
                     false,
                     path.allocation,
@@ -323,8 +317,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         match lookup {
             LazyLookup::Source { node, .. } => self.source_file_id(&node.file_identity, ctx),
             LazyLookup::Shadow { record, .. } => Ok(record.file_id),
-            LazyLookup::Authored { stat, .. } => {
-                if stat.kind == FileKind::Directory {
+            LazyLookup::Authored { record, .. } => {
+                if record.kind == FileKind::Directory {
                     let state = self.state(ctx).await?;
                     if let Some(LazyOverlayChange::Observe { node, .. }) =
                         self.overlay_fact(state.overlay, path, ctx).await?
@@ -333,7 +327,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         return self.source_file_id(&node.file_identity, ctx);
                     }
                 }
-                Ok(stat.file_id)
+                Ok(record.file_id)
             }
         }
     }
@@ -344,18 +338,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         lookup: (LazyLookup, KernelOwnedAllocation),
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let bytes = lookup.0.logical_owned_bytes();
+        let bytes = match &lookup.0 {
+            LazyLookup::Authored { path, .. } => path.capacity() as u64,
+            _ => 0,
+        };
         drop(lookup.0);
         Ok(crate::kernel::retire_allocation(lookup.1, bytes, ctx)?)
-    }
-}
-
-pub(super) fn authored_stat(record: FileRecord, metadata: FileMetadata) -> WorkspaceStat {
-    WorkspaceStat {
-        file_id: record.file_id,
-        kind: record.kind,
-        link_count: record.link_count,
-        logical_bytes: record_logical_bytes(record),
-        metadata: crate::WorkspaceMetadata::from_engine(metadata),
     }
 }

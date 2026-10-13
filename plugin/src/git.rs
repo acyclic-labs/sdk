@@ -72,7 +72,7 @@ impl PluginGitExecutor<'_> {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
                 let lazy = self
                     .lazy_current
-                    .open_related(workspace)
+                    .open_related(workspace, &mut acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()))
                     .await
                     .map_err(display)?;
                 let snapshot_bytes = snapshot.id.into_bytes();
@@ -340,7 +340,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let workspace = self.workspace(*workspace_id).await?;
                 let lazy_workspace = self
                     .lazy_current
-                    .open_related(workspace.clone())
+                    .open_related(workspace.clone(), &mut acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()))
                     .await
                     .map_err(display)?;
                 let tree = GitTreeRef::Lazy(

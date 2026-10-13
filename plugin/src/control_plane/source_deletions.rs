@@ -75,7 +75,7 @@ impl ControlPlane {
                 for (path, deleted) in tombstones {
                     let beneath = format!("{path}/");
                     if child_head.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok()
-                        || view.current_source_version(&path).await.map_err(display)? != Some(deleted)
+                        || view.current_source_version(&path, &mut acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map_err(display)? != Some(deleted)
                         || changed
                             .range(beneath.clone()..)
                             .next()

@@ -191,10 +191,7 @@ where
         work.cancellation()
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
-        Ok(crate::NativePublicationSnapshot::unchanged(
-            self.snapshot_context(),
-            self.expected_generation,
-        ))
+        Ok(crate::NativePublicationSnapshot { context: self.snapshot_context(), operation: None, generation: self.expected_generation })
     }
 
     fn snapshot_context(&self) -> crate::lazy_workspace::NativeSnapshotContext {

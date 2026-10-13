@@ -84,73 +84,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let state =
                 LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
             let frozen = async {
-                for path in paths.value.drain(..) {
+                for path in &mut paths.value {
+                    let (lookup, source, guard) = self
+                        .inspect_unauthored(
+                            &mut checkout.value,
+                            path,
+                            Some(cut),
+                            InspectBasis {
+                                state: Some(&state),
+                                retain_pinned_observation: true,
+                                ..InspectBasis::default()
+                            },
+                            ctx,
+                        )
+                        .await?;
+                    used |= source;
+                    let record = match &lookup {
+                        None => Ok(None),
+                        Some(LazyLookup::Source { .. }) => Err(LazyWorkspaceError::UnsupportedNode),
+                        Some(
+                            LazyLookup::Shadow { record, .. } | LazyLookup::Authored { record, .. },
+                        ) => crate::facade::read_record_metadata_to_file_root_with_accounting(
+                            &self.workspace.volume,
+                            *record,
+                            ctx,
+                            cancellation(ctx),
+                        )
+                        .await
+                        .map(|meta| Some((*record, meta)))
+                        .map_err(LazyWorkspaceError::from),
+                    };
+                    if let Some(lookup) = lookup {
+                        self.retire_lookup((lookup, guard), ctx)?;
+                    } else {
+                        crate::kernel::retire_allocation(guard, 0, ctx)?;
+                    }
+                    let record = record?;
                     let bytes = path.capacity() as u64;
                     let guard = crate::kernel::split_allocation(&mut paths.allocation, bytes)?;
                     paths.bytes -= bytes;
-                    let mut path = Some(Owned::new(path, guard, bytes));
-                    let captured = async {
-                        let name = &path.as_ref().expect("path retained").value;
-                        let (lookup, source, guard) = self
-                            .inspect_unauthored(
-                                &mut checkout.value,
-                                name,
-                                Some(cut),
-                                InspectBasis {
-                                    state: Some(&state),
-                                    retain_pinned_observation: true,
-                                    ..InspectBasis::default()
-                                },
-                                ctx,
-                            )
-                            .await?;
-                        used |= source;
-                        let record = match &lookup {
-                            None => Ok(None),
-                            Some(LazyLookup::Source { .. }) => {
-                                Err(LazyWorkspaceError::UnsupportedNode)
-                            }
-                            Some(LazyLookup::Shadow { record, .. }) => {
-                                crate::facade::read_record_metadata_to_file_root_with_accounting(
-                                    &self.workspace.volume,
-                                    *record,
-                                    ctx,
-                                    cancellation(ctx),
-                                )
-                                .await
-                                .map(|meta| Some((*record, meta)))
-                                .map_err(Into::into)
-                            }
-                            Some(LazyLookup::Authored { .. }) => {
-                                self.authored_record(&mut checkout.value, name, ctx).await
-                            }
-                        };
-                        if let Some(lookup) = lookup {
-                            self.retire_lookup((lookup, guard), ctx)?;
-                        } else {
-                            crate::kernel::retire_allocation(guard, 0, ctx)?;
-                        }
-                        let record = record?;
-                        let path = path.take().expect("captured path");
-                        crate::Transaction::<A, O>::push_mutation(
-                            &mut entries,
-                            Owned::new(
-                                SelectedImportRecord {
-                                    path: path.value,
-                                    record,
-                                },
-                                path.allocation,
-                                path.bytes,
-                            ),
-                            ctx,
-                        )?;
-                        Ok::<_, LazyWorkspaceError>(())
-                    }
-                    .await;
-                    if let Some(path) = path {
-                        path.retire(ctx)?;
-                    }
-                    captured?;
+                    crate::Transaction::<A, O>::push_mutation(
+                        &mut entries,
+                        Owned::new(
+                            SelectedImportRecord {
+                                path: std::mem::take(path),
+                                record,
+                            },
+                            guard,
+                            bytes,
+                        ),
+                        ctx,
+                    )?;
                 }
                 Ok::<_, LazyWorkspaceError>(())
             }
@@ -190,7 +174,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         roots: &[String],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
         let mut paths = Owned::allocate(roots.len(), ctx)?;
         let mut used = false;
