@@ -14,7 +14,7 @@ pub(super) async fn settled_sparse_ranges(
 
     const BLOCK: u64 = 4096;
     const CHUNK: u64 = 1 << 20;
-    if metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE.0 == 0 {
+    if metadata.raw.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE.0 == 0 {
         return Ok(reported);
     }
 

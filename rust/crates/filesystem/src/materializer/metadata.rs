@@ -80,7 +80,7 @@ fn hash_native_metadata_edit(
         &u64::from(
             desired
                 .and_then(|value| value.posix_mode)
-                .unwrap_or_else(|| metadata.mode()),
+                .unwrap_or_else(|| (metadata.raw.st_mode as u32)),
         )
         .to_le_bytes(),
         hasher,
@@ -91,9 +91,9 @@ fn hash_native_metadata_edit(
         let attributes = desired
             .and_then(|value| value.windows_attributes)
             .unwrap_or_else(|| match desired {
-                Some(value) if value.readonly => metadata.file_attributes() | 1,
-                Some(_) => metadata.file_attributes() & !1,
-                None => metadata.file_attributes(),
+                Some(value) if value.readonly => metadata.raw.FileAttributes | 1,
+                Some(_) => metadata.raw.FileAttributes & !1,
+                None => metadata.raw.FileAttributes,
             });
         let attributes = if attributes & !0x80 == 0 {
             0x80
@@ -116,17 +116,17 @@ fn hash_native_entry(
     {
         for value in [
             metadata.nlink(),
-            u64::from(metadata.uid()),
-            u64::from(metadata.gid()),
-            metadata.rdev(),
+            u64::from((metadata.raw.st_uid as u32)),
+            u64::from((metadata.raw.st_gid as u32)),
+            (metadata.raw.st_rdev as u64),
         ] {
             hash_bytes(&value.to_le_bytes(), hasher, work)?;
         }
-        hash_bytes(&metadata.mtime().to_le_bytes(), hasher, work)?;
-        hash_bytes(&metadata.mtime_nsec().to_le_bytes(), hasher, work)?;
+        hash_bytes(&(metadata.raw.st_mtime as i64).to_le_bytes(), hasher, work)?;
+        hash_bytes(&(metadata.raw.st_mtime_nsec as i64).to_le_bytes(), hasher, work)?;
     }
     #[cfg(windows)]
-    hash_bytes(&metadata.last_write_time().to_le_bytes(), hasher, work)?;
+    hash_bytes(&(metadata.raw.LastWriteTime as u64).to_le_bytes(), hasher, work)?;
     let kind = metadata.file_type();
     if kind.is_symlink() {
         #[cfg(unix)]
@@ -215,15 +215,15 @@ fn hash_native_entry(
 pub(super) fn native_metadata(metadata: &HostStat) -> NativeMetadataImage {
     NativeMetadataImage {
         #[cfg(unix)]
-        readonly: metadata.mode() & 0o222 == 0,
+        readonly: (metadata.raw.st_mode as u32) & 0o222 == 0,
         #[cfg(windows)]
-        readonly: metadata.file_attributes() & 1 != 0,
+        readonly: metadata.raw.FileAttributes & 1 != 0,
         #[cfg(unix)]
-        posix_mode: Some(metadata.mode()),
+        posix_mode: Some((metadata.raw.st_mode as u32)),
         #[cfg(not(unix))]
         posix_mode: None,
         #[cfg(windows)]
-        windows_attributes: Some(metadata.file_attributes()),
+        windows_attributes: Some(metadata.raw.FileAttributes),
         #[cfg(not(windows))]
         windows_attributes: None,
     }
@@ -283,9 +283,9 @@ pub(super) fn apply_native_metadata(
     {
         let attributes = desired.windows_attributes.unwrap_or_else(|| {
             if desired.readonly {
-                actual.file_attributes() | 1
+                actual.raw.FileAttributes | 1
             } else {
-                actual.file_attributes() & !1
+                actual.raw.FileAttributes & !1
             }
         });
         use std::os::windows::io::AsRawHandle as _;

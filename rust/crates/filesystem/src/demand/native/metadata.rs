@@ -19,20 +19,20 @@ fn version(metadata: &HostStat) -> SourceVersion {
     hash.update(&metadata.len().to_le_bytes());
     #[cfg(unix)]
     {
-        hash.update(&metadata.dev().to_le_bytes());
-        hash.update(&metadata.ino().to_le_bytes());
-        hash.update(&metadata.mtime().to_le_bytes());
-        hash.update(&metadata.mtime_nsec().to_le_bytes());
-        hash.update(&metadata.ctime().to_le_bytes());
-        hash.update(&metadata.ctime_nsec().to_le_bytes());
+        hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
+        hash.update(&(metadata.raw.st_ino as u64).to_le_bytes());
+        hash.update(&(metadata.raw.st_mtime as i64).to_le_bytes());
+        hash.update(&(metadata.raw.st_mtime_nsec as i64).to_le_bytes());
+        hash.update(&(metadata.raw.st_ctime as i64).to_le_bytes());
+        hash.update(&(metadata.raw.st_ctime_nsec as i64).to_le_bytes());
     }
     #[cfg(windows)]
     {
-        hash.update(&metadata.file_attributes().to_le_bytes());
-        hash.update(&metadata.last_write_time().to_le_bytes());
-        hash.update(&metadata.creation_time().to_le_bytes());
-        hash.update(&metadata.volume_serial_number().to_le_bytes());
-        hash.update(&metadata.file_index().to_le_bytes());
+        hash.update(&metadata.raw.FileAttributes.to_le_bytes());
+        hash.update(&(metadata.raw.LastWriteTime as u64).to_le_bytes());
+        hash.update(&(metadata.raw.CreationTime as u64).to_le_bytes());
+        hash.update(&metadata.volume_serial_number.to_le_bytes());
+        hash.update(&(metadata.raw.FileId as u64).to_le_bytes());
     }
     SourceVersion(*hash.finalize().as_bytes())
 }
@@ -42,8 +42,8 @@ fn version(metadata: &HostStat) -> SourceVersion {
 fn file_identity(metadata: &HostStat) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
-    hash.update(&metadata.dev().to_le_bytes());
-    hash.update(&metadata.ino().to_le_bytes());
+    hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
+    hash.update(&(metadata.raw.st_ino as u64).to_le_bytes());
     if let Some(born) = metadata
         .created()
         .ok()
@@ -57,8 +57,8 @@ fn file_identity(metadata: &HostStat) -> [u8; 32] {
 #[cfg(windows)]
 fn file_identity(metadata: &HostStat) -> [u8; 32] {
     windows_file_identity(
-        u64::from(metadata.volume_serial_number()),
-        metadata.file_index(),
+        u64::from(metadata.volume_serial_number),
+        (metadata.raw.FileId as u64),
     )
 }
 
@@ -85,7 +85,7 @@ fn device_identity(metadata: &HostStat, kind: SourceNodeKind) -> Option<(u32, u3
         ) {
             return None;
         }
-        let raw: libc::dev_t = metadata.rdev().try_into().ok()?;
+        let raw: libc::dev_t = (metadata.raw.st_rdev as u64).try_into().ok()?;
         Some((
             libc::major(raw).try_into().ok()?,
             libc::minor(raw).try_into().ok()?,
@@ -107,15 +107,15 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
     };
     #[cfg(unix)]
     {
-        result.posix_mode = Some(metadata.mode());
-        result.posix_uid = Some(metadata.uid());
-        result.posix_gid = Some(metadata.gid());
+        result.posix_mode = Some((metadata.raw.st_mode as u32));
+        result.posix_uid = Some((metadata.raw.st_uid as u32));
+        result.posix_gid = Some((metadata.raw.st_gid as u32));
         result.changed_ns =
-            Some(i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()));
+            Some(i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000 + i128::from((metadata.raw.st_ctime_nsec as i64)));
     }
     #[cfg(windows)]
     {
-        result.windows_attributes = Some(metadata.file_attributes());
+        result.windows_attributes = Some(metadata.raw.FileAttributes);
     }
     result
 }
