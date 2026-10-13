@@ -7,130 +7,135 @@ use acyclic_harness::filesystem::PreparationIo;
     clippy::too_many_arguments,
     reason = "actual caller, original protected creator and bounded producers"
 )]
-pub(crate) async fn bind_root_output_context_with_native_work(
+pub(crate) fn bind_root_output_context_with_native_work<'a>(
     context: Arc<acyclic_harness::runtime::TaskContext>,
-    current_owner: &Arc<TaskJournalOwner<LocalStream>>,
+    current_owner: &'a Arc<TaskJournalOwner<LocalStream>>,
     owner: Arc<PiOwnerConfig>,
-    resources: &ServiceResources,
+    resources: &'a ServiceResources,
     filesystem: Arc<Host>,
     stream: Arc<LocalStream>,
-    binding: &crate::PiTaskBinding,
-    root: &PiRootIntent,
-    work: &NativeMaterializationWork,
-) -> Result<Arc<acyclic_harness::runtime::TaskContext>> {
-    work.admit(WorkCounters::UNCHARGED)?;
-    let invalid = || Error::NativeBoundary {
-        code: ErrorCode::Unauthorized,
-        reason: "root output context differs from its original admitted task scope",
-    };
-    if context.durable_task_id() != Some(current_owner.task_id())
-        || current_owner.task_id() != owner.policy().root_task
-        || context.scope().grants() != &owner.policy().grants
-        || binding.task_id != owner.policy().root_task
-    {
-        return Err(invalid());
-    }
-    current_owner.require_volume_grant(
-        &binding.scratch.volume,
-        VolumeOperation::Write,
-        &mut Some(&mut &PreparationIo::from_native_work(work)?),
-    )?;
-    current_owner
-        .verify(
-            false,
-            &mut Some(&mut &PreparationIo::from_native_work(work)?),
-        )
-        .await?;
-    let preparation = load_original_preparation_with_native_work(
-        &owner,
-        &filesystem,
-        binding,
-        root,
-        Arc::clone(&context),
-        work,
-    )
-    .await?;
-    let observer = root_provider(
-        owner,
-        resources,
-        Arc::clone(&filesystem),
-        stream,
-        preparation,
-        None,
-        work.clone(),
-    )?;
-    let effect = observer.effect_id_with_native_work(work)?;
-    let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
-    let (scratch, operation, _scratch_custody) = observer
-        .prove_scratch_allocation_with_native_work(attempt, work)
-        .await?
-        .ok_or_else(invalid)?;
-    let binding = &observer.preparation.request.binding;
-    let (authority, custody) = observer.owner.conversation_authority_with_native_work(
-        binding.task_id,
-        binding.agent_id,
-        &observer.owner.policy().grants,
-        work,
-    )?;
-    crate::pi_conversation::bind_task_conversation(
-        &observer.stream,
-        (authority, custody),
-        current_owner,
-        &binding.scratch.volume,
-        operation,
-        observer.owner.policy().limits,
-        work,
-    )
-    .await?;
-    let generation = observer
-        .creation_with_native_work(
-            effect,
-            attempt,
-            "scratch",
+    binding: &'a crate::PiTaskBinding,
+    root: &'a PiRootIntent,
+    work: &'a NativeMaterializationWork,
+) -> impl std::future::Future<Output = Result<Arc<acyclic_harness::runtime::TaskContext>>> + Send + 'a
+{
+    async move {
+        work.admit(WorkCounters::UNCHARGED)?;
+        let invalid = || Error::NativeBoundary {
+            code: ErrorCode::Unauthorized,
+            reason: "root output context differs from its original admitted task scope",
+        };
+        if context.durable_task_id() != Some(current_owner.task_id())
+            || current_owner.task_id() != owner.policy().root_task
+            || context.scope().grants() != &owner.policy().grants
+            || binding.task_id != owner.policy().root_task
+        {
+            return Err(invalid());
+        }
+        current_owner.require_volume_grant(
             &binding.scratch.volume,
-            VolumeConfig::portable(Lifecycle::Durable),
+            VolumeOperation::Write,
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
+        )?;
+        current_owner
+            .verify(
+                false,
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
+            )
+            .await?;
+        let preparation = load_original_preparation_with_native_work(
+            &owner,
+            &filesystem,
+            binding,
+            root,
+            Arc::clone(&context),
             work,
         )
-        .await?
-        .ok_or_else(invalid)?;
-    let actual = observer.scratch_creation_with_native_work(&generation, work)?;
-    if actual.0.workspace_id != scratch.workspace_id || actual.0.generation != scratch.generation {
-        return Err(invalid());
-    }
-    let authority = observer.owner.conversation_authority_with_native_work(
-        binding.task_id,
-        binding.agent_id,
-        &observer.owner.policy().grants,
-        work,
-    )?;
-    let verifier = {
-        let mut io =
-            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody()?)
-    };
-    let io = PreparationIo::from_native_work(work)?;
-    let maximum = context.scope().limits().file_bytes.min(observer.maximum());
-    let output = acyclic_harness::runtime::ContentBindings {
-        reader: acyclic_harness::filesystem::FilesystemContentVerifier::new(
+        .await?;
+        let observer = root_provider(
+            owner,
+            resources,
             Arc::clone(&filesystem),
-            &verifier.0,
-            &authority.0.2,
-            maximum,
-            Some(&io),
-        )?,
-        writer: Some(
-            acyclic_harness::filesystem::FilesystemContentPublisher::new(
-                filesystem,
+            stream,
+            preparation,
+            None,
+            work.clone(),
+        )?;
+        let effect = observer.effect_id_with_native_work(work)?;
+        let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
+        let (scratch, operation, _scratch_custody) = observer
+            .prove_scratch_allocation_with_native_work(attempt, work)
+            .await?
+            .ok_or_else(invalid)?;
+        let binding = &observer.preparation.request.binding;
+        let (authority, custody) = observer.owner.conversation_authority_with_native_work(
+            binding.task_id,
+            binding.agent_id,
+            &observer.owner.policy().grants,
+            work,
+        )?;
+        crate::pi_conversation::bind_task_conversation(
+            &observer.stream,
+            (authority, custody),
+            current_owner,
+            &binding.scratch.volume,
+            operation,
+            observer.owner.policy().limits,
+            work,
+        )
+        .await?;
+        let generation = observer
+            .creation_with_native_work(
+                effect,
+                attempt,
+                "scratch",
                 &binding.scratch.volume,
+                VolumeConfig::portable(Lifecycle::Durable),
+                work,
+            )
+            .await?
+            .ok_or_else(invalid)?;
+        let actual = observer.scratch_creation_with_native_work(&generation, work)?;
+        if actual.0.workspace_id != scratch.workspace_id
+            || actual.0.generation != scratch.generation
+        {
+            return Err(invalid());
+        }
+        let authority = observer.owner.conversation_authority_with_native_work(
+            binding.task_id,
+            binding.agent_id,
+            &observer.owner.policy().grants,
+            work,
+        )?;
+        let verifier = {
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+            let value = authority.0.1.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody()?)
+        };
+        let io = PreparationIo::from_native_work(work)?;
+        let maximum = context.scope().limits().file_bytes.min(observer.maximum());
+        let output = acyclic_harness::runtime::ContentBindings {
+            reader: acyclic_harness::filesystem::FilesystemContentVerifier::new(
+                Arc::clone(&filesystem),
                 &verifier.0,
                 &authority.0.2,
                 maximum,
                 Some(&io),
             )?,
-        ),
-    };
-    context.with_output_bindings(output).await
+            writer: Some(
+                acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                    filesystem,
+                    &binding.scratch.volume,
+                    &verifier.0,
+                    &authority.0.2,
+                    maximum,
+                    Some(&io),
+                )?,
+            ),
+        };
+        context.with_output_bindings(output).await
+    }
 }
 impl PiRootProvider {
     pub(crate) async fn observe_allocation_with_native_work(

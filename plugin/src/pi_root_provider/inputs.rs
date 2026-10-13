@@ -122,7 +122,8 @@ fn stage_pi_input_namespace_with_native_work<'a, T: Serialize + Sync>(
     work: &'a NativeMaterializationWork,
     directory: &'static str,
     purpose: &'static str,
-) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a + use<'a, T> {
+) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a + use<'a, T>
+{
     let coordinates =
         pi_input_coordinates_with_native_work(owner, operation, label, directory, purpose, work);
     async move {
@@ -384,95 +385,94 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
     Ok(decoded)
 }
 
-pub(crate) async fn load_original_preparation_with_native_work(
-    owner: &PiOwnerConfig,
-    filesystem: &Host,
-    expected_binding: &crate::PiTaskBinding,
-    expected_root: &PiRootIntent,
+pub(crate) fn load_original_preparation_with_native_work<'a>(
+    owner: &'a PiOwnerConfig,
+    filesystem: &'a Host,
+    expected_binding: &'a crate::PiTaskBinding,
+    expected_root: &'a PiRootIntent,
     context: Arc<acyclic_harness::runtime::TaskContext>,
-    work: &NativeMaterializationWork,
-) -> Result<PiRootPreparation> {
-    let missing = || Error::NativeBoundary {
-        code: ErrorCode::Unauthorized,
-        reason: "original root preparation upload operation is absent",
-    };
-    let mut payload =
-        observe_pi_root_input_with_native_work(owner, filesystem, "preparation", work)
+    work: &'a NativeMaterializationWork,
+) -> impl std::future::Future<Output = Result<PiRootPreparation>> + Send + 'a {
+    async move {
+        let missing = || Error::NativeBoundary {
+            code: ErrorCode::Unauthorized,
+            reason: "original root preparation upload operation is absent",
+        };
+        let mut payload =
+            observe_pi_root_input_with_native_work(owner, filesystem, "preparation", work)
+                .await?
+                .ok_or_else(missing)?;
+        let plan = read_root_artifact_with_native_work::<
+            acyclic_harness::effect_host::TaskEffectPlan,
+        >(owner, context.as_ref(), &payload.0, work)
+        .await?;
+        let root = observe_pi_root_input_with_native_work(owner, filesystem, "root", work)
             .await?
             .ok_or_else(missing)?;
-    let plan = read_root_artifact_with_native_work::<acyclic_harness::effect_host::TaskEffectPlan>(
-        owner,
-        context.as_ref(),
-        &payload.0,
-        work,
-    )
-    .await?;
-    let root = observe_pi_root_input_with_native_work(owner, filesystem, "root", work)
-        .await?
-        .ok_or_else(missing)?;
-    let schema_reference =
-        observe_pi_root_input_with_native_work(owner, filesystem, "allocation-schema", work)
-            .await?
-            .ok_or_else(missing)?;
-    if plan.0.provider != ROOT_ALLOCATION_PROVIDER
-        || plan.0.effect_kind != ROOT_ALLOCATION_EFFECT
-        || plan.0.guarantee != EffectGuarantee::AtMostOnce
-        || plan.0.request != root.0
-        || plan.0.result_schema != schema_reference.0
-    {
-        return Err(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "original root plan differs from canonical input operations",
-        });
+        let schema_reference =
+            observe_pi_root_input_with_native_work(owner, filesystem, "allocation-schema", work)
+                .await?
+                .ok_or_else(missing)?;
+        if plan.0.provider != ROOT_ALLOCATION_PROVIDER
+            || plan.0.effect_kind != ROOT_ALLOCATION_EFFECT
+            || plan.0.guarantee != EffectGuarantee::AtMostOnce
+            || plan.0.request != root.0
+            || plan.0.result_schema != schema_reference.0
+        {
+            return Err(Error::NativeBoundary {
+                code: ErrorCode::Unauthorized,
+                reason: "original root plan differs from canonical input operations",
+            });
+        }
+        let request = read_root_artifact_with_native_work::<PiRootRequest>(
+            owner,
+            context.as_ref(),
+            &root.0,
+            work,
+        )
+        .await?;
+        if &request.0.binding != expected_binding || &request.0.root != expected_root {
+            return Err(Error::NativeBoundary {
+                code: ErrorCode::Unauthorized,
+                reason: "root request differs from original canonical input",
+            });
+        }
+        let schema = read_root_artifact_with_native_work::<serde_json::Value>(
+            owner,
+            context.as_ref(),
+            &schema_reference.0,
+            work,
+        )
+        .await?;
+        let expected_schema = PiRootAllocation::schema(&request.0.binding, work)?;
+        if schema.0 != expected_schema.0 {
+            return Err(Error::NativeBoundary {
+                code: ErrorCode::Unauthorized,
+                reason: "original root allocation schema differs",
+            });
+        }
+        let mut kind = work.display(acyclic_harness::filesystem::EFFECT_TASK_COMMAND_KIND)?;
+        payload.1.absorb(&mut kind.1)?;
+        let mut plan_custody = plan.1;
+        let mut request_custody = request.1;
+        let mut preparation = PiRootPreparation {
+            command: acyclic_harness::workflow::WorkflowCommand {
+                operation_id: crate::pi_root_inputs::preparation_operation(
+                    owner.policy().root_task,
+                    work,
+                )?,
+                kind: kind.0,
+                payload: payload.0,
+            },
+            plan: plan.0,
+            request: request.0,
+            context,
+            custody: payload.1,
+        };
+        preparation.custody.absorb(&mut plan_custody)?;
+        preparation.custody.absorb(&mut request_custody)?;
+        Ok(preparation)
     }
-    let request = read_root_artifact_with_native_work::<PiRootRequest>(
-        owner,
-        context.as_ref(),
-        &root.0,
-        work,
-    )
-    .await?;
-    if &request.0.binding != expected_binding || &request.0.root != expected_root {
-        return Err(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "root request differs from original canonical input",
-        });
-    }
-    let schema = read_root_artifact_with_native_work::<serde_json::Value>(
-        owner,
-        context.as_ref(),
-        &schema_reference.0,
-        work,
-    )
-    .await?;
-    let expected_schema = PiRootAllocation::schema(&request.0.binding, work)?;
-    if schema.0 != expected_schema.0 {
-        return Err(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "original root allocation schema differs",
-        });
-    }
-    let mut kind = work.display(acyclic_harness::filesystem::EFFECT_TASK_COMMAND_KIND)?;
-    payload.1.absorb(&mut kind.1)?;
-    let mut plan_custody = plan.1;
-    let mut request_custody = request.1;
-    let mut preparation = PiRootPreparation {
-        command: acyclic_harness::workflow::WorkflowCommand {
-            operation_id: crate::pi_root_inputs::preparation_operation(
-                owner.policy().root_task,
-                work,
-            )?,
-            kind: kind.0,
-            payload: payload.0,
-        },
-        plan: plan.0,
-        request: request.0,
-        context,
-        custody: payload.1,
-    };
-    preparation.custody.absorb(&mut plan_custody)?;
-    preparation.custody.absorb(&mut request_custody)?;
-    Ok(preparation)
 }
 
 pub(super) struct NativeInputCoordinates {
