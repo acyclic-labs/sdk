@@ -5,9 +5,9 @@ import { readPackage } from "../src/package.mjs";
 import { sha256 } from "../../../shared/authority.mjs";
 import { fixture } from "./fixtures/package.mjs";
 
-test("archive admission verifies all 14 payload files against the producer and Rust export", t => {
+test("archive admission verifies every payload file against the producer and Rust export", t => {
   const f = fixture(t), admitted = readPackage(f.args);
-  assert.equal(admitted.payload.size, 14);
+  assert.equal(admitted.payload.size, f.payload.size);
   for (const [name, bytes] of admitted.payload) assert.deepEqual(bytes, f.payload.get(name));
 });
 
