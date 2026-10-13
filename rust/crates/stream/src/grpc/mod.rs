@@ -65,7 +65,6 @@ pub enum ConnectError {
 pub struct Client {
     channel: Channel,
     authorization: MetadataValue<Ascii>,
-    acknowledge_deliveries: bool,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -115,8 +114,7 @@ impl Client {
         certificate_pem: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token)?;
-        let endpoint =
-            Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+        let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
         if endpoint.uri().scheme_str() != Some("https") {
             return Err(ConnectError::InsecureEndpoint);
         }
@@ -138,7 +136,6 @@ impl Client {
         Self {
             channel,
             authorization,
-            acknowledge_deliveries: true,
         }
     }
 
@@ -198,7 +195,11 @@ impl Client {
             if !retryable(&error) {
                 return Err(status(&error));
             }
-            tracing::warn!(attempt, rpc.code = error.code() as u64, "stream rpc retried");
+            tracing::warn!(
+                attempt,
+                rpc.code = error.code() as u64,
+                "stream rpc retried"
+            );
             tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
                 .await;
             if tokio::time::Instant::now() >= deadline {
@@ -211,7 +212,9 @@ impl Client {
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
     if bearer_token.trim().is_empty()
         || bearer_token.len() > MAX_BEARER_TOKEN_BYTES
-        || bearer_token.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
+        || bearer_token
+            .bytes()
+            .any(|byte| matches!(byte, b'\r' | b'\n'))
     {
         return Err(ConnectError::InvalidCredential);
     }
@@ -246,7 +249,11 @@ fn retryable(error: &Status) -> bool {
             }
         } else if current
             .downcast_ref::<std::io::Error>()
-            .or_else(|| current.downcast_ref::<h2::Error>().and_then(h2::Error::get_io))
+            .or_else(|| {
+                current
+                    .downcast_ref::<h2::Error>()
+                    .and_then(h2::Error::get_io)
+            })
             .is_some_and(|error| {
                 use std::io::ErrorKind::*;
                 matches!(
@@ -307,14 +314,14 @@ fn status(error: &Status) -> StreamError {
 
 /// Records one operation's terminal result exactly once; dropping it unfinished records `cancelled`.
 struct Completion {
-    span: obs::OperationSpan,
+    span: obs::OwnedSpan,
     finished: bool,
 }
 
 impl Completion {
     fn new(span: tracing::Span) -> Self {
         Self {
-            span: obs::OperationSpan::new(span),
+            span: obs::OwnedSpan::new(span),
             finished: false,
         }
     }

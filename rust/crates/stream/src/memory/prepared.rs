@@ -23,12 +23,8 @@ pub(crate) struct PreparedCommit {
     provider: MemoryStream,
     conditions: [CommitCondition; 2],
     key: IdempotencyKey,
-    output: CommittedEnvelope,
-    cached: CommittedEnvelope,
-    history: Arc<History>,
-    conflicts: [Vec<CommitConflict>; 2],
-    resident: Allocation,
-    output_claim: Allocation,
+    plan: CommitPlan,
+    conflicts: [(Vec<CommitConflict>, Allocation); 2],
     capacity: Option<CapacityReservation>,
     inventory: Option<(VecDeque<Retained>, Allocation)>,
 }
@@ -50,7 +46,7 @@ impl MemoryStream {
         }
         normalize_commit(&mut request)?;
         validate_commit_shape(&request)?;
-        let [CommitMutation::Append { records, .. }] = request.mutations.as_slice() else {
+        let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
             return Err(StreamError::InvalidArgument);
         };
         if request.conditions.len() != 2
@@ -63,11 +59,22 @@ impl MemoryStream {
         {
             return Err(StreamError::InvalidArgument);
         }
+        let expected = request
+            .conditions
+            .iter()
+            .find_map(|condition| match condition {
+                CommitCondition::Tail {
+                    path: guarded,
+                    expected,
+                } if guarded == path => Some(*expected),
+                _ => None,
+            })
+            .expect("target guard");
         let work = self.work.as_ref().expect("prepared context");
         let meter = Arc::clone(&work.meter);
         let input = self.request_claim(&request)?;
         let maximum_hash = commit_hash_bytes(&request) + maximum as u64;
-        let state = self.state.write().await;
+        let mut state = self.state.write().await;
         let capacity = if let Some(stored) = state.replay(request.idempotency_key.as_bytes()) {
             if !matches!(stored.result, IdempotencyOutcome::Commit(_)) {
                 return Err(StreamError::IdempotencyMismatch);
@@ -104,66 +111,30 @@ impl MemoryStream {
         } else {
             None
         };
+        let mut plan = self.plan_commit(&mut state, &request, CommitId::default(), 0)?;
+        for value in [&mut plan.result, &mut plan.cached] {
+            let append = append_mut(value);
+            append.start = expected;
+            append.end = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+            append.tail = append.end;
+            append.records[0].sequence = expected;
+        }
+        history_record(&mut plan.histories[0]).sequence = expected;
+        let conflict = self.vector(2)?;
+        let (cached_conflicts, mut conflict_claim) = self.vector(2)?;
+        self.absorb(&mut conflict_claim, self.retained_claim(true, false)?)?;
+        let prototype = self.copy_commit(&plan.result)?;
+        let recovery_conflicts = self.vector(2)?;
         let conditions: [CommitCondition; 2] = request
             .conditions
             .try_into()
             .map_err(|_| StreamError::InvalidArgument)?;
-        let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
-            unreachable!()
-        };
-        let expected = conditions
-            .iter()
-            .find_map(|condition| match condition {
-                CommitCondition::Tail {
-                    path: guarded,
-                    expected,
-                } if guarded == path => Some(*expected),
-                _ => None,
-            })
-            .expect("target guard");
-        let (records, mut output_claim) =
-            self.records(records, expected, CommitId::default(), 0)?;
-        let (mut mutations, claim) = self.vector(1)?;
-        self.absorb(&mut output_claim, claim)?;
-        mutations.push(CommittedMutation::Append(crate::preparation::append_fact(
-            path.clone(),
-            expected,
-            records,
-        )?));
-        let output = CommitOutcome::Committed(CommittedEnvelope {
-            commit_id: CommitId::default(),
-            mutations,
-        });
-        let (cached, mut resident) = self.copy_commit(&output)?;
-        self.absorb(&mut resident, self.retained_claim(true, true)?)?;
-        let CommitOutcome::Committed(output) = output else {
-            unreachable!()
-        };
-        let CommitOutcome::Committed(cached) = cached else {
-            unreachable!()
-        };
-        let history = self.history(&state, &output.mutations[0])?;
-        let (conflicts, claim) = self.vector(2)?;
-        self.absorb(&mut output_claim, claim)?;
-        let (cached_conflicts, claim) = self.vector(2)?;
-        self.absorb(&mut resident, claim)?;
         drop(state);
         drop(request.mutations);
         drop(input);
         let key = request.idempotency_key;
-        let output = CommitOutcome::Committed(output);
-        let (recovery_value, mut recovery_claim) = self.copy_commit(&output)?;
-        let CommitOutcome::Committed(output) = output else {
-            unreachable!()
-        };
-        let CommitOutcome::Committed(recovery_output) = recovery_value else {
-            unreachable!()
-        };
-        let (recovery_conflicts, claim) = self.vector(2)?;
-        self.absorb(&mut recovery_claim, claim)?;
-        let recovery_conditions = conditions.clone();
         let recovery_key = key.clone();
-        let recovery_work = work.record(Work::new(Arc::clone(&meter)))?;
+        let recovery_conditions = conditions.clone();
         let mut read = work.record(NativeOperationReservation::new(
             Arc::clone(&meter),
             NativeOperationKind::Read,
@@ -187,54 +158,60 @@ impl MemoryStream {
         ))?;
         work.record(meter.admit_examination(8, 0))?;
         let state = Arc::clone(&self.state);
+        let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_new(&meter, async move {
             let state = state.read().await;
-            let (stored, observed) = read.attempt(|| state.replay(recovery_key.as_bytes()));
-            let _ = recovery_work.record(observed);
+            let (stored, mut observed) = read.attempt(|| state.replay(recovery_key.as_bytes()));
             let result = match stored {
-                None => Ok((None, recovery_claim)),
-                Some(stored) => {
-                    let result = copy_outcome(
-                        &stored.result,
-                        &recovery_conditions,
-                        maximum,
-                        recovery_output,
-                        recovery_conflicts,
-                    )
-                    .and_then(|value| {
-                        if let CommitOutcome::Committed(envelope) = &value {
+                None => Ok((None, None)),
+                Some(stored) => match copy_outcome(
+                    &stored.result,
+                    &recovery_conditions,
+                    maximum,
+                    prototype,
+                    recovery_conflicts,
+                ) {
+                    Err(error) => Err(error),
+                    Ok((value, claim)) => {
+                        observed = observed.and(bytes.record(envelope_payload_bytes(&value)));
+                        observed =
+                            observed.and(recovery_meter.record_codec(0, copied_bytes(&value), 0));
+                        let authenticated = if let CommitOutcome::Committed(_) = &value {
+                            let append = append(&value);
                             let (digest, hashed) = digest(
                                 &recovery_conditions,
-                                &append(envelope).path,
-                                &append(envelope).records[0].value,
+                                &append.path,
+                                &append.records[0].value,
                             );
-                            let _ = recovery_work
-                                .record(recovery_work.meter.record_codec(0, 0, hashed));
-                            if digest != stored.digest {
-                                return Err(StreamError::IdempotencyMismatch);
-                            }
+                            observed = observed.and(recovery_meter.record_codec(0, 0, hashed));
+                            digest == stored.digest
+                        } else {
+                            true
+                        };
+                        if authenticated {
+                            Ok((
+                                Some(IdempotencyObservation {
+                                    idempotency_key: recovery_key,
+                                    request_digest: stored.digest,
+                                    outcome: IdempotencyOutcome::Commit(value),
+                                }),
+                                claim,
+                            ))
+                        } else {
+                            Err(StreamError::IdempotencyMismatch)
                         }
-                        let _ = recovery_work.record(bytes.record(envelope_payload_bytes(&value)));
-                        let _ = recovery_work.record(recovery_work.meter.record_examination(8, 0));
-                        let _ = recovery_work.record(recovery_work.meter.record_codec(
-                            0,
-                            copied_bytes(&value),
-                            0,
-                        ));
-                        let claim = split(&mut recovery_claim, storage_bytes(&value));
-                        Ok((
-                            Some(IdempotencyObservation {
-                                idempotency_key: recovery_key,
-                                request_digest: stored.digest,
-                                outcome: IdempotencyOutcome::Commit(value),
-                            }),
-                            claim,
-                        ))
-                    });
-                    result
-                }
+                    }
+                },
             };
-            recovery_work.finish(result)
+            observed.and(recovery_meter.record_examination(8, 0))?;
+            Ok(result.map(|(value, claim)| {
+                crate::NativeStreamOutput::new(
+                    value,
+                    claim.unwrap_or_else(|| {
+                        acyclic_native_runtime::ReadAllocation::empty(&recovery_meter)
+                    }),
+                )
+            }))
         }))?;
         work.record(meter.check())?;
         Ok((
@@ -242,12 +219,8 @@ impl MemoryStream {
                 provider: self.clone(),
                 conditions,
                 key,
-                output,
-                cached,
-                history,
-                conflicts: [conflicts, cached_conflicts],
-                resident,
-                output_claim,
+                plan,
+                conflicts: [conflict, (cached_conflicts, conflict_claim)],
                 capacity,
                 inventory,
             },
@@ -262,25 +235,24 @@ impl PreparedCommit {
         body: Bytes,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         let work = Arc::clone(self.provider.work.as_ref().expect("prepared context"));
-        let (digest, hashed) = digest(&self.conditions, &append(&self.output).path, &body);
+        let (digest, hashed) = digest(&self.conditions, &append(&self.plan.result).path, &body);
         let _ = work.record(work.meter.record_codec(0, 0, hashed));
         let mut state = self.provider.state.write().await;
-        let [mut conflicts, mut cached] = self.conflicts;
+        let [(mut conflicts, output_claim), (mut cached, resident)] = self.conflicts;
         let result = (|| {
             if let Some(stored) = state.replay(self.key.as_bytes()) {
                 if stored.digest != digest {
                     return Err(StreamError::IdempotencyMismatch);
                 }
-                let value = copy_outcome(
+                let result = copy_outcome(
                     &stored.result,
                     &self.conditions,
                     body.len(),
-                    self.output,
-                    conflicts,
+                    (self.plan.result, self.plan.output_claim),
+                    (conflicts, output_claim),
                 )?;
-                let _ = work.record(work.meter.record_codec(0, copied_bytes(&value), 0));
-                let claim = split(&mut self.output_claim, storage_bytes(&value));
-                return Ok((value, claim));
+                let _ = work.record(work.meter.record_codec(0, copied_bytes(&result.0), 0));
+                return Ok(result);
             }
             if self
                 .capacity
@@ -304,7 +276,7 @@ impl PreparedCommit {
             }
             let bytes = if conflicts.is_empty() { body.len() } else { 0 };
             self.provider.publish(bytes, || {
-                let (value, stored) = if conflicts.is_empty() {
+                if conflicts.is_empty() {
                     let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
                     let time = state.last_committed_at_micros.max(
                         self.provider
@@ -313,52 +285,34 @@ impl PreparedCommit {
                             .saturating_mul(1_000),
                     );
                     let id = commit_identity(decision, digest);
-                    for envelope in [&mut self.output, &mut self.cached] {
-                        let record = &mut append_mut(envelope).records[0];
-                        record.value = body.clone();
-                        record.commit_id = id;
-                        record.committed_at_micros = time;
-                        envelope.commit_id = id;
+                    for value in [&mut self.plan.result, &mut self.plan.cached] {
+                        append_mut(value).records[0].value = body.clone();
                     }
-                    *history_record(&mut self.history) = append(&self.output).records[0].clone();
-                    publish_fact(&mut state, &self.output.mutations[0], self.history);
-                    state.decision = decision;
-                    state.last_committed_at_micros = time;
+                    history_record(&mut self.plan.histories[0]).value = body;
+                    self.plan.bind(id, time);
                     let _ = work.record(work.meter.record_codec(
                         0,
                         3 * std::mem::size_of::<Record>() as u64,
                         identity_bytes(),
                     ));
-                    (
-                        CommitOutcome::Committed(self.output),
-                        CommitOutcome::Committed(self.cached),
-                    )
+                    Ok(self.plan.publish(&mut state, self.key, digest, time))
                 } else {
                     let value = CommitOutcome::Conflict(conflicts);
                     let _ = work.record(work.meter.record_codec(0, 2 * copied_bytes(&value), 0));
-                    (value, CommitOutcome::Conflict(cached))
-                };
-                let output = split(&mut self.output_claim, storage_bytes(&value));
-                let resident = split(
-                    &mut self.resident,
-                    storage_bytes(&stored)
-                        + std::mem::size_of::<(Bytes, usize)>()
-                        + usize::from(matches!(stored, CommitOutcome::Committed(_)))
-                            * std::mem::size_of::<(CommitId, usize)>(),
-                );
-                retain(
-                    &mut state,
-                    None,
-                    Some(self.key),
-                    digest,
-                    IdempotencyOutcome::Commit(stored),
-                );
-                state
-                    .retained
-                    .back_mut()
-                    .expect("retained completion")
-                    ._allocation = resident;
-                Ok((value, output))
+                    retain(
+                        &mut state,
+                        None,
+                        Some(self.key),
+                        digest,
+                        IdempotencyOutcome::Commit(CommitOutcome::Conflict(cached)),
+                    );
+                    state
+                        .retained
+                        .back_mut()
+                        .expect("retained conflict")
+                        ._allocation = resident;
+                    Ok((value, output_claim))
+                }
             })
         })();
         let _ = work.record(work.meter.record_examination(16, 0));
@@ -370,13 +324,19 @@ impl PreparedCommit {
     }
 }
 
-fn append(envelope: &CommittedEnvelope) -> &crate::CommittedAppend {
+fn append(value: &CommitOutcome) -> &crate::CommittedAppend {
+    let CommitOutcome::Committed(envelope) = value else {
+        unreachable!()
+    };
     let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
         unreachable!()
     };
     append
 }
-fn append_mut(envelope: &mut CommittedEnvelope) -> &mut crate::CommittedAppend {
+fn append_mut(value: &mut CommitOutcome) -> &mut crate::CommittedAppend {
+    let CommitOutcome::Committed(envelope) = value else {
+        unreachable!()
+    };
     let [CommittedMutation::Append(append)] = envelope.mutations.as_mut_slice() else {
         unreachable!()
     };
@@ -409,9 +369,9 @@ fn copy_outcome(
     source: &IdempotencyOutcome,
     conditions: &[CommitCondition; 2],
     maximum: usize,
-    mut output: CommittedEnvelope,
-    mut conflicts: Vec<CommitConflict>,
-) -> Result<CommitOutcome, StreamError> {
+    (mut output, output_claim): (CommitOutcome, Allocation),
+    (mut conflicts, conflict_claim): (Vec<CommitConflict>, Allocation),
+) -> Result<(CommitOutcome, Allocation), StreamError> {
     match source {
         IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) => {
             if envelope.mutations.len() > 1 {
@@ -439,8 +399,11 @@ fn copy_outcome(
                 return Err(StreamError::LimitExceeded);
             }
             target.records[0] = record.clone();
-            output.commit_id = envelope.commit_id;
-            Ok(CommitOutcome::Committed(output))
+            let CommitOutcome::Committed(output_envelope) = &mut output else {
+                unreachable!()
+            };
+            output_envelope.commit_id = envelope.commit_id;
+            Ok((output, output_claim))
         }
         IdempotencyOutcome::Commit(CommitOutcome::Conflict(source)) => {
             if source.len() > 2 {
@@ -450,30 +413,15 @@ fn copy_outcome(
                 let CommitConflict::Tail { path, expected, .. } = conflict else {
                     return Err(StreamError::IdempotencyMismatch);
                 };
-                if !conditions.iter().any(|condition| matches!(condition, CommitCondition::Tail { path: guarded, expected: tail } if guarded == path && tail == expected)) {
+                if !conditions.iter().any(|condition| matches!(condition,
+                    CommitCondition::Tail { path: guarded, expected: tail } if guarded == path && tail == expected)) {
                     return Err(StreamError::IdempotencyMismatch);
                 }
                 conflicts.push(conflict.clone());
             }
-            Ok(CommitOutcome::Conflict(conflicts))
+            Ok((CommitOutcome::Conflict(conflicts), conflict_claim))
         }
         _ => Err(StreamError::IdempotencyMismatch),
-    }
-}
-fn split(allocation: &mut Allocation, bytes: usize) -> Allocation {
-    allocation
-        .as_mut()
-        .map(|claim| claim.split(bytes).expect("preallocated completion"))
-}
-fn storage_bytes(value: &CommitOutcome) -> usize {
-    match value {
-        CommitOutcome::Committed(envelope) => {
-            envelope.mutations.capacity() * std::mem::size_of::<CommittedMutation>()
-                + append(envelope).records.capacity() * std::mem::size_of::<Record>()
-        }
-        CommitOutcome::Conflict(conflicts) => {
-            conflicts.capacity() * std::mem::size_of::<CommitConflict>()
-        }
     }
 }
 fn copied_bytes(value: &CommitOutcome) -> u64 {
