@@ -59,21 +59,17 @@ pub async fn connect_channel(endpoint: &str, ca: Option<&[u8]>) -> Result<Channe
     }
     let configured = Endpoint::from_shared(endpoint.to_owned())?
         .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
-    let configured = match ca {
-        Some(ca) => {
-            if ca.is_empty() || ca.len() > 64 * 1024 {
-                return Err(ConnectError::InvalidCaCertificate);
-            }
-            configured
-                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
+    let configured = if let Some(ca) = ca {
+        if ca.is_empty() || ca.len() > 64 * 1024 {
+            return Err(ConnectError::InvalidCaCertificate);
         }
-        None => {
-            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .map_err(ConnectError::PlatformVerifier)?;
-            configured.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
-        }
+        configured.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
+    } else {
+        let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .map_err(ConnectError::PlatformVerifier)?;
+        configured.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
     };
     Ok(configured.connect().await?)
 }

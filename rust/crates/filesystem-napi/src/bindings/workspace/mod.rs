@@ -232,8 +232,7 @@ impl NativeWorkspace {
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path))))
-            .map(|value| native_workspace_stat(value))
+        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path)))).map(native_workspace_stat)
     }
 
     #[napi(js_name = readSymbolicLink)]
@@ -553,7 +552,7 @@ pub(in crate::bindings) fn native_workspace_name(
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
-pub(in crate::bindings) fn native_workspace_name_value(name: LogicalName) -> NativeWorkspaceName {
+pub(in crate::bindings) fn native_workspace_name_value(name: &LogicalName) -> NativeWorkspaceName {
     NativeWorkspaceName {
         encoding: name.encoding().as_str().to_owned(),
         bytes: Buffer::from(name.as_bytes().to_vec()),
@@ -568,7 +567,7 @@ pub(in crate::bindings) fn native_workspace_directory_page(
             .entries
             .into_iter()
             .map(|entry| NativeWorkspaceDirectoryEntry {
-                name: native_workspace_name_value(entry.name),
+                name: native_workspace_name_value(&entry.name),
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
                 kind: entry.kind,
             })

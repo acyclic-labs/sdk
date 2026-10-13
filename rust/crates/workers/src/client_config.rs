@@ -126,11 +126,13 @@ pub(crate) fn valid_endpoint(endpoint: &str) -> bool {
 pub struct BearerAuth(MetadataValue<Ascii>);
 impl BearerAuth {
     /// Validates a bounded bearer credential and marks its metadata sensitive.
-    pub fn new(token: &str) -> Result<Self, ()> {
+    pub fn new(token: &str) -> Result<Self, Failure> {
+        let invalid = || Failure::local("invalid_argument", "invalid bearer credential");
         if !crate::valid_token(token) {
-            return Err(());
+            return Err(invalid());
         }
-        let mut value: MetadataValue<Ascii> = format!("Bearer {token}").parse().map_err(|_| ())?;
+        let mut value: MetadataValue<Ascii> =
+            format!("Bearer {token}").parse().map_err(|_| invalid())?;
         value.set_sensitive(true);
         Ok(Self(value))
     }
@@ -173,8 +175,7 @@ impl WorkersClientOptions {
                 "endpoint must be HTTPS without credentials, query or fragment",
             ));
         }
-        let authorization =
-            BearerAuth::new(&self.token).map_err(|()| invalid("invalid bearer credential"))?;
+        let authorization = BearerAuth::new(&self.token)?;
         let maximum = self.maximum_message_bytes.unwrap_or(MAX_MESSAGE_BYTES);
         if maximum == 0 || maximum > MAX_MESSAGE_BYTES {
             return Err(invalid("message ceiling must be within 1..=16 MiB"));
