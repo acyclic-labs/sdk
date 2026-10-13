@@ -27,19 +27,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             OperationId::from_bytes(task.into_bytes()),
             quota.work(),
         )?;
-        let observed = match &state.outcome {
-            Some(Outcome::Succeeded(file)) => {
-                Some(Outcome::Succeeded(file.clone_in_quota(&mut quota)?))
-            }
-            Some(Outcome::Failed { message }) => Some(Outcome::Failed {
-                message: crate::core::copy_text(message, &mut quota)?,
-            }),
-            Some(Outcome::Cancelled) => Some(Outcome::Cancelled),
-            Some(Outcome::Indeterminate { operation_id }) => Some(Outcome::Indeterminate {
-                operation_id: *operation_id,
-            }),
-            None => None,
-        };
+        let observed = state
+            .outcome
+            .as_ref()
+            .map(|outcome| {
+                let copied = outcome.clone_with_work(quota.work())?;
+                quota.adopt(copied.logical_owned_bytes()?)?;
+                Ok::<_, Error>(copied)
+            })
+            .transpose()?;
         drop(coordinator);
         let outcome = match observed {
             Some(Outcome::Succeeded(file)) => {

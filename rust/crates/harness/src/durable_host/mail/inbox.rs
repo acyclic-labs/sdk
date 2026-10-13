@@ -199,7 +199,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let io = PreparationIo::from_native_work(work)?;
         let items = self.inbox_page(task, after, limit, Some(&io)).await?;
         let owned = items.iter().try_fold(
-            (items.capacity() * size_of::<InboxItem>()) as u64,
+            (items.capacity() * std::mem::size_of::<InboxItem>()) as u64,
             |owned, item| {
                 let payload = item.payload.logical_owned_bytes()?;
                 owned

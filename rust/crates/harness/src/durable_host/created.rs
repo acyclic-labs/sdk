@@ -37,45 +37,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     pub(super) fn reserve_proof_slots<T>(
         values: &mut Vec<T>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<u64> {
-        if values.len() < values.capacity() {
-            return Ok(0);
-        }
-        let target = values.capacity().saturating_mul(2).max(4);
-        let bytes = target
-            .checked_sub(values.capacity())
-            .and_then(|slots| slots.checked_mul(std::mem::size_of::<T>()))
-            .ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "resource proof vector ownership overflows",
-                )
-            })? as u64;
-        let old = values.capacity();
+        let before = values.capacity();
         if let Some(io) = work.as_deref_mut() {
-            io.admit_allocation(bytes)?;
+            crate::store::history::ensure_slot(values, usize::MAX, io)?;
+        } else if values.len() == before {
+            values.try_reserve(1).map_err(Error::Allocation)?;
         }
-        values
-            .try_reserve_exact(target - values.len())
-            .map_err(|cause| match work.as_deref() {
-                Some(io) => io.allocation_failure(cause),
-                None => Error::Storage(cause.to_string()),
-            })?;
-        let retained = (values.capacity() - old)
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "resource proof vector ownership overflows",
-                )
-            })? as u64;
-        if let Some(io) = work.as_deref_mut() {
-            io.retain_owned(retained)?;
-        }
-        Ok(retained)
+        Ok(((values.capacity() - before) * std::mem::size_of::<T>()) as u64)
     }
 
     pub(super) fn proof_contains<T: PartialEq>(

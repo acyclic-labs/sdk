@@ -169,6 +169,7 @@ pub struct CoordinatorTaskHost<P> {
     policy_binding: Option<ComponentIdentity>,
     effects: Option<Arc<dyn DurableEffectObserver>>,
     session_limits: Option<crate::scheduler::SessionLimits>,
+    #[cfg(feature = "filesystem")]
     resource_creation: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
 }
 
