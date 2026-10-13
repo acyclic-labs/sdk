@@ -1,4 +1,5 @@
 use super::*;
+use crate::CancellationToken;
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_logical_original_quota_and_all_byte_aliases()
