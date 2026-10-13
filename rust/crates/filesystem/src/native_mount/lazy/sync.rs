@@ -108,7 +108,7 @@ where
                             .map_err(lazy_error)?,
                     )
                 };
-                *acknowledged = Some(crate::NativePublicationSnapshot { context: context, operation: Some(operation), generation: generation });
+                *acknowledged = Some(crate::NativePublicationSnapshot { context, operation: Some(operation), generation });
                 if retained == Some(operation) {
                     self.authored
                         .shared_checkout()
@@ -158,7 +158,7 @@ where
                     self.finish_detached_publication(work)?;
                     self.clear_mount_removals()?;
                 }
-                return Ok(crate::NativePublicationSnapshot { context: context, operation: Some(operation), generation: generation });
+                return Ok(crate::NativePublicationSnapshot { context, operation: Some(operation), generation });
             }
             if let Some(operation) = operation {
                 if retained == Some(operation) {

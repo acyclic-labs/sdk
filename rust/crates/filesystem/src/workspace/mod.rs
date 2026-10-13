@@ -65,6 +65,7 @@ mod writes;
 
 pub use commit::{TransactionCommit, TransactionRebase};
 pub use diff::{ChangeSet, ChangedPath};
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) use errors::workspace_bounded_error;
 pub use errors::{WorkspaceError, WorkspaceNameError};
 pub use extents::{WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan};

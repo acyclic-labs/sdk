@@ -38,13 +38,13 @@ pub(crate) fn publication_evidence(
                         observe(EncodeWorkStep::Admit(WorkCounters {
                             bytes_copied: bytes,
                             ..WorkCounters::UNCHARGED
-                        }))?
+                        }))?;
                     }
                     crate::kernel::EncodeAllocationStep::HeaderWritten { bytes } => {
                         observe(EncodeWorkStep::Completed(WorkCounters {
                             bytes_copied: bytes,
                             ..WorkCounters::UNCHARGED
-                        }))?
+                        }))?;
                     }
                     _ => {}
                 }

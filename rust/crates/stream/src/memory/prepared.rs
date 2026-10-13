@@ -42,6 +42,7 @@ impl MemoryStream {
         StreamError,
     > {
         let expected = prepared_tail(&mut request, maximum)?;
+        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         let input = self.request_claim(&request)?;
         let maximum_hash = commit_hash_bytes(&request) + maximum as u64;
         let mut state = self.state.write().await;
@@ -90,15 +91,11 @@ impl MemoryStream {
             append
                 .records
                 .first_mut()
-                .ok_or(StreamError::InvalidArgument)?
+                .ok_or(StreamError::Unavailable)?
                 .sequence = expected;
         }
-        history_record(
-            plan.histories
-                .first_mut()
-                .ok_or(StreamError::InvalidArgument)?,
-        )?
-        .sequence = expected;
+        history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
+            expected;
         let conflict = self.vector(2)?;
         let (cached_conflicts, conflict_claim) = self.vector(2)?;
         let prototype = self.copy_commit(&plan.result)?;
@@ -111,36 +108,39 @@ impl MemoryStream {
         drop(request.mutations);
         drop(input);
         let key = request.idempotency_key;
-        let prepared = PreparedCommit {
-            provider: self.clone(),
-            conditions,
-            key,
-            plan,
-            conflicts: [conflict, (cached_conflicts, conflict_claim)],
-            capacity,
-            inventory,
-        };
-        let recovery = prepared.recovery(maximum, maximum_hash, prototype, recovery_conflicts)?;
-        Ok((prepared, recovery))
+        let recovery = self.prepare_recovery(
+            key.clone(),
+            conditions.clone(),
+            maximum,
+            maximum_hash,
+            prototype,
+            recovery_conflicts,
+        )?;
+        work.record(work.meter.check())?;
+        Ok((
+            PreparedCommit {
+                provider: self.clone(),
+                conditions,
+                key,
+                plan,
+                conflicts: [conflict, (cached_conflicts, conflict_claim)],
+                capacity,
+                inventory,
+            },
+            recovery,
+        ))
     }
-}
-
-impl PreparedCommit {
-    fn recovery(
+    fn prepare_recovery(
         &self,
+        recovery_key: IdempotencyKey,
+        recovery_conditions: [CommitCondition; 2],
         maximum: usize,
         maximum_hash: u64,
         prototype: (CommitOutcome, Allocation),
         recovery_conflicts: (Vec<CommitConflict>, Allocation),
     ) -> Result<NativeProviderFuture<'static, Option<IdempotencyObservation>>, StreamError> {
-        let work = self
-            .provider
-            .work
-            .as_ref()
-            .ok_or(StreamError::Unavailable)?;
+        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         let meter = Arc::clone(&work.meter);
-        let recovery_key = self.key.clone();
-        let recovery_conditions = self.conditions.clone();
         let mut read = work.record(NativeOperationReservation::new(
             Arc::clone(&meter),
             NativeOperationKind::Read,
@@ -163,7 +163,7 @@ impl PreparedCommit {
             maximum_hash,
         ))?;
         work.record(meter.admit_examination(8, 0))?;
-        let state = Arc::clone(&self.provider.state);
+        let state = Arc::clone(&self.state);
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_new(&meter, async move {
             let state = state.read().await;
@@ -194,7 +194,7 @@ impl PreparedCommit {
                         &append
                             .records
                             .first()
-                            .ok_or(StreamError::IdempotencyMismatch)?
+                            .ok_or(StreamError::Unavailable)?
                             .value,
                     );
                     observed = observed
@@ -225,10 +225,11 @@ impl PreparedCommit {
                 )
             }))
         }))?;
-        work.record(meter.check())?;
         Ok(recovery)
     }
+}
 
+impl PreparedCommit {
     pub(crate) async fn settle(
         mut self,
         body: Bytes,
@@ -293,14 +294,14 @@ impl PreparedCommit {
                         append_mut(value)
                             .records
                             .first_mut()
-                            .ok_or(StreamError::InvalidArgument)?
+                            .ok_or(StreamError::Unavailable)?
                             .value = body.clone();
                     }
                     history_record(
                         self.plan
                             .histories
                             .first_mut()
-                            .ok_or(StreamError::InvalidArgument)?,
+                            .ok_or(StreamError::Unavailable)?,
                     )?
                     .value = body;
                     self.plan.bind(id, time)?;
@@ -410,10 +411,7 @@ fn copy_outcome(
             if record.value.len() > maximum {
                 return Err(StreamError::LimitExceeded);
             }
-            *target
-                .records
-                .first_mut()
-                .ok_or(StreamError::IdempotencyMismatch)? = record.clone();
+            *target.records.first_mut().ok_or(StreamError::Unavailable)? = record.clone();
             let CommitOutcome::Committed(output_envelope) = &mut output else {
                 unreachable!()
             };

@@ -289,18 +289,14 @@ impl DemandWork {
             .reconcile_cancellation_registry()
             .map_err(CancellationWaitError::from);
         let mut empty = CancellationWaitAdmission::default();
-        let admission = match self
+        let admission = if let Some((_, admission)) = self
             .roots
             .cancellations
             .0
             .iter_mut()
-            .find(|(token, _)| prepared.same_token(token))
-        {
-            Some((_, admission)) => admission,
-            None => {
-                assert_eq!(prepared.retained_waiter_bytes(), 0);
-                &mut empty
-            }
+            .find(|(token, _)| prepared.same_token(token)) { admission } else {
+            assert_eq!(prepared.retained_waiter_bytes(), 0);
+            &mut empty
         };
         let finished = prepared.finish(
             &mut self.allocations,

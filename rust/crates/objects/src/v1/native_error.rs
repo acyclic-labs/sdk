@@ -35,9 +35,10 @@ impl NativeObjectsSharedFailure {
 
     /// Borrows the same original typed cause; published aliases are always initialized.
     pub fn error(&self) -> &NativeObjectsError {
-        self.value
-            .as_ref()
-            .expect("only an initialized original failure is published")
+        let Some(error) = self.value.as_ref() else {
+            unreachable!("only an initialized original failure is published")
+        };
+        error
     }
 }
 
@@ -59,11 +60,11 @@ pub struct NativeObjectsError {
     /// The primary unflattened error category.
     pub cause: NativeObjectsCause,
     /// The actual decoded object, intrinsically retaining its header custody.
-    pub object: Option<Object>,
+    pub object: Option<Box<Object>>,
     /// An additional actual decoded object retained by a nested transport failure.
-    pub secondary_object: Option<Object>,
+    pub secondary_object: Option<Box<Object>>,
     /// An actual decoded acknowledgement retained by a failed publication.
-    pub receipt: Option<ObjectsPutReceipt>,
+    pub receipt: Option<Box<ObjectsPutReceipt>>,
     /// An opaque transport chunk retained on a failed bounded collection.
     pub transport_chunk: Option<bytes::Bytes>,
 }

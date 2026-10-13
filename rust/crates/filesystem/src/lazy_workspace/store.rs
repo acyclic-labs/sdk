@@ -169,11 +169,11 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         let mut stored = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         match position(&stored.workspaces, &id, ctx)? {
             Ok(i) if stored.workspaces.value[i].1.revision == revision => {
-                stored.workspaces.value[i].1 = state
+                stored.workspaces.value[i].1 = state;
             }
             Ok(_) => return Ok(false),
             Err(i) if revision == 0 => {
-                insert(&mut stored.workspaces, i, &mut Some((id, state)), ctx)?
+                insert(&mut stored.workspaces, i, &mut Some((id, state)), ctx)?;
             }
             Err(_) => return Ok(false),
         }

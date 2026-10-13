@@ -1,3 +1,4 @@
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 use super::*;
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]

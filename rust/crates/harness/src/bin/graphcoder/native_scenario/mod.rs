@@ -108,7 +108,7 @@ struct Producer {
     worker: Worker,
     preparations: Vec<Value>,
     references: BTreeMap<String, FileRef>,
-    planned_commands: BTreeMap<String, WorkflowCommand>,
+    planned_commands: BTreeMap<String, (WorkflowCommand, WorkflowCommand)>,
     leases: BTreeMap<String, PathBuf>,
     cancellation: acyclic_fs::CancellationToken,
 }

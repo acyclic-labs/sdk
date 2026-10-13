@@ -137,13 +137,7 @@ fn segment_path(root: &Path, id: &[u8; 32]) -> PathBuf {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(char::from(DIGITS[(byte >> 4) as usize]));
-        output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
-    }
-    output
+    hex::encode(bytes)
 }
 
 mod garbage;

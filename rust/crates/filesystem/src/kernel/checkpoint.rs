@@ -127,9 +127,8 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                     let __object_args = (hashed, original, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result =
-                        store.put_hashed(__object_args.0, &mut __object_work).await;
-                    __object_result
+
+                    store.put_hashed(__object_args.0, &mut __object_work).await
                 }
                 .map_err(checkpoint_storage_error)?;
                 return Ok(object);

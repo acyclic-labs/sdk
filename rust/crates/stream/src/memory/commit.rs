@@ -160,7 +160,7 @@ impl MemoryStream {
         };
         let source = fact_records(fact);
         if source.is_empty() {
-            return parent.ok_or(StreamError::InvalidArgument);
+            return parent.ok_or(StreamError::Unavailable);
         }
         let (mut records, mut claim) = self.vector(source.len())?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -420,7 +420,7 @@ fn publish_fact(
         CommittedMutation::Append(append) => (&append.path, append.tail),
         CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
     };
-    let stream = state.paths.get_mut(path).ok_or(StreamError::NotFound)?;
+    let stream = state.paths.get_mut(path).ok_or(StreamError::Unavailable)?;
     stream.history = Some(history);
     stream.tail = tail;
     stream.changed.send_replace(tail);

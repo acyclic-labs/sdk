@@ -69,7 +69,7 @@ impl StreamPath {
     #[must_use]
     pub fn as_str(&self) -> &str {
         let Ok(path) = std::str::from_utf8(&self.0) else {
-            unreachable!("StreamPath constructors validate ASCII")
+            unreachable!("validated ASCII path")
         };
         path
     }

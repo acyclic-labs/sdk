@@ -10,7 +10,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
     pub fn new(
         data: Vec<u8>,
         guard: G,
-        meter: Arc<dyn NativeReadMeter>,
+        meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
         if data.len() != data.capacity() {
             return Err(PreparedOwnedBytesFailure {
@@ -27,6 +27,9 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
         self.guard.data.len()
     }
     /// Borrows the exclusively owned initialized bytes.
+    ///
+    /// # Panics
+    /// Panics if unpublished storage has been shared.
     pub fn writable(&mut self) -> &mut [u8] {
         let Some(guard) = Arc::get_mut(&mut self.guard) else {
             unreachable!("prepared storage is never shared before freeze")

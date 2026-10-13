@@ -33,9 +33,9 @@ impl<G: Send + Sync + 'static> GuardBundle<G> {
     fn new(
         data: Vec<u8>,
         guard: G,
-        meter: Arc<dyn NativeReadMeter>,
+        meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<Arc<Self>, PreparedOwnedBytesFailure<G>> {
-        let metadata = match ReadAllocation::new(&meter, std::mem::size_of::<GuardBundle<G>>()) {
+        let metadata = match ReadAllocation::new(meter, std::mem::size_of::<GuardBundle<G>>()) {
             Ok(metadata) => metadata,
             Err(error) => {
                 return Err(PreparedOwnedBytesFailure {
@@ -45,7 +45,6 @@ impl<G: Send + Sync + 'static> GuardBundle<G> {
                 });
             }
         };
-        drop(meter);
         Ok(Arc::new(Self {
             data,
             metadata,
@@ -88,24 +87,25 @@ impl OwnedBytes {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
         let (length, capacity) = (data.len(), data.capacity());
-        GuardBundle::new(data, guard, meter).map(|guard| Self {
+        let result = GuardBundle::new(data, guard, &meter).map(|guard| Self {
             data: Data::Native(guard),
             range: 0..length,
             retained_capacity: Some(capacity),
-        })
+        });
+        drop(meter);
+        result
     }
     /// Leaves the vector and its owner untouched if admission fails.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_vec_with_guard_in_place<G: Send + Sync + 'static>(
         data: &mut Vec<u8>,
         guard: &mut Option<G>,
-        meter: Arc<dyn NativeReadMeter>,
+        meter: &Arc<dyn NativeReadMeter>,
     ) -> io::Result<Self> {
         if guard.is_none() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let metadata = ReadAllocation::new(&meter, std::mem::size_of::<GuardBundle<G>>())?;
-        drop(meter);
+        let metadata = ReadAllocation::new(meter, std::mem::size_of::<GuardBundle<G>>())?;
         let original_guard = guard.take().ok_or(io::ErrorKind::InvalidInput)?;
         let (length, capacity) = (data.len(), data.capacity());
         let guard = Arc::new(GuardBundle {
@@ -192,14 +192,14 @@ impl OwnedBytes {
         let start = match range.start_bound() {
             Bound::Included(&start) => start,
             Bound::Excluded(&start) => {
-                assert!(start < usize::MAX, "slice start overflow");
+                assert!(start < self.len(), "slice start exceeds visible bytes");
                 start + 1
             }
             Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
             Bound::Included(&end) => {
-                assert!(end < usize::MAX, "slice end overflow");
+                assert!(end < self.len(), "slice end exceeds visible bytes");
                 end + 1
             }
             Bound::Excluded(&end) => end,

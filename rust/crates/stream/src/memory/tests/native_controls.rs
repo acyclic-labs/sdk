@@ -66,7 +66,7 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
             retired: Arc::clone(&retired),
             _allocation: allocation,
         },
-        Arc::clone(&original),
+        &original,
     )
     .map_err(|failure| match failure.into_error() {
         crate::PreparedOwnedBytesError::Admission(error) => {

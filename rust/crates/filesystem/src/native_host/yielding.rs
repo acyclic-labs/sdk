@@ -235,7 +235,7 @@ impl YieldingFile {
                     match status {
                         Ok(WAIT_TIMEOUT) => continue,
                         Ok(WAIT_FAILED) => {
-                            interrupted = Some(DemandError::Io(io::Error::last_os_error()))
+                            interrupted = Some(DemandError::Io(io::Error::last_os_error()));
                         }
                         Err(error) => interrupted = Some(error),
                         _ => {}
