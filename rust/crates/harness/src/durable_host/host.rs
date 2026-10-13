@@ -71,6 +71,14 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         TaskStateProvider::policy_identity(self)
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        TaskStateProvider::policy_identity_with_native_work(self, work)
+    }
+
     async fn reconcile_admission(
         &self,
         operation_id: OperationId,
@@ -314,6 +322,21 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
 
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.policy.as_ref().map(|policy| policy.identity())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        work.charge(acyclic_fs::WorkCounters::default())?;
+        if self.policy.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "task state has no original native policy binding source",
+            });
+        }
+        Ok(None)
     }
 
     async fn observe_admission(
