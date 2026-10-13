@@ -1,16 +1,16 @@
 use super::*;
 
-impl ProjectionCore {
-    pub(super) fn invalidate(self: &Arc<Self>, path: &[u8]) -> Result<(), NativeMountError> {
-        let result = self.request(|work| {
-            let _active = NativeMountWorkScope::new(self, work)?;
+impl FuseSession {
+    pub(in crate::native_mount) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
+        let result = self.core.request(|work| {
+            let _active = NativeMountWorkScope::new(&self.core, work)?;
             let mut components = path
                 .strip_prefix(b"/")
                 .unwrap_or(path)
                 .split(|byte| *byte == b'/');
             let name = components.next_back().expect("split has a leaf");
             for component in components.clone().chain(std::iter::once(name)) {
-                fuse_item(work)?;
+                work.charge(Items.delta(1))?;
                 if component.is_empty()
                     || component.contains(&0)
                     || component == b"."
@@ -23,18 +23,18 @@ impl ProjectionCore {
             }
             let parent = fuse_path(components.clone().count(), components, work)?;
             let child = ChildName::new(
-                self.source.as_ref(),
+                self.core.source.as_ref(),
                 fuse_child_path(&parent, name, work)?,
                 work,
             )?;
-            let parent = match self.source.folded_path_with_meter(&parent, work)? {
+            let parent = match self.core.source.folded_path_with_meter(&parent, work)? {
                 Some((path, bytes)) => FuseOwned::adopt(path, bytes, work)?,
                 None => parent,
             };
-            let mut state = self.state()?;
-            fuse_item(work)?;
+            let mut state = self.core.state()?;
+            work.charge(Items.delta(1))?;
             let file_inode = state.inode_by_path.get(child.key()).copied();
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             let parent_inode = state.inode_by_path.get(&*parent).copied();
             let count = usize::from(file_inode.is_some()) + 2 * usize::from(parent_inode.is_some());
             let mut items = fuse_vec(count, work)?;
@@ -52,32 +52,35 @@ impl ProjectionCore {
                 .len()
                 .checked_mul(std::mem::size_of::<KernelCacheItem>())
                 .ok_or(crate::WorkError::Overflow)? as u64;
-            fuse_copy_admit(copied, work)?;
+            work.admit(Copy.delta(copied))?;
             fuse_reserve(&mut state.invalidation.deferred, items.len(), work)?;
             state.invalidation.deferred.append(&mut items);
-            fuse_copy_record(copied, work)?;
+            work.record_admitted(Copy.delta(copied))?;
             let target = state.invalidation.notified;
-            self.invalidation.notify_all();
-            self.wait_for_invalidation(state, target, work)
+            self.core.invalidation.notify_all();
+            self.core.wait_for_invalidation(state, target, work)
         });
         result.map_err(|failure| failure.0)
     }
 
-    pub(super) fn revalidate(
-        self: &Arc<Self>,
+    pub(in crate::native_mount) fn revalidate(
+        &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         work.admit(crate::WorkCounters::UNCHARGED)?;
-        let _active = NativeMountWorkScope::new(self, work)?;
-        self.source.fence_changes_with_meter(work)?;
+        let _active = NativeMountWorkScope::new(&self.core, work)?;
+        self.core.source.fence_changes_with_meter(work)?;
         let state = self
+            .core
             .state
             .lock()
             .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?;
         let target = state.invalidation.notified;
-        self.wait_for_invalidation(state, target, work)
+        self.core.wait_for_invalidation(state, target, work)
     }
+}
 
+impl ProjectionCore {
     fn wait_for_invalidation(
         &self,
         mut state: MutexGuard<'_, ProjectionState>,
@@ -85,7 +88,7 @@ impl ProjectionCore {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         loop {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             if self.stopping.load(Ordering::Acquire) {
                 return Err(NativeMountError::Lifecycle("session is stopped"));
             }
@@ -193,7 +196,7 @@ pub(super) fn stale_kernel_items(
     let mut items = fuse_vec(0, work)?;
     let mut actions = fuse_vec(0, work)?;
     for (inode, entry) in by_inode.iter() {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         let file_id = entry.lookup.node.file_id;
         let anchor = entry.anchor();
         if let Some(held) = entry.kernel
@@ -205,7 +208,7 @@ pub(super) fn stale_kernel_items(
             actions.push(Action::Inode(*inode));
         }
         for (name, held) in &entry.negative_children {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             let path = fuse_child_path(anchor, name, work)?;
             if !unchanged_since(&path, None, *held)? {
                 let name = fuse_copy_bytes(name, work)?;
@@ -222,7 +225,7 @@ pub(super) fn stale_kernel_items(
             }
         }
         for (index, binding) in entry.bindings.iter().enumerate() {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             if let Some(held) = binding.kernel
                 && !unchanged_since(&binding.path, Some(file_id), held)?
             {
@@ -293,58 +296,32 @@ impl Drop for FuseInvalidationBatch<'_> {
 }
 
 pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
-    let mut blocked: Option<(
-        Option<ViewStamp>,
-        usize,
-        (
-            Weak<crate::demand::NativeDemandReadMeter>,
-            Option<Weak<crate::materializer::NativeResourceAllowance>>,
-        ),
-    )> = None;
+    let mut blocked = None;
     loop {
         let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let scope_identity = loop {
+        let mut wait_key = loop {
             if core.stopping.load(Ordering::Acquire) {
                 return;
             }
-            let identity = core
+            let activation = core
                 .startup_meter
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .upgrade()
-                .as_ref()
-                .map_or_else(
-                    || (Weak::new(), None),
-                    |work| {
-                        (
-                            Arc::downgrade(&work.state),
-                            work.resource.as_ref().map(Arc::downgrade),
-                        )
-                    },
-                );
-            let denied = blocked.as_ref().is_some_and(|(stamp, deferred, previous)| {
-                *stamp == state.invalidation.notified
-                    && *deferred == state.invalidation.deferred.len()
-                    && Weak::ptr_eq(&previous.0, &identity.0)
-                    && match (&previous.1, &identity.1) {
-                        (None, None) => true,
-                        (Some(previous), Some(current)) => Weak::ptr_eq(previous, current),
-                        _ => false,
-                    }
-            });
-            if state.invalidation.is_pending(state.invalidation.notified) && !denied {
-                break identity;
+                .unwrap_or_else(PoisonError::into_inner);
+            let key = (
+                state.invalidation.notified,
+                state.invalidation.deferred.len(),
+                activation.generation,
+                activation.depth != 0,
+            );
+            drop(activation);
+            if state.invalidation.is_pending(state.invalidation.notified) && blocked != Some(key) {
+                break key;
             }
             state = core
                 .invalidation
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         };
-        let mut wait_key = (
-            state.invalidation.notified,
-            state.invalidation.deferred.len(),
-            scope_identity,
-        );
         drop(state);
         let mut completed_through = None;
         let mut sdk_failure = None;

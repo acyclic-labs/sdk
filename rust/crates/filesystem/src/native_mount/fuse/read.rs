@@ -34,7 +34,7 @@ impl PageStores {
         stamp: ViewStamp,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         debug_assert!(self.may_begin(file_id));
         let storage = work.claim(
             std::mem::size_of::<(crate::FileId, (ViewStamp, crate::NativeAllocation))>() as u64,
@@ -53,7 +53,7 @@ impl PageStores {
         file_id: crate::FileId,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         debug_assert!(!self.in_flight.contains_key(&file_id));
         if let Some(claims) = self.claims.get_mut(&file_id) {
             claims.0 = claims.0.checked_add(1).ok_or(crate::WorkError::Overflow)?;
@@ -192,7 +192,12 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
         let read = |opened| -> Result<_, NativeMountError> {
-            let file = self.core.state()?.open_handle(inode, opened, work)?;
+            let file = self
+                .core
+                .state()?
+                .file_handle(inode, opened)?
+                .open_file
+                .clone();
             let bytes = fuse_owned_source_chunk(
                 file.file(work)?.read_up_to_with_meter(offset, size, work)?,
                 work,

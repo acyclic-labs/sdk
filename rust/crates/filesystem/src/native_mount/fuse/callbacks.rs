@@ -77,10 +77,11 @@ impl Filesystem for FuseProjection {
 
     fn forget(&self, _: &Request, inode: INodeNo, nlookup: u64) {
         let _span = callback_span!(TRACE, forget, ino = inode.0);
-        let result = self.core.request(|work| {
+        let result = self.core.request(|_| {
             self.core
                 .state_to_finish()
-                .release_lookup_reference(inode.0, nlookup, work)
+                .release_lookup_reference(inode.0, nlookup);
+            Ok(())
         });
         let _ = self.core.finish(result);
     }

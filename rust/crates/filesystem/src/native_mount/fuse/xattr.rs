@@ -95,7 +95,7 @@ impl FuseProjection {
         )> = None;
         let mut encoded = fuse_vec(0, work)?;
         loop {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             let cursor = previous
                 .as_ref()
                 .and_then(|(page, _)| page.next_cursor.as_deref());
@@ -111,18 +111,18 @@ impl FuseProjection {
                 ),
             }?;
             for name in &page.0.names {
-                fuse_item(work)?;
+                work.charge(Items.delta(1))?;
                 let required = name.len().checked_add(1).ok_or(libc::EOVERFLOW)?;
                 if encoded.len().checked_add(required).ok_or(libc::EOVERFLOW)?
                     > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES
                 {
                     return Err(libc::E2BIG.into());
                 }
-                fuse_copy_admit(required as u64, work)?;
+                work.admit(Copy.delta(required as u64))?;
                 fuse_reserve(&mut encoded, required, work)?;
                 encoded.extend_from_slice(name);
                 encoded.push(0);
-                fuse_copy_record(required as u64, work)?;
+                work.record_admitted(Copy.delta(required as u64))?;
             }
             let Some(next) = page.0.next_cursor.as_deref() else {
                 return Ok(encoded);

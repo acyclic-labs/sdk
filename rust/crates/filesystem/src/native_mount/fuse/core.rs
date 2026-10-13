@@ -261,34 +261,22 @@ impl ProjectionCore {
         }
     }
 
-    pub(super) fn active_meter(&self) -> Option<crate::NativeMaterializationWork> {
-        self.startup_meter
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .upgrade()
-    }
-
     pub(super) fn callback_meter(
         &self,
     ) -> Result<Option<crate::NativeMaterializationWork>, NativeMountError> {
-        let active = self.active_meter();
+        let active = self
+            .startup_meter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .upgrade();
         let candidate = active.as_ref().or(self.source_original_work.as_ref());
         let current = fuse_native_source_original(self.source.as_ref(), candidate)?;
-        if self.source_original_work.is_some() != current.is_some() {
-            return Err(NativeMountError::ControlPending);
-        }
-        if let Some(original) = &self.source_original_work {
-            let current = current
-                .as_ref()
-                .expect("installed native original remains present");
-            if !fuse_same_native_view(original, current) {
-                return Err(NativeMountError::ControlPending);
-            }
+        match (&self.source_original_work, &current) {
+            (None, None) => (),
+            (Some(original), Some(current)) if fuse_same_native_view(original, current) => (),
+            _ => return Err(NativeMountError::ControlPending),
         }
         let selected = candidate.cloned();
-        if let Some(work) = &selected {
-            work.admit(crate::WorkCounters::UNCHARGED)?;
-        }
         let current_guard = self.source.native_callback_guard();
         match (&self.callback_guard, &current_guard) {
             (None, None) => {}

@@ -8,7 +8,7 @@ pub(super) fn confirm_name(
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     for ((known_id, known_name), held) in names.iter_mut() {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         if *known_id == file_id && **known_name == *name {
             *held = stamp;
             return Ok(());
@@ -31,7 +31,7 @@ pub(super) fn name_is_bound(
     work: &crate::NativeMaterializationWork,
 ) -> Result<bool, NativeMountError> {
     for ((known_id, known_name), stamp) in names {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         if *known_id == file_id && **known_name == *name {
             return match stamp {
                 Some(stamp) => Ok(source.unchanged_since_with_meter(name, None, *stamp, work)?),
@@ -71,7 +71,7 @@ impl DirectoryStreams {
         &mut self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::NativeAllocation, Option<(u64, u64)>), NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         let storage = work.claim(
             std::mem::size_of::<((u64, u64), (DirectoryStream, crate::NativeAllocation))>() as u64,
             1,
@@ -83,7 +83,7 @@ impl DirectoryStreams {
         let mut oldest = None;
         if self.waiting.len() >= MAXIMUM_DIRECTORY_STREAMS {
             for (key, (candidate, _)) in &self.waiting {
-                fuse_item(work)?;
+                work.charge(Items.delta(1))?;
                 if oldest.is_none_or(|(_, parked)| candidate.parked < parked) {
                     oldest = Some((*key, candidate.parked));
                 }
@@ -115,7 +115,7 @@ impl DirectoryStreams {
     ) -> Result<(), NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
         for (key, (stream, _)) in &self.waiting {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             if let Some(path) = fuse_replace_prefix(&stream.path, source, destination, work)? {
                 fuse_reserve(&mut replacements, 1, work)?;
                 replacements.push((*key, path));
@@ -151,7 +151,7 @@ impl ProjectionState {
         offset: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<DirectoryStream, NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         if let Some(stream) = self.streams.take(inode, offset) {
             return Ok(stream);
         }
@@ -198,12 +198,12 @@ impl ProjectionState {
                     .into_iter()
                     .filter(|dot| dot.2 > resumed)
                 {
-                    fuse_item(work)?;
+                    work.charge(Items.delta(1))?;
                     let dot = FileAttr {
                         ino: INodeNo(dot_inode),
                         ..attr
                     };
-                    fuse_copy_admit(name.len() as u64, work)?;
+                    work.admit(Copy.delta(name.len() as u64))?;
                     if listing.as_mut().expect("unsent listing").push(
                         next,
                         OsStr::new(name),
@@ -213,7 +213,7 @@ impl ProjectionState {
                         listing.take().expect("unsent listing").ok();
                         return Ok(());
                     }
-                    fuse_copy_record(name.len() as u64, work)?;
+                    work.record_admitted(Copy.delta(name.len() as u64))?;
                     stream.emitted = next;
                 }
             }
@@ -228,7 +228,7 @@ impl ProjectionState {
                     listing.take().expect("unsent listing").ok();
                     return Ok(());
                 };
-                fuse_item(work)?;
+                work.charge(Items.delta(1))?;
                 let child = ChildName::new(
                     source,
                     fuse_child_path(&stream.path, &entry.name, work)?,
@@ -283,7 +283,7 @@ impl ProjectionState {
                 } else {
                     Duration::ZERO
                 };
-                fuse_copy_admit(entry.name.len() as u64, work)?;
+                work.admit(Copy.delta(entry.name.len() as u64))?;
                 if listing.as_mut().expect("unsent listing").push(
                     next,
                     OsStr::from_bytes(&entry.name),
@@ -291,12 +291,12 @@ impl ProjectionState {
                     &ttl,
                 ) {
                     if let Some(inode) = unlisted_reference.take() {
-                        self.release_lookup_reference_administrative(inode, 1);
+                        self.release_lookup_reference(inode, 1);
                     }
                     listing.take().expect("unsent listing").ok();
                     return Ok(());
                 }
-                fuse_copy_record(entry.name.len() as u64, work)?;
+                work.record_admitted(Copy.delta(entry.name.len() as u64))?;
                 unlisted_reference = None;
                 listed = true;
                 stream.emitted = next;
@@ -304,7 +304,7 @@ impl ProjectionState {
             }
         })();
         if let Some(inode) = unlisted_reference {
-            self.release_lookup_reference_administrative(inode, 1);
+            self.release_lookup_reference(inode, 1);
         }
         if result.is_err() && listed {
             listing.take().expect("unsent listing prefix").ok();
@@ -383,7 +383,7 @@ impl FuseProjection {
         let source = self.core.source.as_ref();
         stream.emitted = stream.emitted.max(offset.min(2));
         loop {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             if let Some(page) = &stream.page {
                 if stream.entry_position < page.entries().len() {
                     if stream.emitted >= offset {
@@ -431,7 +431,7 @@ impl FuseProjection {
         let source = self.core.source.as_ref();
         let mut listed = fuse_vec(entries.len(), work)?;
         for entry in entries {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             if entry.node.link_count <= 1 {
                 continue;
             }

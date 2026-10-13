@@ -55,7 +55,7 @@ impl FuseProjection {
         confirmed: &mut HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         if node.link_count <= 1 {
             return Ok(());
         }
@@ -90,20 +90,23 @@ impl FuseProjection {
         let child = {
             let mut state = self.core.state()?;
             let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
-            let ProjectionState {
-                by_inode,
-                inode_by_path,
-                ..
-            } = &mut *state;
-            if let Some((inode, lookup, stamp)) = cached_projected_lookup(
-                by_inode,
-                inode_by_path,
-                child.key(),
-                |file, stamp| {
-                    Ok(source.unchanged_since_with_meter(child.key(), Some(file), stamp, work)?)
-                },
-                work,
-            )? {
+            work.charge(Items.delta(1))?;
+            if let Some(inode) = state.inode_by_path.get(child.key()).copied()
+                && let Some(entry) = state.by_inode.get_mut(&inode)
+                && let Some(stamp) = entry
+                    .binding(child.key())
+                    .and_then(|binding| binding.verified)
+                    .zip(entry.facts)
+                    .map(|(name, facts)| name.min(facts))
+                && source.unchanged_since_with_meter(
+                    child.key(),
+                    Some(entry.lookup.node.file_id),
+                    stamp,
+                    work,
+                )?
+            {
+                entry.lookup_references = entry.lookup_references.saturating_add(1);
+                let lookup = entry.lookup;
                 let attr = state.attr(inode, &lookup)?;
                 let ttl = state.admit_entry(source, inode, &child, Some(stamp), work)?;
                 return Ok(Entry { attr, ttl });
@@ -126,7 +129,10 @@ impl FuseProjection {
         }
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
-            state.remove_path_cache(child.key(), work)?;
+            work.charge(Items.delta(1))?;
+            if let Some(inode) = state.inode_by_path.get(child.key()).copied() {
+                state.remove_binding(inode, child.key(), work)?;
+            }
             return state.negative_entry(source, parent, &child, stamp, work);
         };
         let inode = state.intern(
@@ -138,11 +144,8 @@ impl FuseProjection {
             &confirmed,
             work,
         )?;
-        let attr = state.attr(inode, &lookup).map_err(|error| {
-            state
-                .release_lookup_reference(inode, 1, work)
-                .err()
-                .unwrap_or_else(|| error.into())
+        let attr = state.attr(inode, &lookup).inspect_err(|_| {
+            state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
         Ok(Entry { attr, ttl })
@@ -219,11 +222,8 @@ impl FuseProjection {
         if let Some(entry) = state.by_inode.get_mut(&inode) {
             entry.empty_since = empty;
         }
-        let attr = state.attr(inode, &lookup).map_err(|error| {
-            state
-                .release_lookup_reference(inode, 1, work)
-                .err()
-                .unwrap_or_else(|| error.into())
+        let attr = state.attr(inode, &lookup).inspect_err(|_| {
+            state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
         Ok(Entry { attr, ttl })
@@ -294,10 +294,14 @@ impl FuseProjection {
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached, work)?;
+            state.retain_detached_handles(inode, &detached);
         }
         removed?;
-        state.remove_path_cache(child.key(), work)
+        work.charge(Items.delta(1))?;
+        if let Some(inode) = state.inode_by_path.get(child.key()).copied() {
+            state.remove_binding(inode, child.key(), work)?;
+        }
+        Ok(())
     }
 
     pub(super) fn rename_name(
@@ -335,7 +339,7 @@ impl FuseProjection {
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached, work)?;
+            state.retain_detached_handles(inode, &detached);
         }
         renamed?;
         if from.key() != to.key() {
@@ -379,7 +383,7 @@ impl FuseProjection {
             if entry.lookup.node.file_id != projected.node.file_id {
                 return Err(libc::ESTALE.into());
             }
-            if entry.binding(to.key(), work)?.is_none() {
+            if entry.binding(to.key()).is_none() {
                 fuse_reserve(&mut entry.bindings, 1, work)?;
                 Some(Binding {
                     path: fuse_clone_path(to.key(), work)?,

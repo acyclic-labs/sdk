@@ -54,7 +54,11 @@ impl FuseProjection {
             let state = self.core.state()?;
             state.admit_write().map_err(|_| libc::EOPNOTSUPP)?;
             let open_file = handle
-                .map(|handle| state.open_handle(inode, handle, work))
+                .map(|handle| {
+                    state
+                        .file_handle(inode, handle)
+                        .map(|file| file.open_file.clone())
+                })
                 .transpose()?;
             (state.node_facts(source, inode, handle, work)?, open_file)
         };
@@ -120,7 +124,7 @@ impl FuseProjection {
         let operation = {
             let state = self.core.state()?;
             state.admit_write()?;
-            state.open_handle_operation(inode, handle, work)?
+            Arc::clone(&state.file_handle(inode, handle)?.operation)
         };
         let _operation = operation.0.lock().map_err(|_| libc::EIO)?;
         let open_file = {
@@ -131,7 +135,7 @@ impl FuseProjection {
                 .filter(|file| file.inode == inode && Arc::ptr_eq(&file.operation, &operation))
                 .ok_or(libc::ESTALE)?;
             file.dirty = true;
-            file.open_file.clone(work)?
+            file.open_file.clone()
         };
         #[cfg(test)]
         pause_test_write();
@@ -175,10 +179,7 @@ impl FuseProjection {
         if authored_flush {
             self.check_source_write(work)?;
         }
-        let operation = self
-            .core
-            .state()?
-            .open_handle_operation(inode, handle, work)?;
+        let operation = Arc::clone(&self.core.state()?.file_handle(inode, handle)?.operation);
         let _operation = operation.0.lock().map_err(|_| libc::EIO)?;
         let (should_flush, open_file) = {
             let state = self.core.state()?;
@@ -189,7 +190,7 @@ impl FuseProjection {
                 .ok_or(libc::ESTALE)?;
             (
                 force || (file.dirty && self.core.source.flush_on_handle_close()),
-                file.open_file.clone(work)?,
+                file.open_file.clone(),
             )
         };
         let settled = if force {
@@ -241,7 +242,7 @@ impl FuseProjection {
         let open_file = {
             let state = self.core.state()?;
             state.admit_write()?;
-            state.open_handle(inode, handle, work)?
+            state.file_handle(inode, handle)?.open_file.clone()
         };
         if length == 0 {
             return Err(libc::EINVAL.into());
@@ -287,7 +288,12 @@ impl FuseProjection {
             libc::SEEK_HOLE => MountSeekTarget::Hole,
             _ => return Err(libc::EINVAL.into()),
         };
-        let open_file = self.core.state()?.open_handle(inode, handle, work)?;
+        let open_file = self
+            .core
+            .state()?
+            .file_handle(inode, handle)?
+            .open_file
+            .clone();
         let found = open_file
             .file(work)?
             .seek_with_meter(offset, target, work)?
@@ -316,8 +322,14 @@ impl FuseProjection {
             let state = self.core.state()?;
             state.admit_write()?;
             (
-                state.open_handle(source_inode, source_handle, work)?,
-                state.open_handle(destination_inode, destination_handle, work)?,
+                state
+                    .file_handle(source_inode, source_handle)?
+                    .open_file
+                    .clone(),
+                state
+                    .file_handle(destination_inode, destination_handle)?
+                    .open_file
+                    .clone(),
             )
         };
         u32::try_from(length).map_err(|_| libc::EOVERFLOW)?;
@@ -375,7 +387,7 @@ impl FuseProjection {
                 let chunk = u32::try_from(chunk).unwrap_or(DETACHED_COPY_CHUNK_BYTES);
                 let copied = (|| -> Result<u64, NativeMountError> {
                     self.check_source_write(work)?;
-                    fuse_item(work)?;
+                    work.charge(Items.delta(1))?;
                     let sparse = source_open.file(work)?.read_sparse_range(
                         source_offset + relative,
                         chunk,

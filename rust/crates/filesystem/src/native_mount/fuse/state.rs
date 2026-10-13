@@ -96,12 +96,12 @@ impl ProjectionState {
         name: &OsStr,
         work: &crate::NativeMaterializationWork,
     ) -> Result<FuseOwned<MountPath>, NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         let parent = self.path(parent)?;
         let name = name.as_bytes();
         let mut contains_separator = false;
         for byte in name {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             contains_separator |= *byte == b'/';
         }
         if name.is_empty() || name == b"." || name == b".." || contains_separator {
@@ -124,7 +124,7 @@ impl ProjectionState {
         confirmed: &HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<u64, NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         if let Some(previous) = self.inode_by_path.get(&*path).copied()
             && self
                 .by_inode
@@ -133,7 +133,7 @@ impl ProjectionState {
         {
             let held = match self.by_inode.get(&previous) {
                 Some(entry) => entry
-                    .binding(&path, work)?
+                    .binding(&path)
                     .is_some_and(|binding| binding.kernel.is_some()),
                 None => false,
             };
@@ -175,17 +175,7 @@ impl ProjectionState {
             )?;
             retire_reused_identity(&mut self.by_inode, &mut self.inode_by_file, inode);
         }
-        intern_projected(
-            &mut self.next_inode,
-            &mut self.by_inode,
-            &mut self.inode_by_path,
-            &mut self.inode_by_file,
-            path,
-            lookup,
-            stamp,
-            lookup_reference,
-            work,
-        )
+        self.intern_projected(path, lookup, stamp, lookup_reference, work)
     }
 
     pub(super) fn unvouched_names(
@@ -204,7 +194,7 @@ impl ProjectionState {
             return Ok(names);
         };
         for binding in entry.bindings.iter() {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             if *binding.path == *path {
                 continue;
             }
@@ -220,27 +210,7 @@ impl ProjectionState {
         Ok(names)
     }
 
-    pub(super) fn release_lookup_reference(
-        &mut self,
-        inode: u64,
-        references: u64,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        fuse_item(work)?;
-        if let Some(entry) = self.by_inode.get(&inode) {
-            let remaining = entry.lookup_references.saturating_sub(references);
-            let implicit = u64::from(remaining == 0 && self.implicit.contains_key(&inode));
-            if inode != ROOT_INODE && remaining == 0 && entry.open_handles <= implicit {
-                for _binding in entry.bindings.iter() {
-                    fuse_item(work)?;
-                }
-            }
-        }
-        self.release_lookup_reference_administrative(inode, references);
-        Ok(())
-    }
-
-    pub(super) fn release_lookup_reference_administrative(&mut self, inode: u64, references: u64) {
+    pub(super) fn release_lookup_reference(&mut self, inode: u64, references: u64) {
         if inode == ROOT_INODE {
             return;
         }
@@ -297,7 +267,7 @@ impl ProjectionState {
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         let Some(entry) = self.by_inode.get(&inode) else {
             return Ok(Duration::ZERO);
         };
@@ -337,7 +307,7 @@ impl ProjectionState {
             work,
         )?;
         if let Some(entry) = self.by_inode.get_mut(&inode)
-            && let Some(binding) = entry.binding_mut(name.key(), work)?
+            && let Some(binding) = entry.binding_mut(name.key())
         {
             hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
         }
@@ -422,16 +392,46 @@ impl ProjectionState {
     ) -> Result<(FileAttr, Duration), NativeMountError> {
         let lookup = resolved.lookup;
         if inode == ROOT_INODE {
-            replace_root_lookup(&mut self.by_inode, &mut self.inode_by_file, lookup, work)?;
+            work.charge(Items.delta(1))?;
+            if lookup.node.kind != MountNodeKind::Directory {
+                return Err(libc::EIO.into());
+            }
+            let previous = self
+                .by_inode
+                .get(&ROOT_INODE)
+                .ok_or(libc::ESTALE)?
+                .lookup
+                .node
+                .file_id;
+            if previous != lookup.node.file_id {
+                if self
+                    .inode_by_file
+                    .get(&lookup.node.file_id)
+                    .is_some_and(|(inode, _)| *inode != ROOT_INODE)
+                {
+                    return Err(libc::EIO.into());
+                }
+                let storage = work.claim(
+                    std::mem::size_of::<(crate::FileId, (u64, crate::NativeAllocation))>() as u64,
+                    1,
+                    crate::WorkCounters::UNCHARGED,
+                )?;
+                self.inode_by_file
+                    .try_reserve(1)
+                    .map_err(NativeMountError::Allocation)?;
+                forget_file(&mut self.inode_by_file, previous, ROOT_INODE);
+                self.inode_by_file
+                    .insert(lookup.node.file_id, (ROOT_INODE, storage));
+            }
         }
         let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
-        if entry.lookup.node.file_id != lookup.node.file_id {
+        if inode != ROOT_INODE && entry.lookup.node.file_id != lookup.node.file_id {
             return Err(libc::ESTALE.into());
         }
         entry.lookup = lookup;
         entry.facts = resolved.stamp;
         if let Some(path) = resolved.through.as_ref()
-            && let Some(binding) = entry.binding_mut(path, work)?
+            && let Some(binding) = entry.binding_mut(path)
         {
             binding.verified = resolved.stamp;
         }
@@ -446,10 +446,10 @@ impl ProjectionState {
         handle: Option<u64>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<NodeFacts, NativeMountError> {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;
         if let Some(handle) = handle {
-            let open_file = self.open_handle(inode, handle, work)?;
+            let open_file = self.file_handle(inode, handle)?.open_file.clone();
             return Ok(match entry.current_facts(source, work)? {
                 Some(stamp) => NodeFacts::Current(Resolved {
                     lookup: entry.lookup,
@@ -473,13 +473,13 @@ impl ProjectionState {
         }
         if entry.bindings.is_empty() {
             return self
-                .open_inode(inode, work)?
+                .open_inode(inode)
                 .map(NodeFacts::Handle)
                 .ok_or(libc::ESTALE.into());
         }
         let mut paths = fuse_vec(entry.bindings.len(), work)?;
         for binding in entry.bindings.iter() {
-            fuse_item(work)?;
+            work.charge(Items.delta(1))?;
             paths.push(fuse_clone_path(&binding.path, work)?);
         }
         Ok(NodeFacts::Names {
