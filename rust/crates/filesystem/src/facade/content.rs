@@ -12,6 +12,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> W::Output<(), FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
+            accounting.check()?;
+            if let ContentChange::Write { bytes, .. } = &change
+                && bytes.len() as u64 > self.volume.config.limits.maximum_read_bytes
+            {
+                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
+            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
@@ -44,7 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             ContentAddress::File(id) => Ok(id),
             ContentAddress::Path(path) => {
                 let (lookup, allocation) = self
-                    .lookup_no_follow_with_accounting(&path, accounting, cancellation, true)
+                    .lookup_no_follow_with_accounting(&path, accounting, cancellation, false)
                     .await?;
                 drop(allocation);
                 Ok(lookup.record.ok_or(FsError::NotFound)?.file_id)

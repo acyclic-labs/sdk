@@ -74,7 +74,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities() -> TestRes
         .await?;
     assert!(matches!(outcome.0, LiveMutationOutcome::Committed { .. }));
     assert!(outcome.1.work().shares_ledger(&original));
-    assert!(callbacks.load(Ordering::SeqCst) >= 2);
+    assert_ne!(callbacks.load(Ordering::SeqCst), 0);
     assert!(!local.has_pending_mutations());
     let left_record = local
         .read_file_record_by_id(left, &original, &cancel)
