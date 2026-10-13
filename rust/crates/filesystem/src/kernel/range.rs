@@ -1,6 +1,8 @@
 //! Sparse extent planning that reads only page frontiers intersecting a request.
 
-use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation, LogicalVecCapacity, VisitedObjectSet};
+use super::allocation::{
+    AllocationError, KernelAccounting, KernelOwnedAllocation, LogicalVecCapacity, VisitedObjectSet,
+};
 use super::file_read::{ReadOwned, release_read_allocation};
 use super::{CanonicalDecodeError, DecodeLimits, ExtentKind, ExtentPage};
 use crate::FsError;
@@ -107,19 +109,33 @@ pub struct ExtentRangeRequest {
 
 /// Plans one exact file range without reading unrelated extent pages or blobs.
 pub async fn plan_extent_range<S: AsyncObjectStore>(
-    store: &S, request: ExtentRangeRequest, cancellation: &CancellationToken,
+    store: &S,
+    request: ExtentRangeRequest,
+    cancellation: &CancellationToken,
 ) -> Result<ExtentPlan, ExtentReadFailure> {
     let mut accounting = KernelAccounting::standalone(request.budget, cancellation);
-    plan_extent_range_with_accounting(store, request, &mut accounting, cancellation).await
+    plan_extent_range_with_accounting(store, request, &mut accounting, cancellation)
+        .await
         .map(|(plan, _)| plan)
         .map_err(|error| failed(range_error(error), accounting.spent()))
 }
 
 pub(crate) async fn plan_extent_range_with_accounting<S: AsyncObjectStore>(
-    store: &S, request: ExtentRangeRequest, accounting: &mut KernelAccounting<'_>,
+    store: &S,
+    request: ExtentRangeRequest,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(ExtentPlan, KernelOwnedAllocation), FsError> {
-    let result = ReadOwned::from(run_range_async(store, request, TraversalMode::Plan, accounting, cancellation).await?);
+    let result = ReadOwned::from(
+        run_range_async(
+            store,
+            request,
+            TraversalMode::Plan,
+            accounting,
+            cancellation,
+        )
+        .await?,
+    );
     match result.value {
         RangeOutput::Plan(plan) => Ok((plan, result.custody)),
         _ => Err(range_failure(ExtentReadError::TraversalState)),
@@ -128,27 +144,50 @@ pub(crate) async fn plan_extent_range_with_accounting<S: AsyncObjectStore>(
 
 /// Finds a data or hole boundary without reading content objects.
 pub async fn seek_extent<S: AsyncObjectStore>(
-    store: &S, request: ExtentSeekRequest, cancellation: &CancellationToken,
+    store: &S,
+    request: ExtentSeekRequest,
+    cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Option<u64>>, ExtentReadFailure> {
     let mut accounting = KernelAccounting::standalone(request.budget, cancellation);
     let result = match seek_request(request) {
         Ok(range) => {
-            run_range_async(store, range, TraversalMode::Seek(request.target), &mut accounting, cancellation).await
+            run_range_async(
+                store,
+                range,
+                TraversalMode::Seek(request.target),
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         Err(error) => Err(error),
     };
     match result {
-        Ok((RangeOutput::Seek(value), _)) => Ok(OperationReceipt { value, work: accounting.spent() }),
+        Ok((RangeOutput::Seek(value), _)) => Ok(OperationReceipt {
+            value,
+            work: accounting.spent(),
+        }),
         Ok(_) => Err(failed(ExtentReadError::TraversalState, accounting.spent())),
         Err(error) => Err(failed(range_error(error), accounting.spent())),
     }
 }
 
 pub(crate) async fn seek_extent_with_accounting<S: AsyncObjectStore>(
-    store: &S, request: ExtentSeekRequest, accounting: &mut KernelAccounting<'_>,
+    store: &S,
+    request: ExtentSeekRequest,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<u64>, FsError> {
-    let result = ReadOwned::from(run_range_async(store, seek_request(request)?, TraversalMode::Seek(request.target), accounting, cancellation).await?);
+    let result = ReadOwned::from(
+        run_range_async(
+            store,
+            seek_request(request)?,
+            TraversalMode::Seek(request.target),
+            accounting,
+            cancellation,
+        )
+        .await?,
+    );
     match result.value {
         RangeOutput::Seek(value) => Ok(value),
         _ => Err(range_failure(ExtentReadError::TraversalState)),
@@ -156,11 +195,21 @@ pub(crate) async fn seek_extent_with_accounting<S: AsyncObjectStore>(
 }
 
 fn seek_request(request: ExtentSeekRequest) -> Result<ExtentRangeRequest, FsError> {
-    let length = request.file_size.checked_sub(request.offset)
+    let length = request
+        .file_size
+        .checked_sub(request.offset)
         .ok_or_else(|| range_failure(ExtentReadError::InvalidRange))?;
-    Ok(ExtentRangeRequest { root: request.root, file_size: request.file_size,
-        range: ByteRange { offset: request.offset, length }, maximum_spans: 1,
-        limits: request.limits, budget: request.budget })
+    Ok(ExtentRangeRequest {
+        root: request.root,
+        file_size: request.file_size,
+        range: ByteRange {
+            offset: request.offset,
+            length,
+        },
+        maximum_spans: 1,
+        limits: request.limits,
+        budget: request.budget,
+    })
 }
 
 struct RangeMachine {
@@ -181,70 +230,142 @@ struct RangeMachine {
 }
 
 impl RangeMachine {
-    fn new(request: ExtentRangeRequest, mode: TraversalMode, accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+    fn new(
+        request: ExtentRangeRequest,
+        mode: TraversalMode,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
         accounting.check()?;
-        if request.root.kind != ObjectKind::ExtentPage { return Err(range_failure(ExtentReadError::WrongRootKind)); }
-        let range_end = request.range.offset.checked_add(request.range.length)
+        if request.root.kind != ObjectKind::ExtentPage {
+            return Err(range_failure(ExtentReadError::WrongRootKind));
+        }
+        let range_end = request
+            .range
+            .offset
+            .checked_add(request.range.length)
             .filter(|end| *end <= request.file_size)
             .ok_or_else(|| range_failure(ExtentReadError::InvalidRange))?;
-        if request.range.length != 0 && request.maximum_spans == 0 { return Err(range_failure(ExtentReadError::InvalidSpanLimit)); }
-        if !request.limits.page_limits_valid(1) { return Err(range_failure(ExtentReadError::HeightExceeded)); }
+        if request.range.length != 0 && request.maximum_spans == 0 {
+            return Err(range_failure(ExtentReadError::InvalidSpanLimit));
+        }
+        if !request.limits.page_limits_valid(1) {
+            return Err(range_failure(ExtentReadError::HeightExceeded));
+        }
         let maximum = usize::try_from(request.limits.maximum_visited_pages)
             .map_err(|_| range_failure(ExtentReadError::InvalidLimits))?;
         let visited = VisitedObjectSet::new_with_accounting(maximum, accounting)?;
         let mut machine = Self {
-            input: PlanInput { file_size: request.file_size, range: request.range, maximum_spans: request.maximum_spans },
-            mode, seek_result: (request.range.length == 0 && matches!(mode, TraversalMode::Seek(ExtentSeekTarget::Hole))).then_some(request.file_size),
-            range_end, limits: request.limits, pending: Vec::new(), pending_capacity: LogicalVecCapacity::default(),
-            visited: Some(visited), spans: Vec::new(), spans_capacity: LogicalVecCapacity::default(), successor_page: None,
-            pending_custody: KernelOwnedAllocation::Standalone, spans_custody: KernelOwnedAllocation::Standalone,
+            input: PlanInput {
+                file_size: request.file_size,
+                range: request.range,
+                maximum_spans: request.maximum_spans,
+            },
+            mode,
+            seek_result: (request.range.length == 0
+                && matches!(mode, TraversalMode::Seek(ExtentSeekTarget::Hole)))
+            .then_some(request.file_size),
+            range_end,
+            limits: request.limits,
+            pending: Vec::new(),
+            pending_capacity: LogicalVecCapacity::default(),
+            visited: Some(visited),
+            spans: Vec::new(),
+            spans_capacity: LogicalVecCapacity::default(),
+            successor_page: None,
+            pending_custody: KernelOwnedAllocation::Standalone,
+            spans_custody: KernelOwnedAllocation::Standalone,
         };
         if request.range.length != 0 {
-            machine.push_page(PendingPage { page: request.root, first_offset: 0, end_offset: request.file_size, height: 1 }, accounting)?;
+            machine.push_page(
+                PendingPage {
+                    page: request.root,
+                    first_offset: 0,
+                    end_offset: request.file_size,
+                    height: 1,
+                },
+                accounting,
+            )?;
         }
         Ok(machine)
     }
 
-    fn push_page(&mut self, page: PendingPage, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    fn push_page(
+        &mut self,
+        page: PendingPage,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
         self.pending_capacity.ensure_for_push_with_accounting(
             &mut self.pending,
-            usize::try_from(self.limits.maximum_visited_pages).map_err(|_| range_failure(ExtentReadError::InvalidLimits))?,
-            &mut self.pending_custody, accounting,
+            usize::try_from(self.limits.maximum_visited_pages)
+                .map_err(|_| range_failure(ExtentReadError::InvalidLimits))?,
+            &mut self.pending_custody,
+            accounting,
         )?;
         self.pending.push(page);
         Ok(())
     }
 
     fn prepare(&mut self, accounting: &mut KernelAccounting<'_>) -> Result<PendingPage, FsError> {
-        let expected = self.pending.pop().ok_or_else(|| range_failure(ExtentReadError::TraversalState))?;
-        if expected.height > self.limits.maximum_page_height { return Err(range_failure(ExtentReadError::HeightExceeded)); }
-        let visited = self.visited.as_mut().ok_or_else(|| range_failure(ExtentReadError::TraversalState))?;
-        let inserted = VisitedObjectSet::insert_with_accounting(visited, expected.page, accounting)?;
-        if !inserted.inserted { return Err(range_failure(ExtentReadError::Cycle)); }
-        accounting.charge(WorkCounters { page_reads: 1, ..WorkCounters::UNCHARGED })?;
+        let expected = self
+            .pending
+            .pop()
+            .ok_or_else(|| range_failure(ExtentReadError::TraversalState))?;
+        if expected.height > self.limits.maximum_page_height {
+            return Err(range_failure(ExtentReadError::HeightExceeded));
+        }
+        let visited = self
+            .visited
+            .as_mut()
+            .ok_or_else(|| range_failure(ExtentReadError::TraversalState))?;
+        let inserted =
+            VisitedObjectSet::insert_with_accounting(visited, expected.page, accounting)?;
+        if !inserted.inserted {
+            return Err(range_failure(ExtentReadError::Cycle));
+        }
+        accounting.charge(WorkCounters {
+            page_reads: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
         Ok(expected)
     }
 
-    fn accept_decoded(&mut self, decoded: &ExtentPage, expected: &PendingPage, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    fn accept_decoded(
+        &mut self,
+        decoded: &ExtentPage,
+        expected: &PendingPage,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
         match decoded {
             ExtentPage::Leaf(extents) => {
                 if extents.first().map(|extent| extent.offset) != Some(expected.first_offset)
-                    || extents.last().and_then(|extent| extent.offset.checked_add(extent.length)) != Some(expected.end_offset) {
+                    || extents
+                        .last()
+                        .and_then(|extent| extent.offset.checked_add(extent.length))
+                        != Some(expected.end_offset)
+                {
                     return Err(range_failure(ExtentReadError::ChildBoundsMismatch));
                 }
                 for extent in extents {
-                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                    let end = extent.offset.checked_add(extent.length).ok_or_else(|| range_failure(ExtentReadError::InvalidRange))?;
+                    accounting.charge(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    let end = extent
+                        .offset
+                        .checked_add(extent.length)
+                        .ok_or_else(|| range_failure(ExtentReadError::InvalidRange))?;
                     match self.mode {
                         TraversalMode::Seek(target) => {
-                            if end > self.input.range.offset && match target {
-                                ExtentSeekTarget::Data => {
+                            if end > self.input.range.offset
+                                && match target {
+                                    ExtentSeekTarget::Data => {
                                         !matches!(extent.kind, ExtentKind::Hole)
                                     }
                                     ExtentSeekTarget::Hole => {
                                         matches!(extent.kind, ExtentKind::Hole)
                                     }
-                                } {
+                                }
+                            {
                                 self.seek_result = Some(extent.offset.max(self.input.range.offset));
                                 self.pending.clear();
                                 break;
@@ -254,20 +375,36 @@ impl RangeMachine {
                             let start = extent.offset.max(self.input.range.offset);
                             let clipped_end = end.min(self.range_end);
                             if start < clipped_end {
-                                if self.spans.len() >= usize::try_from(self.input.maximum_spans).unwrap_or(usize::MAX) {
+                                if self.spans.len()
+                                    >= usize::try_from(self.input.maximum_spans)
+                                        .unwrap_or(usize::MAX)
+                                {
                                     return Err(range_failure(ExtentReadError::TooManySpans));
                                 }
-                                let kind = clip_kind(extent.kind.clone(), start - extent.offset).map_err(range_failure)?;
+                                let kind = clip_kind(extent.kind.clone(), start - extent.offset)
+                                    .map_err(range_failure)?;
                                 self.spans_capacity.ensure_for_push_with_accounting(
                                     &mut self.spans,
                                     usize::try_from(self.input.maximum_spans).map_err(|_| {
                                         range_failure(ExtentReadError::InvalidSpanLimit)
                                     })?,
-                                    &mut self.spans_custody, accounting,
+                                    &mut self.spans_custody,
+                                    accounting,
                                 )?;
-                                accounting.admit(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
-                                self.spans.push(ExtentSlice { offset: start, length: clipped_end - start, source_end: end, kind });
-                                accounting.record_completed(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
+                                accounting.admit(WorkCounters {
+                                    items_returned: 1,
+                                    ..WorkCounters::UNCHARGED
+                                })?;
+                                self.spans.push(ExtentSlice {
+                                    offset: start,
+                                    length: clipped_end - start,
+                                    source_end: end,
+                                    kind,
+                                });
+                                accounting.record_completed(WorkCounters {
+                                    items_returned: 1,
+                                    ..WorkCounters::UNCHARGED
+                                })?;
                             }
                         }
                     }
@@ -275,22 +412,45 @@ impl RangeMachine {
             }
             ExtentPage::Internal(children) => {
                 if children.first().map(|child| child.first_offset) != Some(expected.first_offset)
-                    || children.last().map(|child| child.end_offset) != Some(expected.end_offset) {
+                    || children.last().map(|child| child.end_offset) != Some(expected.end_offset)
+                {
                     return Err(range_failure(ExtentReadError::ChildBoundsMismatch));
                 }
                 for child in children.iter().rev() {
-                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                    if child.first_offset < self.range_end && child.end_offset > self.input.range.offset {
-                        self.push_page(PendingPage { page: child.page, first_offset: child.first_offset, end_offset: child.end_offset,
-                            height: expected.height.checked_add(1).ok_or_else(|| {
+                    accounting.charge(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    if child.first_offset < self.range_end
+                        && child.end_offset > self.input.range.offset
+                    {
+                        self.push_page(
+                            PendingPage {
+                                page: child.page,
+                                first_offset: child.first_offset,
+                                end_offset: child.end_offset,
+                                height: expected.height.checked_add(1).ok_or_else(|| {
                                     range_failure(ExtentReadError::HeightExceeded)
-                                })? }, accounting)?;
-                    } else if self.input.range.length != 0 && child.first_offset >= self.range_end
-                        && self.successor_page.is_none_or(|(offset, _)| child.first_offset < offset) {
-                        self.successor_page = Some((child.first_offset, ResidencyHint {
-                            request: ObjectReadRequest { object_id: child.page, maximum_bytes: self.limits.maximum_page_object_bytes() },
-                            reason: ResidencyReason::SequentialRange,
-                        }));
+                                })?,
+                            },
+                            accounting,
+                        )?;
+                    } else if self.input.range.length != 0
+                        && child.first_offset >= self.range_end
+                        && self
+                            .successor_page
+                            .is_none_or(|(offset, _)| child.first_offset < offset)
+                    {
+                        self.successor_page = Some((
+                            child.first_offset,
+                            ResidencyHint {
+                                request: ObjectReadRequest {
+                                    object_id: child.page,
+                                    maximum_bytes: self.limits.maximum_page_object_bytes(),
+                                },
+                                reason: ResidencyReason::SequentialRange,
+                            },
+                        ));
                     }
                 }
             }
@@ -298,19 +458,36 @@ impl RangeMachine {
         Ok(())
     }
 
-    fn finish(mut self, accounting: &mut KernelAccounting<'_>) -> Result<(RangeOutput, KernelOwnedAllocation), FsError> {
+    fn finish(
+        mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(RangeOutput, KernelOwnedAllocation), FsError> {
         let output = match self.mode {
             TraversalMode::Plan => {
-                if self.input.range.length != 0 && (self.spans.first().map(|span| span.offset) != Some(self.input.range.offset)
-                    || self.spans.last().and_then(|span| span.offset.checked_add(span.length)) != Some(self.range_end)
-                    || self.spans.windows(2).any(|pair| match pair { [a, b] => a.offset.checked_add(a.length) != Some(b.offset), _ => false })) {
+                if self.input.range.length != 0
+                    && (self.spans.first().map(|span| span.offset) != Some(self.input.range.offset)
+                        || self
+                            .spans
+                            .last()
+                            .and_then(|span| span.offset.checked_add(span.length))
+                            != Some(self.range_end)
+                        || self.spans.windows(2).any(|pair| match pair {
+                            [a, b] => a.offset.checked_add(a.length) != Some(b.offset),
+                            _ => false,
+                        }))
+                {
                     return Err(range_failure(ExtentReadError::IncompleteCoverage));
                 }
-                RangeOutput::Plan(ExtentPlan { spans: std::mem::take(&mut self.spans), work: accounting.spent(),
-                    retained_allocation_bytes: self.spans_capacity.logical_bytes(), next_residency: self.successor_page.map(|(_, hint)| hint) })
+                RangeOutput::Plan(ExtentPlan {
+                    spans: std::mem::take(&mut self.spans),
+                    work: accounting.spent(),
+                    retained_allocation_bytes: self.spans_capacity.logical_bytes(),
+                    next_residency: self.successor_page.map(|(_, hint)| hint),
+                })
             }
             TraversalMode::Seek(target) => RangeOutput::Seek(
-                self.seek_result.or_else(|| (target == ExtentSeekTarget::Hole).then_some(self.input.file_size)),
+                self.seek_result
+                    .or_else(|| (target == ExtentSeekTarget::Hole).then_some(self.input.file_size)),
             ),
         };
         let output = ReadOwned {
@@ -328,7 +505,10 @@ impl RangeMachine {
 }
 
 async fn run_range_async<S: AsyncObjectStore>(
-    store: &S, request: ExtentRangeRequest, mode: TraversalMode, accounting: &mut KernelAccounting<'_>,
+    store: &S,
+    request: ExtentRangeRequest,
+    mode: TraversalMode,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(RangeOutput, KernelOwnedAllocation), FsError> {
     let mut machine = RangeMachine::new(request, mode, accounting)?;
@@ -345,24 +525,42 @@ async fn run_range_async<S: AsyncObjectStore>(
                     .map_err(crate::ObjectStoreError::from)
                     .and_then(|_| store.decoded_cache_get(__decoded_args.0))
             }
-        } else { store.decoded_cache_get(key) };
+        } else {
+            store.decoded_cache_get(key)
+        };
         #[cfg(target_arch = "wasm32")]
         let cached = store.decoded_cache_get(key);
         if let Some(cached) = cached.map_err(crate::kernel::file_read::read_store_error)? {
-            let page = cached.value.downcast_ref::<ExtentPage>().ok_or_else(|| range_failure(ObjectStoreError::Corrupt.into()))?;
+            let page = cached
+                .value
+                .downcast_ref::<ExtentPage>()
+                .ok_or_else(|| range_failure(ObjectStoreError::Corrupt.into()))?;
             machine.accept_decoded(page, &expected, accounting)?;
-            
+
             drop(cached);
             continue;
         }
         let (read, retained) = super::file_read::read_object_with_accounting(
-            store, expected.page, request.limits.maximum_page_object_bytes(), accounting, cancellation,
-        ).await?;
-        let decoded = ReadOwned::decoded(super::extent::decode_extent_page_with_accounting(&read, request.limits, accounting)?);
-        let (value, allocated) = super::file_read::cache_decoded_read(store, key, decoded, accounting)?;
-        let page = value.value.downcast_ref::<ExtentPage>().ok_or_else(|| range_failure(ObjectStoreError::Corrupt.into()))?;
+            store,
+            expected.page,
+            request.limits.maximum_page_object_bytes(),
+            accounting,
+            cancellation,
+        )
+        .await?;
+        let decoded = ReadOwned::decoded(super::extent::decode_extent_page_with_accounting(
+            &read,
+            request.limits,
+            accounting,
+        )?);
+        let (value, allocated) =
+            super::file_read::cache_decoded_read(store, key, decoded, accounting)?;
+        let page = value
+            .value
+            .downcast_ref::<ExtentPage>()
+            .ok_or_else(|| range_failure(ObjectStoreError::Corrupt.into()))?;
         machine.accept_decoded(page, &expected, accounting)?;
-        
+
         drop(value);
         super::file_read::release_standalone_read_bytes(allocated, accounting)?;
         drop(read);
@@ -371,7 +569,9 @@ async fn run_range_async<S: AsyncObjectStore>(
     machine.finish(accounting)
 }
 
-fn range_failure(error: ExtentReadError) -> FsError { super::FileRangeReadError::Extent(error).into() }
+fn range_failure(error: ExtentReadError) -> FsError {
+    super::FileRangeReadError::Extent(error).into()
+}
 fn range_error(error: FsError) -> ExtentReadError {
     match error {
         FsError::FileRead(super::FileRangeReadError::Extent(error)) => error,
@@ -379,6 +579,7 @@ fn range_error(error: FsError) -> ExtentReadError {
             ExtentReadError::AllocationFailed
         }
         FsError::Work(error) => error.into(),
+        FsError::Object(error) => error.into(),
         FsError::BlobRead(super::BlobReadError::Storage(error)) => error.into(),
         FsError::Cancelled(_) => ExtentReadError::Cancelled,
         error => ExtentReadError::Context(Box::new(error)),

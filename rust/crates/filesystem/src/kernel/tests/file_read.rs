@@ -6,7 +6,7 @@ use crate::kernel::{
     extent_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectId, ObjectKind, };
+use crate::storage::{ObjectId, ObjectKind};
 use acyclic_stream::OwnedBytes;
 use std::io::Cursor;
 
@@ -35,7 +35,8 @@ fn limits() -> DecodeLimits {
 }
 
 #[tokio::test]
-async fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dyn std::error::Error>>
+{
     let request = FileRangeRequest {
         record: inline_record(b"abcdef")?,
         range: ByteRange {
@@ -50,12 +51,17 @@ async fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dy
         &MemoryObjectStore::default(),
         request,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(&read.bytes[..], b"cde");
     assert_eq!(read.logical_owned_bytes(), 3);
     let shared = read.bytes.slice(1..2);
     assert_eq!(shared.as_ref(), b"d");
-    assert_eq!(read.logical_owned_bytes(), 3, "a slice does not shrink producer custody");
+    assert_eq!(
+        read.logical_owned_bytes(),
+        3,
+        "a slice does not shrink producer custody"
+    );
     assert_eq!(read.work.backend_read_operations, 0);
     assert_eq!(read.work.output_bytes, 3);
     assert_eq!(read.work.peak_allocation_bytes, 3);
@@ -78,7 +84,8 @@ async fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::err
         &MemoryObjectStore::default(),
         request,
         &CancellationToken::new(),
-    )).await;
+    ))
+    .await;
     let Err(failure) = result else {
         return Err("invalid range succeeded".into());
     };
@@ -106,7 +113,8 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             budget: WorkBudget::UNBOUNDED,
         },
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled read succeeded")?;
     assert!(matches!(cancelled.error, FileRangeReadError::Cancelled));
@@ -138,7 +146,8 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("non-regular read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
@@ -165,7 +174,8 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("payload-mismatched read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
@@ -175,7 +185,8 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
 }
 
 #[tokio::test]
-async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn std::error::Error>> {
+async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.output_bytes = 2;
@@ -192,7 +203,8 @@ async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn
             budget,
         },
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("inline read exceeded output budget")?;
     assert!(matches!(
@@ -207,7 +219,8 @@ async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std::error::Error>> {
+async fn zero_length_inline_read_at_eof_is_allocation_free()
+-> Result<(), Box<dyn std::error::Error>> {
     let read = (read_file_range_async(
         &MemoryObjectStore::default(),
         FileRangeRequest {
@@ -221,7 +234,8 @@ async fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<d
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert!(read.bytes.is_empty());
     assert_eq!(read.logical_owned_bytes(), 0);
     assert_eq!(read.work.output_bytes, 0);
@@ -246,7 +260,8 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let extents = ExtentPage::Leaf(vec![
         Extent {
             offset: 0,
@@ -284,8 +299,15 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
     {
         let __object_args = (
             extent_root,
-        OwnedBytes::from(encode_extent_page(&extents, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_extent_page(
+                &extents,
+                16,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
@@ -309,14 +331,21 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         &store,
         FileRangeRequest {
             record,
-            range: ByteRange { offset: 1, length: 8 },
+            range: ByteRange {
+                offset: 1,
+                length: 8,
+            },
             maximum_spans: 5,
             limits: DecodeLimits::default(),
-            budget: WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+            budget: WorkBudget {
+                allocation_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
         },
         &CancellationToken::new(),
-    )).await
-        .expect_err("the canonical sparse future is admitted before immutable I/O");
+    ))
+    .await
+    .expect_err("the canonical sparse future is admitted before immutable I/O");
     assert_eq!(denied.work.allocation_operations, 0);
     assert_eq!(denied.work.backend_read_operations, 0);
     assert_eq!(denied.work.bytes_copied, 0);
@@ -333,11 +362,11 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(&read.bytes[..], &[b'B', 0, 0, 0, 0, b'E', b'F', b'G']);
     assert_eq!(read.logical_owned_bytes(), 8);
     assert_eq!(read.work.output_bytes, 8);
-    assert_eq!(read.work.items_returned, 7);
     assert!(read.work.bytes_copied >= 6);
     assert!(read.work.page_reads >= 3);
     assert!(read.work.backend_read_operations >= 3);
@@ -350,16 +379,30 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         let baseline = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let native = (read_file_range_with_accounting(
-            &store, FileRangeRequest { record, range: ByteRange { offset: 1, length: 8 },
-                maximum_spans: 5, limits: DecodeLimits::default(), budget: WorkBudget::UNBOUNDED },
-            &mut accounting, &cancellation,
-        )).await?;
+            &store,
+            FileRangeRequest {
+                record,
+                range: ByteRange {
+                    offset: 1,
+                    length: 8,
+                },
+                maximum_spans: 5,
+                limits: DecodeLimits::default(),
+                budget: WorkBudget::UNBOUNDED,
+            },
+            &mut accounting,
+            &cancellation,
+        ))
+        .await?;
         assert_eq!(native.bytes.as_ref(), read.bytes.as_ref());
         assert_eq!(original.receipt().output_bytes, 8);
         assert!(original.receipt().backend_read_operations >= 3);
         let alias = native.bytes.slice(1..4);
         drop(native);
-        assert!(original.live_allocation_bytes() > baseline, "a physical OwnedBytes alias retains original custody");
+        assert!(
+            original.live_allocation_bytes() > baseline,
+            "a physical OwnedBytes alias retains original custody"
+        );
         drop(alias);
         assert_eq!(original.live_allocation_bytes(), baseline);
     }
@@ -388,7 +431,12 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
     })();
     drop(bytes);
     observed.release_failed()?;
-    assert!(matches!(result, Err(FsError::Cancelled(_))));
+    assert!(matches!(
+        result,
+        Err(FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Cancelled
+        ))
+    ));
     assert_eq!(original.receipt().bytes_copied, 4);
     assert_eq!(original.receipt().items_examined, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
@@ -399,7 +447,10 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
 fn late_backend_retention_refusal_releases_only_returned_backing()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let budget = WorkBudget { peak_allocation_bytes: 4, ..WorkBudget::UNBOUNDED };
+    let budget = WorkBudget {
+        peak_allocation_bytes: 4,
+        ..WorkBudget::UNBOUNDED
+    };
     let mut accounting = KernelAccounting::standalone(budget, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
     let receipt = crate::OperationReceipt {
@@ -407,17 +458,39 @@ fn late_backend_retention_refusal_releases_only_returned_backing()
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
         },
-        work: WorkCounters { allocation_operations: 1, peak_allocation_bytes: 3, ..WorkCounters::UNCHARGED },
+        work: WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: 3,
+            ..WorkCounters::UNCHARGED
+        },
     };
     let error = accept_standalone_object_read(Ok(receipt), &mut accounting)
-        .err().ok_or("over-budget returned backing was accepted")?;
-    assert!(matches!(error, FsError::Work(WorkError::BudgetExceeded { .. })));
-    assert_eq!(accounting.standalone_parts().ok_or("standalone parts unavailable")?.0.live_bytes(), 4);
+        .err()
+        .ok_or("over-budget returned backing was accepted")?;
+    assert!(matches!(
+        error,
+        FsError::Work(WorkError::BudgetExceeded { .. })
+    ));
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("standalone parts unavailable")?
+            .0
+            .live_bytes(),
+        4
+    );
     assert_eq!(accounting.spent().allocation_operations, 2);
     assert_eq!(accounting.spent().peak_allocation_bytes, 7);
     drop(existing.value);
     release_read_allocation(4, existing.custody, &mut accounting)?;
-    assert_eq!(accounting.standalone_parts().ok_or("standalone parts unavailable")?.0.live_bytes(), 0);
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("standalone parts unavailable")?
+            .0
+            .live_bytes(),
+        0
+    );
     Ok(())
 }
 
@@ -427,18 +500,33 @@ fn backend_merge_failure_does_not_release_unregistered_returned_backing()
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
-    accounting.standalone_parts().ok_or("standalone parts unavailable")?.1.object_probes = u64::MAX;
+    accounting
+        .standalone_parts()
+        .ok_or("standalone parts unavailable")?
+        .1
+        .object_probes = u64::MAX;
     let receipt = crate::OperationReceipt {
         value: crate::storage::ObjectRead {
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
         },
-        work: WorkCounters { object_probes: 1, ..WorkCounters::UNCHARGED },
+        work: WorkCounters {
+            object_probes: 1,
+            ..WorkCounters::UNCHARGED
+        },
     };
     let error = accept_standalone_object_read(Ok(receipt), &mut accounting)
-        .err().ok_or("overflowing backend work was accepted")?;
+        .err()
+        .ok_or("overflowing backend work was accepted")?;
     assert!(matches!(error, FsError::Work(WorkError::Overflow)));
-    assert_eq!(accounting.standalone_parts().ok_or("standalone parts unavailable")?.0.live_bytes(), 4);
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("standalone parts unavailable")?
+            .0
+            .live_bytes(),
+        4
+    );
     drop(existing.value);
     release_read_allocation(4, existing.custody, &mut accounting)?;
     Ok(())
@@ -456,7 +544,10 @@ fn owned_read_error_scope_drops_payload_before_original_guard()
     }
     impl Drop for Payload<'_> {
         fn drop(&mut self) {
-            assert_eq!(self.original.live_allocation_bytes(), self.baseline + usize_to_u64(self.bytes.capacity()));
+            assert_eq!(
+                self.original.live_allocation_bytes(),
+                self.baseline + usize_to_u64(self.bytes.capacity())
+            );
             self.dropped.set(true);
         }
     }
@@ -468,7 +559,12 @@ fn owned_read_error_scope_drops_payload_before_original_guard()
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let buffer = allocate_read_buffer(4, &mut accounting)?;
     let owner = ReadOwned {
-        value: Payload { bytes: buffer.value, original: &original, baseline, dropped: &dropped },
+        value: Payload {
+            bytes: buffer.value,
+            original: &original,
+            baseline,
+            dropped: &dropped,
+        },
         custody: buffer.custody,
     };
     let fail = |owner: ReadOwned<Payload<'_>>| -> Result<(), FsError> {

@@ -45,15 +45,15 @@ impl AsyncObjectStore for PeakRecordingStore {
         let budget = context.work.remaining(context.budget)?;
         let _cancellation = context.cancellation;
         let result = async {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        let work = WorkCounters {
-            peak_allocation_bytes: self.peak,
-            ..WorkCounters::default()
-        };
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        Ok(crate::OperationReceipt { value: (), work })
-    }
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let work = WorkCounters {
+                peak_allocation_bytes: self.peak,
+                ..WorkCounters::default()
+            };
+            work.verify(budget)
+                .map_err(|error| ObjectFailure::before_work(error.into()))?;
+            Ok(crate::OperationReceipt { value: (), work })
+        }
         .await;
         context.accept(result)
     }
@@ -189,9 +189,22 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
         "07070707070707070707070707070707",
         "07070707070707070707070707070707"
     ))?;
-    assert_eq!(encode_blob_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?, expected);
-    assert_eq!(decode_blob_page(&expected, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
-        >(()))?, page);
+    assert_eq!(
+        encode_blob_page(
+            &page,
+            1,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed
+        )?,
+        expected
+    );
+    assert_eq!(
+        decode_blob_page(&expected, DecodeLimits::default(), &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
+        >(()))?,
+        page
+    );
     let page_id = blob_page_id(&page, 1)?;
     assert_eq!(page_id.kind, ObjectKind::Blob);
     assert_eq!(page_id.digest, object_digest(ObjectKind::Blob, &expected));
@@ -205,10 +218,19 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
             page: page_id,
         }]),
     };
-    let internal_bytes = encode_blob_page(&internal, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let internal_bytes = encode_blob_page(
+        &internal,
+        1,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     assert_eq!(
-        decode_blob_page(&internal_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
-        >(()))?,
+        decode_blob_page(&internal_bytes, DecodeLimits::default(), &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
+        >(
+            ()
+        ))?,
         internal
     );
     assert_eq!(
@@ -289,22 +311,42 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
             }]),
         },
     ] {
-        assert!(encode_blob_page(&invalid, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
+        assert!(
+            encode_blob_page(
+                &invalid,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed
+            )
+            .is_err()
+        );
         assert!(blob_page_id(&invalid, 8).is_err());
     }
     assert!(matches!(
-        encode_blob_page(&valid, 0, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed),
+        encode_blob_page(
+            &valid,
+            0,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed
+        ),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
             maximum: 0,
         })
     ));
 
-    let encoded = encode_blob_page(&valid, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let encoded = encode_blob_page(
+        &valid,
+        1,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let mut unknown_tag = encoded.clone();
     unknown_tag[26] = 99;
     assert!(matches!(
-        decode_blob_page(&unknown_tag, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        decode_blob_page(&unknown_tag, DecodeLimits::default(), &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
         >(())),
         Err(CanonicalDecodeError::UnknownTag {
             field: "blob_page",
@@ -313,15 +355,29 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
     ));
     let mut trailing = encoded.clone();
     trailing.push(0);
-    assert!(decode_blob_page(&trailing, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
-        >(())).is_err());
-    assert!(decode_blob_page(&encoded[..encoded.len() - 1], DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
+    assert!(
+        decode_blob_page(&trailing, DecodeLimits::default(), &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
+        >(()))
+        .is_err()
+    );
+    assert!(
+        decode_blob_page(
+            &encoded[..encoded.len() - 1],
+            DecodeLimits::default(),
+            &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        )
+        .is_err()
+    );
     let limited = DecodeLimits {
         maximum_page_items: 0,
         ..DecodeLimits::default()
     };
     assert!(matches!(
-        decode_blob_page(&encoded, limited, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        decode_blob_page(&encoded, limited, &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
         >(())),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
@@ -334,8 +390,18 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd")).await?;
-    let second = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"efgh")).await?;
+    let first = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"abcd"),
+    )
+    .await?;
+    let second = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"efgh"),
+    )
+    .await?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 8,
@@ -352,7 +418,12 @@ async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn st
             },
         ]),
     };
-    let bytes = encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let bytes = encode_blob_page(
+        &page,
+        8,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let root = put(&store, ObjectKind::Blob, OwnedBytes::from(bytes)).await?;
     let result = read_blob_range(
         &store,
@@ -364,7 +435,8 @@ async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn st
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(result.bytes.as_ref(), b"fg");
     assert_eq!(result.work.page_reads, 1);
     assert_eq!(result.work.object_probes, 2);
@@ -402,7 +474,8 @@ async fn owned_blob_pages_and_chunks_preserve_exact_range_results()
         &store.inner,
         ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"owned-range"),
-    ).await?;
+    )
+    .await?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 11,
@@ -415,8 +488,14 @@ async fn owned_blob_pages_and_chunks_preserve_exact_range_results()
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-    ).await?;
+        OwnedBytes::from(encode_blob_page(
+            &page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+    )
+    .await?;
     let read = (read_blob_range(
         &store,
         root,
@@ -427,12 +506,17 @@ async fn owned_blob_pages_and_chunks_preserve_exact_range_results()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(&read.bytes[..], b"wned-");
     assert_eq!(read.logical_owned_bytes(), 5);
     let shared = read.bytes.slice(1..2);
     assert_eq!(shared.as_ref(), b"n");
-    assert_eq!(read.logical_owned_bytes(), 5, "shared slices retain the controlled output buffer");
+    assert_eq!(
+        read.logical_owned_bytes(),
+        5,
+        "shared slices retain the controlled output buffer"
+    );
     assert_eq!(read.work.backend_read_operations, 2);
     assert!(read.work.bytes_copied >= 5);
     Ok(())
@@ -444,7 +528,14 @@ async fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
     let store = MemoryObjectStore::default();
     let mut chunks = Vec::new();
     for bytes in [b"abc".as_slice(), b"def".as_slice(), b"ghi".as_slice()] {
-        chunks.push(put(&store, ObjectKind::BlobChunk, OwnedBytes::from(bytes.to_vec())).await?);
+        chunks.push(
+            put(
+                &store,
+                ObjectKind::BlobChunk,
+                OwnedBytes::from(bytes.to_vec()),
+            )
+            .await?,
+        );
     }
     let [first, second, third] = chunks.as_slice() else {
         return Err("expected exactly three chunks".into());
@@ -473,8 +564,14 @@ async fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-    ).await?;
+        OwnedBytes::from(encode_blob_page(
+            &page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+    )
+    .await?;
     let read = (read_blob_range(
         &store,
         root,
@@ -485,7 +582,8 @@ async fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(read.bytes.as_ref(), b"bcdefgh");
     assert_eq!(read.work.backend_read_operations, 2);
     assert_eq!(read.work.object_probes, 4);
@@ -520,15 +618,10 @@ async fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
     let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
     let before = accounting.spent();
     assert_eq!(before.allocation_operations, 1);
-    let failure = (put_blob_page(
-        &mut batch,
-        &page,
-        options,
-        &mut accounting,
-        &cancellation,
-    )).await
-    .err()
-    .ok_or("oversized blob page unexpectedly published")?;
+    let failure = (put_blob_page(&mut batch, &page, options, &mut accounting, &cancellation))
+        .await
+        .err()
+        .ok_or("oversized blob page unexpectedly published")?;
     assert!(matches!(
         failure,
         FsError::BlobBuild(BlobBuildError::PageTooLarge {
@@ -549,8 +642,8 @@ async fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
         peak: 1,
     };
     let retained_per_object = 3_u64;
-    let vector_bytes = u64::try_from(BLOB_BATCH_OBJECTS)?
-        * u64::try_from(size_of::<HashedObject>())?;
+    let vector_bytes =
+        u64::try_from(BLOB_BATCH_OBJECTS)? * u64::try_from(size_of::<HashedObject>())?;
     let total_live = vector_bytes + retained_per_object * u64::try_from(BLOB_BATCH_OBJECTS)?;
     let total_budget = WorkBudget {
         peak_allocation_bytes: total_live + store.peak,
@@ -566,9 +659,7 @@ async fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
         ]);
         let object = HashedObject::new(ObjectKind::BlobChunk, bytes);
         let _custody = accounting.claim_owned(retained_per_object, 0)?;
-        (batch.put(
-            object, retained_per_object, &mut accounting, &cancellation,
-        )).await?;
+        (batch.put(object, retained_per_object, &mut accounting, &cancellation)).await?;
     }
     assert_eq!(store.calls.load(Ordering::Relaxed), 1);
     batch.release(&mut accounting)?;
@@ -587,12 +678,14 @@ async fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
     let object = HashedObject::new(ObjectKind::BlobChunk, vec![b'o', b'n', b'e'].into());
     let _custody = final_accounting.claim_owned(retained_per_object, 0)?;
     (final_batch.put(
-        object, retained_per_object, &mut final_accounting, &cancellation,
-    )).await?;
+        object,
+        retained_per_object,
+        &mut final_accounting,
+        &cancellation,
+    ))
+    .await?;
     assert_eq!(final_store.calls.load(Ordering::Relaxed), 0);
-    (final_batch.flush(
-        &mut final_accounting, &cancellation,
-    )).await?;
+    (final_batch.flush(&mut final_accounting, &cancellation)).await?;
     assert_eq!(final_store.calls.load(Ordering::Relaxed), 1);
     final_batch.release(&mut final_accounting)?;
     Ok(())
@@ -606,7 +699,8 @@ async fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission
         &store.inner,
         ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"x"),
-    ).await?;
+    )
+    .await?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 1,
@@ -619,8 +713,14 @@ async fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-    ).await?;
+        OwnedBytes::from(encode_blob_page(
+            &page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+    )
+    .await?;
     store
         .reject_decoded_admission
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -634,7 +734,8 @@ async fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("decoded-cache rejection unexpectedly succeeded")?;
     assert!(matches!(
@@ -649,8 +750,18 @@ async fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission
 async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd")).await?;
-    let second = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"efgh")).await?;
+    let first = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"abcd"),
+    )
+    .await?;
+    let second = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"efgh"),
+    )
+    .await?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 8,
@@ -670,8 +781,14 @@ async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-    ).await?;
+        OwnedBytes::from(encode_blob_page(
+            &page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+    )
+    .await?;
     let read = read_blob_range(
         &store,
         root,
@@ -682,7 +799,8 @@ async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(read.bytes.as_ref(), b"abcd");
     assert_eq!(read.work.object_probes, 2);
     assert_eq!(
@@ -718,8 +836,14 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let missing_root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&missing_page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-    ).await?;
+        OwnedBytes::from(encode_blob_page(
+            &missing_page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+    )
+    .await?;
     let missing = read_blob_range(
         &store,
         missing_root,
@@ -730,7 +854,8 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("missing blob chunk unexpectedly succeeded")?;
     assert!(matches!(
@@ -739,7 +864,12 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     ));
     assert_eq!(missing.work.page_reads, 1);
 
-    let short_chunk = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"ab")).await?;
+    let short_chunk = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"ab"),
+    )
+    .await?;
     let short_page = BlobPage {
         first_offset: 0,
         end_offset: 4,
@@ -752,8 +882,14 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let short_root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&short_page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-    ).await?;
+        OwnedBytes::from(encode_blob_page(
+            &short_page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+    )
+    .await?;
     let short = read_blob_range(
         &store,
         short_root,
@@ -764,7 +900,8 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("short blob chunk unexpectedly succeeded")?;
     assert!(matches!(short.error, BlobReadError::ChunkLengthMismatch));
@@ -787,7 +924,8 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await
+        )
+        .await
         .err()
         .ok_or("invalid blob range unexpectedly succeeded")?;
         assert!(matches!(failure.error, BlobReadError::InvalidRange));
@@ -802,7 +940,8 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert!(empty.bytes.is_empty());
     assert_eq!(empty.work.page_reads, 1);
     let wrong = read_blob_range(
@@ -815,7 +954,8 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("wrong blob root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, BlobReadError::WrongRootKind));
@@ -834,7 +974,8 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         invalid_limits,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("invalid blob limits unexpectedly succeeded")?;
     assert!(matches!(invalid.error, BlobReadError::InvalidLimits));
@@ -846,8 +987,18 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
 async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd")).await?;
-    let second = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"efgh")).await?;
+    let first = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"abcd"),
+    )
+    .await?;
+    let second = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"efgh"),
+    )
+    .await?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 8,
@@ -867,8 +1018,14 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 2, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-    ).await?;
+        OwnedBytes::from(encode_blob_page(
+            &page,
+            2,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+    )
+    .await?;
     let limits = DecodeLimits {
         maximum_page_items: 2,
         maximum_page_height: 1,
@@ -879,7 +1036,15 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
         offset: 1,
         length: 6,
     };
-    let baseline = read_blob_range(&store, root, range, limits, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let baseline = read_blob_range(
+        &store,
+        root,
+        range,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let failure = read_blob_range(
         &store,
@@ -891,7 +1056,8 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("one-byte-short blob read allocation budget unexpectedly succeeded")?;
     assert!(matches!(
@@ -910,7 +1076,12 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
 #[tokio::test]
 async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let chunk = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd")).await?;
+    let chunk = put(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"abcd"),
+    )
+    .await?;
     let leaf = BlobPage {
         first_offset: 0,
         end_offset: 4,
@@ -920,7 +1091,12 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
             chunk,
         }]),
     };
-    let leaf_bytes = encode_blob_page(&leaf, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let leaf_bytes = encode_blob_page(
+        &leaf,
+        8,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let leaf_id = put(&store, ObjectKind::Blob, OwnedBytes::from(leaf_bytes)).await?;
     let root = BlobPage {
         first_offset: 1,
@@ -931,7 +1107,12 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
             page: leaf_id,
         }]),
     };
-    let root_bytes = encode_blob_page(&root, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let root_bytes = encode_blob_page(
+        &root,
+        8,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let root_id = put(&store, ObjectKind::Blob, OwnedBytes::from(root_bytes)).await?;
     assert!(matches!(
         read_blob_range(
@@ -944,7 +1125,8 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await,
+        )
+        .await,
         Err(BlobReadFailure {
             error: BlobReadError::ChildBoundsMismatch,
             ..
@@ -954,7 +1136,8 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
 }
 
 #[tokio::test]
-async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std::error::Error>> {
+async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(b"abcdefghi");
     let built = build_blob(
@@ -968,7 +1151,8 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(built.logical_bytes, 9);
     assert_eq!(built.work.source_bytes_read, 9);
     let read = read_blob_range(
@@ -984,7 +1168,8 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(read.bytes.as_ref(), b"bcdefgh");
     assert!(read.work.page_reads >= 3);
     let narrow = read_blob_range(
@@ -1000,7 +1185,8 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(narrow.bytes.as_ref(), b"e");
     assert!(narrow.work.object_probes < read.work.object_probes);
 
@@ -1018,7 +1204,8 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("multilevel blob unexpectedly fit a one-page height bound")?;
     assert!(matches!(shallow.error, BlobReadError::CycleOrHeight));
@@ -1052,7 +1239,10 @@ async fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         ) -> std::io::Result<Option<OwnedSourceChunk>> {
             if self.returned {
                 self.work = Some(WorkCounters::default());
-                return Ok(Some(OwnedSourceChunk::claimed(acyclic_stream::OwnedBytes::new(), 0)));
+                return Ok(Some(OwnedSourceChunk::claimed(
+                    acyclic_stream::OwnedBytes::new(),
+                    0,
+                )));
             }
             self.returned = true;
             self.work = Some(WorkCounters {
@@ -1060,7 +1250,10 @@ async fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
                 source_path_components: 7,
                 ..WorkCounters::default()
             });
-            Ok(Some(OwnedSourceChunk::claimed(acyclic_stream::OwnedBytes::from_static(b"abc"), 0)))
+            Ok(Some(OwnedSourceChunk::claimed(
+                acyclic_stream::OwnedBytes::from_static(b"abc"),
+                0,
+            )))
         }
 
         fn take_work(&mut self) -> Option<WorkCounters> {
@@ -1084,7 +1277,8 @@ async fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         options,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(built.work.source_bytes_read, 3);
     assert_eq!(built.work.source_path_components, 7);
 
@@ -1100,7 +1294,8 @@ async fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         options,
         budget,
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("underbudgeted measured source unexpectedly built")?;
     assert!(matches!(failed.error, BlobBuildError::Work(_)));
@@ -1128,7 +1323,10 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
             _budget: WorkBudget,
             _cancellation: &CancellationToken,
         ) -> std::io::Result<Option<OwnedSourceChunk>> {
-            Ok(Some(self.0.take().unwrap_or(OwnedSourceChunk::claimed(acyclic_stream::OwnedBytes::new(), 0))))
+            Ok(Some(self.0.take().unwrap_or(OwnedSourceChunk::claimed(
+                acyclic_stream::OwnedBytes::new(),
+                0,
+            ))))
         }
     }
 
@@ -1139,7 +1337,10 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
         let mut bytes = Vec::with_capacity(65_536);
         bytes.extend_from_slice(b"abc");
         let capacity = usize_to_u64(bytes.capacity());
-        (RetainedSource(Some(OwnedSourceChunk::claimed(bytes.into(), capacity))), capacity)
+        (
+            RetainedSource(Some(OwnedSourceChunk::claimed(bytes.into(), capacity))),
+            capacity,
+        )
     };
     let options = BlobBuildOptions {
         chunk_bytes: 3,
@@ -1149,9 +1350,13 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     };
     let (mut source, capacity) = make_source();
     let built = (build_blob(
-        &MemoryObjectStore::default(), &mut source, options,
-        WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    )).await?;
+        &MemoryObjectStore::default(),
+        &mut source,
+        options,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    ))
+    .await?;
     assert_eq!(built.logical_bytes, 3);
     assert_eq!(built.work.source_bytes_read, 3);
     assert!(built.work.peak_allocation_bytes >= capacity);
@@ -1160,10 +1365,15 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = capacity - 1;
     let failed = (build_blob(
-        &MemoryObjectStore::default(), &mut source, options,
-        budget, &CancellationToken::new(),
-    )).await
-        .err().ok_or("spare-capacity input escaped its hard bound")?;
+        &MemoryObjectStore::default(),
+        &mut source,
+        options,
+        budget,
+        &CancellationToken::new(),
+    ))
+    .await
+    .err()
+    .ok_or("spare-capacity input escaped its hard bound")?;
     assert!(matches!(failed.error, BlobBuildError::Work(_)));
     assert_eq!(failed.work.source_bytes_read, 3);
     assert_eq!(failed.work.backend_write_operations, 0);
@@ -1194,7 +1404,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
         options,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(built.logical_bytes, 6);
     assert_eq!(built.work.source_bytes_read, 6);
     assert_eq!(
@@ -1208,7 +1419,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .bytes,
         OwnedBytes::from_static(b"abcdef")
     );
@@ -1226,7 +1438,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
         options,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("failing source unexpectedly built")?;
     assert!(matches!(failure.error, BlobBuildError::Source(_)));
@@ -1247,7 +1460,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
         options,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("midstream-cancelled source unexpectedly built")?;
     assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
@@ -1268,7 +1482,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
         options,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("queued midstream cancellation unexpectedly built")?;
     assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
@@ -1284,7 +1499,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
         options,
         tight_budget,
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("one-byte-short retained-buffer budget unexpectedly built")?;
     assert!(matches!(rejected.error, BlobBuildError::Work(_)));
@@ -1294,7 +1510,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
 }
 
 #[tokio::test]
-async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std::error::Error>> {
+async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(OwnedBytes::new());
     let built = build_blob(
@@ -1308,7 +1525,8 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(built.logical_bytes, 0);
     assert_eq!(built.work.source_bytes_read, 0);
     assert_eq!(built.work.backend_write_operations, 1);
@@ -1324,9 +1542,12 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
             AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }?.value;
+    }?
+    .value;
     assert_eq!(
-        decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
         >(()))?,
         BlobPage {
             first_offset: 0,
@@ -1344,13 +1565,15 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert!(read.bytes.is_empty());
     Ok(())
 }
 
 #[tokio::test]
-async fn pre_cancelled_async_blob_build_performs_zero_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn pre_cancelled_async_blob_build_performs_zero_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(b"abc");
     let cancellation = CancellationToken::new();
@@ -1366,7 +1589,8 @@ async fn pre_cancelled_async_blob_build_performs_zero_work() -> Result<(), Box<d
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled blob build unexpectedly succeeded")?;
     assert!(matches!(failure.error, BlobBuildError::Cancelled));
@@ -1390,7 +1614,8 @@ async fn oversized_source_consumes_only_one_detection_byte_past_bound() {
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await;
+    )
+    .await;
     assert!(matches!(
         result,
         Err(OperationFailure {
@@ -1402,9 +1627,10 @@ async fn oversized_source_consumes_only_one_detection_byte_past_bound() {
 }
 
 #[tokio::test]
-async fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Box<dyn std::error::Error>>
-{
-    let store = MemoryObjectStore::default();
+async fn streaming_index_memory_is_logarithmic_in_chunk_count()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let store = crate::LogicalObjectStore::new(std::sync::Arc::new(objects), bucket);
     let content = vec![3_u8; 4_096];
     let mut source = std::io::Cursor::new(&content);
     let built = build_blob(
@@ -1418,7 +1644,8 @@ async fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Bo
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let linear_reference_bytes = u64::try_from(4_096 * size_of::<BlobChunkRef>())?;
     assert!(built.work.peak_allocation_bytes < linear_reference_bytes / 8);
     let read = read_blob_range(
@@ -1435,7 +1662,8 @@ async fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Bo
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(read.bytes, OwnedBytes::from_static(&[3, 3, 3]));
     Ok(())
 }
@@ -1465,9 +1693,16 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         },
     ] {
         let mut source = std::io::Cursor::new(b"x");
-        let failure = build_blob(&store, &mut source, options, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
-            .err()
-            .ok_or("invalid blob options unexpectedly succeeded")?;
+        let failure = build_blob(
+            &store,
+            &mut source,
+            options,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .ok_or("invalid blob options unexpectedly succeeded")?;
         assert!(matches!(failure.error, BlobBuildError::InvalidOptions));
         assert_eq!(*failure.work, WorkCounters::default());
         assert_eq!(source.position(), 0);
@@ -1484,7 +1719,8 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("undersized blob page unexpectedly succeeded")?;
     assert!(matches!(invalid.error, BlobBuildError::InvalidOptions));
@@ -1498,7 +1734,14 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         maximum_blob_bytes: 8,
     };
     let mut baseline_source = std::io::Cursor::new(b"abcdefgh");
-    let baseline = build_blob(&store, &mut baseline_source, options, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let baseline = build_blob(
+        &store,
+        &mut baseline_source,
+        options,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let mut limited_source = std::io::Cursor::new(b"abcdefgh");
     let failure = build_blob(
@@ -1510,7 +1753,8 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("one-byte-short blob peak budget unexpectedly succeeded")?;
     assert!(matches!(
@@ -1539,7 +1783,12 @@ async fn decoded_blob_shape_and_sync_source_cancellation_fail_before_hidden_work
             },
         }]),
     };
-    let encoded = encode_blob_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let encoded = encode_blob_page(
+        &page,
+        1,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let limits = DecodeLimits {
         maximum_page_items: 1,
         ..DecodeLimits::default()
@@ -1578,7 +1827,8 @@ async fn decoded_blob_shape_and_sync_source_cancellation_fail_before_hidden_work
         &mut destination,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled synchronous blob source read succeeded")?;
     assert_eq!(failure.kind(), std::io::ErrorKind::Interrupted);
@@ -1596,15 +1846,31 @@ async fn original_blob_custom_source_rejects_before_io_without_a_fresh_meter()
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let mut source = ScriptedSource {
-        bytes: OwnedBytes::from_static(b"abcdef"), position: 0, maximum_per_read: 1,
-        fail_after: None, cancel_at: None,
+        bytes: OwnedBytes::from_static(b"abcdef"),
+        position: 0,
+        maximum_per_read: 1,
+        fail_after: None,
+        cancel_at: None,
     };
     let error = (build_blob_with_accounting(
-        &MemoryObjectStore::default(), &mut source,
-        BlobBuildOptions { chunk_bytes: 4, page_items: 2, page_bytes: 256, maximum_blob_bytes: 6 },
-        &mut accounting, &cancellation,
-    )).await.err().ok_or("custom source used ordinary I/O")?;
-    assert!(matches!(error, FsError::BlobBuild(BlobBuildError::NativeSourceUnavailable)));
+        &MemoryObjectStore::default(),
+        &mut source,
+        BlobBuildOptions {
+            chunk_bytes: 4,
+            page_items: 2,
+            page_bytes: 256,
+            maximum_blob_bytes: 6,
+        },
+        &mut accounting,
+        &cancellation,
+    ))
+    .await
+    .err()
+    .ok_or("custom source used ordinary I/O")?;
+    assert!(matches!(
+        error,
+        FsError::BlobBuild(BlobBuildError::NativeSourceUnavailable)
+    ));
     assert_eq!(source.position, 0);
     assert_eq!(original.receipt().source_bytes_read, 0);
     assert_eq!(original.receipt().backend_write_operations, 0);
@@ -1622,24 +1888,40 @@ struct NativePartialBlobSource {
 #[cfg(not(target_arch = "wasm32"))]
 impl AsyncBlobSource for NativePartialBlobSource {
     async fn read<'a>(
-        &'a mut self, _destination: &'a mut [u8], _budget: WorkBudget,
+        &'a mut self,
+        _destination: &'a mut [u8],
+        _budget: WorkBudget,
         _cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
         Err(std::io::ErrorKind::Unsupported.into())
     }
 
     async fn read_with_native_work<'a>(
-        &'a mut self, destination: &'a mut [u8], original: &'a crate::NativeMaterializationWork,
+        &'a mut self,
+        destination: &'a mut [u8],
+        original: &'a crate::NativeMaterializationWork,
         cancellation: &'a CancellationToken,
     ) -> Result<usize, FsError> {
         if self.fail_at.is_some_and(|at| self.source.position() >= at) {
             return Err(BlobBuildError::Source(std::io::ErrorKind::PermissionDenied.into()).into());
         }
         let length = destination.len().min(1);
-        let read = self.source.read_with_native_work(
-            destination.get_mut(..length).ok_or(BlobBuildError::TooLarge)?, original, cancellation,
-        ).await?;
-        if self.cancel_at.is_some_and(|at| self.source.position() >= at) { cancellation.cancel(); }
+        let read = self
+            .source
+            .read_with_native_work(
+                destination
+                    .get_mut(..length)
+                    .ok_or(BlobBuildError::TooLarge)?,
+                original,
+                cancellation,
+            )
+            .await?;
+        if self
+            .cancel_at
+            .is_some_and(|at| self.source.position() >= at)
+        {
+            cancellation.cancel();
+        }
         Ok(read)
     }
 }
@@ -1656,19 +1938,35 @@ async fn original_blob_partial_reads_retain_source_failure_and_cancellation_pref
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let mut source = NativePartialBlobSource {
             source: std::io::Cursor::new(b"abcdef"),
-            fail_at: (!cancelled).then_some(3), cancel_at: cancelled.then_some(3),
+            fail_at: (!cancelled).then_some(3),
+            cancel_at: cancelled.then_some(3),
         };
         let error = (build_blob_with_accounting(
-            &MemoryObjectStore::default(), &mut source,
-            BlobBuildOptions { chunk_bytes: 4, page_items: 2, page_bytes: 256, maximum_blob_bytes: 6 },
-            &mut accounting, &cancellation,
-        )).await.err().ok_or("source failure was erased")?;
+            &MemoryObjectStore::default(),
+            &mut source,
+            BlobBuildOptions {
+                chunk_bytes: 4,
+                page_items: 2,
+                page_bytes: 256,
+                maximum_blob_bytes: 6,
+            },
+            &mut accounting,
+            &cancellation,
+        ))
+        .await
+        .err()
+        .ok_or("source failure was erased")?;
         if cancelled {
-            assert!(matches!(error, FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)
-                | FsError::Cancelled(_)));
+            assert!(matches!(
+                error,
+                FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)
+                    | FsError::Cancelled(_)
+            ));
         } else {
-            assert!(matches!(error, FsError::BlobBuild(BlobBuildError::Source(error))
-                if error.kind() == std::io::ErrorKind::PermissionDenied));
+            assert!(
+                matches!(error, FsError::BlobBuild(BlobBuildError::Source(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied)
+            );
         }
         assert_eq!(source.source.position(), 3);
         assert_eq!(original.receipt().source_bytes_read, 3);
@@ -1686,15 +1984,28 @@ fn impossible_blob_buffers_fail_before_allocation_and_preserve_accounting()
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut chunk = empty_blob_vec::<u8>();
     let error = reserve_blob_vec(&mut chunk, usize::MAX, &mut accounting)
-        .err().ok_or("impossible chunk allocation succeeded")?;
-    assert!(matches!(error, FsError::BlobBuild(BlobBuildError::ReserveFailed(_))));
+        .err()
+        .ok_or("impossible chunk allocation succeeded")?;
+    assert!(matches!(
+        error,
+        FsError::BlobBuild(BlobBuildError::ReserveFailed(_))
+    ));
     release_blob_vec(chunk, &mut accounting)?;
     let mut items = empty_blob_vec::<u8>();
     let error = reserve_blob_vec(&mut items, usize::MAX, &mut accounting)
-        .err().ok_or("impossible page item allocation succeeded")?;
-    assert!(matches!(error, FsError::BlobBuild(BlobBuildError::ReserveFailed(_))));
+        .err()
+        .ok_or("impossible page item allocation succeeded")?;
+    assert!(matches!(
+        error,
+        FsError::BlobBuild(BlobBuildError::ReserveFailed(_))
+    ));
     release_blob_vec(items, &mut accounting)?;
-    let KernelAccounting::Standalone { allocations, work, .. } = accounting else { unreachable!() };
+    let KernelAccounting::Standalone {
+        allocations, work, ..
+    } = accounting
+    else {
+        unreachable!()
+    };
     assert_eq!(allocations.live_bytes(), 0);
     assert_eq!(work.allocation_operations, 2);
     Ok(())

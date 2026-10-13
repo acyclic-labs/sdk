@@ -291,10 +291,10 @@ fn shared_destination_fence_retains_original_owner_after_denial()
         .expect_err("original write allowance denies cleanup");
     assert!(matches!(
         error,
-        NativeMountError::Work(crate::WorkError::BudgetExceeded {
+        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
             counter: "backend_write_operations",
             ..
-        })
+        }))
     ));
     assert!(guard.file.is_some());
     assert_eq!(

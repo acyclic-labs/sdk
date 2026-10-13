@@ -15,12 +15,16 @@ where
 {
     let cancellation = work.cancellation();
     let carrier = &mut adapter::NativeDemandCarrier::Native(work);
+    let operation = crate::OperationId::new();
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
         carrier.with_work(|work| mount_items(work, 1))?;
         let (mut candidate, epoch, stamp) = authored
             .shared_checkout()
             .candidate(None, carrier, &cancellation, Some(authored.cancellation()))
             .await?;
+        if candidate.checkout.bound_authored_operation_id().is_none() {
+            candidate.checkout.bind_authored_operation(operation);
+        }
         let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
         let changed = lazy
             .stage_into_checkout(

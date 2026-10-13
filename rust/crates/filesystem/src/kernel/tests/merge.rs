@@ -81,8 +81,14 @@ async fn put_metadata(
     {
         let __object_args = (
             object,
-        OwnedBytes::from(encode_file_metadata(metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_file_metadata(
+                metadata,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -109,8 +115,15 @@ async fn put_tree(
     {
         let __object_args = (
             object,
-        OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_tree_page(
+                &page,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -129,8 +142,15 @@ async fn put_table(
     {
         let __object_args = (
             object,
-        OwnedBytes::from(super::super::encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(super::super::encode_file_table_page(
+                &page,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -144,7 +164,11 @@ async fn put_generation(
     store: &MemoryObjectStore,
     generation: &GenerationRoot,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let encoded = super::super::encode_generation_root(generation, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let encoded = super::super::encode_generation_root(
+        generation,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
@@ -195,7 +219,8 @@ async fn merge_error(
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         cancellation,
-    )).await;
+    ))
+    .await;
     result
         .err()
         .ok_or_else(|| std::io::Error::other("request guard admitted an invalid request"))
@@ -223,7 +248,8 @@ async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn s
         merge_error(
             request(valid.clone(), root(9, 2, 3), valid.clone()),
             &cancellation
-        ).await?
+        )
+        .await?
         .error,
         MergeGenerationError::InvalidDiff
     ));
@@ -231,7 +257,8 @@ async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn s
         merge_error(
             request(valid.clone(), valid.clone(), root(1, 9, 3)),
             &cancellation
-        ).await?
+        )
+        .await?
         .error,
         MergeGenerationError::InvalidDiff
     ));
@@ -245,7 +272,8 @@ async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn s
 }
 
 #[tokio::test]
-async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
+async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let directory_id = FileId::from_bytes([7; 16]);
@@ -266,7 +294,8 @@ async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dy
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(metadata_conflict.value.record.is_none());
     assert_eq!(
         metadata_conflict.value.conflicts,
@@ -286,7 +315,8 @@ async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dy
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(bounded_link_conflict.value.record.is_none());
     assert!(bounded_link_conflict.value.conflicts.is_empty());
     assert!(bounded_link_conflict.value.truncated);
@@ -303,7 +333,8 @@ async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dy
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await;
+    ))
+    .await;
     let failure = result
         .err()
         .ok_or_else(|| std::io::Error::other("directory merge accepted a non-directory record"))?;
@@ -345,8 +376,13 @@ fn tree_mutation_preserves_exact_names_and_file_identity() -> Result<(), Box<dyn
 }
 
 async fn adjust_test_link_counts(
-    store: &MemoryObjectStore, records: &mut BTreeMap<FileId, RecordChange>, remaining_changes: &mut u32,
-    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken, work: &mut WorkCounters,
+    store: &MemoryObjectStore,
+    records: &mut BTreeMap<FileId, RecordChange>,
+    remaining_changes: &mut u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
 ) -> Result<(), OperationFailure<MergeGenerationError>> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = async {
@@ -355,7 +391,8 @@ async fn adjust_test_link_counts(
             state.records.ensure_for_push(usize::MAX, &mut accounting)?;
             state.records.value.push((*file, *value));
         }
-        let result = adjust_link_counts(store, limits, &mut state, &mut accounting, cancellation).await;
+        let result =
+            adjust_link_counts(store, limits, &mut state, &mut accounting, cancellation).await;
         for (file, value) in &state.records.value {
             *records.get_mut(file).ok_or(FsError::InvalidDiff)? = *value;
         }
@@ -365,7 +402,8 @@ async fn adjust_test_link_counts(
         state.folds.retire(&mut accounting)?;
         state.file_folds.retire(&mut accounting)?;
         result
-    }.await;
+    }
+    .await;
     *work = accounting.spent();
     result.map_err(|error| OperationFailure::new(project_merge_error(error), *work))
 }
@@ -410,13 +448,16 @@ async fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     ]);
     let mut remaining_changes = 8;
     let mut work = WorkCounters::default();
-    (adjust_test_link_counts(&store,
-    &mut resolutions,
-    &mut remaining_changes,
-    DecodeLimits::default(),
-    WorkBudget::UNBOUNDED,
-    &cancellation,
-    &mut work,)).await?;
+    (adjust_test_link_counts(
+        &store,
+        &mut resolutions,
+        &mut remaining_changes,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &mut work,
+    ))
+    .await?;
     assert_eq!(
         resolutions
             .get(&target_id)
@@ -432,13 +473,16 @@ async fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     let introduced = record(33, 1, 1, FilePayload::Empty, FileKind::Fifo);
     let introduced_id = introduced.file_id;
     let mut resolutions = BTreeMap::from([(introduced_id, (None, Some(introduced)))]);
-    (adjust_test_link_counts(&store,
-    &mut resolutions,
-    &mut 8,
-    DecodeLimits::default(),
-    WorkBudget::UNBOUNDED,
-    &cancellation,
-    &mut WorkCounters::default(),)).await?;
+    (adjust_test_link_counts(
+        &store,
+        &mut resolutions,
+        &mut 8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &mut WorkCounters::default(),
+    ))
+    .await?;
     assert_eq!(
         resolutions.get(&introduced_id).map(|(_, record)| *record),
         Some(None)
@@ -455,26 +499,32 @@ async fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
         (Some(base_directory), Some(renamed_directory)),
     )]);
     let mut remaining_changes = 8;
-    (adjust_test_link_counts(&store,
-    &mut resolutions,
-    &mut remaining_changes,
-    DecodeLimits::default(),
-    WorkBudget::UNBOUNDED,
-    &cancellation,
-    &mut WorkCounters::default(),)).await?;
+    (adjust_test_link_counts(
+        &store,
+        &mut resolutions,
+        &mut remaining_changes,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &mut WorkCounters::default(),
+    ))
+    .await?;
     assert!(!resolutions.contains_key(&target_id));
 
     let mut resolutions = BTreeMap::from([(
         directory_id,
         (Some(base_directory), Some(removed_directory)),
     )]);
-    let limit = (adjust_test_link_counts(&store,
-    &mut resolutions,
-    &mut 0,
-    DecodeLimits::default(),
-    WorkBudget::UNBOUNDED,
-    &cancellation,
-    &mut WorkCounters::default(),)).await
+    let limit = (adjust_test_link_counts(
+        &store,
+        &mut resolutions,
+        &mut 0,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &mut WorkCounters::default(),
+    ))
+    .await
     .err()
     .ok_or("zero link frontier unexpectedly succeeded")?;
     assert!(matches!(limit.error, MergeGenerationError::ChangeLimit));
@@ -495,7 +545,8 @@ async fn pruning_an_unbound_directory_recomputes_descendant_links()
             file_id: child_id,
             kind: FileKind::Fifo,
         }],
-    ).await?;
+    )
+    .await?;
     let directory = FileRecord {
         file_id: directory_id,
         kind: FileKind::Directory,
@@ -507,29 +558,36 @@ async fn pruning_an_unbound_directory_recomputes_descendant_links()
         (directory_id, (None, Some(directory))),
         (child_id, (None, Some(child))),
     ]);
-    (adjust_test_link_counts(&store,
-    &mut resolutions,
-    &mut 8,
-    DecodeLimits::default(),
-    WorkBudget::UNBOUNDED,
-    &CancellationToken::new(),
-    &mut WorkCounters::default(),)).await?;
+    (adjust_test_link_counts(
+        &store,
+        &mut resolutions,
+        &mut 8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+        &mut WorkCounters::default(),
+    ))
+    .await?;
     assert!(resolutions.values().all(|(_, resolved)| resolved.is_none()));
     Ok(())
 }
 
 #[tokio::test]
-async fn deleting_a_record_with_remaining_links_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+async fn deleting_a_record_with_remaining_links_is_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let linked = record(92, 1, 2, FilePayload::Empty, FileKind::Fifo);
     let mut resolutions = BTreeMap::from([(linked.file_id, (Some(linked), None))]);
-    let failure = (adjust_test_link_counts(&store,
-    &mut resolutions,
-    &mut 8,
-    DecodeLimits::default(),
-    WorkBudget::UNBOUNDED,
-    &CancellationToken::new(),
-    &mut WorkCounters::default(),)).await
+    let failure = (adjust_test_link_counts(
+        &store,
+        &mut resolutions,
+        &mut 8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+        &mut WorkCounters::default(),
+    ))
+    .await
     .err()
     .ok_or("remaining-link deletion unexpectedly succeeded")?;
     assert!(matches!(failure.error, MergeGenerationError::InvalidDiff));
@@ -565,7 +623,8 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("union-limited generation merge succeeded")?;
     assert!(matches!(
@@ -582,24 +641,22 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         MergeGenerationRequest {
             maximum_changes: 2,
             ..request(
-                generation(put_table(
-                    &store,
-                    vec![base_first, base_second, base_third],
-                ).await?),
-                generation(put_table(
-                    &store,
-                    vec![ours_first, ours_second, base_third],
-                ).await?),
-                generation(put_table(
-                    &store,
-                    vec![base_first, theirs_second_overlap, theirs_third],
-                ).await?),
+                generation(put_table(&store, vec![base_first, base_second, base_third]).await?),
+                generation(put_table(&store, vec![ours_first, ours_second, base_third]).await?),
+                generation(
+                    put_table(
+                        &store,
+                        vec![base_first, theirs_second_overlap, theirs_third],
+                    )
+                    .await?,
+                ),
             )
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("three-file union-limited generation merge succeeded")?;
     assert!(matches!(
@@ -615,11 +672,13 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
             generation(base_table),
             generation(shared_change_table),
             generation(shared_change_table),
-        ).await?,
+        )
+        .await?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(matches!(
         unchanged.value,
         MergeGenerationOutcome::Prepared { root, .. } if root.file_table == shared_change_table
@@ -637,11 +696,13 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
             generation(base_field_table),
             generation(ours_field_table),
             generation(theirs_field_table),
-        ).await?,
+        )
+        .await?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(matches!(
         combined.value,
         MergeGenerationOutcome::Prepared { .. }
@@ -652,7 +713,8 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         generation(base_field_table),
         generation(ours_field_table),
         generation(theirs_field_table),
-    ).await?;
+    )
+    .await?;
     linear_request.retain_theirs_parent = false;
     let linear = (merge_generation_async(
         &store,
@@ -660,7 +722,8 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(matches!(
         linear.value,
         MergeGenerationOutcome::Prepared { root, .. } if root.parents.len() == 1
@@ -674,7 +737,8 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
             file_id: FileId::from_bytes([7; 16]),
             kind: FileKind::Fifo,
         }],
-    ).await?;
+    )
+    .await?;
     let theirs_tree = put_tree(
         &store,
         vec![TreeEntry {
@@ -682,7 +746,8 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
             file_id: FileId::from_bytes([8; 16]),
             kind: FileKind::Fifo,
         }],
-    ).await?;
+    )
+    .await?;
     let base_directory = directory(3, 1, 1, 1);
     let directory_with = |entries| FileRecord {
         payload: FilePayload::Directory { entries },
@@ -701,7 +766,8 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("directory-limited generation merge succeeded")?;
     assert!(matches!(
@@ -718,7 +784,8 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
                 file_id: FileId::from_bytes([file; 16]),
                 kind: FileKind::Fifo,
             }],
-        ).await
+        )
+        .await
     };
     let conflicted = (merge_generation_async(
         &store,
@@ -727,11 +794,13 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
             generation(put_table(&store, vec![directory_with(tree_for(10).await?)]).await?),
             generation(put_table(&store, vec![directory_with(tree_for(11).await?)]).await?),
             generation(put_table(&store, vec![directory_with(tree_for(12).await?)]).await?),
-        ).await?,
+        )
+        .await?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(matches!(
         conflicted.value,
         MergeGenerationOutcome::Conflicted { .. }
@@ -781,7 +850,8 @@ async fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier(
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("side-truncated directory merge succeeded")?;
     assert!(matches!(
@@ -800,7 +870,8 @@ async fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier(
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("union-limited directory merge succeeded")?;
     assert!(matches!(
@@ -810,13 +881,16 @@ async fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier(
 
     let mut resolutions = BTreeMap::from([(directory_id, (Some(base), Some(with(both))))]);
     let mut remaining_changes = 1;
-    let failure = (adjust_test_link_counts(&store,
-    &mut resolutions,
-    &mut remaining_changes,
-    DecodeLimits::default(),
-    WorkBudget::UNBOUNDED,
-    &cancellation,
-    &mut WorkCounters::default(),)).await
+    let failure = (adjust_test_link_counts(
+        &store,
+        &mut resolutions,
+        &mut remaining_changes,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &mut WorkCounters::default(),
+    ))
+    .await
     .err()
     .ok_or("truncated link recount succeeded")?;
     assert!(matches!(failure.error, MergeGenerationError::ChangeLimit));
@@ -902,7 +976,8 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(merged.value.conflicts.is_empty());
     let record = merged
         .value
@@ -926,7 +1001,8 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(
         unresolved.value.conflicts,
         vec![MergeConflict::File(directory_id)]
@@ -939,9 +1015,20 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut state = MergeState::new(8, &mut accounting)?;
     let record = (merge_directory_record_with_resolutions_async(
-        &store, directory_id, base, ours, theirs, ResolutionView::Map(&resolutions), 8,
-        DecodeLimits::default(), &mut state, &mut accounting, &cancellation,
-    )).await?.ok_or("resolved directory merge produced no record")?;
+        &store,
+        directory_id,
+        base,
+        ours,
+        theirs,
+        ResolutionView::Map(&resolutions),
+        8,
+        DecodeLimits::default(),
+        &mut state,
+        &mut accounting,
+        &cancellation,
+    ))
+    .await?
+    .ok_or("resolved directory merge produced no record")?;
     state.records.retire(&mut accounting)?;
     state.conflicts.retire(&mut accounting)?;
     state.folds.retire(&mut accounting)?;
@@ -1048,42 +1135,132 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     let a = FileId::from_bytes([2; 16]);
     let b = FileId::from_bytes([3; 16]);
     let entry = |name: &str, file_id| -> Result<TreeEntry, Box<dyn std::error::Error>> {
-        Ok(TreeEntry { name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 16)?,
-            file_id, kind: FileKind::Fifo })
+        Ok(TreeEntry {
+            name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 16)?,
+            file_id,
+            kind: FileKind::Fifo,
+        })
     };
     let base_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?]).await?;
-    let ours_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("left", a)?]).await?;
-    let theirs_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("right", b)?]).await?;
-    let directory = |entries| FileRecord { metadata, payload: FilePayload::Directory { entries }, ..directory(1, 0, 1, 0) };
-    let first = FileRecord { metadata, ..record(2, 0, 1, FilePayload::Empty, FileKind::Fifo) };
-    let second = FileRecord { metadata, ..record(3, 0, 1, FilePayload::Empty, FileKind::Fifo) };
-    let base = GenerationRoot { file_table: put_table(&store, vec![directory(base_entries), first, second]).await?, ..root(1, 1, 0) };
-    let ours = GenerationRoot { file_table: put_table(&store,
-        vec![directory(ours_entries), FileRecord { link_count: 2, ..first }, second]).await?, ..root(1, 1, 0) };
+    let ours_entries = put_tree(
+        &store,
+        vec![entry("alpha", a)?, entry("beta", b)?, entry("left", a)?],
+    )
+    .await?;
+    let theirs_entries = put_tree(
+        &store,
+        vec![entry("alpha", a)?, entry("beta", b)?, entry("right", b)?],
+    )
+    .await?;
+    let directory = |entries| FileRecord {
+        metadata,
+        payload: FilePayload::Directory { entries },
+        ..directory(1, 0, 1, 0)
+    };
+    let first = FileRecord {
+        metadata,
+        ..record(2, 0, 1, FilePayload::Empty, FileKind::Fifo)
+    };
+    let second = FileRecord {
+        metadata,
+        ..record(3, 0, 1, FilePayload::Empty, FileKind::Fifo)
+    };
+    let base = GenerationRoot {
+        file_table: put_table(&store, vec![directory(base_entries), first, second]).await?,
+        ..root(1, 1, 0)
+    };
+    let ours = GenerationRoot {
+        file_table: put_table(
+            &store,
+            vec![
+                directory(ours_entries),
+                FileRecord {
+                    link_count: 2,
+                    ..first
+                },
+                second,
+            ],
+        )
+        .await?,
+        ..root(1, 1, 0)
+    };
     let ours_table = ours.file_table;
-    let theirs = GenerationRoot { file_table: put_table(&store,
-        vec![directory(theirs_entries), first, FileRecord { link_count: 2, ..second }]).await?, ..root(1, 1, 0) };
+    let theirs = GenerationRoot {
+        file_table: put_table(
+            &store,
+            vec![
+                directory(theirs_entries),
+                first,
+                FileRecord {
+                    link_count: 2,
+                    ..second
+                },
+            ],
+        )
+        .await?,
+        ..root(1, 1, 0)
+    };
     let request = stored_request(&store, base, ours, theirs).await?;
     let second_parent = GenerationId::new(request.theirs_generation.digest);
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (outcome, allocation) = (merge_generation_with_accounting(
-        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).await?;
-    let MergeGenerationOutcome::Prepared { generation_root, root, generation_id } = outcome
-        else { return Err("independent native additions conflicted".into()); };
+        &store,
+        request,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+    ))
+    .await?;
+    let MergeGenerationOutcome::Prepared {
+        generation_root,
+        root,
+        generation_id,
+    } = outcome
+    else {
+        return Err("independent native additions conflicted".into());
+    };
     assert_eq!(generation_id, GenerationId::new(generation_root.digest));
     assert_eq!(root.parents.len(), 2);
     assert_eq!(root.parents.get(1), Some(&second_parent));
-    let KernelOwnedAllocation::NativeOriginal(guard) = allocation else { return Err("native merge lost output custody".into()); };
-    assert_eq!(guard.bytes(), (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64);
-    let changes = (super::super::diff_file_records_with_accounting(&store, Some(ours_table), Some(root.file_table),
-        8, DecodeLimits::default(), &mut super::super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation)).await?.0;
-    let merged_second = changes.changes.iter().find(|change| change.key == b).and_then(|change| change.after).ok_or("second hardlink delta missing")?;
+    let KernelOwnedAllocation::NativeOriginal(guard) = allocation else {
+        return Err("native merge lost output custody".into());
+    };
+    assert_eq!(
+        guard.bytes(),
+        (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64
+    );
+    let changes = (super::super::diff_file_records_with_accounting(
+        &store,
+        Some(ours_table),
+        Some(root.file_table),
+        8,
+        DecodeLimits::default(),
+        &mut super::super::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+        &cancellation,
+    ))
+    .await?
+    .0;
+    let merged_second = changes
+        .changes
+        .iter()
+        .find(|change| change.key == b)
+        .and_then(|change| change.after)
+        .ok_or("second hardlink delta missing")?;
     assert_eq!(merged_second.link_count, 2);
-    let merged_directory = changes.changes.iter().find(|change| change.key == FileId::from_bytes([1; 16]))
-        .and_then(|change| change.after).ok_or("merged directory missing")?;
-    let entries = directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
+    let merged_directory = changes
+        .changes
+        .iter()
+        .find(|change| change.key == FileId::from_bytes([1; 16]))
+        .and_then(|change| change.after)
+        .ok_or("merged directory missing")?;
+    let entries =
+        directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
     let read = {
         let __object_args = (
             entries,
@@ -1097,13 +1274,24 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
                 .await;
         __object_work.receipt(__object_result)
     }?;
-    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| {
+    let TreePage::Leaf(entries) =
+        super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
         })?
-        else { return Err("small merged directory was not a leaf".into()); };
+    else {
+        return Err("small merged directory was not a leaf".into());
+    };
     assert_eq!(entries.len(), 4);
-    assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"left" && entry.file_id == a));
-    assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b));
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"left" && entry.file_id == a)
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b)
+    );
     let stored = {
         let __object_args = (
             generation_root,
@@ -1117,7 +1305,14 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
                 .await;
         __object_work.receipt(__object_result)
     }?;
-    assert_eq!(super::super::decode_generation_root(&stored.value.bytes, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, root);
+    assert_eq!(
+        super::super::decode_generation_root(
+            &stored.value.bytes,
+            DecodeLimits::default(),
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        )?,
+        root
+    );
     assert!(original.receipt().page_reads > 0);
     assert!(original.receipt().page_writes > 0);
     drop(root);
@@ -1130,23 +1325,62 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
 async fn native_merge_original_allocation_denial_precedes_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let base = GenerationRoot { file_table: put_table(&store,
-        vec![record(1, 1, 1, FilePayload::Empty, FileKind::Fifo)]).await?, ..root(1, 1, 0) };
-    let ours = GenerationRoot { file_table: put_table(&store,
-        vec![record(1, 2, 1, FilePayload::Empty, FileKind::Fifo)]).await?, ..root(1, 1, 0) };
+    let base = GenerationRoot {
+        file_table: put_table(
+            &store,
+            vec![record(1, 1, 1, FilePayload::Empty, FileKind::Fifo)],
+        )
+        .await?,
+        ..root(1, 1, 0)
+    };
+    let ours = GenerationRoot {
+        file_table: put_table(
+            &store,
+            vec![record(1, 2, 1, FilePayload::Empty, FileKind::Fifo)],
+        )
+        .await?,
+        ..root(1, 1, 0)
+    };
     let request = request(base.clone(), ours, base);
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
-        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation).map_err(|(error, _)| error)?;
+        WorkBudget {
+            allocation_operations: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let before = original.receipt();
-    let baseline = original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?;
+    let baseline = original
+        .allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))
+        .map(|(value, _allocation)| value)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = (merge_generation_with_accounting(
-        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).await;
-    assert!(matches!(result, Err(FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }))));
+        &store,
+        request,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+    ))
+    .await;
+    assert!(matches!(
+        result,
+        Err(FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            })
+        ))
+    ));
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?, baseline);
+    assert_eq!(
+        original
+            .allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))
+            .map(|(value, _allocation)| value)?,
+        baseline
+    );
     Ok(())
 }

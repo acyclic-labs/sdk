@@ -31,13 +31,23 @@ fn entry(value: &str, id: u8) -> Result<TreeEntry, Box<dyn std::error::Error>> {
     })
 }
 
-async fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn put(
+    store: &MemoryObjectStore,
+    page: &TreePage,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 8)?;
     {
         let __object_args = (
             id,
-        OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_tree_page(
+                page,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -68,8 +78,15 @@ async fn put_file_table(
     {
         let __object_args = (
             id,
-        OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_file_table_page(
+                page,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -95,7 +112,8 @@ async fn diff<S: AsyncObjectStore>(
         DecodeLimits::default(),
         budget,
         cancellation,
-    )).await
+    ))
+    .await
 }
 
 #[tokio::test]
@@ -112,7 +130,8 @@ async fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ).await?;
+        )
+        .await?;
         assert!(result.changes.is_empty());
         assert!(!result.truncated);
         assert_eq!(result.work, WorkCounters::default());
@@ -125,7 +144,8 @@ async fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
             0,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ).await
+        )
+        .await
         .err()
         .ok_or("zero diff limit unexpectedly succeeded")?;
         assert!(matches!(failure.error, FsError::InvalidDiff));
@@ -142,7 +162,8 @@ async fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await
+    )
+    .await
     .err()
     .ok_or("wrong diff root kind unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::InvalidDiff));
@@ -157,11 +178,13 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
     let before = put(
         &store,
         &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
-    ).await?;
+    )
+    .await?;
     let after = put(
         &store,
         &TreePage::Leaf(vec![entry("a", 3)?, entry("c", 4)?]),
-    ).await?;
+    )
+    .await?;
     let cancellation = CancellationToken::new();
     let complete = diff(
         &store,
@@ -170,7 +193,8 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         complete
             .changes
@@ -195,7 +219,8 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(bounded.changes.len(), 1);
     assert!(bounded.truncated);
 
@@ -208,7 +233,8 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(exact.changes.len(), 1);
     assert!(!exact.truncated);
     Ok(())
@@ -229,7 +255,8 @@ async fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
         1,
         WorkBudget::UNBOUNDED,
         &cancelled,
-    ).await
+    )
+    .await
     .err()
     .ok_or("cancelled diff unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::Cancelled(_)));
@@ -245,7 +272,8 @@ async fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("unadmitted diff read unexpectedly succeeded")?;
     assert!(matches!(
@@ -258,7 +286,10 @@ async fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     ));
     assert_eq!(failure.work.page_reads, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
-    assert!(failure.work.allocation_operations > 0, "the guarded frontier precedes provider admission");
+    assert!(
+        failure.work.allocation_operations > 0,
+        "the guarded frontier precedes provider admission"
+    );
     Ok(())
 }
 
@@ -299,7 +330,8 @@ async fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std:
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(diff.changes.len(), 1);
     assert_eq!(diff.changes[0].key.as_bytes(), b"c");
     assert_eq!(diff.work.page_reads, 4);
@@ -326,7 +358,8 @@ async fn internal_file_table_diff_aligns_shared_and_one_sided_children()
                 page: removed,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let after = put_file_table(
         &store,
         &FileTablePage::Internal(vec![
@@ -343,7 +376,8 @@ async fn internal_file_table_diff_aligns_shared_and_one_sided_children()
                 page: added_right,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let result = (diff_accounted::<_, FileTableFormat>(
         &store,
         Some(before),
@@ -352,7 +386,8 @@ async fn internal_file_table_diff_aligns_shared_and_one_sided_children()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(
         result
             .changes
@@ -370,8 +405,8 @@ async fn internal_file_table_diff_aligns_shared_and_one_sided_children()
 }
 
 #[tokio::test]
-async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let a = put(&store, &TreePage::Leaf(vec![entry("a", 1)?])).await?;
     let c = put(&store, &TreePage::Leaf(vec![entry("c", 2)?])).await?;
@@ -387,7 +422,8 @@ async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), 
                 page: c,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let cancellation = CancellationToken::new();
     let added = diff(
         &store,
@@ -396,7 +432,8 @@ async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), 
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(added.changes.len(), 2);
     assert!(
         added
@@ -413,7 +450,8 @@ async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), 
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(removed.changes.len(), 2);
     assert!(
         removed
@@ -425,7 +463,8 @@ async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), 
     let flattened = put(
         &store,
         &TreePage::Leaf(vec![entry("a", 1)?, entry("c", 2)?]),
-    ).await?;
+    )
+    .await?;
     let mixed = diff(
         &store,
         Some(internal),
@@ -433,7 +472,8 @@ async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), 
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert!(mixed.changes.is_empty());
     assert!(!mixed.truncated);
 
@@ -443,7 +483,8 @@ async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), 
             first: name("a")?,
             page: flattened,
         }]),
-    ).await?;
+    )
+    .await?;
     let realigned = diff(
         &store,
         Some(internal),
@@ -451,7 +492,8 @@ async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), 
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert!(realigned.changes.is_empty());
     assert!(!realigned.truncated);
     Ok(())
@@ -475,7 +517,8 @@ async fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
                 page: second,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let result = diff(
         &store,
         None,
@@ -483,7 +526,8 @@ async fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
         1,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(result.changes.len(), 1);
     assert!(result.truncated);
     assert!(result.work.bytes_copied > 0);
@@ -506,7 +550,8 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
         2,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("missing page unexpectedly diffed")?;
     assert!(matches!(
@@ -541,7 +586,8 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
         2,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("malformed page unexpectedly diffed")?;
     assert!(matches!(failure.error, FsError::Decode(_)));
@@ -564,7 +610,8 @@ async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_valu
                 file_id: FileId::from_bytes([index; 16]),
                 kind: FileKind::Regular,
             }]),
-        ).await?;
+        )
+        .await?;
         let descriptor = Child {
             first: child_name,
             page: child,
@@ -602,7 +649,8 @@ async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_valu
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(cold.changes.len(), 1);
 
     let warm = diff(
@@ -612,7 +660,8 @@ async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_valu
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(warm.changes, cold.changes);
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
@@ -684,9 +733,15 @@ mod model {
             return Ok(root);
         }
         let receipt = apply_tree_mutations(
-            store, root, mutations, 256, LIMITS, WorkBudget::UNBOUNDED,
+            store,
+            root,
+            mutations,
+            256,
+            LIMITS,
+            WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?;
+        )
+        .await?;
         Ok(receipt.value)
     }
 
@@ -701,13 +756,16 @@ mod model {
             let receipt = paginate::<_, TreeFormat>(
                 store,
                 root,
-                after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                after
+                    .as_ref()
+                    .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                 page,
                 LIMITS,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 None,
-            ).await?;
+            )
+            .await?;
             if receipt.values.len() > usize::try_from(page)? {
                 return Err("page exceeded its bound".into());
             }
@@ -735,7 +793,8 @@ mod model {
             1_024,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .changes
         .into_iter()
         .map(|change| (change.key, change.before, change.after))
@@ -782,28 +841,73 @@ async fn native_diff_denies_frontier_allocation_before_backend_work()
     let root = put(&store, &TreePage::Leaf(vec![entry("alpha", 1)?])).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
-        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            allocation_operations: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let before = original.receipt();
-    let baseline = original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?;
+    let baseline = original
+        .allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))
+        .map(|(value, _allocation)| value)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = diff_tree_entries_with_accounting(
-        &store, None, Some(root), 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    ).await;
-    assert!(matches!(result, Err(FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }))));
+        &store,
+        None,
+        Some(root),
+        1,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            })
+        ))
+    ));
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?, baseline);
+    assert_eq!(
+        original
+            .allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))
+            .map(|(value, _allocation)| value)?,
+        baseline
+    );
     Ok(())
 }
 
 async fn diff_accounted<S: AsyncObjectStore, F: Format>(
-    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
-    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
+    store: &S,
+    before: Option<ObjectId>,
+    after: Option<ObjectId>,
+    maximum_changes: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
 ) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = diff_with_accounting::<S, F>(store, before, after, maximum_changes, limits, &mut accounting, cancellation).await;
+    let result = diff_with_accounting::<S, F>(
+        store,
+        before,
+        after,
+        maximum_changes,
+        limits,
+        &mut accounting,
+        cancellation,
+    )
+    .await;
     let work = accounting.spent();
-    result.map(|(mut diff, _)| { diff.work = work; diff })
+    result
+        .map(|(mut diff, _)| {
+            diff.work = work;
+            diff
+        })
         .map_err(|error| OperationFailure::new(error, work))
 }
