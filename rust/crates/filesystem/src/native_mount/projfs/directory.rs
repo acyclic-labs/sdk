@@ -65,7 +65,7 @@ pub(super) fn projected_entry(
             .source
             .as_ref()
             .read_link(&directory.child(component.clone()), projection.work)?;
-        if symlink_extended(target.bytes()).is_none() {
+        if symlink_extended(&target.bytes).is_none() {
             return Ok(None);
         }
         Some(target)
@@ -77,7 +77,7 @@ pub(super) fn projected_entry(
             projection,
             directory,
             lookup.metadata.windows_attributes,
-            target.bytes(),
+            &target.bytes,
         )
     });
     Ok(Some(ProjectedEntry {
@@ -145,7 +145,7 @@ pub(super) fn resolves_to_directory(
             ) else {
                 return false;
             };
-            decode_utf16_name(next.bytes())
+            decode_utf16_name(&next.bytes)
                 .is_some_and(|next| resolves_to_directory(projection, &parent, &next, hops + 1))
         }
         _ => false,
