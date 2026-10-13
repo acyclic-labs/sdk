@@ -138,14 +138,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let admission = self.admission(operation_id).await?;
         self.verify_owner(task, &fence, true).await?;
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &outcome,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut None,
         )?;
         let key = IdempotencyKey::new(format!(
             "task-settle:{operation_id}:{}:{}",
-            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(
+            blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
                 &fence,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
                 &mut None
@@ -155,7 +155,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         ))?;
         let outcome = match outcome {
             Outcome::Succeeded(value) => {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &admission.output_schema,
                     &value,
                     "task output",

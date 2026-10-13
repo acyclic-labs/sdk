@@ -222,18 +222,21 @@ impl ExecutionJournal for RecordingTurnJournal {
 
     fn open_interaction<'a>(
         &'a self,
-        id: crate::InteractionId,
-        interaction: crate::interaction::Interaction,
-    ) -> BoxFuture<'a, Result<()>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        _id: crate::InteractionId,
+        _interaction: &'a crate::interaction::Interaction,
+        _io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(Error::Unsupported("unused test journal".into()))
     }
 
     fn interaction_outcome<'a>(
         &'a self,
-        id: crate::InteractionId,
-    ) -> BoxFuture<'a, Result<Option<crate::interaction::InteractionOutcome>>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        _id: crate::InteractionId,
+        _io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<crate::interaction::InteractionOutcome>>> {
+        Err(Error::Unsupported("unused test journal".into()))
     }
+
 }
 
 struct RecordingExecutor {

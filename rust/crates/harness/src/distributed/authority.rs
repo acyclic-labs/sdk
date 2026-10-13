@@ -94,7 +94,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.refresh(work).await?;
         self.observe_operation(owner, scope, verifier, parent, work)?;
         if expected_revision.is_some_and(|revision| revision != self.revision) {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Conflict,
                 "child hierarchy revision changed",
@@ -113,7 +113,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 break;
             };
             if let Some(work) = custody.work().as_deref_mut() {
-                work.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                work.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if after_slot.is_some_and(|after| slot <= after)
                 || child.spec.owner.authority() != owner
@@ -126,7 +126,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             child.spec.verify_owner(owner, verifier, custody.work())?;
             if child.spec.operation_id.into_bytes() == [0; 16] {
-                return Err(coordinator_boundary(
+                return Err(guarded_boundary(
                     custody.work(),
                     wire::ErrorCode::Invalid,
                     "child hierarchy contains a nil operation",
@@ -174,7 +174,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let child = self.authorize_owner(owner, verifier, operation_id, work)?;
         let verified_revision = if let Some((parent, fence)) = parent_guard {
             if child.spec.parent.as_ref().map(|link| link.operation_id) != Some(parent) {
-                return Err(coordinator_boundary(
+                return Err(guarded_boundary(
                     work,
                     wire::ErrorCode::Unauthorized,
                     "cancellation requires an authorized direct child",
@@ -205,7 +205,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .scheduler
             .operation(operation_id)
             .ok_or_else(|| {
-                coordinator_boundary(
+                guarded_boundary(
                     work,
                     wire::ErrorCode::NotFound,
                     "operation is absent after cancellation",
@@ -227,7 +227,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .operation(operation_id)
             .filter(|operation| operation.spec.owner.authority() == owner)
             .ok_or_else(|| {
-                coordinator_boundary(
+                guarded_boundary(
                     work,
                     wire::ErrorCode::NotFound,
                     "operation is absent for this owner",
@@ -284,7 +284,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
         if parent_fence.is_some() && spec.parent.is_none() {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "owned child declaration has no parent",
@@ -328,7 +328,7 @@ pub(super) fn authorize_operation_scope(
     verifier.verify_audience(owner, work)?;
     verifier.verify_scope_for_with_work(owner, scope, work)?;
     if !scope.capabilities().contains(capability) {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             work,
             wire::ErrorCode::Unauthorized,
             "owner scope lacks the required operation capability",

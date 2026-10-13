@@ -79,9 +79,9 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let signed = &authority.0.2;
         let caller_id = work.display(&owner.task_id())?;
@@ -100,7 +100,7 @@ impl<'a> PiForkCoordinator<'a> {
         }
         verifier.0.verify_audience(
             parent.reducer().authority(),
-            &mut Some(&mut native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
         self.selected_graph(context, owner, commit.source_task)
             .await?;
@@ -119,9 +119,9 @@ impl<'a> PiForkCoordinator<'a> {
         let mut selected_project = None;
         for (key, volume) in &source_input.binding.project_volumes {
             let name = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 let value = volume.storage_name(&mut Some(&mut io))?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             if name.0 == source.workspace().name().as_str() {
                 selected_project = Some((key, volume));
@@ -225,7 +225,7 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "Pi immutable result allocation must remain Preparing",
             });
         }
-        let mut child_volume_io = native_work_io(work)?;
+        let mut child_volume_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let child_project = child_project.copy(&mut Some(&mut child_volume_io))?;
         let child_private = commit
             .child
@@ -233,7 +233,7 @@ impl<'a> PiForkCoordinator<'a> {
             .volume
             .copy(&mut Some(&mut child_volume_io))?;
         let child_result = results.volume.copy(&mut Some(&mut child_volume_io))?;
-        let _child_volume_custody = child_volume_io.into_custody();
+        let _child_volume_custody = child_volume_io.into_custody()?;
         let child_id = work.display(&commit.child.task_id)?;
         #[derive(Serialize)]
         struct Arguments<'a> {
@@ -268,25 +268,40 @@ impl<'a> PiForkCoordinator<'a> {
             inherited_references: limits.resources,
             history_limits,
         };
-        let checkpoint_snapshot = parent.reducer().snapshot_native(usize::MAX, work)?;
+        let checkpoint_snapshot = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let snapshot = parent.reducer().snapshot(usize::MAX, &mut Some(&mut io))?.0;
+            (snapshot, io.into_custody()?)
+        };
         let checkpoint_bytes = crate::pi_root_provider::guarded_pi_bytes(
-            &checkpoint_snapshot,
+            &checkpoint_snapshot.0,
             self.owner.policy().maximum_payload_bytes,
             work,
         )?;
         let checkpoint_path =
             work.display(&format_args!("pi-fork/{original}/source-checkpoint.json"))?;
-        let checkpoint = (context)
-            .stage_file_once_with_native_work(
-                derived(original, "source-checkpoint", &self.work)?,
-                &checkpoint_path.0,
-                &checkpoint_bytes.0,
-                "application/json",
-                "Pi original caller cut",
-                &self.work,
-            )
-            .await?;
-        let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
+        let checkpoint = {
+            let publication_io =
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?;
+            (context)
+                .stage_file_once(
+                    derived(original, "source-checkpoint", &self.work)?,
+                    &checkpoint_path.0,
+                    &checkpoint_bytes.0,
+                    "application/json",
+                    "Pi original caller cut",
+                    Some(&publication_io),
+                )
+                .await
+                .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+        }?;
+        let resolver = acyclic_harness::runtime::content_residency_verifier(
+            Arc::clone(shared),
+            Arc::clone(owner),
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        )?;
         let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
             "local", "stream", "1", work,
         )?;
@@ -309,7 +324,13 @@ impl<'a> PiForkCoordinator<'a> {
         )
         .await?;
         source
-            .validate_snapshot_with_native_work(frozen, work)
+            .validate_snapshot(
+                frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let request = source_binding.0.request;
@@ -319,12 +340,12 @@ impl<'a> PiForkCoordinator<'a> {
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1)?;
         let input_read = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = self.owner.policy().journal.directory_read_capability(
                 crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
                 &mut Some(&mut io),
             )?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         if !context.scope().grants().contains(&input_read.0) {
             return Err(Error::NativeBoundary {
@@ -396,16 +417,21 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let fork_path = work.display(&format_args!("pi-fork/{original}/fork-input.json"))?;
-        let mut fork_input = (context)
-            .stage_file_once_with_native_work(
-                derived(original, "fork-input", &self.work)?,
-                &fork_path.0,
-                &bytes.0,
-                "application/json",
-                "Pi original fork input",
-                &self.work,
-            )
-            .await?;
+        let mut fork_input = {
+            let publication_io =
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?;
+            (context)
+                .stage_file_once(
+                    derived(original, "fork-input", &self.work)?,
+                    &fork_path.0,
+                    &bytes.0,
+                    "application/json",
+                    "Pi original fork input",
+                    Some(&publication_io),
+                )
+                .await
+                .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+        }?;
         let command_kind = work.display(&FORK_PREPARE_TASK_COMMAND_KIND)?;
         let command = WorkflowCommand {
             operation_id: operations.fork,
@@ -470,7 +496,7 @@ impl<'a> PiForkCoordinator<'a> {
             custody: None,
         })?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         drop(launch_reference.0);
         let mut plan = PiForkPlan {

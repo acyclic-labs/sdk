@@ -145,8 +145,8 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         )
         .await?;
     assert!(published.operation().is_some());
-    assert!(published.snapshot().is_lazy());
-    assert_eq!(published.snapshot().workspace_id(), lazy.workspace().id());
+    assert!(published.is_lazy());
+    assert_eq!(published.workspace_id(), lazy.workspace().id());
     read("/authored.txt", b"native edit").await?;
 
     let snapshot_work = new_work(WorkBudget::UNBOUNDED)?;

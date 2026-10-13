@@ -267,17 +267,21 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
             &original,
         )?),
     )?;
-    let staged = shared
-        .as_ref()
-        .stage_file_once_with_native_work(
-            crate::OperationId::from_bytes([118; 16]),
-            "native/shared.txt",
-            b"same issued context",
-            "text/plain",
-            "shared.txt",
-            &original,
-        )
-        .await?;
+    let staged = {
+        let publication_io = crate::executor::PreparationIo::from_native_work(&original)?;
+        shared
+            .as_ref()
+            .stage_file_once(
+                crate::OperationId::from_bytes([118; 16]),
+                "native/shared.txt",
+                b"same issued context",
+                "text/plain",
+                "shared.txt",
+                Some(&publication_io),
+            )
+            .await
+            .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+    }?;
     let before = original.live_allocation_bytes();
     let reads = original.receipt().backend_read_operations;
     let bytes = reader.read(&staged.0, 65_536, Some(&content_io))?.await?;

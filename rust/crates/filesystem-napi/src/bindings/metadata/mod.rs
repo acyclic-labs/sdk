@@ -3,46 +3,35 @@ use super::*;
 /// Complete canonical metadata bytes plus exact work.
 #[napi(object)]
 pub struct NativeMetadataResult {
-    /// Versioned canonical metadata record.
     pub canonical_bytes: Buffer,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Optional exact named-attribute value plus exact work.
 #[napi(object)]
 pub struct NativeNamedAttributeResult {
-    /// Whether the attribute exists.
     pub exists: bool,
-    /// Exact bytes when present.
     pub bytes: Option<Buffer>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One bounded ordered named-attribute page.
 #[napi(object)]
 pub struct NativeNamedAttributePage {
-    /// Exact canonical class/name pairs.
     pub entries: Vec<NativeNamedAttributeName>,
-    /// Whether another canonical page follows.
     pub has_more: bool,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One exact canonical named-attribute identity.
 #[napi(object)]
 pub struct NativeNamedAttributeName {
-    /// Canonical source-semantics class.
     pub attribute_class: String,
-    /// Exact raw name.
     pub name: Buffer,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Reads complete canonical metadata bytes for one path.
     #[napi]
     pub async fn read_metadata(&self, path: String) -> Result<NativeMetadataResult> {
         let path = native_path(&path, self.config)?;
@@ -61,7 +50,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Reads complete canonical metadata bytes by stable file identity.
     #[napi]
     pub async fn read_metadata_by_id(&self, file_id: Buffer) -> Result<NativeMetadataResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
@@ -80,7 +68,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Atomically replaces complete canonical metadata for one path.
     #[napi]
     pub async fn set_metadata(
         &self,
@@ -104,7 +91,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Atomically replaces complete canonical metadata by stable file identity.
     #[napi]
     pub async fn set_metadata_by_id(
         &self,
@@ -122,7 +108,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Atomically replaces metadata and optional logical size for one path.
     #[napi]
     pub async fn set_attributes(
         &self,
@@ -145,7 +130,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Atomically replaces metadata and optional logical size by file identity.
     #[napi]
     pub async fn set_attributes_by_id(
         &self,
@@ -171,7 +155,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Reads one exact named-attribute value.
     #[napi]
     pub async fn read_named_attribute(
         &self,
@@ -199,7 +182,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Returns one bounded ordered named-attribute page.
     #[napi]
     pub async fn list_named_attributes(
         &self,
@@ -250,7 +232,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Inserts or replaces one exact named attribute.
     #[napi]
     pub async fn write_named_attribute(
         &self,
@@ -277,7 +258,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Removes one exact named attribute.
     #[napi]
     pub async fn remove_named_attribute(
         &self,

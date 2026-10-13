@@ -424,10 +424,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let root = std::mem::size_of::<serde_json::Value>() as u64;
             io.retain_owned(root)?;
             let root_hold = io.guard_owned(root)?;
-            let diagnostics = io.reserve_decode(crate::contract::sdk_json_diagnostic_bytes())?;
-            let statement = match crate::contract::json_value_bounded(
+            let diagnostics = io.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes())?;
+            let statement = match crate::executor::json::json_value_bounded(
                 &_witness,
-                crate::contract::JsonBounds {
+                crate::executor::json::JsonBounds {
                     maximum_bytes: maximum_witness_bytes,
                     maximum_items: io.remaining()?.items_examined,
                     maximum_depth: 8,
@@ -552,7 +552,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<MergePlan> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .describe_conflicts(conflicts, truncated)
+            .describe_conflicts(conflicts.to_vec(), truncated)
             .await
             .map_err(map_error)
     }

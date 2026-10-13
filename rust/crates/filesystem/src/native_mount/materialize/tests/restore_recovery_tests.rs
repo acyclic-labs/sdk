@@ -362,7 +362,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     let cancellation = CancellationToken::new();
     let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
         .map_err(|failure| failure.0)?;
-    let root = receipt.run(|work| HostRoot::open(temporary.path(), work))?;
+    let root = HostRoot::open(temporary.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
     let namespace = NamespacePath::new(
@@ -601,7 +601,36 @@ fn live_mount_recovery_preserves_the_correct_entry() -> Result<(), Box<dyn std::
         if published {
             std::fs::write(root.join(&backup), b"before")?;
         } else {
-            parent.rename_to(relative, &parent, &backup, &mut work)?;
+            {
+                #[cfg(unix)]
+                {
+                    crate::native_host::rename_held(
+                        &(parent).directory,
+                        relative,
+                        &(&parent).directory,
+                        &backup,
+                        acyclic_native_runtime::RenameMode::Replace,
+                        None,
+                        &mut work,
+                    )
+                }
+                #[cfg(windows)]
+                {
+                    crate::native_host::with_wide_path(relative, &mut work, |name, work| {
+                        crate::native_host::with_wide_path(&backup, work, |target, work| {
+                            crate::native_host::rename_held(
+                                &(parent).directory,
+                                name,
+                                &(&parent).directory,
+                                target,
+                                acyclic_native_runtime::RenameMode::Replace,
+                                None,
+                                work,
+                            )
+                        })
+                    })
+                }
+            }?;
         }
         recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
         assert_eq!(std::fs::read(&destination)?, expected);

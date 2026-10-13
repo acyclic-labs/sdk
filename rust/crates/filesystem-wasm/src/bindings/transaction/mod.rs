@@ -51,7 +51,6 @@ pub struct BrowserTransactionConflict {
 
 #[wasm_bindgen]
 impl BrowserTransaction {
-    /// Creates every absent directory on one canonical path.
     #[wasm_bindgen(js_name = createDirAll)]
     pub async fn create_dir_all(&mut self, path: String) -> Result<(), JsValue> {
         sdk_value!(Box::pin(unbounded_future!(
@@ -60,13 +59,11 @@ impl BrowserTransaction {
         )))
     }
 
-    /// Creates exactly one empty directory.
     #[wasm_bindgen(js_name = createDirectory)]
     pub async fn create_directory(&mut self, path: String) -> Result<(), JsValue> {
         sdk_value!(unbounded_future!(self.engine, create_directory(&path)))
     }
 
-    /// Creates one symbolic link with an opaque target.
     #[wasm_bindgen(js_name = createSymbolicLink)]
     pub async fn create_symbolic_link(
         &mut self,
@@ -80,7 +77,6 @@ impl BrowserTransaction {
         ))
     }
 
-    /// Creates or replaces one complete file inside this transaction.
     #[wasm_bindgen]
     pub async fn write(&mut self, path: String, bytes: Vec<u8>) -> Result<(), JsValue> {
         let bytes = bytes::Bytes::from(bytes);
@@ -90,13 +86,11 @@ impl BrowserTransaction {
         )))
     }
 
-    /// Removes one existing namespace binding inside this transaction.
     #[wasm_bindgen]
     pub async fn remove(&mut self, path: String) -> Result<(), JsValue> {
         sdk_value!(unbounded_future!(self.engine, remove(&path)))
     }
 
-    /// Clones one complete regular file without copying its body.
     #[wasm_bindgen]
     pub async fn copy(&mut self, source: String, destination: String) -> Result<(), JsValue> {
         sdk_value!(Box::pin(unbounded_future!(
@@ -105,7 +99,6 @@ impl BrowserTransaction {
         )))
     }
 
-    /// Atomically renames one namespace binding inside this transaction.
     #[wasm_bindgen]
     pub async fn rename(&mut self, source: String, destination: String) -> Result<(), JsValue> {
         sdk_value!(Box::pin(unbounded_future!(
@@ -114,7 +107,6 @@ impl BrowserTransaction {
         )))
     }
 
-    /// Creates one same-workspace hard link.
     #[wasm_bindgen(js_name = hardLink)]
     pub async fn hard_link(&mut self, source: String, destination: String) -> Result<(), JsValue> {
         sdk_value!(unbounded_future!(
@@ -123,7 +115,6 @@ impl BrowserTransaction {
         ))
     }
 
-    /// Replaces one sparse regular-file range.
     #[wasm_bindgen(js_name = writeRange)]
     pub async fn write_range(
         &mut self,
@@ -138,12 +129,10 @@ impl BrowserTransaction {
         ))
     }
 
-    /// Changes one regular file's logical length.
     pub async fn resize(&mut self, path: String, logical_bytes: u64) -> Result<(), JsValue> {
         sdk_value!(unbounded_future!(self.engine, resize(&path, logical_bytes)))
     }
 
-    /// Punches a hole or installs allocated zeros over one exact range.
     #[wasm_bindgen(js_name = zeroRange)]
     pub async fn zero_range(
         &mut self,
@@ -160,7 +149,6 @@ impl BrowserTransaction {
         ))
     }
 
-    /// Preallocates one sparse range without replacing content.
     pub async fn preallocate(
         &mut self,
         path: String,
@@ -175,7 +163,6 @@ impl BrowserTransaction {
         ))
     }
 
-    /// Clones one immutable range without reading file bytes.
     #[wasm_bindgen(js_name = cloneRange)]
     pub async fn clone_range(
         &mut self,
@@ -197,7 +184,6 @@ impl BrowserTransaction {
         ))
     }
 
-    /// Publishes the complete candidate through one idempotent head CAS.
     #[wasm_bindgen]
     pub async fn commit(
         &mut self,
@@ -218,16 +204,14 @@ impl BrowserTransaction {
         ts(outcome)
     }
 
-    /// Safely advances this retained candidate and sparsely replays its work.
     #[wasm_bindgen]
     pub async fn rebase(
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserTransactionRebase>, JsValue> {
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
-        let outcome = sdk_value!(unbounded_future!(self.engine, rebase(maximum_conflicts)))
-            .map(browser_transaction_rebase)?;
-        ts(outcome)
+        let outcome = sdk_value!(unbounded_future!(self.engine, rebase(maximum_conflicts)))?;
+        ts(browser_transaction_rebase(outcome))
     }
 }
 

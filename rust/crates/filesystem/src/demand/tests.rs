@@ -118,6 +118,7 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )?
+        .value
         .ok_or("a local root is watched")?;
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, source.reference(), &path("/f")?, &cancellation).await?;
@@ -185,6 +186,7 @@ async fn a_filtered_source_reports_nothing_beneath_its_exclusions() -> Result<()
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )?
+        .value
         .ok_or("a local root is watched")?;
     std::fs::write(root.path().join(".git").join("index"), b"x")?;
     std::fs::write(root.path().join("visible"), b"x")?;
@@ -848,9 +850,17 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
     )?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(&host_name), b"data")?;
-    let source =
-        NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits, None, None)
-            .await?;
+    let source = NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(root.path()),
+        FilesystemProfile::Windows,
+        limits,
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .value;
     let exact = NamespacePath::new(vec![name], limits)?;
     assert!(
         source

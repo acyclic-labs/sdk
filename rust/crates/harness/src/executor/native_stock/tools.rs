@@ -13,7 +13,7 @@ pub(in crate::executor) fn stock_tool_definitions(
         let mut selected = Vec::new();
         for definition in definitions {
             let key = with_history_io(Some(io), |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("tool:call:{}", definition.name),
                     work,
                 )
@@ -47,33 +47,6 @@ pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     }
 }
 
-pub(in crate::executor) fn stock_native_failure(error: &Error) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        return error.is_native_failure();
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = error;
-        false
-    }
-}
-
-pub(in crate::executor) fn stock_model_call(
-    parent: OperationId,
-    step: u32,
-    call: String,
-    name: String,
-    arguments: Value,
-    io: Option<&PreparationIo>,
-) -> Result<ToolInvocation> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return ToolInvocation::for_model_call(parent, step, call, name, arguments, Some(work));
-    }
-    ToolInvocation::for_model_call(parent, step, call, name, arguments, None)
-}
-
 pub(in crate::executor) fn stock_tool_lookup<'a>(
     registry: &'a ToolRegistry,
     name: &str,
@@ -91,20 +64,6 @@ pub(in crate::executor) fn stock_tool_lookup<'a>(
     registry
         .get(name, None, io)?
         .ok_or_else(|| Error::NotFound(format!("tool {name}")))
-}
-
-pub(in crate::executor) fn stock_tool_support(
-    tool: &crate::tool::Tool,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        tool.executor.supports_native_execution(work)?;
-        tool.projection.supports_native_projection(Some(work))?;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = (tool, io);
-    Ok(())
 }
 
 pub(in crate::executor) fn stock_authorize_tool(
@@ -305,12 +264,9 @@ impl StockExecution<'_> {
             );
             let approval = stock_task_interaction_id(task, approval_operation, Some(io))?;
             journal
-                .open_interaction_with_native_work(approval, &request, work)?
+                .open_interaction(approval, &request, Some(io))?
                 .await?;
-            let (outcome, custody) = journal
-                .interaction_outcome_with_native_work(approval, work)?
-                .await?;
-            io.absorb_native_custody(custody)?;
+            let outcome = journal.interaction_outcome(approval, Some(io))?.await?;
             let Some(outcome) = outcome else {
                 return if started {
                     Err(Error::Indeterminate(invocation.operation_id))
@@ -350,14 +306,14 @@ pub(in crate::executor) fn stock_validate_invocation(
     if let Some(io) = io
         && io.original_native_work().is_some()
     {
-        crate::contract::json_owned_value_shape_bounded(
+        crate::executor::json::json_owned_value_shape_bounded(
             &invocation.arguments,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: u64::MAX,
                 maximum_items: io.remaining()?.items_examined,
                 maximum_depth: 256,
             },
-            crate::contract::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::None,
             &mut |next| io.codec_charge(next, false),
         )?;
         return Ok(());
@@ -374,7 +330,7 @@ pub(in crate::executor) async fn stock_tool_rejection(
     kind: ToolFailureKind,
     error: Error,
 ) -> Result<ExecutionProgress<()>> {
-    if stock_native_failure(&error) {
+    if error.is_native_failure() {
         return Err(error);
     }
     session

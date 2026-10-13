@@ -7,7 +7,7 @@ use crate::storage::{ObjectId, ObjectKind};
 use std::borrow::Cow;
 use thiserror::Error;
 use super::allocation::AllocationLedger;
-use super::codec::{CanonicalDecodeError, Decoder, Encoder, ReadAllocationStep};
+use super::codec::{CanonicalDecodeError, ReadAllocationStep};
 use super::namespace_path::{NamespacePathError, NamespacePathStep, };
 use super::namespace_path::NamespacePathAccounting;
 use crate::{CancellationToken, WorkBudget, WorkCounters};
@@ -198,97 +198,6 @@ impl LogicalName {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn cursor_encoded_len(&self) -> Result<usize, NamespacePathError> {
-        u32::try_from(self.bytes.len()).map_err(|_| NamespacePathError::ComponentTooLong)?;
-        self.bytes.len().checked_add(5)
-            .ok_or(NamespacePathError::Codec(CanonicalDecodeError::LengthOverflow))
-    }
-
-    pub(crate) fn encode_cursor_into_with_accounting(
-        &self,
-        encoder: &mut Encoder,
-        accounting: &mut super::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), crate::FsError> {
-        accounting.check()?;
-        cancellation.check()?;
-        let length = self.cursor_encoded_len()?;
-        if encoder.remaining_capacity() < length {
-            return Err(NamespacePathError::AllocationFailed.into());
-        }
-        let delta = WorkCounters { bytes_encoded: length as u64,
-            bytes_copied: self.bytes.len() as u64, items_examined: 1,
-            ..WorkCounters::UNCHARGED };
-        accounting.admit(delta)?;
-        encoder.u8(self.encoding.tag());
-        encoder.bounded_bytes(&self.bytes)
-            .map_err(NamespacePathError::Codec)?;
-        accounting.record_completed(delta)
-    }
-
-    pub(super) fn read_cursor_borrowed<'a>(
-        decoder: &mut Decoder<'a>,
-        profile: FilesystemProfile,
-        maximum_bytes: u32,
-        cancellation: &CancellationToken,
-        owned: &mut NamespacePathAccounting<'_, '_>,
-    ) -> Result<(NameEncoding, &'a [u8]), crate::FsError> {
-        cancellation.check()?;
-        owned.observe(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1, ..WorkCounters::UNCHARGED
-        }))?;
-        let encoding = NameEncoding::from_tag(
-            decoder.u8(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?,
-        ).map_err(NamespacePathError::Name)?;
-        if !encoding.is_admitted_in_profile(profile) {
-            return Err(NamespacePathError::Name(TreePageError::InvalidName).into());
-        }
-        let length = decoder.u32(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?;
-        if length > maximum_bytes {
-            return Err(NamespacePathError::Name(TreePageError::NameTooLarge).into());
-        }
-        let bytes = decoder.take_exact(length as usize)
-            .map_err(NamespacePathError::Codec)?;
-        Self::validate_bytes(encoding, bytes, maximum_bytes)
-            .map_err(NamespacePathError::Name)?;
-        Ok((encoding, bytes))
-    }
-
-    pub(crate) fn decode_cursor_with_accounting(
-        decoder: &mut Decoder<'_>,
-        profile: FilesystemProfile,
-        maximum_bytes: u32,
-        accounting: &mut super::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(Self, super::allocation::KernelOwnedAllocation), crate::FsError> {
-        let mut owned = NamespacePathAccounting::new(accounting)?;
-        let result = Self::decode_cursor(
-            decoder, profile, maximum_bytes, cancellation, &mut owned,
-        );
-        owned.finish(result)
-    }
-
-    pub(super) fn decode_cursor(
-        decoder: &mut Decoder<'_>,
-        profile: FilesystemProfile,
-        maximum_bytes: u32,
-        cancellation: &CancellationToken,
-        owned: &mut NamespacePathAccounting<'_, '_>,
-    ) -> Result<Self, crate::FsError> {
-        let (encoding, source) = Self::read_cursor_borrowed(
-            decoder, profile, maximum_bytes, cancellation, owned,
-        )?;
-        let delta = WorkCounters { bytes_copied: source.len() as u64,
-            ..WorkCounters::UNCHARGED };
-        owned.observe(NamespacePathStep::Admit(&delta))?;
-        let mut bytes = super::namespace_path::namespace_path_vec_with_steps(
-            source.len(), cancellation, &mut |step| owned.observe(step),
-        )?;
-        bytes.extend_from_slice(source);
-        owned.observe(NamespacePathStep::Performed(&delta))?;
-        Ok(Self::from_validated_bytes(encoding, bytes))
     }
 
     /// Returns the canonical representation kind.

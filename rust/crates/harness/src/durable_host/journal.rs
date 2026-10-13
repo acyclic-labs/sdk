@@ -180,14 +180,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             std::borrow::Cow::Borrowed(&record.input),
             io,
         )?;
-        if next != record.next || transition != record.transition {
+        if record.checkpoint()? != (&next.machine, next.revision, &next.state) || transition != record.transition {
             return Err(Error::Conflict(
                 "workflow transition differs from pinned machine".into(),
             ));
         }
         if let crate::workflow::MachineStatus::Completed { value } = &transition.status {
             crate::executor::with_history_io(io, |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &self.admission.output_schema,
                     value,
                     "task output",

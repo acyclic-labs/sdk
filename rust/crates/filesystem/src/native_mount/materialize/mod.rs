@@ -9,7 +9,7 @@ use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,
 };
-use crate::native_host::{HostRoot, NativeHostWork};
+use crate::native_host::HostRoot;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Checkout, FileId,
     OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
@@ -35,11 +35,17 @@ macro_rules! read_source {
             let $value = $native.await.map_err(MaterializeError::from)?;
             $accept_native
         } else {
-            let $remaining = $receipt.run(|work| work.remaining())?;
+            let $remaining = SourceDemandReadWork::remaining(&mut $receipt.custody.work().clone())
+                .map_err(MaterializeError::from)?;
             let result = $legacy
                 .await
                 .map_err(|failure| $receipt.engine_failure(failure))?;
-            $receipt.run(|work| work.merge(result.work))?;
+            $receipt
+                .custody
+                .work()
+                .clone()
+                .merge(result.work)
+                .map_err(MaterializeError::from)?;
             let $value = result.value;
             $accept_legacy
         }

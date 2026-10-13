@@ -3,107 +3,71 @@ use super::*;
 /// Explicit native materialization bounds.
 #[napi(object)]
 pub struct NativeMaterializeOptions {
-    /// Existing empty host directory.
     pub destination: String,
-    /// Maximum entries in one authenticated directory page.
     pub maximum_directory_entries: NapiU32,
-    /// Maximum spans in one authenticated extent plan.
     pub maximum_extent_spans: NapiU32,
-    /// Maximum bytes in one host transfer allocation.
     pub transfer_bytes: BigInt,
 }
 
 /// Exact native materialization result.
 #[napi(object)]
 pub struct NativeMaterializationResult {
-    /// Materialized regular-file bindings.
     pub files: BigInt,
-    /// Materialized directories excluding the supplied root.
     pub directories: BigInt,
-    /// Materialized symbolic links.
     pub symbolic_links: BigInt,
-    /// Materialized FIFO, socket, character-device, or block-device bindings.
     pub special_files: BigInt,
-    /// Logical regular-file bytes.
     pub logical_file_bytes: BigInt,
-    /// Bytes physically written.
     pub written_bytes: BigInt,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Exact native capture result.
 #[napi(object)]
 pub struct NativeCaptureResult {
-    /// Paths examined.
     pub examined_paths: BigInt,
-    /// Paths producing mutations.
     pub changed_paths: BigInt,
-    /// File bytes streamed into immutable objects.
     pub staged_file_bytes: BigInt,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Exact native watcher-capture result and durable acknowledgement boundary.
 #[napi(object)]
 pub struct NativeWatchCaptureResult {
-    /// Watcher epoch authenticated by the captured batch.
     pub epoch: BigInt,
-    /// First sequence included in the captured interval.
     pub first_sequence: BigInt,
-    /// First sequence not included; safe to persist only after this result.
     pub next_sequence: BigInt,
-    /// Paths examined.
     pub examined_paths: BigInt,
-    /// Paths producing mutations.
     pub changed_paths: BigInt,
-    /// File bytes streamed into immutable objects.
     pub staged_file_bytes: BigInt,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One watcher-bound baseline reconciliation result.
 #[napi(object)]
 pub struct NativeWatchReconcileResult {
-    /// New baseline epoch.
     pub epoch: BigInt,
-    /// Atomic baseline capture receipt.
     pub baseline: NativeCaptureResult,
-    /// Exact interval accumulated while the baseline was captured.
     pub post_baseline: NativeWatchBatch,
 }
 
 /// One exact native watcher hint.
 #[napi(object)]
 pub struct NativeWatchChange {
-    /// `created`, `modified`, `metadata`, `removed`, or `renamed`.
     pub kind: String,
-    /// Single-path hint; absent for renames.
     pub path: Option<NativeNamespacePath>,
-    /// Rename source; present only for renames.
     pub from: Option<NativeNamespacePath>,
-    /// Rename destination; present only for renames.
     pub to: Option<NativeNamespacePath>,
 }
 
 /// One contiguous or invalidated watcher interval.
 #[napi(object)]
 pub struct NativeWatchBatch {
-    /// `changes` or `rescan-required`.
     pub status: String,
-    /// Process-local watcher epoch.
     pub epoch: BigInt,
-    /// First sequence for a changes batch.
     pub first_sequence: Option<BigInt>,
-    /// Cursor safe after a successful capture.
     pub next_sequence: Option<BigInt>,
-    /// Exact invalidation reason for a rescan batch.
     pub reason: Option<String>,
-    /// Exact bounded hints.
     pub changes: Vec<NativeWatchChange>,
-    /// Exact machine-readable polling work receipt.
     pub work_json: String,
 }
 
@@ -138,7 +102,6 @@ pub struct NativeMount {
 
 #[napi]
 impl NativeCheckout {
-    /// Mounts this checkout through the target's real native namespace driver.
     #[napi]
     pub fn mount(&self, destination: String, writable: bool) -> Result<NativeMount> {
         let source = Arc::new(
@@ -162,7 +125,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Explicitly materializes this checkout; never used as a mount fallback.
     #[napi]
     pub async fn materialize(
         &self,
@@ -202,7 +164,6 @@ impl NativeCheckout {
         .map_err(napi_error)?
     }
 
-    /// Captures final host state for a bounded exact path set in one atomic
     #[napi]
     pub async fn capture(
         &self,
@@ -236,15 +197,9 @@ impl NativeCheckout {
         ))
         .await
         .map_err(napi_error)?;
-        Ok(NativeCaptureResult {
-            examined_paths: bigint(receipt.value.examined_paths),
-            changed_paths: bigint(receipt.value.changed_paths),
-            staged_file_bytes: bigint(receipt.value.staged_file_bytes),
-            work_json: work_json(&receipt.work)?,
-        })
+        capture_result(&receipt.value, &receipt.work)
     }
 
-    /// Captures the complete bounded host/checkout union in one atomic baseline.
     #[napi]
     pub async fn capture_baseline(
         &self,
@@ -273,15 +228,9 @@ impl NativeCheckout {
         ))
         .await
         .map_err(napi_error)?;
-        Ok(NativeCaptureResult {
-            examined_paths: bigint(receipt.value.examined_paths),
-            changed_paths: bigint(receipt.value.changed_paths),
-            staged_file_bytes: bigint(receipt.value.staged_file_bytes),
-            work_json: work_json(&receipt.work)?,
-        })
+        capture_result(&receipt.value, &receipt.work)
     }
 
-    /// Opens an exact native watcher using this volume's path bounds.
     #[napi]
     pub fn watch(
         &self,
@@ -382,7 +331,6 @@ impl NativeWatcher {
 
 #[napi]
 impl NativeWatcher {
-    /// Establishes an authenticated baseline while preserving events that
     #[napi]
     pub async fn reconcile(
         &self,
@@ -433,17 +381,11 @@ impl NativeWatcher {
         });
         Ok(NativeWatchReconcileResult {
             epoch: bigint(pending.epoch),
-            baseline: NativeCaptureResult {
-                examined_paths: bigint(pending.baseline.examined_paths),
-                changed_paths: bigint(pending.baseline.changed_paths),
-                staged_file_bytes: bigint(pending.baseline.staged_file_bytes),
-                work_json: work_json(&pending.work)?,
-            },
+            baseline: capture_result(&pending.baseline, &pending.work)?,
             post_baseline,
         })
     }
 
-    /// Polls and atomically captures one watcher interval. An interval remains
     #[napi]
     pub async fn poll_capture(
         &self,
@@ -546,21 +488,18 @@ impl NativeWatcher {
 
 #[napi]
 impl NativeMount {
-    /// Canonical 16-byte mount identity.
     #[must_use]
     #[napi(getter)]
     pub fn id(&self) -> Buffer {
         Buffer::from(self.mount_id.into_bytes().to_vec())
     }
 
-    /// Exact native destination.
     #[must_use]
     #[napi(getter)]
     pub fn destination(&self) -> String {
         self.destination.clone()
     }
 
-    /// Waits until everything the kernel caches through this mount reflects
     #[napi]
     pub fn revalidate(&self) -> Result<()> {
         self.inner
@@ -578,7 +517,6 @@ impl NativeMount {
             .map_err(napi_error)
     }
 
-    /// Stops this projection exactly once.
     #[napi]
     pub fn stop(&self) -> Result<bool> {
         let mut session = self
@@ -590,6 +528,18 @@ impl NativeMount {
         };
         session.stop().map_err(napi_error)
     }
+}
+
+fn capture_result(
+    capture: &CaptureReceipt,
+    work: &acyclic_fs::WorkCounters,
+) -> Result<NativeCaptureResult> {
+    Ok(NativeCaptureResult {
+        examined_paths: bigint(capture.examined_paths),
+        changed_paths: bigint(capture.changed_paths),
+        staged_file_bytes: bigint(capture.staged_file_bytes),
+        work_json: work_json(work)?,
+    })
 }
 
 pub(in crate::bindings) fn encode_watch_batch(

@@ -86,16 +86,26 @@ impl ControlPlane {
                     let parent_workspace = WorkspaceGraph::new(store.clone()).workspace(&self.fs, parent_root.workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
                         .await
                         .map_err(display)?;
-                    let parent_lazy = LazyWorkspace::open(parent_workspace, source, store.clone())
+                    let parent_lazy = LazyWorkspace::open(parent_workspace, source, store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                        allocations: Default::default(),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        budget: WorkBudget::UNBOUNDED,
+                        cancellation: &CancellationToken::new(),
+                    })
                         .await
                         .map_err(display)?;
                     let root_name = route_name(*root_id);
                     let child_name = format!("{}-{root_name}", pending.workspace_name);
                     let fork_generation = parent_lazy.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?.id();
                     let child = parent_lazy
-                        .fork(&child_name, derived_idempotency_key(fork_key, *root_id))
+                        .fork(&child_name, derived_idempotency_key(fork_key, *root_id), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                            allocations: Default::default(),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            budget: WorkBudget::UNBOUNDED,
+                            cancellation: &CancellationToken::new(),
+                        })
                         .await
-                        .map_err(display)?;
+                        .map_err(display)?.0;
                     WorkspaceGraph::new(store.clone())
                         .register_existing_child(
                             parent_lazy.workspace(),
@@ -163,7 +173,12 @@ impl ControlPlane {
                     .map_err(display)?;
                 roots.push((
                     root.mount_name(),
-                    LazyWorkspace::open(workspace, source, self.store.clone())
+                    LazyWorkspace::open(workspace, source, self.store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                        allocations: Default::default(),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        budget: WorkBudget::UNBOUNDED,
+                        cancellation: &CancellationToken::new(),
+                    })
                         .await
                         .map_err(display)?,
                 ));

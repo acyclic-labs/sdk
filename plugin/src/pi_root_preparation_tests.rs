@@ -83,7 +83,7 @@ impl Fixture {
     async fn head(&self) -> acyclic_fs::GenerationId {
         let query = work();
         self.raw
-            .open_workspace_with_native_work(
+            .open_workspace(
                 &self.owner.policy.journal.storage_name(&mut None).unwrap(),
                 &query,
                 query.cancellation(),

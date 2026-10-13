@@ -212,13 +212,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert!(batch.value.entries[0].record.is_some());
     assert!(batch.value.entries[1].record.is_some());
     assert!(batch.value.entries[2].record.is_none());
-    let directory_names = through_every_object_cut!(checkout.list_directory(
-        &root_path()?,
-        std::ops::Bound::Unbounded,
-        8,
-        B,
-        &cancellation
-    ));
+    let directory_names = through_every_object_cut!(checkout.list_directory(&root_path()?, None, 8, B, &cancellation));
     assert_eq!(directory_names.value.entries.len(), 7);
     let directory = through_every_object_cut!(checkout.list_directory_records(
         &root_path()?,

@@ -27,9 +27,9 @@ where
                 .task_binding()
                 .0;
             let id = crate::durable_host::task_interaction_id(task, operation_id, &mut None)?;
-            self.open_interaction(id, interaction).await?;
+            self.open_interaction(id, &interaction, None)?.await?;
             Ok(self
-                .interaction_outcome(id)
+                .interaction_outcome(id, None)?
                 .await?
                 .unwrap_or(InteractionOutcome::Indeterminate { operation_id }))
         })
@@ -77,10 +77,12 @@ where
                 .0
                 .task_binding()
                 .0;
-            let id = crate::durable_host::task_interaction_id(task, operation_id, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?;
-            self.open_interaction_with_native_work(id, &paid.0, work)?
-                .await?;
-            let (outcome, custody) = self.interaction_outcome_with_native_work(id, work)?.await?;
+            let io = PreparationIo::from_native_work(work)?;
+            let id = crate::durable_host::task_interaction_id(task, operation_id, &mut Some(&mut io.history_io()))?;
+            self.open_interaction(id, &paid.0, Some(&io))?.await?;
+            let outcome = self.interaction_outcome(id, Some(&io))?.await?;
+            let retained = io.owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
             Ok((
                 outcome.unwrap_or(InteractionOutcome::Indeterminate { operation_id }),
                 custody,

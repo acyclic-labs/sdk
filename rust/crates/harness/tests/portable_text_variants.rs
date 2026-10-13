@@ -235,11 +235,11 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 )
                 .await?;
             assert_eq!(
-                context.read_file(&edited.file).await?.as_ref(),
+                context.read_file(&edited.file, None).await?.as_ref(),
                 "alpha\r\n🦀 done\r\n".as_bytes()
             );
             assert_eq!(
-                context.read_file(&written.file).await?.as_ref(),
+                context.read_file(&written.file, None).await?.as_ref(),
                 "alpha\r\n🦀 omega\r\n".as_bytes()
             );
             let patched = context
@@ -252,11 +252,11 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 )
                 .await?;
             assert_eq!(
-                context.read_file(&patched.file).await?.as_ref(),
+                context.read_file(&patched.file, None).await?.as_ref(),
                 "beta\r\n🦀 done\r\n".as_bytes()
             );
             assert_eq!(
-                context.read_file(&edited.file).await?.as_ref(),
+                context.read_file(&edited.file, None).await?.as_ref(),
                 "alpha\r\n🦀 done\r\n".as_bytes()
             );
             let workspace = acyclic_harness::filesystem::workspace_ref(
@@ -303,7 +303,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 Err(Error::Unauthorized(_))
             ));
             assert_eq!(
-                context.read_file(&patched.file).await?.as_ref(),
+                context.read_file(&patched.file, None).await?.as_ref(),
                 "beta\r\n🦀 done\r\n".as_bytes()
             );
             assert_eq!(

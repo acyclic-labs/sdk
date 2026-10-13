@@ -13,7 +13,7 @@ mod tls {
 }
 
 #[derive(Clone)]
-struct Fixture(MemoryObjects, std::sync::Arc<std::sync::atomic::AtomicU64>);
+struct Fixture(MemoryObjects);
 fn authenticated<T>(request: Request<T>) -> Result<T, Status> {
     if request
         .metadata()
@@ -106,16 +106,10 @@ impl wire::objects_service_server::ObjectsService for Fixture {
             }
         }
         framing.finish().map_err(status)?;
-        let bad_receipt = header.object_key == "native-bad-receipt";
         self.0
             .put(header, body.freeze().into())
             .await
-            .map(|mut info| {
-                if bad_receipt {
-                    info.size += 1;
-                }
-                Response::new(info)
-            })
+            .map(Response::new)
             .map_err(status)
     }
     type GetObjectStream = stream::BoxStream<'static, Result<wire::GetObjectResponse, Status>>;
@@ -124,7 +118,6 @@ impl wire::objects_service_server::ObjectsService for Fixture {
         request: Request<wire::GetObjectRequest>,
     ) -> Result<Response<Self::GetObjectStream>, Status> {
         let query = authenticated(request)?;
-        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let malformed = query.object_key == "malformed";
         let terminal_error = query.object_key == "terminal-error";
         let delayed = query.object_key == "delayed-body";
@@ -313,11 +306,7 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
     let pem = certified.cert.pem();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-    let fixture = Fixture(
-        MemoryObjects::new(MemoryOptions::default())?,
-        std::sync::Arc::default(),
-    );
-    let physical_get_calls = fixture.1.clone();
+    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
     let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -407,10 +396,6 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
     .await?;
     super::tests::exercise_streaming(&client, |query, maximum| {
         Box::pin(client.get_stream(query, maximum))
-    })
-    .await?;
-    super::tests::exercise_native_transport(&client, || {
-        physical_get_calls.load(std::sync::atomic::Ordering::SeqCst)
     })
     .await?;
     exercise_transfer_deadlines(&client).await?;
@@ -668,11 +653,7 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
             }
         })
         .filter_map(|result| async { result.ok().map(Ok::<_, std::io::Error>) });
-    let fixture = Fixture(
-        MemoryObjects::new(MemoryOptions::default())?,
-        std::sync::Arc::default(),
-    );
-    let physical_get_calls = fixture.1.clone();
+    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -773,10 +754,6 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
     .await?;
     super::tests::exercise_streaming(&client, |query, maximum| {
         Box::pin(client.get_stream(query, maximum))
-    })
-    .await?;
-    super::tests::exercise_native_transport(&client, || {
-        physical_get_calls.load(std::sync::atomic::Ordering::SeqCst)
     })
     .await?;
     let _ = shutdown_tx.send(());

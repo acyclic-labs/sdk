@@ -1,36 +1,16 @@
 use super::*;
 
+/// One allocated data extent.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostDataRange {
     pub offset: u64,
     pub length: u64,
 }
 
-/// One object's kind, size, times, and identity, read without following its name's final link.
-#[cfg(unix)]
-#[derive(Clone, Debug)]
-pub struct HostStat {
-    pub(super) mode: u32,
-    pub(super) len: u64,
-    pub(super) dev: u64,
-    pub(super) ino: u64,
-    pub(super) nlink: u64,
-    pub(super) uid: u32,
-    pub(super) gid: u32,
-    pub(super) rdev: u64,
-    pub(super) atime: i64,
-    pub(super) atime_nsec: i64,
-    pub(super) mtime: i64,
-    pub(super) mtime_nsec: i64,
-    pub(super) ctime: i64,
-    pub(super) ctime_nsec: i64,
-    pub(super) created: Option<cap_std::time::SystemTime>,
-}
-
-/// One native object's file kind.
+/// Native file kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostFileType(u32);
-
 impl HostFileType {
     pub fn is_dir(self) -> bool {
         self.0 == 0o040000
@@ -55,29 +35,30 @@ impl HostFileType {
     }
 }
 
+/// One object's native metadata, without following its final link.
 #[cfg(unix)]
-pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::SystemTime> {
-    let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
-    let magnitude = nanos.unsigned_abs();
-    let duration = std::time::Duration::new(
-        u64::try_from(magnitude / 1_000_000_000)
-            .map_err(|_| io::Error::other("host time overflow"))?,
-        u32::try_from(magnitude % 1_000_000_000)
-            .map_err(|_| io::Error::other("host time overflow"))?,
-    );
-    let time = if nanos < 0 {
-        std::time::UNIX_EPOCH.checked_sub(duration)
-    } else {
-        std::time::UNIX_EPOCH.checked_add(duration)
-    };
-    time.map(cap_std::time::SystemTime::from_std)
-        .ok_or_else(|| io::Error::other("host time overflow"))
+#[derive(Clone)]
+pub struct HostStat {
+    #[cfg(target_os = "linux")]
+    raw: rustix::fs::Stat,
+    #[cfg(target_os = "macos")]
+    raw: libc::stat,
+    len: u64,
+    created: Option<cap_std::time::SystemTime>,
 }
-
+#[cfg(unix)]
+impl std::fmt::Debug for HostStat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostStat")
+            .field("identity", &self.identity())
+            .field("length", &self.len())
+            .finish_non_exhaustive()
+    }
+}
 #[cfg(unix)]
 impl HostStat {
     pub fn file_type(&self) -> HostFileType {
-        HostFileType(self.mode & libc::S_IFMT as u32)
+        HostFileType(self.mode() & 0o170000)
     }
     pub fn is_dir(&self) -> bool {
         self.file_type().is_dir()
@@ -86,215 +67,206 @@ impl HostStat {
         self.len
     }
     pub fn mode(&self) -> u32 {
-        self.mode
+        self.raw.st_mode as u32
     }
     pub fn dev(&self) -> u64 {
-        self.dev
+        self.raw.st_dev as u64
     }
     pub fn ino(&self) -> u64 {
-        self.ino
+        self.raw.st_ino as u64
     }
     pub fn nlink(&self) -> u64 {
-        self.nlink
+        self.raw.st_nlink as u64
     }
     pub fn uid(&self) -> u32 {
-        self.uid
+        self.raw.st_uid as u32
     }
     pub fn gid(&self) -> u32 {
-        self.gid
+        self.raw.st_gid as u32
     }
     pub fn rdev(&self) -> u64 {
-        self.rdev
+        self.raw.st_rdev as u64
     }
     pub fn atime(&self) -> i64 {
-        self.atime
+        self.raw.st_atime as i64
     }
     pub fn atime_nsec(&self) -> i64 {
-        self.atime_nsec
+        self.raw.st_atime_nsec as i64
     }
     pub fn mtime(&self) -> i64 {
-        self.mtime
+        self.raw.st_mtime as i64
     }
     pub fn mtime_nsec(&self) -> i64 {
-        self.mtime_nsec
+        self.raw.st_mtime_nsec as i64
     }
     pub fn ctime(&self) -> i64 {
-        self.ctime
+        self.raw.st_ctime as i64
     }
     pub fn ctime_nsec(&self) -> i64 {
-        self.ctime_nsec
+        self.raw.st_ctime_nsec as i64
     }
+
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
         self.created
             .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "birth time unavailable"))
     }
     pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
-        unix_time(self.mtime, self.mtime_nsec)
+        unix_time(self.mtime(), self.mtime_nsec())
     }
     pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
-        unix_time(self.atime, self.atime_nsec)
+        unix_time(self.atime(), self.atime_nsec())
+    }
+    pub(super) fn from_stat(
+        #[cfg(target_os = "linux")] raw: rustix::fs::Stat,
+        #[cfg(target_os = "macos")] raw: libc::stat,
+    ) -> io::Result<Self> {
+        let len =
+            u64::try_from(raw.st_size).map_err(|_| io::Error::other("negative file length"))?;
+        #[cfg(target_os = "linux")]
+        let created = None;
+        #[cfg(target_os = "macos")]
+        let created = unix_time(raw.st_birthtime, raw.st_birthtime_nsec).ok();
+        Ok(Self { raw, len, created })
     }
     #[cfg(target_os = "linux")]
-    pub(super) fn from_stat(stat: rustix::fs::Stat) -> io::Result<Self> {
+    pub(super) fn from_statx(stat: rustix::fs::Statx) -> io::Result<Self> {
+        // SAFETY: the native stat record contains only integers and integer arrays.
+        let mut raw: rustix::fs::Stat = unsafe { std::mem::zeroed() };
+        raw.st_mode = stat.stx_mode as _;
+        raw.st_size = stat.stx_size as _;
+        raw.st_dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor) as _;
+        raw.st_ino = stat.stx_ino as _;
+        raw.st_nlink = stat.stx_nlink as _;
+        raw.st_uid = stat.stx_uid as _;
+        raw.st_gid = stat.stx_gid as _;
+        raw.st_rdev = rustix::fs::makedev(stat.stx_rdev_major, stat.stx_rdev_minor) as _;
+        raw.st_atime = stat.stx_atime.tv_sec as _;
+        raw.st_atime_nsec = stat.stx_atime.tv_nsec as _;
+        raw.st_mtime = stat.stx_mtime.tv_sec as _;
+        raw.st_mtime_nsec = stat.stx_mtime.tv_nsec as _;
+        raw.st_ctime = stat.stx_ctime.tv_sec as _;
+        raw.st_ctime_nsec = stat.stx_ctime.tv_nsec as _;
+
+        let created = if stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0 {
+            unix_time(stat.stx_btime.tv_sec, stat.stx_btime.tv_nsec as i64).ok()
+        } else {
+            None
+        };
         Ok(Self {
-            mode: stat.st_mode as u32,
-            len: u64::try_from(stat.st_size)
-                .map_err(|_| io::Error::other("negative file length"))?,
-            dev: stat.st_dev as u64,
-            ino: stat.st_ino as u64,
-            nlink: stat.st_nlink as u64,
-            uid: stat.st_uid,
-            gid: stat.st_gid,
-            rdev: stat.st_rdev as u64,
-            atime: stat.st_atime as i64,
-            atime_nsec: stat.st_atime_nsec as i64,
-            mtime: stat.st_mtime as i64,
-            mtime_nsec: stat.st_mtime_nsec as i64,
-            ctime: stat.st_ctime as i64,
-            ctime_nsec: stat.st_ctime_nsec as i64,
-            created: None,
-        })
-    }
-    #[cfg(target_os = "macos")]
-    pub(super) fn from_stat(stat: libc::stat) -> io::Result<Self> {
-        Ok(Self {
-            mode: u32::from(stat.st_mode),
-            len: u64::try_from(stat.st_size)
-                .map_err(|_| io::Error::other("negative file length"))?,
-            dev: stat.st_dev as u64,
-            ino: stat.st_ino,
-            nlink: u64::from(stat.st_nlink),
-            uid: stat.st_uid,
-            gid: stat.st_gid,
-            rdev: stat.st_rdev as u64,
-            atime: stat.st_atime,
-            atime_nsec: stat.st_atime_nsec,
-            mtime: stat.st_mtime,
-            mtime_nsec: stat.st_mtime_nsec,
-            ctime: stat.st_ctime,
-            ctime_nsec: stat.st_ctime_nsec,
-            created: unix_time(stat.st_birthtime, stat.st_birthtime_nsec).ok(),
+            raw,
+            len: stat.stx_size,
+            created,
         })
     }
 }
+#[cfg(unix)]
+pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::SystemTime> {
+    let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
+    let magnitude = nanos.unsigned_abs();
+    let duration = std::time::Duration::new(
+        u64::try_from(magnitude / 1_000_000_000)
+            .map_err(|_| io::Error::other("timestamp overflow"))?,
+        (magnitude % 1_000_000_000) as u32,
+    );
+    let value = if nanos < 0 {
+        std::time::UNIX_EPOCH.checked_sub(duration)
+    } else {
+        std::time::UNIX_EPOCH.checked_add(duration)
+    };
+    value
+        .map(cap_std::time::SystemTime::from_std)
+        .ok_or_else(|| io::Error::other("timestamp overflow"))
+}
 
-/// One object's kind, size, times, attributes, and identity, read without following its name's final link.
+/// One object's Windows file-record metadata.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug)]
 pub struct HostStat {
-    pub(super) symlink: bool,
-    pub(super) len: u64,
-    pub(super) attributes: u32,
-    pub(super) creation_time: u64,
-    pub(super) last_access_time: u64,
-    pub(super) last_write_time: u64,
-    pub(super) volume_serial_number: u32,
-    pub(super) file_index: u64,
-    pub(super) number_of_links: u32,
+    raw: windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION,
+    volume_serial_number: u32,
 }
-
 #[cfg(windows)]
 impl HostStat {
     pub(super) fn from_stat_information(
-        information: &windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION,
+        raw: &windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION,
         volume_serial_number: u32,
     ) -> io::Result<Self> {
-        let unsigned =
-            |value: i64| u64::try_from(value).map_err(|_| io::Error::other("negative stat field"));
+        for field in [
+            raw.EndOfFile,
+            raw.CreationTime,
+            raw.LastAccessTime,
+            raw.LastWriteTime,
+        ] {
+            u64::try_from(field).map_err(|_| io::Error::other("negative stat field"))?;
+        }
         Ok(Self {
-            symlink: matches!(information.ReparseTag, 0xA000_0003 | 0xA000_000C),
-            len: unsigned(information.EndOfFile)?,
-            attributes: information.FileAttributes,
-            creation_time: unsigned(information.CreationTime)?,
-            last_access_time: unsigned(information.LastAccessTime)?,
-            last_write_time: unsigned(information.LastWriteTime)?,
+            raw: *raw,
             volume_serial_number,
-            file_index: information.FileId as u64,
-            number_of_links: information.NumberOfLinks,
         })
     }
-    #[must_use]
-    pub const fn file_type(&self) -> HostFileType {
-        HostFileType(if self.symlink {
-            0o120000
-        } else if self.attributes & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0
-            != 0
-        {
-            0o040000
-        } else {
-            0o100000
-        })
+    pub fn file_type(&self) -> HostFileType {
+        HostFileType(
+            if matches!(self.raw.ReparseTag, 0xA000_0003 | 0xA000_000C) {
+                0o120000
+            } else if self.raw.FileAttributes
+                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0
+                != 0
+            {
+                0o040000
+            } else {
+                0o100000
+            },
+        )
     }
-    #[must_use]
     pub fn is_dir(&self) -> bool {
         self.file_type().is_dir()
     }
-    #[must_use]
-    #[allow(
-        clippy::len_without_is_empty,
-        reason = "mirrors Metadata::len: the byte length of the named object"
-    )]
     pub const fn len(&self) -> u64 {
-        self.len
+        self.raw.EndOfFile as u64
     }
-    #[must_use]
     pub const fn file_attributes(&self) -> u32 {
-        self.attributes
+        self.raw.FileAttributes
     }
-    #[must_use]
     pub const fn creation_time(&self) -> u64 {
-        self.creation_time
+        self.raw.CreationTime as u64
     }
-    #[must_use]
     pub const fn last_write_time(&self) -> u64 {
-        self.last_write_time
+        self.raw.LastWriteTime as u64
     }
-    #[must_use]
     pub const fn volume_serial_number(&self) -> u32 {
         self.volume_serial_number
     }
-    #[must_use]
     pub const fn file_index(&self) -> u64 {
-        self.file_index
+        self.raw.FileId as u64
     }
-    /// How many names the file record has, which the file record keeps exact for every one of them.
-    #[must_use]
     pub const fn nlink(&self) -> u64 {
-        self.number_of_links as u64
+        self.raw.NumberOfLinks as u64
     }
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
-        Ok(windows_time(self.creation_time))
+        Ok(windows_time(self.creation_time()))
     }
     pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
-        Ok(windows_time(self.last_write_time))
+        Ok(windows_time(self.last_write_time()))
     }
     pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
-        Ok(windows_time(self.last_access_time))
+        Ok(windows_time(self.raw.LastAccessTime as u64))
     }
 }
 
-/// `FILETIME` ticks (100 ns since 1601-01-01 UTC) at the Unix epoch.
+/// FILETIME ticks at the Unix epoch.
 #[cfg(windows)]
 pub(crate) const UNIX_EPOCH_FILETIME: i64 = 116_444_736_000_000_000;
 
-/// Unix nanoseconds one `FILETIME` names. Every tick is a whole number of
-/// nanoseconds, so this is exact or `None` beyond the `i64` nanosecond range.
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) fn filetime_to_unix_nanoseconds(ticks: i64) -> Option<i64> {
     ticks.checked_sub(UNIX_EPOCH_FILETIME)?.checked_mul(100)
 }
 
-/// The `FILETIME` tick containing one Unix-nanosecond instant: the instant
-/// rounded toward the past, so ordering is preserved, including before 1970.
-/// It never overflows, because `i64` nanoseconds span far fewer ticks than
-/// `i64`. A writer that must reproduce an instant exactly rejects
-/// `nanoseconds % 100 != 0` first.
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) fn unix_nanoseconds_to_filetime(nanoseconds: i64) -> i64 {
     nanoseconds.div_euclid(100) + UNIX_EPOCH_FILETIME
 }
 
-/// The instant one `FILETIME` names, as the standard library reads it.
 #[cfg(windows)]
 pub(super) fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
     const UNIX_EPOCH_TICKS: u64 = UNIX_EPOCH_FILETIME.unsigned_abs();
@@ -314,27 +286,25 @@ pub struct HostListedEntry {
     pub name: Vec<u16>,
     pub stat: Option<HostStat>,
 }
-
 impl HostListedEntry {
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         #[cfg(unix)]
         {
-            self.name.as_encoded_bytes().len() as u64
+            self.name.capacity() as u64
         }
         #[cfg(windows)]
         {
-            self.name.len() as u64 * 2
+            self.name.capacity() as u64 * 2
         }
     }
 }
-
 pub(crate) fn stat_file<W: NativeHostWork>(
     file: &File,
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
     #[cfg(unix)]
     {
-        stat_unix_fd_at(file.as_raw_fd(), OsStr::new(""), true, work)
+        stat_at(file.as_raw_fd(), c"", work)
     }
     #[cfg(windows)]
     {
@@ -344,7 +314,6 @@ pub(crate) fn stat_file<W: NativeHostWork>(
         stat_windows_file(file, volume, work)
     }
 }
-
 impl HostStat {
     pub(crate) fn identity(&self) -> NativeRootIdentity {
         #[cfg(unix)]
@@ -357,7 +326,7 @@ impl HostStat {
         #[cfg(windows)]
         {
             NativeRootIdentity {
-                device: u64::from(self.volume_serial_number()),
+                device: self.volume_serial_number() as u64,
                 object: self.file_index(),
             }
         }

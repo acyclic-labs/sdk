@@ -8,7 +8,6 @@ use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters,
 };
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, OperationId, Outcome, Result, TaskId,
     durable_host::TaskJournalOwner,
@@ -75,7 +74,7 @@ async fn authenticate<P: StreamProvider>(
         });
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok(owner.task_id())
 }
@@ -113,7 +112,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     )
     .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok((command.0, command.1))
 }
@@ -210,7 +209,7 @@ where
         });
     }
     let bytes = context
-        .read_file_with_native_work(&command.payload, work)
+        .read_file(&command.payload, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
         .await?;
     let payload = decode::<MailSendTaskCommand>(bytes.as_ref(), work)?;
     drop(bytes);

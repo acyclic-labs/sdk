@@ -168,6 +168,7 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    let mut work = receipt.custody.work().clone();
     let cancellation = receipt
         .custody
         .work()
@@ -263,7 +264,7 @@ where
                     .lookup_no_follow(path, remaining, cancellation)
                     .await
                     .map_err(|failure| receipt.engine_failure(failure))?;
-                receipt.run(|work| work.merge(lookup.work))?;
+                work.merge(lookup.work).map_err(MaterializeError::from)?;
                 lookup.value.record
             }
             GenerationSource::Original(reader) => {
@@ -275,26 +276,27 @@ where
         }
         .ok_or(MaterializeError::MissingPath)?;
         generation_action(&mut before_effect, NativeMaterializationActionPhase::Before).await?;
-        receipt.run(|work| {
-            #[cfg(unix)]
-            if let Some(parent) = super::work::host_path(&host_path.0)
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-            {
-                host_root.0.create_dir_all_held(parent, work)?;
-            }
-            #[cfg(windows)]
-            if let Some(separator) = host_path
+        #[cfg(unix)]
+        if let Some(parent) = super::work::host_path(&host_path.0)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+        {
+            host_root
                 .0
-                .iter()
-                .rposition(|unit| *unit == u16::from(b'\\'))
-            {
-                host_root
-                    .0
-                    .create_dir_all_held_wide(&host_path.0[..separator], work)?;
-            }
-            Ok(())
-        })?;
+                .create_dir_all_held(parent, &mut work)
+                .map_err(MaterializeError::from)?;
+        }
+        #[cfg(windows)]
+        if let Some(separator) = host_path
+            .0
+            .iter()
+            .rposition(|unit| *unit == u16::from(b'\\'))
+        {
+            host_root
+                .0
+                .create_dir_all_held(&host_path.0[..separator], &mut work)
+                .map_err(MaterializeError::from)?;
+        }
         generation_action(
             &mut before_effect,
             NativeMaterializationActionPhase::Completed,
@@ -318,11 +320,7 @@ where
             path,
             &host_path,
             directory,
-            record.file_id,
-            record.kind,
-            record.payload,
-            #[cfg(any(target_os = "macos", windows))]
-            record.metadata,
+            &record,
             options,
             cancellation,
             &mut known_files,
@@ -361,7 +359,7 @@ where
                         )
                         .await
                         .map_err(|failure| receipt.engine_failure(failure))?;
-                    receipt.run(|work| work.merge(page.work))?;
+                    work.merge(page.work).map_err(MaterializeError::from)?;
                     page.value
                 }
                 GenerationSource::Original(reader) => {
@@ -423,11 +421,7 @@ where
                     child,
                     &child_host,
                     selected_directory.clone(),
-                    entry.record.file_id,
-                    entry.record.kind,
-                    entry.record.payload,
-                    #[cfg(any(target_os = "macos", windows))]
-                    entry.record.metadata,
+                    &entry.record,
                     options,
                     cancellation,
                     &mut known_files,
@@ -729,11 +723,19 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             };
             let stage_identity = stage_root.identity();
             drop(stage_root);
-            let cleanup = stage_owner
-                .remove_identity(&stage_name.0, stage_identity, work)
-                .and_then(|()| {
-                    crate::native_host::sync_directory_held(&stage_owner.directory, work)
-                });
+            let cleanup = {
+                #[cfg(unix)]
+                {
+                    stage_owner.remove(&stage_name.0, Some(stage_identity), work)
+                }
+                #[cfg(windows)]
+                {
+                    crate::native_host::with_wide_path(&stage_name.0, work, |path, work| {
+                        stage_owner.remove(path, Some(stage_identity), work)
+                    })
+                }
+            }
+            .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
             match (result, cleanup) {
                 (Ok(value), Ok(())) => Ok(value),
                 (Ok(_), Err(error)) => Err(restore_demand_error(error)),
