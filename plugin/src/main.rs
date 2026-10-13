@@ -54,7 +54,7 @@ mod util;
 
 use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::demand::{
-    DemandDirectoryObserver, DemandSource, FilteredDemandSource, SourceReference,
+    DemandDirectoryObserver, DemandSource, SourceReference,
 };
 use acyclic_fs::kernel::{FileKind, NamespacePath};
 use acyclic_fs::model::{

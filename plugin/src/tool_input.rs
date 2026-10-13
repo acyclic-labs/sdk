@@ -458,7 +458,7 @@ pub(crate) fn verify_native_root_identity(
             path.display()
         ));
     }
-    let observed = source.inner().root_identity().to_bytes();
+    let observed = source.root_identity().to_bytes();
     if observed != expected {
         return Err(format!(
             "native root identity changed for {}; refusing to reuse its workspace",
@@ -471,8 +471,14 @@ pub(crate) fn verify_native_root_identity(
 pub(crate) async fn merge_drivers_for(
     workspace: &LocalLazyWorkspace,
 ) -> Result<Arc<MergeDriverRegistry>, String> {
-    let attributes = match workspace.read("/.gitattributes", 1024 * 1024).await {
-        Ok(bytes) => String::from_utf8(bytes.to_vec())
+    let attributes = match workspace.read("/.gitattributes", 1024 * 1024,
+        &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: acyclic_fs::WorkCounters::UNCHARGED,
+            budget: WorkBudget::UNBOUNDED,
+            cancellation: &CancellationToken::new(),
+        }).await {
+        Ok(chunk) => String::from_utf8(chunk.bytes.to_vec())
             .map_err(|_| ".gitattributes must be UTF-8".to_owned())?,
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
         Err(error) => return Err(display(error)),

@@ -72,6 +72,7 @@ pub(crate) fn write_mcp_ownership(
         &temporary,
         path,
         acyclic_native_runtime::RenameMode::Replace,
+        None,
     )
     .map_err(display)
 }

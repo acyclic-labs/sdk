@@ -14,7 +14,7 @@ pub(crate) struct ServiceResources {
     pub(crate) shared_roots: SharedRootRegistry,
     pub(crate) binary_identity: String,
     pub(crate) instance_id: String,
-    pub(crate) private_state_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
+    pub(crate) private_state_root: PathBuf,
 }
 
 pub(crate) type ServiceConfiguredInfrastructure = (LocalFs, LocalCoreStateStore, String, String);
@@ -46,11 +46,10 @@ impl ServiceResources {
     pub(crate) async fn open(
         data: PathBuf,
         configured: ServiceConfiguredInfrastructure,
-        private_state_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
+        private_state_root: PathBuf,
         original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, BTreeMap<String, SessionController>)> {
-        original_bootstrap_work
-            .create_directories_with_native_work(&private_state_root, Path::new("sessions"))?;
+        fs::create_dir_all(data.join("sessions")).map_err(|error| Error::Storage(display(error)))?;
         let (fs, store, binary_identity, instance_id) = configured;
         let resources = Self {
             store,
@@ -65,69 +64,30 @@ impl ServiceResources {
             .shared_roots
             .collection
             .start(resources.fs.clone(), resources.store.clone());
-        let mut entries = original_bootstrap_work.read_private_state_directory_with_native_work(
-            &resources.private_state_root,
-            Path::new("sessions"),
-        )?;
-        for entry in entries.0.iter_mut().filter(|entry| entry.is_directory) {
-            let relative = original_bootstrap_work
-                .path(Path::new("sessions"), Some(Path::new(&entry.name)))?;
-            let mut modified: Option<std::time::SystemTime> = None;
-            for slot in ADAPTER_STATE_SLOTS {
-                let path = original_bootstrap_work.path(&relative.0, Some(Path::new(slot)))?;
-                match original_bootstrap_work
-                    .state_path_modified_with_native_work(&resources.private_state_root, &path.0)
-                {
-                    Ok(Some(value)) => {
-                        modified = Some(modified.map_or(value, |old| old.max(value)))
-                    }
-                    Ok(None) | Err(acyclic_fs::NativeTreeMaterializationError::Io(_)) => {}
-                    Err(cause) => {
-                        return Err(Error::NativeWork {
-                            cause,
-                            custody: None,
-                        });
-                    }
-                }
-            }
-            entry.modified = modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        }
-        original_bootstrap_work.sort_by_with_native_work(&mut entries.0, |left, right| {
-            if left.is_directory != right.is_directory {
-                return Ok(!left.is_directory);
-            }
-            if !left.is_directory {
-                return Ok(false);
-            }
-            let order = left.modified.cmp(&right.modified);
-            if order != std::cmp::Ordering::Equal {
-                return Ok(order == std::cmp::Ordering::Less);
-            }
-            Ok(left.name < right.name)
-        })?;
+        let mut entries = fs::read_dir(resources.data.join("sessions"))
+            .map_err(|error| Error::Storage(display(error)))?
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|error| Error::Storage(display(error)))?;
+        entries.sort_by_key(|entry| {
+            let modified = ADAPTER_STATE_SLOTS.iter().filter_map(|slot| {
+                fs::metadata(entry.path().join(slot)).ok()?.modified().ok()
+            }).max().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            (modified, entry.file_name())
+        });
         let mut sessions = BTreeMap::new();
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
-        for row in entries.0.iter().filter(|entry| entry.is_directory) {
-            let relative =
-                original_bootstrap_work.path(Path::new("sessions"), Some(Path::new(&row.name)))?;
-            let (directory_custody, entry) = {
-                let (path, custody) =
-                    original_bootstrap_work.path(&resources.data, Some(&relative.0))?;
-                (custody, path)
-            };
-            let loaded = crate::adapter_state::load_state_with_native_work(
-                &resources.private_state_root,
-                &relative.0,
-                original_bootstrap_work,
-            )?;
-            let state = &loaded.0.0;
+        for row in entries {
+            if !row.file_type().map_err(|error| Error::Storage(display(error)))?.is_dir() {
+                continue;
+            }
+            let entry = row.path();
+            let (state, _) = crate::adapter_state::load_state(&entry).map_err(Error::Storage)?;
             if !state.active {
                 continue;
             }
             if matches!(state.task_binding, PluginTaskBinding::Pi(_)) {
                 let control = SessionController::open(entry, &resources, original_bootstrap_work)
-                    .await?
-                    .retain_original_input(directory_custody)?;
+                    .await?;
                 let (session_id, key_custody) =
                     original_bootstrap_work.display(&state.root_session_id)?;
                 let control = control.retain_original_input(key_custody)?;
@@ -168,8 +128,7 @@ impl ServiceResources {
                 retained_sources.extend(roots);
                 let (session_id, key_custody) =
                     original_bootstrap_work.display(&control.state.root_session_id)?;
-                let control = SessionController::from(control)
-                    .retain_original_input(directory_custody)?
+                let control = SessionController::HostManaged(Box::new(control))
                     .retain_original_input(key_custody)?;
                 sessions.insert(session_id, control);
             }
