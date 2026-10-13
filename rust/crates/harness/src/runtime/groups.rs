@@ -9,22 +9,6 @@ pub struct RuntimeGroup {
     pub(super) durable_parent: Option<TaskId>,
 }
 
-/// Ordered immutable batch selection.
-pub struct Batch<I> {
-    /// Caller-retained identity allocated before dispatch.
-    pub id: BatchId,
-    /// Complete ordered input list.
-    pub inputs: Vec<I>,
-}
-
-impl<I> Batch<I> {
-    /// Creates an ordered batch with a stable identity.
-    #[must_use]
-    pub fn new(id: BatchId, inputs: Vec<I>) -> Self {
-        Self { id, inputs }
-    }
-}
-
 /// One unambiguous slot in an admitted batch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputKey {
@@ -513,22 +497,13 @@ impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
                 break;
             }
         }
-        let entries = slots;
         BatchOutcome {
             group_id,
             batch_id,
-            entries,
+            entries: slots,
             cancellation,
         }
     }
-}
-
-/// A typed ordered map cannot silently discard a rejected admission, failed child, or unknown outcome.
-pub enum RuntimeMap<O> {
-    /// Every input admitted and completed successfully, in input order.
-    Complete(Vec<O>),
-    /// One entry per input, including admission or observation errors.
-    Incomplete(Vec<Result<Outcome<O>>>),
 }
 
 impl RuntimeGroup {
@@ -582,19 +557,19 @@ impl RuntimeGroup {
         admissions
     }
 
-    /// Admits all independent inputs before awaiting any result, then returns either ordered outputs or every input's exact outcome.
+    /// Admits every input before observing ordered outcomes, including failures.
     pub async fn map<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
         inputs: impl IntoIterator<Item = I>,
-    ) -> RuntimeMap<O>
+    ) -> Vec<Result<Outcome<O>>>
     where
         I: Serialize + Send + 'static,
         O: Serialize + DeserializeOwned + Send + 'static,
     {
         let admissions = self.spawn_many(definition, inputs).await;
         let concurrency = admissions.len().clamp(1, 64);
-        let outcomes = stream::iter(admissions)
+        stream::iter(admissions)
             .map(|admission| async move {
                 match admission {
                     Ok(task) => task.result().await,
@@ -602,32 +577,8 @@ impl RuntimeGroup {
                 }
             })
             .buffered(concurrency)
-            .collect::<Vec<_>>()
-            .await;
-        if outcomes
-            .iter()
-            .all(|entry| matches!(entry, Ok(Outcome::Succeeded(_))))
-        {
-            RuntimeMap::Complete(
-                outcomes
-                    .into_iter()
-                    .map(|entry| match entry {
-                        Ok(Outcome::Succeeded(value)) => value,
-                        _ => unreachable!("all outcomes were successful"),
-                    })
-                    .collect(),
-            )
-        } else {
-            RuntimeMap::Incomplete(outcomes)
-        }
-    }
-
-    /// Observes admitted members in input order.
-    pub async fn join<O: DeserializeOwned + Send + 'static>(
-        &self,
-        tasks: Vec<RuntimeTask<O>>,
-    ) -> Vec<Result<Outcome<O>>> {
-        join_runtime(tasks).await
+            .collect()
+            .await
     }
 
     /// Collects the first `required` successes, or reports all non-successes.
@@ -635,7 +586,7 @@ impl RuntimeGroup {
         &self,
         tasks: Vec<RuntimeTask<O>>,
         required: usize,
-    ) -> std::result::Result<Vec<O>, QuorumFailure<O>> {
+    ) -> std::result::Result<Vec<O>, Vec<(String, Result<Outcome<O>>)>> {
         if required == 0 {
             return Ok(Vec::new());
         }
@@ -647,28 +598,23 @@ impl RuntimeGroup {
             })
             .buffer_unordered(concurrency);
         futures::pin_mut!(completions);
-        let mut successes = Vec::new();
-        let mut others = Vec::new();
-        while let Some((id, result)) = completions.next().await {
-            match result {
-                Ok(Outcome::Succeeded(value)) => {
-                    successes.push((id, value));
-                    if successes.len() == required {
-                        return Ok(successes.into_iter().map(|(_, value)| value).collect());
-                    }
-                }
-                result => others.push((id, result)),
+        let mut outcomes = Vec::new();
+        let mut successes = 0;
+        while let Some(outcome) = completions.next().await {
+            if matches!(&outcome.1, Ok(Outcome::Succeeded(_))) {
+                successes += 1;
+            }
+            outcomes.push(outcome);
+            if successes == required {
+                return Ok(outcomes
+                    .into_iter()
+                    .filter_map(|(_, result)| match result {
+                        Ok(Outcome::Succeeded(value)) => Some(value),
+                        _ => None,
+                    })
+                    .collect());
             }
         }
-        Err(QuorumFailure {
-            required,
-            successes,
-            others,
-        })
-    }
-
-    /// Closes admission while already accepted members and descendants drain.
-    pub fn close(&self) {
-        self.group.close();
+        Err(outcomes)
     }
 }

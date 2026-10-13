@@ -192,7 +192,7 @@ impl TaskContext {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
                         let (value, custody) = self
-                            .interact_with_native_work_and_router(
+                            .route_native_interaction(
                                 approval_id,
                                 request,
                                 custody.expect("native approval retains its prompt"),
