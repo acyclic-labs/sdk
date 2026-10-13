@@ -191,23 +191,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             .live_bytes()
             .checked_sub(baseline)
             .ok_or(crate::WorkError::Overflow)?;
-        let ceiling = acyclic_stream::MAX_COMMAND_BYTES as u64;
-        work.admit(WorkCounters {
-            backend_read_operations: u64::from(!work.is_native()),
-            authority_records_read: (acyclic_stream::MAX_ITEMS as u64)
-                .checked_mul(acyclic_stream::MAX_ITEMS as u64)
-                .ok_or(crate::WorkError::Overflow)?,
-            authority_bytes_read: ceiling,
-            peak_allocation_bytes: if work.is_native() {
-                0
-            } else {
-                work.allocations
-                    .live_bytes()
-                    .checked_add(ceiling)
-                    .ok_or(crate::WorkError::Overflow)?
-            },
-            ..WorkCounters::UNCHARGED
-        })?;
         let result = self.authority_inspect(key, work).await;
         let mut actual = WorkCounters::UNCHARGED;
         if let Ok((Some(observation), _)) = &result
@@ -233,9 +216,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
         work.charge(actual)?;
         let output = result?;
-        // The opaque envelope bound includes a retained retry key, regardless of sharing.
+        if actual.authority_bytes_read > acyclic_stream::MAX_COMMAND_BYTES as u64 {
+            return Err(authority_corrupt("publication observation exceeds the command bound", work));
+        }
         if output.0.is_some() {
-            work.hold_opaque(ceiling)?;
+            work.hold_opaque(actual.authority_bytes_read)?;
         }
         work.release(key_bytes)?;
         Ok(output)
@@ -310,7 +295,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let (records, epochs) = tails.ok_or_else(unavailable)?;
         drop(candidate);
         drop(observed);
-        work.release(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
         work.release_request()?;
         let epoch = self
             .read_at(authority_id, "/epochs", epochs - 1, work, |record, work| {
