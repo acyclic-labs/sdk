@@ -1,12 +1,14 @@
 use super::*;
 
 struct OpaqueRouter;
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl InteractionRouter for OpaqueRouter {
-    fn route<'a>(
-        &'a self,
+    async fn route(
+        &self,
         _: OperationId,
         _: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
+    ) -> Result<InteractionOutcome> {
         panic!("ordinary route must not run");
     }
 }

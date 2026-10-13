@@ -1,12 +1,12 @@
 use super::*;
+
+fn unbound(reason: &str) -> Error {
+    Error::Unsupported(reason.into())
+}
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::NativeFutureBundle;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
-
-fn unbound<'a, T>(reason: &'static str) -> BoxFuture<'a, Result<T>> {
-    Box::pin(async move { Err(Error::Unsupported(reason.into())) })
-}
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_unbound(reason: &'static str) -> Error {
@@ -17,6 +17,8 @@ fn native_unbound(reason: &'static str) -> Error {
 }
 
 /// Provider boundary for stable durable admission and outcome observation.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
     /// Native execution support is an allocation-free preflight, not authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -25,15 +27,15 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
     }
 
     /// Charges one exact durable model attempt under the current task owner.
-    fn claim_model_dispatch<'a>(
-        &'a self,
+    async fn claim_model_dispatch(
+        &self,
         _task_id: TaskId,
         _attempt_id: OperationId,
         _step: u32,
         _request_digest: [u8; 32],
         _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable model accounting is not bound")
+    ) -> Result<()> {
+        Err(unbound("durable model accounting is not bound"))
     }
 
     /// Claims the same durable model attempt on its original native ledger.
@@ -54,6 +56,8 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
 }
 
 /// Owner-bound durable task state, independently replaceable from admission and execution.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     /// Verifies the current dispatch owner on caller IO.
     fn verify_dispatch_owner<'a>(
@@ -108,10 +112,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Reads the complete immutable admission for cross-provider attestation.
-    fn observe_admission<'a>(
-        &'a self,
-        task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>>;
+    async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord>;
 
     /// Native admission observation must preserve its original metadata custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -125,21 +126,21 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Discovers direct owner-retained children with revision-checked pagination.
-    fn children<'a>(
-        &'a self,
+    async fn children(
+        &self,
         _parent: TaskId,
         _expected_revision: Option<u64>,
         _after_slot: Option<String>,
         _maximum: usize,
-    ) -> BoxFuture<'a, Result<TaskChildrenPage>> {
-        unbound("durable task hierarchy is not bound")
+    ) -> Result<TaskChildrenPage> {
+        Err(unbound("durable task hierarchy is not bound"))
     }
     /// Authenticates and reconstructs the admitted scope after process restart.
-    fn resume_scope<'a>(
-        &'a self,
+    async fn resume_scope(
+        &self,
         task_id: TaskId,
         operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>>;
+    ) -> Result<RuntimeScope>;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Restores the admitted scope on the original work.
@@ -155,7 +156,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     }
 
     /// Observes a terminal result or ordinary pending state without dispatch.
-    fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+    async fn outcome(&self, task_id: TaskId) -> Result<Option<Outcome<Value>>>;
 
     /// Native terminal observation never re-executes the admitted task.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -169,28 +170,26 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Waits for a terminal result; providers may override polling.
-    fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
-        Box::pin(async move {
-            let mut delay_ms = 50_u64;
-            loop {
-                if let Some(outcome) = self.outcome(task_id).await? {
-                    return Ok(outcome);
-                }
-                crate::live::sleep_millis(delay_ms).await?;
-                delay_ms = delay_ms.saturating_mul(2).min(1_000);
+    async fn wait_outcome(&self, task_id: TaskId) -> Result<Outcome<Value>> {
+        let mut delay_ms = 50_u64;
+        loop {
+            if let Some(outcome) = self.outcome(task_id).await? {
+                return Ok(outcome);
             }
-        })
+            crate::live::sleep_millis(delay_ms).await?;
+            delay_ms = delay_ms.saturating_mul(2).min(1_000);
+        }
     }
     /// Requests cancellation without claiming a terminal result.
-    fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>>;
+    async fn cancel(&self, task_id: TaskId) -> Result<()>;
     /// Routes an addressable interaction through owner-retained state.
-    fn interact<'a>(
-        &'a self,
+    async fn interact(
+        &self,
         _task_id: TaskId,
         _operation_id: OperationId,
         _interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        unbound("durable interaction routing is not bound")
+    ) -> Result<InteractionOutcome> {
+        Err(unbound("durable interaction routing is not bound"))
     }
 
     /// Pure discovery before request validation or future construction.
@@ -217,44 +216,41 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Publishes one idempotent ref-only mailbox item.
-    fn send<'a>(
-        &'a self,
+    async fn send(
+        &self,
         _sender: TaskId,
         _recipient: TaskId,
         _message_id: OperationId,
         _payload: FileRef,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable task mail is not bound")
+    ) -> Result<()> {
+        Err(unbound("durable task mail is not bound"))
     }
     /// Reads a bounded ordered inbox page.
-    fn inbox<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _after: u64,
-        _limit: usize,
-    ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
-        unbound("durable task inbox is not bound")
+    async fn inbox(&self, _task_id: TaskId, _after: u64, _limit: usize) -> Result<Vec<InboxItem>> {
+        Err(unbound("durable task inbox is not bound"))
     }
     /// Retains or reconciles an absolute timer wait.
-    fn wait_until<'a>(
-        &'a self,
+    async fn wait_until(
+        &self,
         _task_id: TaskId,
         _operation_id: OperationId,
         _deadline_unix_ms: u64,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable timers are not bound")
+    ) -> Result<()> {
+        Err(unbound("durable timers are not bound"))
     }
     /// Observes one recorded effect without redispatching it.
-    fn reconcile_effect<'a>(
-        &'a self,
+    async fn reconcile_effect(
+        &self,
         _task_id: TaskId,
         _effect_id: EffectId,
-    ) -> BoxFuture<'a, Result<crate::core::EffectStatus>> {
-        unbound("durable effect reconciliation is not bound")
+    ) -> Result<crate::core::EffectStatus> {
+        Err(unbound("durable effect reconciliation is not bound"))
     }
 }
 
 /// Independently replaceable durable admission boundary.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
@@ -283,17 +279,14 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Publishes or reconciles one complete caller-identified admission.
-    fn admit<'a>(
-        &'a self,
-        request: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>>;
+    async fn admit(&self, request: TaskAdmissionRecord) -> Result<Admission<TaskId>>;
     /// Publishes a child only while this exact original parent lease is current.
-    fn admit_owned<'a>(
-        &'a self,
+    async fn admit_owned(
+        &self,
         _request: TaskAdmissionRecord,
         _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        unbound("owned child spawner is not bound")
+    ) -> Result<Admission<TaskId>> {
+        Err(unbound("owned child spawner is not bound"))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -311,11 +304,11 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Observes one possibly lost admission without resubmission.
-    fn reconcile_admission<'a>(
-        &'a self,
+    async fn reconcile_admission(
+        &self,
         _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        unbound("durable admission reconciliation is not bound")
+    ) -> Result<Option<(TaskId, TaskAdmissionRecord)>> {
+        Err(unbound("durable admission reconciliation is not bound"))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -331,32 +324,23 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Publishes the immutable request before any indexed child admission.
-    fn admit_batch<'a>(
-        &'a self,
-        _request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Vec<Admission<TaskId>>>> {
-        unbound("durable batch admission is not bound")
+    async fn admit_batch(&self, _request: DurableBatchRequest) -> Result<Vec<Admission<TaskId>>> {
+        Err(unbound("durable batch admission is not bound"))
     }
     /// Observes the original batch and current indexed admissions only.
-    fn reconcile_batch<'a>(
-        &'a self,
+    async fn reconcile_batch(
+        &self,
         _request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Option<Vec<Admission<TaskId>>>>> {
-        unbound("durable batch reconciliation is not bound")
+    ) -> Result<Option<Vec<Admission<TaskId>>>> {
+        Err(unbound("durable batch reconciliation is not bound"))
     }
     /// Loads a retained request by identity after the caller loses its inputs.
-    fn load_batch<'a>(
-        &'a self,
-        _batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<DurableBatchRequest>>> {
-        unbound("durable batch lookup is not bound")
+    async fn load_batch(&self, _batch_id: BatchId) -> Result<Option<DurableBatchRequest>> {
+        Err(unbound("durable batch lookup is not bound"))
     }
     /// Retains an idempotent cancellation declaration at the batch owner.
-    fn cancel_batch<'a>(
-        &'a self,
-        _batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<BatchCancellationReport>>> {
-        unbound("durable batch cancellation is not bound")
+    async fn cancel_batch(&self, _batch_id: BatchId) -> Result<Option<BatchCancellationReport>> {
+        Err(unbound("durable batch cancellation is not bound"))
     }
     /// Whether this spawner can retain a cancellation declaration.
     fn supports_batch_cancellation(&self) -> bool {
@@ -365,6 +349,8 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
 }
 
 /// One replaceable execution route.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Immutable provider implementation pinned in every admitted placement.
     fn identity(&self) -> ComponentIdentity;
@@ -383,29 +369,27 @@ pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Owner-bound observation and cancellation for the same route.
     fn state(&self) -> Arc<dyn TaskStateProvider>;
     /// Read-only qualification of one exact admitted task and its accessible input.
-    fn qualify<'a>(
-        &'a self,
-        request: &'a TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<ExecutionPlacement>>;
+    async fn qualify(&self, request: &TaskAdmissionRecord) -> Result<ExecutionPlacement>;
 }
 
 /// Replaceable owner-bound observer for an already planned provider effect.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
     /// Returns the latest attested status after querying the pinned attempt.
-    fn reconcile<'a>(
-        &'a self,
-        effect_id: EffectId,
-    ) -> BoxFuture<'a, Result<crate::core::EffectStatus>>;
+    async fn reconcile(&self, effect_id: EffectId) -> Result<crate::core::EffectStatus>;
 }
 
 /// Replaceable local interaction router.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
     /// Routes an interaction while retaining its payloads in the provider.
-    fn route<'a>(
-        &'a self,
+    async fn route(
+        &self,
         operation_id: OperationId,
         interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>>;
+    ) -> Result<InteractionOutcome>;
 
     /// Pure native support discovery, before building a callback future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -435,32 +419,30 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
 pub type InteractionInspection = Option<(InteractionTicket, Option<InteractionResolution>)>;
 
 /// Owner-mediated resolver for versioned questions and approvals.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait InteractionResolver: acyclic_stream::ProviderPlatform {
     /// Reads the admitted request and current decision before a CAS reply.
-    fn inspect<'a>(
-        &'a self,
-        scope: Scope,
-        id: InteractionId,
-    ) -> BoxFuture<'a, Result<InteractionInspection>>;
+    async fn inspect(&self, scope: Scope, id: InteractionId) -> Result<InteractionInspection>;
 
     /// Stages and validates a question, choice, or form answer before CAS.
-    fn resolve_answer<'a>(
-        &'a self,
+    async fn resolve_answer(
+        &self,
         operation_id: OperationId,
         scope: Scope,
         id: InteractionId,
         expected_version: u64,
         response: InteractionResponse,
-    ) -> BoxFuture<'a, Result<ResolutionReceipt>>;
+    ) -> Result<ResolutionReceipt>;
 
     /// Accepts or declines only the ticket's pinned approval action.
-    fn resolve_approval<'a>(
-        &'a self,
+    async fn resolve_approval(
+        &self,
         operation_id: OperationId,
         scope: Scope,
         id: InteractionId,
         expected_version: u64,
         approved: bool,
         reason: Option<String>,
-    ) -> BoxFuture<'a, Result<ResolutionReceipt>>;
+    ) -> Result<ResolutionReceipt>;
 }

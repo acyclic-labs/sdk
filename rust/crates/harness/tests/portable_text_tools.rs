@@ -20,35 +20,32 @@ use std::sync::{
 
 struct ResumedScope(acyclic_harness::runtime::RuntimeScope);
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl acyclic_harness::runtime::TaskStateProvider for ResumedScope {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
         None
     }
-    fn observe_admission<'a>(
-        &'a self,
+    async fn observe_admission(
+        &self,
         _: acyclic_harness::TaskId,
-    ) -> BoxProviderFuture<'a, Result<acyclic_harness::runtime::TaskAdmissionRecord>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "fixture tests content authority, not task admission".into(),
-            ))
-        })
+    ) -> Result<acyclic_harness::runtime::TaskAdmissionRecord> {
+        Err(Error::Unsupported(
+            "fixture tests content authority, not task admission".into(),
+        ))
     }
-    fn resume_scope<'a>(
-        &'a self,
+    async fn resume_scope(
+        &self,
         _: acyclic_harness::TaskId,
         _: OperationId,
-    ) -> BoxProviderFuture<'a, Result<acyclic_harness::runtime::RuntimeScope>> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    ) -> Result<acyclic_harness::runtime::RuntimeScope> { Ok(self.0.clone())
     }
-    fn outcome<'a>(
-        &'a self,
+    async fn outcome(
+        &self,
         _: acyclic_harness::TaskId,
-    ) -> BoxProviderFuture<'a, Result<Option<acyclic_harness::Outcome<serde_json::Value>>>> {
-        Box::pin(async { Ok(None) })
+    ) -> Result<Option<acyclic_harness::Outcome<serde_json::Value>>> { Ok(None)
     }
-    fn cancel<'a>(&'a self, _: acyclic_harness::TaskId) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+    async fn cancel(&self, _: acyclic_harness::TaskId) -> Result<()> { Ok(())
     }
 }
 
