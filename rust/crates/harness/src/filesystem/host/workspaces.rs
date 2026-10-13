@@ -261,7 +261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if let Some(work) = io.original_native_work() {
                 break 'commit transaction.commit_with_native_work(None, acyclic_fs::PublicationPermit::Unrestricted, work, io.cancellation(), &mut native_before).await?;
             }
-            io.receive_content(transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), &mut |_| async move {
+            io.receive(transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), &mut |_| async move {
                 let result = match preparation {
                     Some(task) => task.verify(false, Some(io)).map_err(acyclic_fs::OperationFailure::before_work)?.await,
                     None => Ok(()),

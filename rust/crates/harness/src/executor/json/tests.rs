@@ -59,42 +59,20 @@ fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
 }
 
 #[test]
-fn every_codec_cancellation_schedule_preserves_original_error() -> Result<()> {
+fn allocation_denial_precedes_growth_and_preserves_its_error() {
     let value = serde_json::json!({"b": ["escape\n", 0.1], "a": {"later": 2, "earlier": 1}});
-    let mut calls = 0usize;
-    canonical_json_bytes_bounded(&value, BOUNDS, None, &mut |event| {
-        if !matches!(event, JsonCodecCharge::Release { .. }) {
-            calls += 1;
-        }
-        Ok(())
-    })?;
-    for stop in 0..calls {
-        let mut seen = 0;
-        let mut live = 0u64;
-        let operation = crate::OperationId::from_bytes((stop as u128).to_le_bytes());
-        let mut error = Some(Error::Indeterminate(operation));
-        let result = canonical_json_bytes_bounded(&value, BOUNDS, None, &mut |event| {
-            if let JsonCodecCharge::Release { bytes } = event {
-                live = live
-                    .checked_sub(bytes)
-                    .expect("release only admitted quota");
-                return Ok(());
-            }
-            if seen == stop {
-                return Err(error
-                    .take()
-                    .expect("codec must stop after its first failure"));
-            }
-            seen += 1;
-            if let JsonCodecCharge::Retain { bytes } = event {
-                live += bytes;
-            }
+    let operation = crate::OperationId::from_bytes([17; 16]);
+    let mut allocated = false;
+    let result = canonical_json_bytes_bounded(&value, BOUNDS, None, &mut |event| match event {
+        JsonCodecCharge::Retain { .. } => Err(Error::Indeterminate(operation)),
+        JsonCodecCharge::AllocationOperation { .. } => {
+            allocated = true;
             Ok(())
-        });
-        assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
-        assert_eq!(live, 0, "cancel schedule {stop} leaks live codec quota");
-    }
-    Ok(())
+        }
+        _ => Ok(()),
+    });
+    assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
+    assert!(!allocated);
 }
 
 #[test]

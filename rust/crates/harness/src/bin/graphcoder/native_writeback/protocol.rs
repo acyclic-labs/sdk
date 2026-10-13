@@ -59,62 +59,38 @@ pub(super) fn approval_operation(operation: OperationId) -> OperationId {
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
 }
-pub(super) fn publication_options(
-    binding: &NativePublicationConfig,
-) -> acyclic_fs::MaterializeOptions {
-    acyclic_fs::MaterializeOptions {
-        destination: binding.operation_directory.join("target"),
-        expected_root_identity: None,
-        maximum_directory_entries: binding.maximum_directory_entries,
-        maximum_extent_spans: binding.maximum_extent_spans,
-        transfer_bytes: binding.transfer_bytes,
+pub(super) fn publication_status(
+    original: Option<&MaterializationJournal>,
+    approval: Option<&(InteractionTicket, Option<InteractionResolution>)>,
+) -> &'static str {
+    let status = match original.map(|journal| journal.phase) {
+        Some(MaterializationPhase::Applied) => "applied",
+        Some(MaterializationPhase::Preparing | MaterializationPhase::Applying) => "recovering",
+        Some(MaterializationPhase::RollingBack | MaterializationPhase::RolledBack) => "rejected",
+        Some(MaterializationPhase::Prepared) => "pending",
+        None => "unopened",
+    };
+    match approval
+        .and_then(|(_, resolution)| resolution.as_ref())
+        .map(|resolution| &resolution.outcome)
+    {
+        Some(InteractionOutcome::Approved) if !matches!(status, "applied" | "recovering") => {
+            "approved"
+        }
+        Some(InteractionOutcome::Indeterminate { .. }) => "pending",
+        Some(InteractionOutcome::Approved) | None => status,
+        _ => "rejected",
     }
 }
-pub(super) fn publication<'a>(
-    binding: &'a NativePublicationConfig,
-    excluded: &'a [&'a str],
-    options: &'a acyclic_fs::MaterializeOptions,
-    cancellation: &'a acyclic_fs::CancellationToken,
-) -> acyclic_fs::NativeWorkspacePublication<'a> {
-    acyclic_fs::NativeWorkspacePublication {
-        root: &binding.root,
-        operation_directory: &binding.operation_directory,
-        source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(
-            binding.source_root_identity,
-        ),
-        operation_id: fs_operation(binding.operation_id),
-        from: binding.from,
-        to: binding.to,
-        excluded_names: excluded,
-        options,
-        budget: binding.budget,
-        cancellation,
-    }
-}
-pub(super) fn publication_base(
-    binding: &NativePublicationConfig,
-    work: WorkCounters,
-) -> NativePublicationResult {
-    NativePublicationResult {
-        operation_id: binding.operation_id,
-        caller: binding.caller,
-        status: "unopened",
-        interaction: None,
-        resolution: None,
-        action_digest: None,
-        publication: None,
-        work,
-        failure: None,
-        approved_frame_hex: None,
-    }
-}
+
 pub(super) fn publication_failure(
     binding: &NativePublicationConfig,
     message: String,
     work: WorkCounters,
-) -> NativePublicationResult {
-    let mut result = publication_base(binding, work);
-    result.status = "failed";
-    result.failure = Some(message);
-    result
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation_id": binding.operation_id, "caller": binding.caller, "status": "failed",
+        "interaction": null, "resolution": null, "action_digest": null,
+        "publication": null, "work": work, "failure": message, "approved_frame_hex": null,
+    })
 }

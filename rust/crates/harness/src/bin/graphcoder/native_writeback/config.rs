@@ -23,9 +23,6 @@ pub struct NativePublicationConfig {
 }
 impl NativePublicationConfig {
     pub fn validate(&self) -> Result<()> {
-        self.private_volume.validate(&mut None)?;
-        self.from_project.validate(&mut None)?;
-        self.to_project.validate(&mut None)?;
         if self.private_volume.class() != VolumeClass::AgentPrivate
             || self.from_project.class() != VolumeClass::Project
             || self.to_project.class() != VolumeClass::Project

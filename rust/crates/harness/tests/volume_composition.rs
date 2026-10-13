@@ -218,7 +218,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         )
         .await?;
     let root_workspace = workspace_ref(provider.clone(), &root.storage_name(&mut None)?)?;
-    let pinned = host.resolve(&root_workspace).await?;
+    let pinned = host.resolve(&root_workspace, None).await?;
     let root_reader = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
@@ -315,13 +315,13 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     )
     .await?;
     assert_eq!(
-        host.read(&root_workspace, None, "/instructions.txt", 1024)
+        host.read(&root_workspace, None, "/instructions.txt", 1024, None)
             .await?
             .as_ref(),
         b"root skill"
     );
     let skills_workspace = workspace_ref(provider.clone(), &skills.storage_name(&mut None)?)?;
-    let selected = host.resolve(&skills_workspace).await?;
+    let selected = host.resolve(&skills_workspace, None).await?;
     let skills_reader = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
@@ -382,18 +382,18 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
-        host.read(&root_workspace, None, "/instructions.txt", 1024)
+        host.read(&root_workspace, None, "/instructions.txt", 1024, None)
             .await?
             .as_ref(),
         b"session skill"
     );
     assert!(
-        host.read(&root_workspace, None, "/late.txt", 1024)
+        host.read(&root_workspace, None, "/late.txt", 1024, None)
             .await
             .is_err()
     );
     assert_eq!(
-        host.read(&skills_workspace, None, "/late.txt", 1024)
+        host.read(&skills_workspace, None, "/late.txt", 1024, None)
             .await?
             .as_ref(),
         b"late"

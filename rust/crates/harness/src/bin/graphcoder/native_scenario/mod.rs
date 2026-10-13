@@ -10,23 +10,21 @@ use crate::native_writeback::NativePublicationConfig;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{
-        ContentGrant, ConversationMessage, FileRef, Limits, MessageKind, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        ContentGrant, ConversationMessage, FileRef, MessageKind, VolumeClass, VolumeOperation,
+        VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
     filesystem::{
-        ConfiguredRecursiveMerge, FORK_PREPARE_TASK_COMMAND_KIND, FilesystemHost,
-        ForkPreparationLimits, ForkToolArguments, MODEL_TASK_COMMAND_KIND, ModelTaskCommand,
-        RecursiveForkConfig, RecursiveSourceSnapshot, fork_preparation_request,
-        recursive_fork_source, workspace_ref,
+        FORK_PREPARE_TASK_COMMAND_KIND, FilesystemHost, ForkPreparationLimits, ForkToolArguments,
+        MODEL_TASK_COMMAND_KIND, ModelTaskCommand, RecursiveForkConfig, RecursiveSourceSnapshot,
+        fork_preparation_request, recursive_fork_source, workspace_ref,
     },
     fork::ForkReport,
-    model::ModelContent,
     resource_preparation::ResourcePreparationRequest,
     resources::ProviderRef,
-    runtime::{RuntimeTask, TaskAdmissionRecord, TaskDefinition, TaskRunLimits, TaskStateProvider},
+    runtime::{RuntimeTask, TaskAdmissionRecord, TaskDefinition, TaskStateProvider},
     scheduler::{LeaseFence, SessionLimits},
     store::StreamAggregate,
     workflow::WorkflowCommand,
@@ -49,31 +47,6 @@ const FORK_LIMITS: ForkPreparationLimits = ForkPreparationLimits {
     work: 16 * 1024 * 1024,
     bytes: 16 * 1024 * 1024,
 };
-const COMMON_GRANTS: &[&str] = &[
-    "operation:declare",
-    "operation:observe",
-    "operation:cancel",
-    "operation:wake",
-    "model:generate",
-    "fork:publish",
-    "project:merge",
-    "task:spawn:acyclic.stock_turn@1",
-    "task:spawn:acyclic.fork_preparation@1",
-    "task:spawn:acyclic.mailbox_model@1",
-    "mail:send",
-    "mail:read",
-    "interaction:open",
-    "interaction:resolve",
-    "interaction:route",
-    "effect:plan",
-    "effect:run",
-    "effect:provider:graphcoder.native",
-    "tool:call:acyclic.fork",
-    "tool:call:acyclic.merge",
-    "tool:call:acyclic.read_file",
-    "tool:call:acyclic.write_file",
-    "tool:call:acyclic.edit_file",
-];
 struct Caller {
     task: TaskId,
     binding: AuthorityBinding,
@@ -195,4 +168,13 @@ fn admitted_task<T: Send + 'static>(admission: Admission<RuntimeTask<T>>) -> Res
 async fn persist(path: &Path, value: &impl Serialize) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(invalid)?;
     tokio::fs::write(path, bytes).await.map_err(storage)
+}
+
+fn fixture<T: serde::de::DeserializeOwned>(name: &str, fields: Value) -> Result<T> {
+    let mut data: Value = serde_json::from_str(include_str!("data.json")).map_err(invalid)?;
+    let mut data = data[name].take();
+    for (name, value) in fields.as_object().expect("fixture fields").iter() {
+        data[name] = value.clone();
+    }
+    serde_json::from_value(data).map_err(invalid)
 }

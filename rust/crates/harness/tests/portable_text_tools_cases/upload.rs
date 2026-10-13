@@ -232,7 +232,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             .is_err()
     );
     let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
-    let head = host.resolve(&workspace).await?.generation;
+    let head = host.resolve(&workspace, None).await?.generation;
     let cancelled = acyclic_fs::CancellationToken::new();
     let io =
         acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancelled)?;
@@ -253,7 +253,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         .await
         .is_err()
     );
-    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    assert_eq!(host.resolve(&workspace, None).await?.generation, head);
     let mut denied = CONTENT_WORK_BUDGET;
     denied.peak_allocation_bytes = 0;
     let io = acyclic_harness::filesystem::PreparationIo::from_budget(denied, &cancellation)?;
@@ -273,7 +273,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         .await
         .is_err()
     );
-    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    assert_eq!(host.resolve(&workspace, None).await?.generation, head);
     let io = acyclic_harness::filesystem::PreparationIo::from_budget(
         CONTENT_WORK_BUDGET,
         &cancellation,
@@ -291,7 +291,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         None
     );
     assert_eq!(
-        host.read(&workspace, None, "/result.json", 64)
+        host.read(&workspace, None, "/result.json", 64, None)
             .await?
             .as_ref(),
         b"later"

@@ -215,7 +215,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             None,
         )
         .await?;
-    project_head = host.resolve(&project_head.workspace).await?;
+    project_head = host.resolve(&project_head.workspace, None).await?;
     let shared_writer = issuer
         .issue(
             "shared-writer",

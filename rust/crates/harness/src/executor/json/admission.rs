@@ -1,153 +1,10 @@
 use super::schema::{JsonValueSchema, NONE, ROOT, UNKNOWN};
 use super::*;
-use std::{cell::RefCell, iter::Peekable};
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use std::cell::RefCell;
 
-type Input<'a> = dyn Iterator<Item = Result<u8>> + 'a;
 type Charge<'a> = RefCell<&'a mut dyn FnMut(JsonCodecCharge) -> Result<()>>;
 const RAW: &[u8] = b"$serde_json::private::RawValue";
-
-fn next(input: &mut Peekable<&mut Input<'_>>) -> Result<Option<u8>> {
-    input.next().transpose()
-}
-fn peek(input: &mut Peekable<&mut Input<'_>>) -> Result<Option<u8>> {
-    match input.peek() {
-        Some(Ok(byte)) => Ok(Some(*byte)),
-        Some(Err(_)) => next(input),
-        None => Ok(None),
-    }
-}
-fn space(input: &mut Peekable<&mut Input<'_>>) -> Result<Option<u8>> {
-    while peek(input)?.is_some_and(|byte| byte.is_ascii_whitespace()) {
-        next(input)?;
-    }
-    peek(input)
-}
-
-struct Quoted<'a, 'b> {
-    input: &'a mut Input<'b>,
-    pending: [u8; 4],
-    position: usize,
-    length: usize,
-    done: bool,
-    invalid: bool,
-}
-impl<'a, 'b> Quoted<'a, 'b> {
-    fn new(input: &'a mut Input<'b>) -> Self {
-        Self {
-            input,
-            pending: [0; 4],
-            position: 0,
-            length: 0,
-            done: false,
-            invalid: false,
-        }
-    }
-    fn hex(&mut self) -> Result<Option<u32>> {
-        let mut value = 0;
-        for _ in 0..4 {
-            let Some(digit) = self
-                .input
-                .next()
-                .transpose()?
-                .and_then(|byte| (byte as char).to_digit(16))
-            else {
-                return Ok(None);
-            };
-            value = value * 16 + digit;
-        }
-        Ok(Some(value))
-    }
-    fn byte(&mut self) -> Result<Option<u8>> {
-        if self.position < self.length {
-            let byte = self.pending[self.position];
-            self.position += 1;
-            return Ok(Some(byte));
-        }
-        if self.done {
-            return Ok(None);
-        }
-        let Some(byte) = self.input.next().transpose()? else {
-            self.invalid = true;
-            self.done = true;
-            return Ok(None);
-        };
-        if byte == b'"' {
-            self.done = true;
-            return Ok(None);
-        }
-        if byte != b'\\' {
-            if byte < 0x20 {
-                self.invalid = true;
-                self.done = true;
-                return Ok(None);
-            }
-            return Ok(Some(byte));
-        }
-        let byte = match self.input.next().transpose()? {
-            Some(b'"') => b'"',
-            Some(b'\\') => b'\\',
-            Some(b'/') => b'/',
-            Some(b'b') => 8,
-            Some(b'f') => 12,
-            Some(b'n') => b'\n',
-            Some(b'r') => b'\r',
-            Some(b't') => b'\t',
-            Some(b'u') => {
-                let mut scalar = self.hex()?;
-                if scalar.is_some_and(|value| (0xd800..=0xdbff).contains(&value)) {
-                    if self.input.next().transpose()? != Some(b'\\')
-                        || self.input.next().transpose()? != Some(b'u')
-                    {
-                        scalar = None;
-                    } else {
-                        scalar = scalar.zip(self.hex()?).and_then(|(high, low)| {
-                            (0xdc00..=0xdfff)
-                                .contains(&low)
-                                .then_some(0x10000 + ((high - 0xd800) << 10) + low - 0xdc00)
-                        });
-                    }
-                }
-                let Some(character) = scalar.and_then(char::from_u32) else {
-                    self.invalid = true;
-                    self.done = true;
-                    return Ok(None);
-                };
-                self.length = character.encode_utf8(&mut self.pending).len();
-                self.position = 1;
-                return Ok(Some(self.pending[0]));
-            }
-            _ => {
-                self.invalid = true;
-                self.done = true;
-                return Ok(None);
-            }
-        };
-        Ok(Some(byte))
-    }
-}
-impl Iterator for Quoted<'_, '_> {
-    type Item = Result<u8>;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.byte().transpose()
-    }
-}
-fn token(input: &mut Peekable<&mut Input<'_>>) -> Result<([u8; 64], usize, bool)> {
-    let mut quoted = Quoted::new(input);
-    let (mut bytes, mut length) = ([0; 64], 0);
-    for byte in quoted.by_ref() {
-        let byte = byte?;
-        if length < bytes.len() {
-            bytes[length] = byte;
-        }
-        length = length.saturating_add(1);
-    }
-    Ok((
-        bytes,
-        if length <= 64 { length } else { 0 },
-        !quoted.invalid && quoted.done,
-    ))
-}
-
 #[derive(Clone, Copy, Default)]
 struct Counts {
     nodes: u64,
@@ -210,167 +67,228 @@ impl Branches {
     }
 }
 
-fn value(
-    input: &mut Peekable<&mut Input<'_>>,
+struct Walk<'a, 'b> {
+    schema: &'static JsonValueSchema,
+    depth: u32,
+    virtual_value: bool,
+    raw: Option<&'static JsonValueSchema>,
+    charge: &'a Charge<'b>,
+    failed: &'a RefCell<Option<Error>>,
+}
+impl<'a, 'b> Walk<'a, 'b> {
+    fn base(&self) -> Branches {
+        Branches {
+            always: Counts {
+                nodes: u64::from(self.virtual_value),
+                depth: if self.virtual_value { self.depth } else { 0 },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+    fn error<E: de::Error>(&self, error: Error) -> E {
+        if self.failed.borrow().is_none() {
+            *self.failed.borrow_mut() = Some(error);
+        }
+        E::custom("JSON admission interrupted")
+    }
+    fn child(
+        &self,
+        schema: &'static JsonValueSchema,
+        raw: Option<&'static JsonValueSchema>,
+    ) -> Walk<'a, 'b> {
+        Walk {
+            schema,
+            raw,
+            depth: self.depth + 1,
+            virtual_value: self.virtual_value,
+            charge: self.charge,
+            failed: self.failed,
+        }
+    }
+}
+impl<'de> DeserializeSeed<'de> for Walk<'_, '_> {
+    type Value = Branches;
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        decoder: D,
+    ) -> std::result::Result<Branches, D::Error> {
+        if self.depth > 256 + usize::BITS {
+            <IgnoredAny as serde::Deserialize>::deserialize(decoder)?;
+            return Ok(Branches {
+                always: Counts {
+                    depth: self.depth,
+                    unresolved: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        decoder.deserialize_any(self)
+    }
+}
+macro_rules! walk_scalar {
+    ($($method:ident($ty:ty)),*) => {$(fn $method<E: de::Error>(self, _: $ty) -> std::result::Result<Branches, E> { Ok(self.base()) })*};
+}
+impl<'de> Visitor<'de> for Walk<'_, '_> {
+    type Value = Branches;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("JSON value")
+    }
+    walk_scalar!(
+        visit_bool(bool),
+        visit_i64(i64),
+        visit_u64(u64),
+        visit_f64(f64)
+    );
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<Branches, E> {
+        Ok(self.base())
+    }
+    fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Branches, E> {
+        let mut counts = self.base();
+        match self.raw {
+            Some(schema) if std::ptr::eq(schema, &ROOT) => {
+                self.charge.borrow_mut()(JsonCodecCharge::Inspect {
+                    items: text.len() as u64,
+                })
+                .map_err(|error| self.error::<E>(error))?;
+                let mut nested = document(
+                    text.as_bytes(),
+                    &ROOT,
+                    self.depth,
+                    true,
+                    self.charge,
+                    self.failed,
+                )
+                .map_err(|error| self.error::<E>(error))?;
+                nested.always.bytes = checked(
+                    nested.always.bytes.checked_add(text.len() as u64),
+                    "JSON byte count overflow",
+                )
+                .map_err(|error| self.error::<E>(error))?;
+                nested.always.frames = checked(
+                    nested.always.frames.checked_add(1),
+                    "JSON RawValue count overflow",
+                )
+                .map_err(|error| self.error::<E>(error))?;
+                counts
+                    .add(nested, 0)
+                    .map_err(|error| self.error::<E>(error))?;
+            }
+            Some(schema) if std::ptr::eq(schema, &UNKNOWN) => counts.always.unresolved = true,
+            _ => {}
+        }
+        Ok(counts)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(
+        self,
+        mut values: A,
+    ) -> std::result::Result<Branches, A::Error> {
+        let mut counts = self.base();
+        let mut index = 0;
+        loop {
+            let (schema, gate) = self.schema.child(b"", Some(index));
+            let Some(child) = values.next_element_seed(self.child(schema, None))? else {
+                break;
+            };
+            counts
+                .add(child, gate)
+                .map_err(|error| self.error::<A::Error>(error))?;
+            index += 1;
+        }
+        Ok(counts)
+    }
+    fn visit_map<A: MapAccess<'de>>(
+        self,
+        mut fields: A,
+    ) -> std::result::Result<Branches, A::Error> {
+        let mut counts = self.base();
+        let (mut index, mut tag) = (0, None);
+        while let Some(key) = fields.next_key::<String>()? {
+            let key = key.as_bytes();
+            if self.virtual_value {
+                counts
+                    .always
+                    .add(Counts {
+                        nodes: 1,
+                        depth: self.depth + 1,
+                        ..Default::default()
+                    })
+                    .map_err(|error| self.error::<A::Error>(error))?;
+            }
+            let (schema, gate) = self.schema.child(key, None);
+            let mut child = if !self.schema.tag.is_empty() && key == self.schema.tag.as_bytes() {
+                let label: &serde_json::value::RawValue = fields.next_value()?;
+                let label = serde_json::from_str::<String>(label.get()).unwrap_or_default();
+                tag = Some(if tag.is_some() {
+                    0
+                } else {
+                    self.schema.mask(label.as_bytes())
+                });
+                self.child(schema, None).base()
+            } else {
+                fields.next_value_seed(
+                    self.child(schema, (index == 0 && key == RAW).then_some(schema)),
+                )?
+            };
+            if std::ptr::eq(schema, &NONE) {
+                child = Branches::default();
+            }
+            counts
+                .add(child, gate)
+                .map_err(|error| self.error::<A::Error>(error))?;
+            index += 1;
+        }
+        if !self.schema.tag.is_empty() {
+            counts
+                .resolve(tag.unwrap_or(0))
+                .map_err(|error| self.error::<A::Error>(error))?;
+        }
+        Ok(counts)
+    }
+}
+fn document(
+    bytes: &[u8],
     schema: &'static JsonValueSchema,
     depth: u32,
     virtual_value: bool,
     charge: &Charge<'_>,
-) -> Result<(Branches, bool)> {
-    let Some(byte) = space(input)? else {
-        return Ok((Branches::default(), false));
-    };
-    next(input)?;
-    let mut counts = Branches::default();
-    if virtual_value {
-        counts.always.nodes = 1;
-        counts.always.depth = depth;
+    failed: &RefCell<Option<Error>>,
+) -> Result<Branches> {
+    let scratch = checked(
+        (bytes.len() as u64).max(8).checked_mul(4),
+        "JSON scratch bound overflow",
+    )?;
+    charge.borrow_mut()(JsonCodecCharge::Retain { bytes: scratch })?;
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    decoder.disable_recursion_limit();
+    let result = Walk {
+        schema,
+        depth,
+        virtual_value,
+        raw: None,
+        charge,
+        failed,
     }
-    match byte {
-        b'"' => {
-            let (_, _, valid) = token(input)?;
-            Ok((counts, valid))
-        }
-        b'{' | b'[' => {
-            if depth > 256 + usize::BITS {
-                counts.always.unresolved = true;
-                return Ok((counts, false));
-            }
-            let object = byte == b'{';
-            let end = if object { b'}' } else { b']' };
-            let (mut index, mut tag) = (0usize, None);
-            loop {
-                let Some(byte) = space(input)? else {
-                    return Ok((counts, false));
-                };
-                if byte == end {
-                    next(input)?;
-                    if !schema.tag.is_empty() {
-                        counts.resolve(tag.unwrap_or(0))?;
-                    }
-                    return Ok((counts, true));
-                }
-                if index != 0 {
-                    if byte != b',' {
-                        return Ok((counts, false));
-                    }
-                    next(input)?;
-                }
-                let (key, length) = if object {
-                    if space(input)? != Some(b'"') {
-                        return Ok((counts, false));
-                    }
-                    next(input)?;
-                    let (key, length, valid) = token(input)?;
-                    if !valid || space(input)? != Some(b':') {
-                        return Ok((counts, false));
-                    }
-                    next(input)?;
-                    if virtual_value {
-                        counts.always.nodes = checked(
-                            counts.always.nodes.checked_add(1),
-                            "JSON item count overflow",
-                        )?;
-                        counts.always.depth = counts.always.depth.max(depth + 1);
-                    }
-                    (key, length)
-                } else {
-                    ([0; 64], 0)
-                };
-                let key = &key[..length];
-                let (child, gate) = schema.child(key, (!object).then_some(index));
-                let quoted = space(input)? == Some(b'"');
-                let mut selected = if object
-                    && index == 0
-                    && key == RAW
-                    && quoted
-                    && std::ptr::eq(child, &ROOT)
-                {
-                    next(input)?;
-                    let mut quoted = Quoted::new(input);
-                    let mut bytes = 0u64;
-                    let mut decoded = quoted.by_ref().map(|byte| {
-                        let byte = byte?;
-                        charge.borrow_mut()(JsonCodecCharge::Inspect { items: 1 })?;
-                        bytes = checked(bytes.checked_add(1), "JSON byte count overflow")?;
-                        Ok(byte)
-                    });
-                    let reader: &mut Input<'_> = &mut decoded;
-                    let mut reader = Iterator::peekable(reader);
-                    let (mut selected, valid) = value(&mut reader, &ROOT, depth + 1, true, charge)?;
-                    let ended = space(&mut reader)?.is_none();
-                    while next(&mut reader)?.is_some() {}
-                    drop(reader);
-                    drop(decoded);
-                    selected.always.unresolved |=
-                        !valid || !ended || quoted.invalid || !quoted.done;
-                    selected.always.bytes = checked(
-                        selected.always.bytes.checked_add(bytes),
-                        "JSON byte count overflow",
-                    )?;
-                    selected.always.frames = checked(
-                        selected.always.frames.checked_add(1),
-                        "JSON RawValue count overflow",
-                    )?;
-                    if virtual_value {
-                        selected.always.nodes = checked(
-                            selected.always.nodes.checked_add(1),
-                            "JSON item count overflow",
-                        )?;
-                    }
-                    selected
-                } else if object && !schema.tag.is_empty() && key == schema.tag.as_bytes() && quoted
-                {
-                    next(input)?;
-                    let (label, length, valid) = token(input)?;
-                    if !valid {
-                        return Ok((counts, false));
-                    }
-                    tag = Some(if tag.is_some() {
-                        0
-                    } else {
-                        schema.mask(&label[..length])
-                    });
-                    let mut child = Branches::default();
-                    if virtual_value {
-                        child.always.nodes = 1;
-                        child.always.depth = depth + 1;
-                    }
-                    child
-                } else {
-                    if object && key == schema.tag.as_bytes() && !schema.tag.is_empty() {
-                        tag = Some(0);
-                    }
-                    let (mut selected, valid) =
-                        value(input, child, depth + 1, virtual_value, charge)?;
-                    if !valid {
-                        return Ok((counts, false));
-                    }
-                    if object && index == 0 && key == RAW && quoted && std::ptr::eq(child, &UNKNOWN)
-                    {
-                        selected.always.unresolved = true;
-                    }
-                    selected
-                };
-                if std::ptr::eq(child, &NONE) {
-                    selected = Branches::default();
-                }
-                counts.add(selected, gate)?;
-                index = index.saturating_add(1);
-            }
-        }
-        b',' | b':' | b'}' | b']' => Ok((counts, false)),
-        _ => {
-            while peek(input)?.is_some_and(|byte| {
-                !matches!(byte, b',' | b'}' | b']' | b' ' | b'\r' | b'\n' | b'\t')
-            }) {
-                next(input)?;
-            }
-            Ok((counts, true))
-        }
+    .deserialize(&mut decoder)
+    .and_then(|counts| {
+        decoder.end()?;
+        Ok(counts)
+    });
+    drop(decoder);
+    let release = charge.borrow_mut()(JsonCodecCharge::Release { bytes: scratch });
+    if let Some(error) = failed.borrow_mut().take() {
+        return Err(error);
     }
+    release?;
+    Ok(result.unwrap_or_else(|_| Branches {
+        always: Counts {
+            unresolved: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
 }
-
 #[derive(Default)]
 pub(super) struct Lexical {
     pub(super) items: u64,
@@ -451,27 +369,26 @@ pub(super) fn source(
     }
     let charge = RefCell::new(charge);
     let mut lexical = Lexical::default();
-    let mut source = bytes.iter().map(|byte| {
+    for byte in bytes {
         charge.borrow_mut()(JsonCodecCharge::Read { bytes: 1 })?;
         lexical.byte(*byte, bounds, code, &charge)?;
-        Ok(*byte)
-    });
-    let reader: &mut Input<'_> = &mut source;
-    let mut reader = Iterator::peekable(reader);
-    let descriptor = schema.unwrap_or(&UNKNOWN);
-    let (mut branches, valid) = value(&mut reader, descriptor, 0, false, &charge)?;
-    let ended = space(&mut reader)?.is_none();
-    while next(&mut reader)?.is_some() {}
-    drop(reader);
-    drop(source);
+    }
     if lexical.string || lexical.depth != 0 {
         return Err(boundary("incomplete JSON document", code));
     }
-    branches.always.unresolved |= !valid || !ended;
+    let counts = document(
+        bytes,
+        schema.unwrap_or(&UNKNOWN),
+        0,
+        false,
+        &charge,
+        &RefCell::new(None),
+    )?
+    .always;
     finish(
         bytes.len() as u64,
         lexical.items,
-        branches.always,
+        counts,
         bounds,
         Origin::Slice,
         code,
