@@ -217,9 +217,11 @@ pub(crate) fn traced<R: Outcome>(
     future: impl Future<Output = R>,
 ) -> impl Future<Output = R> {
     #[cfg(not(target_arch = "wasm32"))]
-    let mut lifetime = Lifetime(Some(span.clone()));
+    let scope = span.clone();
     #[cfg(not(target_arch = "wasm32"))]
-    return span.scope(async move {
+    let mut lifetime = Lifetime(Some(span));
+    #[cfg(not(target_arch = "wasm32"))]
+    return scope.scope(async move {
         let mut future = std::pin::pin!(future);
         let result =
             futures::future::poll_fn(|cx| lifetime.scoped(|| future.as_mut().poll(cx))).await;
@@ -239,9 +241,10 @@ pub(crate) fn download(
     span: OperationSpan,
     future: impl Future<Output = Result<crate::v1::Download, crate::Error>>,
 ) -> impl Future<Output = Result<crate::v1::Download, crate::Error>> {
-    let mut lifetime = Lifetime(Some(span.clone()));
     let context = span.context().clone();
-    span.scope(async move {
+    let scope = span.clone();
+    let mut lifetime = Lifetime(Some(span));
+    scope.scope(async move {
         let mut future = std::pin::pin!(future);
         let result =
             futures::future::poll_fn(|cx| lifetime.scoped(|| future.as_mut().poll(cx))).await;

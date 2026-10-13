@@ -5,6 +5,7 @@ mod fork;
 mod tasks;
 mod wire;
 pub use config::{AuthorityBinding, Config, ForkSourceConfig, WorkflowContext};
+pub(super) use tasks::stock_turn_commands;
 pub use tasks::{lease_hex, render_attempt};
 
 use crate::terminal::{MAX_FRAME_BYTES, MAX_PAGE_EVENTS};

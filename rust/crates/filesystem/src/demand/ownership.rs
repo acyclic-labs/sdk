@@ -87,15 +87,13 @@ impl SourcePayloadOwnership {
 }
 impl Drop for SourcePayloadOwnership {
     fn drop(&mut self) {
-        if let Self::Registered(custody, bytes) = self {
-            if let Err(error) = custody.retire(*bytes.get_mut()) {
-                if let Some(original) = &custody.original {
+        if let Self::Registered(custody, bytes) = self
+            && let Err(error) = custody.retire(*bytes.get_mut())
+                && let Some(original) = &custody.original {
                     original.with_original_leaf(|work| {
                         work.record_native_io_failure(error.into());
                     });
                 }
-            }
-        }
     }
 }
 
@@ -192,14 +190,12 @@ impl NativeMountAllocationCustody {
     fn retire_resource(&self, bytes: u64) -> Result<(), crate::WorkError> {
         if let Some(original) = &self.original
             && let Some(resource) = &original.resource
-        {
-            if let Err(error) = resource.retire(bytes) {
+            && let Err(error) = resource.retire(bytes) {
                 original.with_original_leaf(|work| {
                     work.record_native_io_failure(error);
                 });
                 return Err(crate::WorkError::Overflow);
             }
-        }
         Ok(())
     }
 }

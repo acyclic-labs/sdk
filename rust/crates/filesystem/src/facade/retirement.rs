@@ -7,7 +7,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         name: impl AsRef<str>,
         idempotency_key: crate::IdempotencyKey,
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
-        let result = (async move {
+
+        (async move {
             let (_, id) = self
                 .workspace_name_identity(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(|failure| failure.error)?
@@ -29,8 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             self.delete_workspace_volume(&volume, idempotency_key.operation_id())
                 .await
         })
-        .await;
-        result
+        .await
     }
 
     pub(crate) async fn delete_workspace_volume(

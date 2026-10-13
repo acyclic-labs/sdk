@@ -332,11 +332,10 @@ pub(crate) fn rename_held<W: NativeHostWork>(
             nt::FILE_OPEN_REPARSE_POINT | nt::FILE_SYNCHRONOUS_IO_NONALERT,
             work,
         )?;
-        if let Some(expected) = expected {
-            if file_identity_and_length(&file, work)?.0 != expected {
+        if let Some(expected) = expected
+            && file_identity_and_length(&file, work)?.0 != expected {
                 return Err(io::Error::other("rename source identity changed").into());
             }
-        }
         set_windows_name(
             &file,
             to,

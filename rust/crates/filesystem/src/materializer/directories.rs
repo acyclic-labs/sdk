@@ -53,7 +53,7 @@ impl NativeTreeMaterializationBackend {
         path: &str,
     ) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
         self.check_path(path)?;
-        let actual = self.work.root_identity(&self.root_path())?;
+        let actual = self.work.root_identity(self.root_path())?;
         let expected = self.held_root.identity();
         if actual != expected {
             return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual });

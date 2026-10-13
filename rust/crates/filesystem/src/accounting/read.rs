@@ -13,7 +13,6 @@ enum AuthorityKind {
 }
 
 /// Reads and proves at most `maximum_records` records after `cursor`.
-#[allow(clippy::too_many_lines)] // The pinned read, anchor checks, and page verification form one fail-closed operation.
 pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     authority: &A,
     objects: &O,

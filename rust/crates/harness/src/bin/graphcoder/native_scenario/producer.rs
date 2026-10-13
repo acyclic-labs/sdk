@@ -54,8 +54,12 @@ impl Producer {
         let approval = InteractionId::new();
         let verifier = caller.binding.verifier()?;
         let budget = self.config.tools.content_budget;
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation).map_err(
+            |(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            },
+        )?;
         let io = PreparationIo::from_native_work(&work)?;
         let fence = LeaseFence::from(&caller.lease.reservation);
         let owner = self
@@ -414,12 +418,14 @@ impl Producer {
         let mut child = self.template.clone();
         child.operation_id = child_operation;
         child.parent = Some(parent.task);
-        child.input = serde_json::to_value(&self.planned_commands[label]).map_err(invalid)?;
+        let (receive, model) = &self.planned_commands[label];
+        child.input = json!({"receive": receive, "model": model});
         let mut grants = fixture::<Vec<String>>("grants", json!({}))?;
         let capabilities =
             std::iter::once(parent.project.capability(VolumeOperation::Read, &mut None)).chain(
                 self.planned_commands
                     .values()
+                    .flat_map(|(receive, model)| [receive, model])
                     .map(|command| command.payload.read_capability(&mut None)),
             );
         for capability in capabilities {
@@ -482,7 +488,7 @@ impl Producer {
             },
             FORK_LIMITS,
             None,
-            vec![command_file, self.planned_commands[label].payload.clone()],
+            vec![command_file, receive.payload.clone(), model.payload.clone()],
             None,
         )?;
         let request_path = self
@@ -623,10 +629,13 @@ impl Producer {
     ) -> Result<acyclic_harness::resources::GenerationRef> {
         Ok(self
             .files
-            .resolve(&workspace_ref(
-                self.config.filesystem_provider.clone(),
-                &volume.storage_name(&mut None)?,
-            )?, None)
+            .resolve(
+                &workspace_ref(
+                    self.config.filesystem_provider.clone(),
+                    &volume.storage_name(&mut None)?,
+                )?,
+                None,
+            )
             .await?
             .generation)
     }

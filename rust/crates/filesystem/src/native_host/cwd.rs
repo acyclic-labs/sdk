@@ -34,12 +34,11 @@ pub(crate) fn canonical_directory_wide<W: NativeHostWork>(
             work.check()?;
             Ok(count)
         });
-        if let Ok(count) = result.as_ref() {
-            if *count < capacity {
+        if let Ok(count) = result.as_ref()
+            && *count < capacity {
                 output.truncate(*count);
                 return Ok((output, allocation));
             }
-        }
         drop(output);
         work.release(allocation)?;
         capacity = result?.checked_add(1).ok_or(crate::WorkError::Overflow)?;

@@ -150,12 +150,11 @@ impl Drop for PreparedCancellation {
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(lease) = &self.registry_lease {
-                if let Some(credit) = &mut *lease.cancellation_visits.lock()
+            if let Some(lease) = &self.registry_lease
+                && let Some(credit) = &mut *lease.cancellation_visits.lock()
                 {
                     credit.record_deferred(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED });
                 }
-            }
         }
         // The iterator and original buffer have physically dropped.
         self.state.registry_generation.fetch_add(1, Ordering::AcqRel);
@@ -310,14 +309,13 @@ impl CancellationToken {
                 visits += 1;
                 Ok::<(), crate::WorkError>(())
             })?;
-            if let Some(lease) = &lease {
-                if let Some(credit) = &mut *lease.cancellation_visits.lock()
+            if let Some(lease) = &lease
+                && let Some(credit) = &mut *lease.cancellation_visits.lock()
                 {
                     // Record the actual lookup, including empty/dead slots,
                     // on this backing's original prepaid terminal credit.
                     credit.record_deferred(crate::WorkCounters { items_examined: visits, ..crate::WorkCounters::UNCHARGED });
                 }
-            }
             lease
         };
         if let Some((work, budget)) = admission {
@@ -702,12 +700,11 @@ impl WaitMeter<'_> {
     }
 
     fn observe_registry(&mut self, generation: u64) {
-        if let Some((owned_generation, bytes)) = self.admission.registry {
-            if owned_generation != generation {
+        if let Some((owned_generation, bytes)) = self.admission.registry
+            && owned_generation != generation {
                 self.release(bytes);
                 self.admission.registry = None;
             }
-        }
     }
 }
 
@@ -732,17 +729,15 @@ impl Cancelled<'_> {
         if self.registered.is_none() {
             let mut free = None;
             for (index, entry) in waiters.iter().enumerate() {
-                if let Some(meter) = &mut self.meter {
-                    if let Err(error) = meter.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }) {
+                if let Some(meter) = &mut self.meter
+                    && let Err(error) = meter.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }) {
                         return Poll::Ready(Err(error));
                     }
-                }
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = self.native_original {
-                    if let Err(error) = original.charge(crate::WorkCounters {
+                if let Some(original) = self.native_original
+                    && let Err(error) = original.charge(crate::WorkCounters {
                         items_examined: 1, ..crate::WorkCounters::UNCHARGED
                     }) { return Poll::Ready(Err(error.into())); }
-                }
                 if entry.is_none() { free = Some(index); break; }
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -847,11 +842,10 @@ impl Cancelled<'_> {
             };
             let waiter = Arc::new(waiter_value);
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = native_original {
-                if let Err(error) = original.record_admitted(crate::WorkCounters {
+            if let Some(original) = native_original
+                && let Err(error) = original.record_admitted(crate::WorkCounters {
                     items_examined: 1, ..crate::WorkCounters::UNCHARGED
                 }) { return Poll::Ready(Err(error.into())); }
-            }
             if grows {
                 if let Some(meter) = &mut self.meter {
                     if meter.admission.registry.is_none() {
@@ -882,12 +876,11 @@ impl Cancelled<'_> {
                     }
                     return Poll::Ready(Err(CancellationWaitError::AllocationFailed));
                 }
-                if let Some(meter) = &mut self.meter {
-                    if let Err(error) = meter.charge(crate::WorkCounters {
+                if let Some(meter) = &mut self.meter
+                    && let Err(error) = meter.charge(crate::WorkCounters {
                         bytes_copied: (waiters.len() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64,
                         ..crate::WorkCounters::default()
                     }) { return Poll::Ready(Err(error)); }
-                }
                 #[cfg(not(target_arch = "wasm32"))]
                 let new_lease = if let Some(original) = native_original {
                     let actual = (replacement.capacity() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64;
@@ -898,13 +891,10 @@ impl Cancelled<'_> {
                         drop(replacement);
                         return Poll::Ready(Err(error.into()));
                     }
-                    let generation = match self.token.state.registry_generation.load(Ordering::Acquire).checked_add(1) {
-                        Some(generation) => generation,
-                        None => {
-                            drop(waiters);
-                            drop(replacement);
-                            return Poll::Ready(Err(crate::WorkError::Overflow.into()));
-                        }
+                    let generation = if let Some(generation) = self.token.state.registry_generation.load(Ordering::Acquire).checked_add(1) { generation } else {
+                        drop(waiters);
+                        drop(replacement);
+                        return Poll::Ready(Err(crate::WorkError::Overflow.into()));
                     };
                     let mut metadata = match original.claim(std::mem::size_of::<NativeRegistryLease>() as u64, 1, crate::WorkCounters::UNCHARGED) {
                         Ok(metadata) => metadata,
@@ -978,11 +968,10 @@ impl Cancelled<'_> {
                     if let Err(error) = copied.and(retired) { return Poll::Ready(Err(error.into())); }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = native_original {
-                    if let Err(error) = original.admit(crate::WorkCounters::UNCHARGED) {
+                if let Some(original) = native_original
+                    && let Err(error) = original.admit(crate::WorkCounters::UNCHARGED) {
                         return Poll::Ready(Err(error.into()));
                     }
-                }
                 waiters = self.token.state.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 // Cancellation may have drained the newly installed registry
                 // while its old backing was being physically retired.
@@ -1055,19 +1044,17 @@ impl Drop for Cancelled<'_> {
                 meter.work.charge(&crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }, &meter.budget)
                     .expect("cancellation cleanup allowance was reserved");
             }
-            if let (Some(slot), Some(waiter)) = (waiters.get_mut(index), &self.waiter) {
-                if slot.as_ref().is_some_and(|slot| Weak::ptr_eq(slot, &Arc::downgrade(waiter))) {
+            if let (Some(slot), Some(waiter)) = (waiters.get_mut(index), &self.waiter)
+                && slot.as_ref().is_some_and(|slot| Weak::ptr_eq(slot, &Arc::downgrade(waiter))) {
                     *slot = None;
                     #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(lease) = waiter.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
-                        if lease.registered.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    if let Some(lease) = waiter.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
+                        && lease.registered.fetch_sub(1, Ordering::AcqRel) == 1 {
                             retired_backing = Some(std::mem::take(&mut *waiters));
                             self.token.state.registry_generation.fetch_add(1, Ordering::AcqRel);
                             retired_lease = Some(lease.clone());
                         }
-                    }
                 }
-            }
         }
         drop(waiters);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1076,11 +1063,10 @@ impl Drop for Cancelled<'_> {
             if let Some(lease) = retired_lease {
                 lease.retire_backing_deferred();
             }
-            if self.registered.is_some() {
-                if let Some(credit) = &mut self.native_cleanup {
+            if self.registered.is_some()
+                && let Some(credit) = &mut self.native_cleanup {
                     credit.record_deferred(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED });
                 }
-            }
         }
         let waker = self.waiter.take().and_then(|waiter| {
             let waker = waiter.waker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();

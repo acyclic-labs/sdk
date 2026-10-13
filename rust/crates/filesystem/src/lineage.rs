@@ -164,7 +164,7 @@ impl LineageRegistrationWork<'_> {
                     Err(WorkspaceError::Name(crate::WorkspaceNameError::Empty
                         | crate::WorkspaceNameError::Reserved | crate::WorkspaceNameError::TooLong
                         | crate::WorkspaceNameError::InvalidCharacter)) => Ok(false),
-                    Err(error) => Err((WorkspaceLineageError::Workspace(error), None)),
+                    Err(error) => Err((WorkspaceLineageError::Workspace(Box::new(error)), None)),
                 };
                 let parent_shape = match (record.parent_workspace_id, record.parent_workspace_name.as_deref()) {
                     (None, None) => record.fork_generation == record.initial_generation,
@@ -211,7 +211,7 @@ impl LineageRegistrationWork<'_> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn lineage_filesystem_failure<E: std::error::Error + 'static>(error: crate::FsError) -> LineageFailure<E> {
-    (WorkspaceLineageError::Workspace(WorkspaceError::from(error)), None)
+    (WorkspaceLineageError::Workspace(Box::new(WorkspaceError::from(error))), None)
 }
 
 /// Durable optimistic-concurrency adapter for workspace lineage.
@@ -245,7 +245,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
         async move {
             KernelAccounting::native(original, cancellation).check().map_err(lineage_filesystem_failure)?;
             original.cancellation().check().map_err(|error|
-                (WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(error)), None))?;
+                (WorkspaceLineageError::Workspace(Box::new(WorkspaceError::Cancelled(error))), None))?;
             let _ = workspace_id;
             Err((WorkspaceLineageError::NativeOriginalUnsupported, None))
         }
@@ -265,7 +265,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
         async move {
             KernelAccounting::native(original, cancellation).check().map_err(lineage_filesystem_failure)?;
             original.cancellation().check().map_err(|error|
-                (WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(error)), None))?;
+                (WorkspaceLineageError::Workspace(Box::new(WorkspaceError::Cancelled(error))), None))?;
             let _ = (workspace_id, expected_revision, replacement);
             Err((WorkspaceLineageError::NativeOriginalUnsupported, None))
         }
@@ -280,7 +280,7 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     Store(E),
     /// The workspace operation failed.
     #[error(transparent)]
-    Workspace(#[from] WorkspaceError),
+    Workspace(#[from] Box<WorkspaceError>),
     /// Persisted state uses an unsupported version or mismatched identity.
     #[error("workspace-lineage state is incompatible")]
     IncompatibleState,
@@ -300,6 +300,12 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("workspace-lineage store does not support original native work")]
     NativeOriginalUnsupported,
+}
+
+impl<E: std::error::Error + 'static> From<WorkspaceError> for WorkspaceLineageError<E> {
+    fn from(error: WorkspaceError) -> Self {
+        Self::Workspace(Box::new(error))
+    }
 }
 
 /// Core recursive-workspace graph over one durable lineage adapter.
@@ -362,11 +368,11 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         }
         let generation = match control {
             LineageRegistrationWork::Ordinary(_) => workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| (WorkspaceLineageError::Workspace(error), None))?,
+                .map_err(|error| (WorkspaceLineageError::Workspace(Box::new(error)), None))?,
             #[cfg(not(target_arch = "wasm32"))]
             LineageRegistrationWork::Native { original, cancellation } =>
                 workspace.head(*original, cancellation).await.map_err(|error| (error, None))
-                    .map_err(|(error, allocation)| (WorkspaceLineageError::Workspace(error), allocation))?,
+                    .map_err(|(error, allocation)| (WorkspaceLineageError::Workspace(Box::new(error)), allocation))?,
         };
         let (workspace_name, allocation) = control.copy_name(workspace.name().as_str())?;
         self.register_engine(LineageOwnedRecord {
@@ -725,8 +731,8 @@ impl MemoryWorkspaceLineageStore {
         }
         let mut entry_allocation = None;
         #[cfg(not(target_arch = "wasm32"))]
-        if !records.contains_key(&workspace_id) {
-            if let LineageRegistrationWork::Native { original, cancellation } = _control {
+        if !records.contains_key(&workspace_id)
+            && let LineageRegistrationWork::Native { original, cancellation } = _control {
                 // Logical entry storage is known; opaque B-tree nodes are not guessed.
                 let allocation = KernelAccounting::native(original, cancellation).claim_owned(
                     std::mem::size_of::<(WorkspaceId, MemoryLineageRecord)>() as u64, 0,
@@ -736,7 +742,6 @@ impl MemoryWorkspaceLineageStore {
                 };
                 entry_allocation = Some(allocation);
             }
-        }
         if let Some(stored) = records.get_mut(&workspace_id) {
             // Replacing metadata reuses the actual existing entry, not a newly adopted one.
             entry_allocation = stored.entry_allocation.take();

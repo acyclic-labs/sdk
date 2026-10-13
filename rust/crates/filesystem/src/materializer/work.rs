@@ -147,11 +147,10 @@ impl NativeMaterializationWork {
         if let Some(execution) = &self.execution {
             return execution.clone();
         }
-        if let Some(invocation) = &self.invocation {
-            if invocation.owns_resource(self.resource.as_ref()) {
+        if let Some(invocation) = &self.invocation
+            && invocation.owns_resource(self.resource.as_ref()) {
                 return invocation.clone();
             }
-        }
         self.resource.as_ref().map_or_else(
             || self.state.clone() as Arc<dyn acyclic_native_runtime::NativeReadMeter>,
             |resource| resource.clone(),
@@ -253,7 +252,7 @@ impl NativeMaterializationWork {
     pub fn live_allocation_bytes(&self) -> u64 {
         self.state(|state| state.live_allocation_bytes())
     }
-    /// Observes the original root through native_host.
+    /// Observes the original root through `native_host`.
     pub fn root_identity(
         &self,
         path: &Path,

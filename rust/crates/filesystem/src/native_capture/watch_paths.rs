@@ -208,7 +208,6 @@ pub(super) fn remap_renamed_directory_path(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,

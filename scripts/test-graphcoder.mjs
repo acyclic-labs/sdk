@@ -636,10 +636,10 @@ if (scenarioDirectory) {
     await active.expect(/actual local Harness runtime/);
     const outcomes = new Map([[mailbox.task, mailboxOutcome]]);
     for (const [task, leasePath, command] of [
-      [left, manifest.leases.left, manifest.callers.left.admission.input],
-      [right, manifest.leases.right, manifest.callers.right.admission.input],
-      [grandchild, manifest.leases.grandchild, manifest.callers.grandchild.admission.input],
-      [crossTask, crossLeasePath, crossInput.request.child.input],
+      [left, manifest.leases.left, manifest.callers.left.admission.input.model],
+      [right, manifest.leases.right, manifest.callers.right.admission.input.model],
+      [grandchild, manifest.leases.grandchild, manifest.callers.grandchild.admission.input.model],
+      [crossTask, crossLeasePath, crossInput.request.child.input.model],
     ]) {
       const started = active.stdout.length;
       const dispatchedFrom = active.stderr.length;
@@ -667,7 +667,7 @@ if (scenarioDirectory) {
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", rootDispatchStart);
     const rootCheckpoint = await modelCheckpoint(active, root, leases.root);
-    bindDispatch(manifest.callers.root.admission.input, rootDispatch, rootCheckpoint.transition);
+    bindDispatch(manifest.callers.root.admission.input.model, rootDispatch, rootCheckpoint.transition);
     const beforeKillLedger = snapshotInvocations();
     assert.ok(!active.stdout.slice(rootStart).includes(`worker completed task=${root}`));
     assert.equal(active.finished, null);
@@ -700,7 +700,7 @@ if (scenarioDirectory) {
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", bootstrapDispatchStart);
     const bootstrapCheckpoint = await modelCheckpoint(active, manifest.tasks.bootstrap_seed, load(manifest.leases.bootstrap_seed));
-    bindDispatch(manifest.callers.bootstrap_seed.admission.input,
+    bindDispatch(manifest.callers.bootstrap_seed.admission.input.model,
       bootstrapDispatch, bootstrapCheckpoint.transition);
     snapshotInvocations([rootModelOperation]);
     await active.expect(new RegExp(`worker completed task=${manifest.tasks.bootstrap_seed}`), "stdout", bootstrapStart);

@@ -673,8 +673,8 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 // Resolve borrowed entries; clone only actual retained outputs.
                 let mut resolved = if ours_value == theirs_value || theirs_value == base_value { Some(ours_value) }
                     else if ours_value == base_value { Some(theirs_value) } else { None };
-                if resolved.is_none() {
-                    if let Some(resolution) = requested.binding(directory_id, name, accounting)? {
+                if resolved.is_none()
+                    && let Some(resolution) = requested.binding(directory_id, name, accounting)? {
                         resolved = match resolution {
                             MergeConflictResolution::Select(side) => Some(match side {
                                 MergeConflictSide::Base => base_value, MergeConflictSide::Ours => ours_value, MergeConflictSide::Theirs => theirs_value }),
@@ -683,7 +683,6 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                             MergeConflictResolution::File(_) => None,
                         };
                     }
-                }
                 if resolved.is_none() && let (None, Some(a), Some(b)) = (base_value, ours_value, theirs_value)
                     && a.file_id != b.file_id {
                     if a.kind == super::FileKind::Directory && b.kind == super::FileKind::Directory {
@@ -714,19 +713,16 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 };
                 if resolved != ours_value {
                     mutations.ensure_for_push(usize::MAX, accounting)?;
-                    let (mutation, mut allocation, bytes) = match resolved {
-                        Some(entry) => {
-                            let (entry, allocation) = super::persistent_io::clone_value_with_accounting::<TreeFormat>(entry, limits.maximum_name_bytes, accounting)?;
-                            let bytes = TreeFormat::value_owned_bytes(&entry);
-                            let mutation = if let Some(before) = ours_value { TreeMutation::Replace { entry, expected_file_id: before.file_id } }
-                                else { TreeMutation::Insert(entry) };
-                            (mutation, allocation, bytes)
-                        }
-                        None => {
-                            let (name, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(name, limits.maximum_name_bytes, accounting)?;
-                            let bytes = TreeFormat::key_owned_bytes(&name);
-                            (TreeMutation::Remove { name, expected_file_id: ours_value.map(|entry| entry.file_id) }, allocation, bytes)
-                        }
+                    let (mutation, mut allocation, bytes) = if let Some(entry) = resolved {
+                        let (entry, allocation) = super::persistent_io::clone_value_with_accounting::<TreeFormat>(entry, limits.maximum_name_bytes, accounting)?;
+                        let bytes = TreeFormat::value_owned_bytes(&entry);
+                        let mutation = if let Some(before) = ours_value { TreeMutation::Replace { entry, expected_file_id: before.file_id } }
+                            else { TreeMutation::Insert(entry) };
+                        (mutation, allocation, bytes)
+                    } else {
+                        let (name, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(name, limits.maximum_name_bytes, accounting)?;
+                        let bytes = TreeFormat::key_owned_bytes(&name);
+                        (TreeMutation::Remove { name, expected_file_id: ours_value.map(|entry| entry.file_id) }, allocation, bytes)
                     };
                     mutations.value.push(mutation);
                     mutations.allocation.absorb(&mut allocation)?;

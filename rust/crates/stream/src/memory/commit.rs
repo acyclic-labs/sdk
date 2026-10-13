@@ -9,7 +9,7 @@ struct CommitPlan {
 }
 
 impl CommitPlan {
-    fn bind(&mut self, commit_id: CommitId, time: u64) {
+    fn bind(&mut self, commit_id: CommitId, time: u64) -> Result<(), StreamError> {
         for output in [&mut self.result, &mut self.cached] {
             if let CommitOutcome::Committed(envelope) = output {
                 bind_envelope(envelope, commit_id, time);
@@ -17,14 +17,18 @@ impl CommitPlan {
         }
         for history in &mut self.histories {
             if let History::Batch { records, .. } =
-                Arc::get_mut(history).expect("unpublished history")
+                Arc::get_mut(history).ok_or(StreamError::Unavailable)?
             {
-                for record in &mut Arc::get_mut(records).expect("unpublished records").records {
+                for record in &mut Arc::get_mut(records)
+                    .ok_or(StreamError::Unavailable)?
+                    .records
+                {
                     record.commit_id = commit_id;
                     record.committed_at_micros = time;
                 }
             }
         }
+        Ok(())
     }
 
     fn publish(
@@ -33,11 +37,11 @@ impl CommitPlan {
         key: IdempotencyKey,
         digest: [u8; 32],
         time: u64,
-    ) -> (CommitOutcome, Allocation) {
+    ) -> Result<(CommitOutcome, Allocation), StreamError> {
         let CommitOutcome::Committed(envelope) = &self.result else {
             unreachable!()
         };
-        publish(state, self.paths, self.histories, envelope);
+        publish(state, self.paths, self.histories, envelope)?;
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
@@ -50,9 +54,9 @@ impl CommitPlan {
         state
             .retained
             .last_mut()
-            .expect("retained commit")
+            .ok_or(StreamError::Unavailable)?
             ._allocation = self.resident;
-        (self.result, self.output_claim)
+        Ok((self.result, self.output_claim))
     }
 }
 
@@ -160,7 +164,7 @@ impl MemoryStream {
         };
         let source = fact_records(fact);
         if source.is_empty() {
-            return Ok(parent.expect("empty fork prefix"));
+            return parent.ok_or(StreamError::Unavailable);
         }
         let (mut records, mut claim) = self.vector(source.len())?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -308,7 +312,7 @@ impl MemoryStream {
                 state
                     .retained
                     .last_mut()
-                    .expect("retained conflict")
+                    .ok_or(StreamError::Unavailable)?
                     ._allocation = resident;
                 Ok((result, output_claim))
             });
@@ -336,8 +340,8 @@ impl MemoryStream {
             let time = state
                 .last_committed_at_micros
                 .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
-            plan.bind(commit_id, time);
-            Ok(plan.publish(state, request.idempotency_key, digest, time))
+            plan.bind(commit_id, time)?;
+            plan.publish(state, request.idempotency_key, digest, time)
         })
     }
 }
@@ -403,23 +407,28 @@ fn publish(
     paths: Vec<(StreamPath, PathState)>,
     histories: Vec<Arc<History>>,
     envelope: &CommittedEnvelope,
-) {
+) -> Result<(), StreamError> {
     for (path, stream) in paths {
         state.path_bytes += path.as_str().len();
         state.paths.insert(path, stream);
         state.hierarchy_version = envelope.commit_id;
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
-        publish_fact(state, fact, history);
+        publish_fact(state, fact, history)?;
     }
+    Ok(())
 }
 
-fn publish_fact(state: &mut State, fact: &CommittedMutation, history: Arc<History>) {
+fn publish_fact(
+    state: &mut State,
+    fact: &CommittedMutation,
+    history: Arc<History>,
+) -> Result<(), StreamError> {
     let (path, tail) = match fact {
         CommittedMutation::Append(append) => (&append.path, append.tail),
         CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
     };
-    let stream = state.paths.get_mut(path).expect("prepared destination");
+    let stream = state.paths.get_mut(path).ok_or(StreamError::Unavailable)?;
     stream.history = Some(history);
     stream.tail = tail;
     stream.changed.send_replace(tail);
@@ -428,4 +437,5 @@ fn publish_fact(state: &mut State, fact: &CommittedMutation, history: Arc<Histor
         .iter()
         .map(|record| record.value.len())
         .sum::<usize>();
+    Ok(())
 }
