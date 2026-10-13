@@ -1,7 +1,6 @@
 //! Native controls exercise the ordinary admitted runtime and real journals.
 
 use super::*;
-#[cfg(feature = "native-execution")]
 use crate::filesystem::PreparationIo;
 use crate::runtime::TaskStateProvider;
 use crate::{
@@ -10,7 +9,7 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::{SchedulerPayloadStore, WorkLease, WorkPull, Worker},
     resources::ProviderRef,
-    runtime::{TaskDefinition, ToolContext},
+    runtime::ToolContext,
     scheduler::ResourceRequest,
     tool::{Tool, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
     workflow::{MachineIdentity, MachineTransition, ResumableMachine},
@@ -186,6 +185,13 @@ impl ResumableMachine for Machine {
     fn supports_native_work(&self) -> bool {
         self.native.load(Ordering::SeqCst)
     }
+    fn identity_with_native_work<'a>(
+        &'a self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&'a MachineIdentity> {
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+        Ok(&self.identity)
+    }
     fn initialize_with_native_work(
         &self,
         input: &Value,
@@ -318,16 +324,24 @@ impl Fixture {
             },
             schema: json!({"type":"object"}),
             transitioned: AtomicUsize::new(0),
-            native: AtomicBool::new(false),
+            native: AtomicBool::new(true),
         });
-        let mut tasks = TaskRegistry::default();
-        tasks.register(TaskDefinition::<Value, Value>::resumable(
+        let metadata_work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
+        let metadata_io = PreparationIo::from_native_work(&metadata_work)?;
+        let (_, _, tasks, machines) = crate::durable_host::tests::created_fixture::test_registries(
             machine.clone(),
             json!({"type":"object"}),
             json!({"type":"string"}),
-        )?)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(machine.clone(), &mut None)?;
+            Some(&metadata_io),
+        )?;
+        machine.native.store(false, Ordering::SeqCst);
         let clock = Arc::new(Clock(AtomicU64::new(10)));
         let tool = Arc::new(PendingTool {
             clock: clock.clone(),
@@ -390,7 +404,7 @@ impl Fixture {
             .cloned()
             .ok_or_else(|| Error::NotFound("fixture task".into()))
     }
-    async fn runtime(&self) -> Result<Runtime> {
+    async fn runtime(&self, io: Option<&PreparationIo>) -> Result<Runtime> {
         FilesystemTaskRuntime::open(
             self.stream.clone(),
             self.filesystem.clone(),
@@ -413,7 +427,7 @@ impl Fixture {
             None,
             &[],
             &ResumableToolRegistry::default(),
-            None,
+            io,
         )
         .await
     }

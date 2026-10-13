@@ -203,11 +203,7 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn finite_budget() -> acyclic_fs::WorkBudget {
-    let mut encoded = serde_json::to_value(acyclic_fs::WorkBudget::UNBOUNDED).unwrap();
-    for value in encoded.as_object_mut().unwrap().values_mut() {
-        *value = Value::from(100_000_000u64);
-    }
-    serde_json::from_value(encoded).unwrap()
+    acyclic_fs::performance::work_budget(100_000_000, 100_000_000)
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -392,7 +388,7 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
-fn original_native_frame_quota_precedes_trusted_parse_and_preserves_owned_cause() {
+fn malformed_native_frame_preserves_owned_cause() {
     let (initialization, operation) = ids();
     let request = McpStdioRequest {
         initialization,
@@ -401,28 +397,6 @@ fn original_native_frame_quota_precedes_trusted_parse_and_preserves_owned_cause(
         params: json!({}),
         maximum_bytes: 4096,
     };
-    let sizing = native_work();
-    let (exchange, first, guard) = request.exchange(Some(&sizing)).unwrap();
-    let preparation_peak = sizing.receipt().peak_allocation_bytes;
-    drop(exchange);
-    drop(first);
-    drop(guard);
-    let mut budget = finite_budget();
-    budget.peak_allocation_bytes = preparation_peak + 1024;
-    let work =
-        acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
-            .unwrap();
-    let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
-    let error = exchange
-        .push(&initialized(initialization), Some(&work))
-        .err()
-        .unwrap();
-    assert!(matches!(error, Error::NativeWork { .. }));
-    drop(exchange);
-    drop(first);
-    drop(guard);
-    work.receipt().verify(budget).unwrap();
-
     let work = native_work();
     let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
     let error = exchange

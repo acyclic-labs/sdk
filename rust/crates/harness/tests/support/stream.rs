@@ -596,7 +596,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         let mut outcome = self.inner.commit(request).await?;
         self.measure_committed(&outcome)?;
         if aggregate_fault == 3 {
-            self.hide_aggregate_read
+            self.hide_receipt
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         if matches!(aggregate_fault, 2 | 3) {
@@ -774,9 +774,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 None
             };
             if let Some(commit) = head_race
-                && let Err(error) = self.inner.commit(commit).await {
-                    return Ok(Err(error));
-                }
+                && let Err(error) = self.inner.commit(commit).await
+            {
+                return Ok(Err(error));
+            }
             let hidden = (request.path.as_str().contains("/effect-heads/")
                 && request.path.as_str().contains("/nodes/")
                 && self.hide_effect_node_read.load(Ordering::SeqCst))
@@ -1097,7 +1098,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 return Ok(Err(error));
             }
             if aggregate_fault == 3 {
-                self.hide_aggregate_read.store(true, Ordering::SeqCst);
+                self.hide_receipt.store(true, Ordering::SeqCst);
             }
             if matches!(aggregate_fault, 2 | 3) {
                 return Ok(Err(StreamError::Unavailable));

@@ -150,23 +150,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation: OperationId,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<crate::scheduler::OperationState> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = work
-            .as_deref()
-            .and_then(|io| io.original_native_work())
-            .cloned();
-        #[cfg(not(target_arch = "wasm32"))]
-        let io = native
-            .as_ref()
-            .map(crate::executor::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let io: Option<crate::executor::PreparationIo> = None;
-        if work.is_some() && io.is_none() {
-            return Err(Error::Unsupported(
-                "child cancellation requires original IO".into(),
-            ));
-        }
+        let io = operation_io(work)?;
         let admitted = self
             .admission(
                 OperationId::from_bytes(parent.into_bytes()),

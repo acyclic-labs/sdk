@@ -40,15 +40,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
-                allocation_operations: 1,
-                peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-                ..Default::default()
-            },
-            &cancellation,
-        )
-        .expect("native policy source ledger");
+        let work = super::native::native_work(&cancellation);
         assert!(matches!(
             narrowed
                 .authorize_tool_policies(

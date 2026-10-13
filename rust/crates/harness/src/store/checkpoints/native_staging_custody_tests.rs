@@ -67,7 +67,7 @@ async fn competing_immutable_identity_recovers_or_rejects_without_retained_sourc
                 .remaining()
                 .expect("competitor recovery retires all original aliases")
                 .peak_allocation_bytes,
-            budget().peak_allocation_bytes
+            budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes()
         );
     }
     Ok(())
