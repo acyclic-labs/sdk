@@ -7,10 +7,11 @@ use std::{
 };
 
 use crate::OwnedBytes as Bytes;
+#[cfg(test)]
+use crate::request::validate_append_size;
 use crate::request::{
     append_digest, commit_digest, condition_path, fork_digest, hash_conditions, hash_path,
-    hash_records, mutation_path, normalize_commit, request_hasher, validate_append_size,
-    validate_commit_shape, validate_fork_size, validate_records,
+    hash_records, mutation_path, normalize_commit, request_hasher, validate_commit_shape,
 };
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
