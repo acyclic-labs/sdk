@@ -22,6 +22,7 @@ async fn indexed_publication_cancellation_precedes_codec_and_sdk() -> Result<()>
             reducer.authority(),
             &event,
             bytes,
+            None,
             &mut Some(&mut work),
         )
         .is_err()

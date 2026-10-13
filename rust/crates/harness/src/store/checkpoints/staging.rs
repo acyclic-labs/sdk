@@ -103,15 +103,9 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<operations::IndexedPublication> {
-    let mut publication = operations::IndexedPublication::new(
-        reducer.authority(),
-        event,
-        crate::wire_codec::encode_event(reducer.authority(), event, work)?,
-        work,
-    )?;
+    let mut publication =
+        crate::store::effect_heads::publication(client, reducer, event, work).await?;
     let result = async {
-        crate::store::effect_heads::publication(client, reducer, event, &mut publication, work)
-            .await?;
         if !event
             .revision
             .is_multiple_of(u64::from(DEFAULT_PROJECTION_EVENTS))

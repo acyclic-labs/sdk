@@ -6,7 +6,7 @@ pub(crate) struct IndexedPublication {
     pub(crate) path: StreamPath,
     pub(crate) expected_tail: u64,
     pub(crate) bytes: OwnedBytes,
-    pub(super) indexes: Vec<(StreamPath, u64, OwnedBytes)>,
+    pub(in crate::store) indexes: Vec<(StreamPath, u64, OwnedBytes)>,
     retained_payload_bytes: u64,
 }
 
@@ -15,37 +15,31 @@ impl IndexedPublication {
         authority: &Authority,
         event: &Event,
         bytes: Vec<u8>,
+        effect_position: Option<u64>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Self> {
-        let (bytes, retained) = owned_bytes_from_retained_vec(bytes, work)?;
-        let prepared = (|| {
-            if let Some(io) = work.as_deref() {
-                io.check_cancellation()?;
-            }
-            let expected_tail = event
-                .revision
-                .checked_sub(1)
-                .ok_or_else(|| Error::Invalid("indexed event revision must be positive".into()))?;
-            let path = publication_path(authority, "harness/v2/", None, work)?;
-            Ok((expected_tail, path))
-        })();
-        let (expected_tail, (path, path_owned)) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                drop(bytes);
-                return release_owned_after_drop(Err(error), retained, work);
-            }
-        };
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
+        let (bytes, retained) = owned_bytes_from_retained_vec(bytes, quota.work())?;
+        quota.adopt(retained)?;
+        if let Some(io) = quota.work().as_deref() {
+            io.check_cancellation()?;
+        }
+        let expected_tail = event
+            .revision
+            .checked_sub(1)
+            .ok_or_else(|| Error::Invalid("indexed event revision must be positive".into()))?;
+        let (path, path_owned) = publication_path(authority, "harness/v2/", None, quota.work())?;
+        quota.adopt(path_owned)?;
         let mut publication = Self {
             operation_id: event.operation_id,
             path,
             expected_tail,
             bytes,
             indexes: Vec::new(),
-            retained_payload_bytes: retained + path_owned,
+            retained_payload_bytes: quota.retained(),
         };
+        quota.transfer();
         let result = (|| {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let location = OperationLocation {
                 authority: match quota.work().as_deref_mut() {
                     Some(io) => io.clone_authority(authority)?,
@@ -54,7 +48,7 @@ impl IndexedPublication {
                 operation_id: event.operation_id,
                 revision: event.revision,
                 intent_digest: event.intent_digest,
-                effect_position: None,
+                effect_position,
             };
             quota.adopt(location.authority.id.capacity() as u64)?;
             let operation = publication_path(
@@ -80,11 +74,12 @@ impl IndexedPublication {
                 _ => None,
             };
             if let Some((message_id, sequence)) = message {
-                let binding = matches!(
-                    event.payload,
-                    crate::core::EventPayload::ConversationBound { .. }
-                );
-                if !binding && sequence == 0 {
+                if sequence == 0
+                    && !matches!(
+                        event.payload,
+                        crate::core::EventPayload::ConversationBound { .. }
+                    )
+                {
                     return Err(crate::store::guarded_boundary(
                         quota.work(),
                         crate::wire::ErrorCode::Invalid,
@@ -96,47 +91,39 @@ impl IndexedPublication {
                     message_id,
                     sequence,
                 };
-                let path = if binding {
-                    publication_path(
-                        authority,
-                        "harness/v2/conversation-heads/",
-                        None,
-                        quota.work(),
-                    )?
-                } else {
-                    publication_path(
-                        authority,
-                        "harness/v2/conversation-messages/",
-                        Some((&message_id, 36)),
-                        quota.work(),
-                    )?
-                };
+                let head = publication_path(
+                    authority,
+                    "harness/v2/conversation-heads/",
+                    None,
+                    quota.work(),
+                )?;
                 let encoded = crate::store::history::canonical_bytes_with_work(
                     &location,
                     acyclic_stream::MAX_RECORD_BYTES as u64,
                     quota.work(),
                 );
-                drop(location);
-                publication.add_derived_index_with_work(path, 0, encoded, quota.work())?;
-                if !binding {
-                    let bytes = publication.indexes.last().expect("message index").2.clone();
-                    let path = publication_path(
-                        authority,
-                        "harness/v2/conversation-sequences/",
-                        Some((&sequence, 20)),
-                        quota.work(),
-                    )?;
-                    publication.push_index(path, 0, bytes.clone(), 0, quota.work())?;
-                    let path = publication_path(
-                        authority,
-                        "harness/v2/conversation-heads/",
-                        None,
-                        quota.work(),
-                    )?;
-                    publication.push_index(path, sequence, bytes, 0, quota.work())?;
+                publication.add_derived_index_with_work(head, sequence, encoded, quota.work())?;
+                if sequence > 0 {
+                    let bytes = publication
+                        .indexes
+                        .last()
+                        .expect("message head index")
+                        .2
+                        .clone();
+                    for (prefix, key) in [
+                        (
+                            "harness/v2/conversation-messages/",
+                            (&message_id as &dyn std::fmt::Display, 36),
+                        ),
+                        (
+                            "harness/v2/conversation-sequences/",
+                            (&sequence as &dyn std::fmt::Display, 20),
+                        ),
+                    ] {
+                        let path = publication_path(authority, prefix, Some(key), quota.work())?;
+                        publication.push_index(path, 0, bytes.clone(), 0, quota.work())?;
+                    }
                 }
-            } else {
-                drop(location);
             }
             Ok(())
         })();
@@ -145,7 +132,7 @@ impl IndexedPublication {
             Err(error) => {
                 let owned = publication.retained_owned();
                 drop(publication);
-                release_owned_after_drop(Err(error), owned, work)
+                release_owned_after_drop(Err(error), owned, quota.work())
             }
         }
     }
@@ -154,43 +141,6 @@ impl IndexedPublication {
         self.retained_payload_bytes
             + (self.indexes.capacity() * std::mem::size_of::<(StreamPath, u64, OwnedBytes)>())
                 as u64
-    }
-
-    pub(in crate::store) fn set_effect_position_with_work(
-        &mut self,
-        position: u64,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<OwnedBytes> {
-        if let Some(io) = work.as_deref() {
-            io.check_cancellation()?;
-        }
-        let bytes = &mut self
-            .indexes
-            .first_mut()
-            .ok_or_else(|| Error::Storage("publication operation index is absent".into()))?
-            .2;
-        let mut location = decode_location_with_work(bytes, work)?;
-        location.effect_position = Some(position);
-        let owned = location.authority.id.capacity() as u64;
-        let encoded = crate::store::history::canonical_bytes_with_work(
-            &location,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            work,
-        );
-        drop(location);
-        let encoded = release_owned_after_drop(encoded, owned, work)?;
-        let (encoded, capacity) = owned_bytes_from_retained_vec(encoded, work)?;
-        let old_capacity = if work
-            .as_deref()
-            .is_some_and(|io| !original_native_decode_mode(io))
-        {
-            bytes.retained_capacity().unwrap_or(0) as u64
-        } else {
-            0
-        };
-        drop(std::mem::replace(bytes, encoded));
-        self.retained_payload_bytes = self.retained_payload_bytes - old_capacity + capacity;
-        release_owned_after_drop(Ok(bytes.clone()), old_capacity, work)
     }
 
     pub(in crate::store) fn add_derived_index_with_work(
@@ -233,30 +183,6 @@ impl IndexedPublication {
         Ok(())
     }
 
-    pub(crate) fn add_index(
-        &self,
-        request: &mut (
-            acyclic_stream::CommitRequest,
-            crate::wire_codec::CodecQuota<'_, '_>,
-        ),
-    ) -> Result<()> {
-        for (path, tail, bytes) in &self.indexes {
-            crate::distributed::add_condition(
-                request,
-                if *tail == 0 {
-                    CommitCondition::Absent { path: path.clone() }
-                } else {
-                    CommitCondition::Tail {
-                        path: path.clone(),
-                        expected: *tail,
-                    }
-                },
-            )?;
-            crate::distributed::add_record(request, path.clone(), bytes.clone())?;
-        }
-        Ok(())
-    }
-
     pub(crate) async fn request<'a, 'b, P: StreamProvider>(
         &self,
         client: &std::sync::Arc<P>,
@@ -284,19 +210,36 @@ impl IndexedPublication {
                 expected: self.expected_tail,
             },
             Err(error)
-                if error == acyclic_stream::StreamError::NotFound
-                    && self.expected_tail == 0 =>
+                if error == acyclic_stream::StreamError::NotFound && self.expected_tail == 0 =>
             {
                 drop(error);
                 CommitCondition::Absent {
                     path: self.path.clone(),
                 }
             }
-            Err(error) => return Err(crate::store::operations::stream_error_with_work(error, request.1.work())),
+            Err(error) => {
+                return Err(crate::store::operations::stream_error_with_work(
+                    error,
+                    request.1.work(),
+                ));
+            }
         };
         crate::distributed::add_condition(&mut request, target)?;
         crate::distributed::add_record(&mut request, self.path.clone(), self.bytes.clone())?;
-        self.add_index(&mut request)?;
+        for (path, tail, bytes) in &self.indexes {
+            crate::distributed::add_condition(
+                &mut request,
+                if *tail == 0 {
+                    CommitCondition::Absent { path: path.clone() }
+                } else {
+                    CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: *tail,
+                    }
+                },
+            )?;
+            crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
+        }
         Ok(request)
     }
     pub(crate) fn verify(
