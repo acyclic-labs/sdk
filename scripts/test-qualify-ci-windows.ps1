@@ -58,7 +58,12 @@ function Record-Command([string] $Name, [object[]] $Arguments) {
     if ($script:Calls.Count -eq $script:FailCall) { throw 'simulated command failure' }
 }
 function cargo { Record-Command cargo $args }
-function node { Record-Command node $args }
+function node {
+    if ($args[0] -eq 'scripts/clippy-feature-sets.mjs' -and $env:CARGO_BUILD_JOBS -ne '4') {
+        throw 'clippy worker allocation changed'
+    }
+    Record-Command node $args
+}
 function rustup { Record-Command rustup $args }
 
 $expected = @{
@@ -76,11 +81,12 @@ $expected = @{
     )
     'windows-clippy' = @(
         'cargo clippy -p acyclic-plugin --all-targets --all-features --locked -D warnings',
-        'node scripts/clippy-feature-sets.mjs'
+        'node scripts/clippy-feature-sets.mjs 4'
     )
 }
 $priorTarget = $env:CARGO_TARGET_DIR
 $priorTestThreads = $env:RUST_TEST_THREADS
+$priorBuildJobs = $env:CARGO_BUILD_JOBS
 $env:RUST_TEST_THREADS = '32'
 try {
     foreach ($clause in $dispatch.Clauses) {
@@ -112,6 +118,8 @@ try {
     else { $env:CARGO_TARGET_DIR = $priorTarget }
     if ($null -eq $priorTestThreads) { Remove-Item Env:RUST_TEST_THREADS -ErrorAction SilentlyContinue }
     else { $env:RUST_TEST_THREADS = $priorTestThreads }
+    if ($null -eq $priorBuildJobs) { Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue }
+    else { $env:CARGO_BUILD_JOBS = $priorBuildJobs }
 }
 $action = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../.github/actions/qualification-lane/action.yml')
 $installation = ($action -split '    - name: Install Windows nextest', 2)[1] -split '    - name:', 2
