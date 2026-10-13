@@ -281,164 +281,167 @@ impl PiControlHost<'_> {
         result
     }
 
-    async fn dispatch_workflow(
-        &self,
+    fn dispatch_workflow<'a>(
+        &'a self,
         context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
-        work: &acyclic_fs::NativeMaterializationWork,
+        work: &'a acyclic_fs::NativeMaterializationWork,
         reconcile: bool,
-    ) -> acyclic_harness::Result<TaskCommandProgress> {
-        let task = context
-            .durable_task_id()
-            .ok_or_else(|| boundary("Pi command has no original task"))?;
-        let owner = pi_owner::PiOwnerConfig::load(&self.resources.data, self.directory, work)?
-            .into_native_shared(work)?;
-        self.runtime.verify_owner_with_native_work(&owner, work)?;
-        if task == owner.policy().root_task
-            && command.operation_id == pi_root_inputs::preparation_operation(task, work)?
-        {
-            let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
-                return Err(boundary("Pi root preparation requires a Pi state binding"));
-            };
-            let preparation = pi_root_inputs::PiRootPreparation::load(
-                (&self.resources.data, self.directory),
-                &self.runtime,
-                &self.filesystem,
-                binding,
-                pi_recovery::PiTaskOrigin::RootState(self.retained),
-                Some(context.clone()),
-                work,
-            )
-            .await?;
-            let journal_owner = self
-                .runtime
-                .runtime
-                .task_host()
-                .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
-                .await?
+    ) -> impl std::future::Future<Output = acyclic_harness::Result<TaskCommandProgress>> + Send + 'a
+    {
+        async move {
+            let task = context
+                .durable_task_id()
+                .ok_or_else(|| boundary("Pi command has no original task"))?;
+            let owner = pi_owner::PiOwnerConfig::load(&self.resources.data, self.directory, work)?
                 .into_native_shared(work)?;
-            journal_owner
-                .verify(
-                    false,
-                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
+            self.runtime.verify_owner_with_native_work(&owner, work)?;
+            if task == owner.policy().root_task
+                && command.operation_id == pi_root_inputs::preparation_operation(task, work)?
+            {
+                let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
+                    return Err(boundary("Pi root preparation requires a Pi state binding"));
+                };
+                let preparation = pi_root_inputs::PiRootPreparation::load(
+                    (&self.resources.data, self.directory),
+                    &self.runtime,
+                    &self.filesystem,
+                    binding,
+                    pi_recovery::PiTaskOrigin::RootState(self.retained),
+                    Some(context.clone()),
+                    work,
                 )
                 .await?;
-            let expected = pi_root_provider::guarded_pi_value(
-                &preparation.plan,
-                MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-                work,
-            )?;
-            if preparation.command != command || expected.0 != payload {
-                return Err(acyclic_harness::Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Conflict,
-                    reason: "Pi root command differs from original admission",
-                });
+                let journal_owner = self
+                    .runtime
+                    .runtime
+                    .task_host()
+                    .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
+                    .await?
+                    .into_native_shared(work)?;
+                journal_owner
+                    .verify(
+                        false,
+                        &mut Some(&mut &PreparationIo::from_native_work(work)?),
+                    )
+                    .await?;
+                let expected = pi_root_provider::guarded_pi_value(
+                    &preparation.plan,
+                    MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+                    work,
+                )?;
+                if preparation.command != command || expected.0 != payload {
+                    return Err(acyclic_harness::Error::NativeBoundary {
+                        code: acyclic_harness::wire::ErrorCode::Conflict,
+                        reason: "Pi root command differs from original admission",
+                    });
+                }
+                drop(expected);
+                let content = acyclic_harness::runtime::content_residency_verifier(
+                    Arc::clone(&context),
+                    Arc::clone(&journal_owner),
+                    Some(&PreparationIo::from_native_work(work)?),
+                )?;
+                let authority = owner.effect_authority_with_native_work(work)?;
+                let provider = pi_root_provider::root_provider(
+                    owner,
+                    self.resources,
+                    self.filesystem.clone(),
+                    self.stream.clone(),
+                    preparation,
+                    Some(journal_owner),
+                    work.clone(),
+                )?;
+                let effects = pi_owner::root_effects_with_native_work(
+                    self.stream.clone(),
+                    authority.0,
+                    authority.1,
+                    content,
+                    provider.clone(),
+                    work,
+                )?;
+                *self.root_provider.lock().await = Some(provider);
+                let commands = self.runtime.runtime.commands().with_effects(effects);
+                return if reconcile {
+                    commands
+                        .reconcile_with_native_work(context, fence, command, payload, work)?
+                        .await
+                } else {
+                    commands
+                        .execute_with_native_work(context, fence, command, payload, work)?
+                        .await
+                };
             }
-            drop(expected);
-            let content = acyclic_harness::runtime::content_residency_verifier(
-                Arc::clone(&context),
-                Arc::clone(&journal_owner),
-                Some(&PreparationIo::from_native_work(work)?),
-            )?;
-            let authority = owner.effect_authority_with_native_work(work)?;
-            let provider = pi_root_provider::root_provider(
-                owner,
-                self.resources,
-                self.filesystem.clone(),
-                self.stream.clone(),
-                preparation,
-                Some(journal_owner),
-                work.clone(),
-            )?;
-            let effects = pi_owner::root_effects_with_native_work(
-                self.stream.clone(),
-                authority.0,
-                authority.1,
-                content,
-                provider.clone(),
-                work,
-            )?;
-            *self.root_provider.lock().await = Some(provider);
-            let commands = self.runtime.runtime.commands().with_effects(effects);
-            return if reconcile {
-                commands
+            let context = if task == owner.policy().root_task {
+                let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
+                    return Err(boundary("Pi root preparation requires a Pi state binding"));
+                };
+                let preparation = pi_root_inputs::PiRootPreparation::load(
+                    (&self.resources.data, self.directory),
+                    &self.runtime,
+                    &self.filesystem,
+                    binding,
+                    pi_recovery::PiTaskOrigin::RootState(self.retained),
+                    Some(context.clone()),
+                    work,
+                )
+                .await?;
+                let journal_owner = self
+                    .runtime
+                    .runtime
+                    .task_host()
+                    .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
+                    .await?
+                    .into_native_shared(work)?;
+                journal_owner
+                    .verify(
+                        false,
+                        &mut Some(&mut &PreparationIo::from_native_work(work)?),
+                    )
+                    .await?;
+                pi_root_provider::bind_root_output_context_with_native_work(
+                    context,
+                    &journal_owner,
+                    owner,
+                    self.resources,
+                    self.filesystem.clone(),
+                    self.stream.clone(),
+                    &preparation.request.binding,
+                    &preparation.request.root,
+                    work,
+                )
+                .await?
+            } else {
+                context
+            };
+            if matches!(
+                command.kind.as_str(),
+                "acyclic.pi.fork"
+                    | "acyclic.pi.observe-source"
+                    | "acyclic.pi.inspect"
+                    | "acyclic.pi.diff"
+                    | "acyclic.pi.import"
+                    | "acyclic.pi.writeback"
+                    | "acyclic.pi.operator-approval"
+                    | "acyclic.pi.builtin"
+            ) {
+                self.run(context, fence, command, payload, reconcile, work)
+                    .await
+            } else if reconcile {
+                self.runtime
+                    .runtime
+                    .commands()
                     .reconcile_with_native_work(context, fence, command, payload, work)?
                     .await
             } else {
-                commands
+                self.runtime
+                    .runtime
+                    .commands()
                     .execute_with_native_work(context, fence, command, payload, work)?
                     .await
-            };
-        }
-        let context = if task == owner.policy().root_task {
-            let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
-                return Err(boundary("Pi root preparation requires a Pi state binding"));
-            };
-            let preparation = pi_root_inputs::PiRootPreparation::load(
-                (&self.resources.data, self.directory),
-                &self.runtime,
-                &self.filesystem,
-                binding,
-                pi_recovery::PiTaskOrigin::RootState(self.retained),
-                Some(context.clone()),
-                work,
-            )
-            .await?;
-            let journal_owner = self
-                .runtime
-                .runtime
-                .task_host()
-                .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
-                .await?
-                .into_native_shared(work)?;
-            journal_owner
-                .verify(
-                    false,
-                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
-                )
-                .await?;
-            pi_root_provider::bind_root_output_context_with_native_work(
-                context,
-                &journal_owner,
-                owner,
-                self.resources,
-                self.filesystem.clone(),
-                self.stream.clone(),
-                &preparation.request.binding,
-                &preparation.request.root,
-                work,
-            )
-            .await?
-        } else {
-            context
-        };
-        if matches!(
-            command.kind.as_str(),
-            "acyclic.pi.fork"
-                | "acyclic.pi.observe-source"
-                | "acyclic.pi.inspect"
-                | "acyclic.pi.diff"
-                | "acyclic.pi.import"
-                | "acyclic.pi.writeback"
-                | "acyclic.pi.operator-approval"
-                | "acyclic.pi.builtin"
-        ) {
-            self.run(context, fence, command, payload, reconcile, work)
-                .await
-        } else if reconcile {
-            self.runtime
-                .runtime
-                .commands()
-                .reconcile_with_native_work(context, fence, command, payload, work)?
-                .await
-        } else {
-            self.runtime
-                .runtime
-                .commands()
-                .execute_with_native_work(context, fence, command, payload, work)?
-                .await
+            }
         }
     }
 }
