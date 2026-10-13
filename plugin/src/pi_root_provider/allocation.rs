@@ -209,63 +209,60 @@ impl PiRootProvider {
                         )
                         .await?;
                     self.require_native_creation()?;
-                    let workspace = match existing_workspace {
-                        Some(workspace) => {
-                            let mut accounting =
-                                acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                                    work,
-                                    cancellation: &cancellation,
-                                };
-                            let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
-                                &self.store,
-                                workspace.id(),
-                                &mut accounting,
-                            )
-                            .await
-                            .map_err(crate::pi_fork_host::native_lazy_error)?
-                            .ok_or_else(|| {
-                                crate::pi_fork_host::native_lazy_error(
-                                    acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
-                                )
-                            })?;
-                            original
-                                .validate_root_binding(workspace.id(), input.0)
-                                .map_err(crate::pi_fork_host::native_lazy_error)?;
-                            LocalLazyWorkspace::open(
-                                workspace,
-                                Arc::clone(&physical.source),
-                                self.store.clone(),
-                                &mut accounting,
-                            )
-                            .await
-                            .map_err(crate::pi_fork_host::native_lazy_error)?
-                        }
-                        None => {
-                            let operation = self
-                                .creation_operation_with_native_work(effect, attempt, key, work)?;
-                            let name = {
-                                let mut io = acyclic_harness::store::HistoryWork::new(
-                                    PreparationIo::from_native_work(work)?,
-                                );
-                                let value = volume.storage_name(&mut Some(&mut io))?;
-                                (value, io.into_custody()?)
+                    let workspace = if let Some(workspace) = existing_workspace {
+                        let mut accounting =
+                            acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                                work,
+                                cancellation: &cancellation,
                             };
-                            acyclic_fs::LazyWorkspace::attach(
-                                &self.fs,
-                                &name.0,
-                                Arc::clone(&physical.source),
-                                self.store.clone(),
-                                VolumeConfig::native(Lifecycle::Durable),
-                                operation,
-                                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                                    work,
-                                    cancellation: &cancellation,
-                                },
+                        let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+                            &self.store,
+                            workspace.id(),
+                            &mut accounting,
+                        )
+                        .await
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
+                        .ok_or_else(|| {
+                            crate::pi_fork_host::native_lazy_error(
+                                acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
                             )
-                            .await
-                            .map_err(crate::pi_fork_host::native_lazy_error)?
-                            .0
-                        }
+                        })?;
+                        original
+                            .validate_root_binding(workspace.id(), input.0)
+                            .map_err(crate::pi_fork_host::native_lazy_error)?;
+                        LocalLazyWorkspace::open(
+                            workspace,
+                            Arc::clone(&physical.source),
+                            self.store.clone(),
+                            &mut accounting,
+                        )
+                        .await
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
+                    } else {
+                        let operation = self
+                            .creation_operation_with_native_work(effect, attempt, key, work)?;
+                        let name = {
+                            let mut io = acyclic_harness::store::HistoryWork::new(
+                                PreparationIo::from_native_work(work)?,
+                            );
+                            let value = volume.storage_name(&mut Some(&mut io))?;
+                            (value, io.into_custody()?)
+                        };
+                        acyclic_fs::LazyWorkspace::attach(
+                            &self.fs,
+                            &name.0,
+                            Arc::clone(&physical.source),
+                            self.store.clone(),
+                            VolumeConfig::native(Lifecycle::Durable),
+                            operation,
+                            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                                work,
+                                cancellation: &cancellation,
+                            },
+                        )
+                        .await
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
+                        .0
                     };
                     let mut owned_key = work.display(key)?;
                     let mut slot = work.claim(

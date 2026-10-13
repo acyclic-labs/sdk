@@ -12,7 +12,7 @@ use crate::{
 };
 use acyclic_fs::{LazySnapshotRef, NativeMaterializationWork};
 use acyclic_harness::{
-    Error, OperationId, Result, TaskId,
+    Error, Result, TaskId,
     durable_host::TaskJournalOwner,
     filesystem::{ForkPreparationLimits, PreparationIo, TaskCommandProgress},
     runtime::TaskContext,

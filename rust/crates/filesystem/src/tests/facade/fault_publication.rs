@@ -365,9 +365,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     .ok_or("post-append acknowledgement loss unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
-        FsError::Publication(PublicationError::Authority(
-            AuthorityStoreError::Indeterminate { .. }
-        ))
+        FsError::Authority(AuthorityStoreError::Indeterminate { .. })
     ));
     assert_eq!(checkout_state(&checkout), before);
     assert!(

@@ -391,7 +391,6 @@ impl PiNativeCommandHost {
         );
         let effects = self.effects(context, input, &provider, work)?;
         let bound = Arc::new(BoundEffect {
-            provider,
             work: work.clone(),
             effects,
             owner,

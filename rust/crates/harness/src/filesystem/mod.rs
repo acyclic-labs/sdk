@@ -305,7 +305,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .operation_generation(key, original, io.cancellation())
                             .await
                             .map_err(|source| Error::NativeWorkspace {
-                                source,
+                                source: Box::new(source),
                                 custody: None,
                             })?
                     } else {
@@ -526,7 +526,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read(&path, maximum_bytes, original, io.cancellation())
                 .await
                 .map_err(|source| Error::NativeWorkspace {
-                    source,
+                    source: Box::new(source),
                     custody: None,
                 })?;
             fork_preparer_io::retain(&pinned, Some(io)).await?;

@@ -446,7 +446,7 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
                 0 => invalid["roots"].as_object_mut().unwrap().clear(),
                 1 => {
                     invalid["scratch"]["generation"]["provider"]["namespace"] =
-                        serde_json::json!("foreign")
+                        serde_json::json!("foreign");
                 }
                 2 => invalid["scratch"]["workspace_id"] = serde_json::json!(vec![0u8; 16]),
                 _ => {
@@ -498,7 +498,12 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
             .unwrap();
         assert_eq!(proof.0.workspace_id, observed.0.scratch.workspace_id);
         assert_eq!(proof.0.generation, observed.0.scratch.generation);
-        if !fixture.request.binding.project_volumes.is_empty() {
+        if fixture.request.binding.project_volumes.is_empty() {
+            assert_eq!(
+                std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
+                b"original native bytes"
+            );
+        } else {
             let retained = fixture.directory.path().join("retained-project");
             std::fs::rename(&fixture.native, &retained).unwrap();
             std::fs::create_dir(&fixture.native).unwrap();
@@ -519,11 +524,6 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
             assert_eq!(again.0.generation, proof.0.generation);
             assert_eq!(
                 std::fs::read(retained.join("untouched.txt")).unwrap(),
-                b"original native bytes"
-            );
-        } else {
-            assert_eq!(
-                std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
                 b"original native bytes"
             );
         }

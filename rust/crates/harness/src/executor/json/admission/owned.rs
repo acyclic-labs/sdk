@@ -28,69 +28,103 @@ impl Resident {
         Ok(())
     }
 }
+struct Frame<'a> {
+    schema: &'static JsonValueSchema,
+    array: std::iter::Enumerate<std::slice::Iter<'a, Value>>,
+    object: Option<std::iter::Enumerate<serde_json::map::Iter<'a>>>,
+    counts: Branches,
+    tag: Option<u8>,
+    gate: u8,
+}
+impl<'a> Frame<'a> {
+    fn new(value: &'a Value, schema: &'static JsonValueSchema, gate: u8) -> Self {
+        Self {
+            schema,
+            array: value
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .enumerate(),
+            object: value.as_object().map(|values| values.iter().enumerate()),
+            counts: Branches::default(),
+            tag: None,
+            gate,
+        }
+    }
+}
 fn tree(
     value: &Value,
     schema: &'static JsonValueSchema,
-    depth: u32,
     resident: &mut Resident,
     charge: &Charge<'_>,
 ) -> Result<Branches> {
-    resident.visit(depth, value.as_str().map_or(0, str::len), charge)?;
-    let mut counts = Branches::default();
-    match value {
-        Value::Array(values) => {
-            for (index, value) in values.iter().enumerate() {
-                let (child, gate) = schema.child(b"", Some(index));
-                counts.add(tree(value, child, depth + 1, resident, charge)?, gate)?;
+    resident.visit(0, value.as_str().map_or(0, str::len), charge)?;
+    let mut stack: [Option<Frame<'_>>; 257] = [const { None }; 257];
+    stack[0] = Some(Frame::new(value, schema, 0));
+    let mut depth = 0;
+    loop {
+        let frame = stack[depth].as_mut().unwrap();
+        let next = if let Some(object) = &mut frame.object {
+            object
+                .next()
+                .map(|(index, (key, value))| (index, key.as_str(), value))
+        } else {
+            frame.array.next().map(|(index, value)| (index, "", value))
+        };
+        let Some((index, key, field)) = next else {
+            let mut frame = stack[depth].take().unwrap();
+            if frame.object.is_some() && !frame.schema.tag.is_empty() {
+                frame.counts.resolve(frame.tag.unwrap_or(0))?;
             }
+            if depth == 0 {
+                return Ok(frame.counts);
+            }
+            depth -= 1;
+            stack[depth]
+                .as_mut()
+                .unwrap()
+                .counts
+                .add(frame.counts, frame.gate)?;
+            continue;
+        };
+        let child_depth = depth as u32 + 1;
+        if frame.object.is_some() {
+            resident.visit(child_depth, key.len(), charge)?;
         }
-        Value::Object(values) => {
-            let mut tag = None;
-            for (index, (key, field)) in values.iter().enumerate() {
-                resident.visit(depth + 1, key.len(), charge)?;
-                let (child, gate) = schema.child(key.as_bytes(), None);
-                if !schema.tag.is_empty() && key == schema.tag {
-                    tag = Some(schema.mask(field.as_str().map_or(b"", str::as_bytes)));
-                }
-                let selected = if index == 0
-                    && key.as_bytes() == RAW
-                    && std::ptr::eq(child, &ROOT)
-                    && field.is_string()
-                {
-                    let text = field.as_str().unwrap();
-                    resident.visit(depth + 1, text.len(), charge)?;
-                    charge.borrow_mut()(JsonCodecCharge::Inspect {
-                        items: text.len() as u64,
-                    })?;
-                    let mut selected = super::document(
-                        text.as_bytes(),
-                        &ROOT,
-                        depth + 1,
-                        true,
-                        charge,
-                        &RefCell::new(None),
-                    )?;
-                    selected.always.bytes = checked(
-                        selected.always.bytes.checked_add(text.len() as u64),
-                        "JSON byte count overflow",
-                    )?;
-                    selected.always.frames = checked(
-                        selected.always.frames.checked_add(1),
-                        "JSON RawValue count overflow",
-                    )?;
-                    selected
-                } else {
-                    tree(field, child, depth + 1, resident, charge)?
-                };
-                counts.add(selected, gate)?;
-            }
-            if !schema.tag.is_empty() {
-                counts.resolve(tag.unwrap_or(0))?;
-            }
+        let (child, gate) = frame
+            .schema
+            .child(key.as_bytes(), frame.object.is_none().then_some(index));
+        if frame.object.is_some() && !frame.schema.tag.is_empty() && key == frame.schema.tag {
+            frame.tag = Some(frame.schema.mask(field.as_str().map_or(b"", str::as_bytes)));
         }
-        _ => {}
+        resident.visit(child_depth, field.as_str().map_or(0, str::len), charge)?;
+        if index == 0 && key.as_bytes() == RAW && std::ptr::eq(child, &ROOT) && field.is_string() {
+            let text = field.as_str().unwrap();
+            charge.borrow_mut()(JsonCodecCharge::Inspect {
+                items: text.len() as u64,
+            })?;
+            let mut selected = super::document(
+                text.as_bytes(),
+                &ROOT,
+                child_depth,
+                true,
+                charge,
+                &RefCell::new(None),
+            )?;
+            selected.always.bytes = checked(
+                selected.always.bytes.checked_add(text.len() as u64),
+                "JSON byte count overflow",
+            )?;
+            selected.always.frames = checked(
+                selected.always.frames.checked_add(1),
+                "JSON RawValue count overflow",
+            )?;
+            frame.counts.add(selected, gate)?;
+        } else {
+            depth += 1;
+            stack[depth] = Some(Frame::new(field, child, gate));
+        }
     }
-    Ok(counts)
 }
 pub(super) fn inspect(
     value: &Value,
@@ -104,7 +138,7 @@ pub(super) fn inspect(
         nodes: 0,
         bounds,
     };
-    let counts = tree(value, schema, 0, &mut resident, &charge)?.always;
+    let counts = tree(value, schema, &mut resident, &charge)?.always;
     finish(
         resident.bytes,
         resident.nodes,

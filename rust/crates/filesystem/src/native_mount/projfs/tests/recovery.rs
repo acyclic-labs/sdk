@@ -1,4 +1,39 @@
 use super::*;
+
+#[tokio::test]
+async fn detach_removes_projection_and_preserves_non_provider_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    let source = windows_checkout_source().await?;
+    let folder = windows_path("nested");
+    source.create_directory(&folder, FileMetadata::default(), &work)?;
+    let seed = folder.child(windows_name("seed.txt"));
+    source.create_file(&seed, FileMetadata::default(), None, &work)?;
+    source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+    let (_root, destination, mut session) = mount_source(&source)?;
+    let projected = destination.join("nested/seed.txt");
+    let mut permissions = std::fs::metadata(&projected)?.permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&projected, permissions)?;
+    let checkout = tempfile::tempdir()?;
+    std::fs::write(checkout.path().join("keep.txt"), b"checkout")?;
+    super::detach_projection(
+        &destination, session.native_root_identity().ok_or("missing root identity")?,
+        source.as_ref(), &work, || {
+            session.stop()?;
+            std::fs::write(destination.join("keep.txt"), b"unrelated")?;
+            std::fs::write(destination.join("nested/keep.txt"), b"nested unrelated")?;
+            std::os::windows::fs::symlink_dir(checkout.path(), destination.join("checkout"))?;
+            Ok(())
+        },
+    )?;
+    assert!(!projected.exists());
+    assert_eq!(std::fs::read(destination.join("keep.txt"))?, b"unrelated");
+    assert_eq!(std::fs::read(destination.join("nested/keep.txt"))?, b"nested unrelated");
+    assert_eq!(std::fs::read(checkout.path().join("keep.txt"))?, b"checkout");
+    assert_eq!(super::reparse_tag(&destination)?.0, None);
+    Ok(())
+}
 #[test]
 fn ordinary_held_root_has_no_reparse_tag() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

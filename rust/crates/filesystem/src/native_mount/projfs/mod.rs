@@ -105,6 +105,8 @@ pub(super) use session::*;
 mod lifecycle;
 mod recovery;
 pub(super) use recovery::*;
+mod cleanup;
+pub(super) use cleanup::detach_projection;
 mod recovery_control;
 pub(super) use recovery_control::*;
 mod locks;

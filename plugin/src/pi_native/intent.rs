@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
-/// Seeded immutable input consumed only through the actual created child's TaskContext.
+/// Seeded immutable input consumed only through the actual created child's `TaskContext`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeLaunchIntent {
@@ -112,7 +112,7 @@ impl PiNativeLaunchIntent {
             .request_with_work(runtime, binding, manifest, work)
     }
 
-    /// Publishes on the caller's original work and retains the actual FileRef ownership through the prepared generation's final consumer.
+    /// Publishes on the caller's original work and retains the actual `FileRef` ownership through the prepared generation's final consumer.
     pub(crate) async fn publish_session(
         &self,
         context: &TaskContext,
@@ -341,7 +341,7 @@ pub(crate) async fn approve_command(
         work,
     )?;
     let interaction = (
-        Interaction::approval(title.0.into(), command, digest)?,
+        Interaction::approval(title.0, command, digest)?,
         title.1,
     );
     journal

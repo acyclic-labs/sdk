@@ -146,13 +146,7 @@ where
         let actual = work.root_identity(root)?;
         authenticate(work, &mut guard, expected).await?;
         let live = registration.live.upgrade();
-        if actual.to_bytes() != identity {
-            if live.is_some() || matches!(admission, SharedRootAdmission::Resume(_)) {
-                return Err(rejection(ROOT_IDENTITY));
-            }
-            *registration = SharedRootRegistration::default();
-            retained = None;
-        } else {
+        if actual.to_bytes() == identity {
             let retained = retained.ok_or_else(|| rejection(MISSING_REFERENCE))?;
             if let Some(shared) = live {
                 if shared.source.root_identity() != expected {
@@ -172,6 +166,12 @@ where
                 drop(observed);
                 return Ok(shared);
             }
+        } else {
+            if live.is_some() || matches!(admission, SharedRootAdmission::Resume(_)) {
+                return Err(rejection(ROOT_IDENTITY));
+            }
+            *registration = SharedRootRegistration::default();
+            retained = None;
         }
     }
     let reference = retained
@@ -251,15 +251,14 @@ where
     .await
     .map_err(native_source_error)?;
     let excluded = native_reserved_paths(work)?;
-    let source = source.exclude(excluded.0, work, work.cancellation())
+    let source = source
+        .exclude(excluded.0, work, work.cancellation())
         .map_err(native_source_error)?;
     drop(excluded.1);
     let source = Arc::new(source);
     registration.pending_source = Some(Arc::clone(&source));
     authenticate(work, &mut guard, expected).await?;
-    if source.root_identity() != expected
-        || source.reference().identity != reference.identity
-    {
+    if source.root_identity() != expected || source.reference().identity != reference.identity {
         return Err(rejection(ROOT_IDENTITY));
     }
     if matches!(admission, SharedRootAdmission::Resume(_)) {
@@ -334,7 +333,7 @@ pub(crate) fn native_source_error(source: acyclic_fs::DemandError) -> RootError 
             native_work_error(acyclic_fs::NativeTreeMaterializationError::Cancelled)
         }
         source => RootError::NativeSource {
-            source: acyclic_fs::LazyWorkspaceError::Demand(source),
+            source: Box::new(acyclic_fs::LazyWorkspaceError::Demand(source)),
             custody: None,
         },
     }
@@ -349,7 +348,7 @@ pub(crate) fn native_watch_error(source: acyclic_fs::NativeWatchError) -> RootEr
             native_work_error(acyclic_fs::NativeTreeMaterializationError::Cancelled)
         }
         acyclic_fs::NativeWatchError::NativeWork(cause) => native_work_error(cause),
-        source => native_source_error(acyclic_fs::DemandError::Observation(source)),
+        source => native_source_error(acyclic_fs::DemandError::from(source)),
     }
 }
 
@@ -464,6 +463,7 @@ fn shutdown_pending(
     Ok(true)
 }
 
+#[cfg(test)]
 pub(crate) async fn shutdown_pending_with_native_work<F, G>(
     registry: &SharedRootRegistry,
     root: &Path,

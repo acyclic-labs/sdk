@@ -569,7 +569,7 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
         },
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let commands = NativeAdmissionFailure {
         clock: fixture.clock.clone(),
         work,
@@ -999,7 +999,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
         },
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let custody = work
         .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(Error::from)?;
@@ -1049,7 +1049,7 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
         },
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let prefix = work.receipt();
     assert!(matches!(
         native_step_key(u64::MAX, &work),
@@ -1077,7 +1077,7 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
             ..Default::default()
         };
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
         let original = lease.clone();
         let recovered_bytes = recovery_custody.bytes();
@@ -1152,7 +1152,7 @@ async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispa
             acyclic_fs::WorkBudget::default(),
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         let (lease, custody) = fixture
             .native_lease_command(&runtime, kind, Value::Null, &work)
             .await?;
@@ -1198,7 +1198,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         acyclic_fs::WorkBudget::default(),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -1284,7 +1284,7 @@ async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_
             acyclic_fs::WorkBudget::default(),
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         let (mut lease, custody) = fixture.native_lease(&runtime, &work).await?;
         if stale {
             lease.reservation.id.replace_range(0..1, "x");
@@ -1344,7 +1344,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         acyclic_fs::WorkBudget::default(),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let input = super::super::ModelTaskCommand {
         input: crate::model::ModelContent::Text("question".into()),
         selected_context: None,
@@ -1465,7 +1465,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
         acyclic_fs::WorkBudget::default(),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let commands = runtime.commands().with_model(
         &model,
         provider.clone(),
@@ -1528,7 +1528,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
         }
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         if cancelled {
             cancellation.cancel();
         }
@@ -1580,7 +1580,7 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
         acyclic_fs::WorkBudget::default(),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let before = work.receipt();
     let commands = runtime.commands().with_model(
         &model,
@@ -1595,7 +1595,7 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
         acyclic_fs::WorkBudget::default(),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let before = foreign.receipt();
     let result = commands.with_model(
         &model,
@@ -1626,7 +1626,7 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
         acyclic_fs::WorkBudget::default(),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
     runtime.task_host().start_task(&lease, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(&work)?.history_io())).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());

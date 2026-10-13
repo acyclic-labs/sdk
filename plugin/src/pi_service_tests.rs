@@ -7,7 +7,6 @@ use crate::{
 };
 use acyclic_harness::{
     distributed::{WorkPull, Worker},
-    runtime::TaskStateProvider,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::fs;
@@ -140,7 +139,6 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
                 .unwrap();
         }
         drop(runtime);
-        let private = resources.data.clone();
         let session = resources.session_directory(&state.root_session_id);
         let controller = SessionController::open(session.clone(), &resources, &work())
             .await
@@ -176,7 +174,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
             }
             assert!(!state.roots.values().next().unwrap().path.exists());
         }
-        service.shutdown().await.unwrap();
+        let _ = service.shutdown().await.unwrap();
         assert_eq!(
             serde_json::to_value(load_saved_state(&session).unwrap()).unwrap(),
             serde_json::to_value(&state).unwrap()
@@ -203,7 +201,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
                 .unwrap()
                 .is_none()
         );
-        reopened.shutdown().await.unwrap();
+        let _ = reopened.shutdown().await.unwrap();
     }
 }
 
@@ -238,7 +236,6 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
         .await
         .unwrap();
     drop(runtime);
-    let private = resources.data.clone();
     let session = resources.session_directory(&state.root_session_id);
     let controller = SessionController::open(session.clone(), &resources, &work())
         .await
@@ -250,7 +247,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
     )
     .unwrap();
     service.begin_drain();
-    service.shutdown().await.unwrap();
+    let _ = service.shutdown().await.unwrap();
     assert!(!load_saved_state(&session).unwrap().active);
     let configured = ServiceResources::configure(directory.path()).await.unwrap();
     let (resources, sessions) =
@@ -430,7 +427,7 @@ async fn failed_registration_releases_waiters_and_never_replaces_credentials() {
                 b"native original"
             );
         }
-        service.shutdown().await.unwrap();
+        let _ = service.shutdown().await.unwrap();
         drop(original);
     }
 }
@@ -511,7 +508,7 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
         fs::read(project.join("user.txt")).unwrap(),
         b"unchanged native content"
     );
-    service.shutdown().await.unwrap();
+    let _ = service.shutdown().await.unwrap();
 }
 
 #[test]

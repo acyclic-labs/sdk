@@ -22,7 +22,7 @@ impl Wake for PanicWake {
 fn waiter_count(token: &CancellationToken) -> usize {
     match token.state.waiters.lock() {
         Ok(waiters) => waiters.iter().flatten().count(),
-        Err(poisoned) => poisoned.into_inner().len(),
+        Err(poisoned) => poisoned.into_inner().iter().flatten().count(),
     }
 }
 

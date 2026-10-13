@@ -3,10 +3,12 @@ use super::*;
 async fn host_state(service: &ConcurrentServiceControl) -> AdapterState {
     let handle = service.session("session").await.unwrap();
     let resume = handle.pause().await;
-    let state = handle.with_snapshot(|snapshot| match snapshot {
-        Some(SessionSnapshot::HostManaged(state)) => state.clone(),
-        _ => panic!("host-managed session snapshot"),
-    }).unwrap();
+    let state = handle
+        .with_snapshot(|snapshot| match snapshot {
+            Some(SessionSnapshot::HostManaged(state)) => *state.clone(),
+            _ => panic!("host-managed session snapshot"),
+        })
+        .unwrap();
     resume.send(()).unwrap();
     state
 }
@@ -34,10 +36,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                 ),
             ] {
                 let request = native_hook_request(host, event, "session", &fixture.root, extra);
-                service
-                    .dispatch_request(request, &mut None)
-                    .await
-                    .unwrap();
+                service.dispatch_request(request, &mut None).await.unwrap();
             }
             let child = host_state(&service).await.routes["child"]
                 .active_path()
@@ -46,10 +45,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                 "tool_name":"Bash", "tool_use_id":"tool", "tool_input":{"command":"pwd"}});
             let request =
                 native_hook_request(host, "PreToolUse", "session", &fixture.root, input.clone());
-            let (routed, _) = service
-                .dispatch_request(request, &mut None)
-                .await
-                .unwrap();
+            let (routed, _) = service.dispatch_request(request, &mut None).await.unwrap();
             assert!(
                 routed["hookSpecificOutput"]["updatedInput"]["command"]
                     .as_str()
@@ -57,10 +53,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                     .contains(&child.to_string_lossy().replace('\\', "/"))
             );
             if host == "codex" {
-                assert_eq!(
-                    host_state(&service).await.turns["child-tool-turn"],
-                    "child"
-                );
+                assert_eq!(host_state(&service).await.turns["child-tool-turn"], "child");
             }
             for denied in [
                 json!({"turn_id":"forged", "agent_id":"unknown", "agent_type":"explorer",
@@ -70,19 +63,11 @@ fn native_hosts_route_children_and_reject_forged_identity() {
             ] {
                 let request =
                     native_hook_request(host, "PreToolUse", "session", &fixture.root, denied);
-                assert!(
-                    service
-                        .dispatch_request(request, &mut None)
-                        .await
-                        .is_err()
-                );
+                assert!(service.dispatch_request(request, &mut None).await.is_err());
             }
             let request =
                 native_hook_request(host, "PostToolUseFailure", "session", &fixture.root, input);
-            service
-                .dispatch_request(request, &mut None)
-                .await
-                .unwrap();
+            service.dispatch_request(request, &mut None).await.unwrap();
             let context = host_state(&service).await.root_context_id;
             for (event, cwd, extra) in [
                 (
@@ -105,13 +90,10 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                 ("SessionStart", &fixture.root, json!({"source":"resume"})),
             ] {
                 let request = native_hook_request(host, event, "session", cwd, extra);
-                service
-                    .dispatch_request(request, &mut None)
-                    .await
-                    .unwrap();
+                service.dispatch_request(request, &mut None).await.unwrap();
             }
             assert_eq!(host_state(&service).await.root_context_id, context);
-            service.shutdown().await.unwrap();
+            let _ = service.shutdown().await.unwrap();
         }
     });
 }

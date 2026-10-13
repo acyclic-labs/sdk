@@ -226,11 +226,6 @@ pub(crate) fn open_windows_directory<W: NativeHostWork>(
     create: bool,
     work: &mut W,
 ) -> Result<(Dir, NativeRootIdentity), W::Error> {
-    let access = if create {
-        fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE
-    } else {
-        fs::FILE_GENERIC_READ
-    };
     let disposition = if create {
         nt::FILE_OPEN_IF
     } else {
@@ -239,7 +234,7 @@ pub(crate) fn open_windows_directory<W: NativeHostWork>(
     let directory = Dir::from_std_file(open_windows_at(
         parent,
         name,
-        access,
+        fs::FILE_GENERIC_READ,
         disposition,
         nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
         work,

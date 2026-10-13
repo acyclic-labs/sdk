@@ -177,7 +177,7 @@ fn schema_error(
         scope.transfer();
         return Error::NativeSchema {
             code: ErrorCode::Invalid,
-            source,
+            source: Box::new(source),
             custody: Some(custody),
         };
     }

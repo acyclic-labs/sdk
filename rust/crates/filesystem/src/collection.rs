@@ -774,7 +774,9 @@ mod tests {
         let mut accounting = KernelAccounting::native(&denied, &cancellation);
         let error = clone_generation_root_with_accounting(&source.working, &mut accounting)
             .err().ok_or("copy-denied root unexpectedly completed")?;
-        assert!(matches!(error, crate::FsError::Work(_)));
+        assert!(matches!(error, crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { counter: "bytes_copied", .. })
+        )));
         assert_eq!(denied.live_allocation_bytes(), baseline);
         assert_eq!(denied.receipt().bytes_copied, before.bytes_copied);
         assert_eq!(denied.receipt().allocation_operations, before.allocation_operations + 1);

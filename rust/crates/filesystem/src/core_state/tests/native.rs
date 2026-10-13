@@ -4,6 +4,7 @@ use crate::materializer::{NativeMaterializationWork, NativeTreeMaterializationEr
 use crate::workspace_context::{WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
 
 pub(super) fn finite_budget() -> crate::WorkBudget {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
     let mut budget = serde_json::to_value(crate::WorkBudget::UNBOUNDED).unwrap();
     for value in budget.as_object_mut().unwrap().values_mut() {
         *value = serde_json::Value::from(100_000_000_u64);

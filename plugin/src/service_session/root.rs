@@ -80,20 +80,17 @@ impl PiSession {
                 return Err(error);
             }
             let handles = driver.created_roots().await;
-            let allocation = match driver.root_output().await? {
-                Some(allocation) => allocation,
-                None => {
-                    let observer = self.root_observer(None, work).await?;
-                    let attempt = EffectAttemptId::from_bytes(
-                        observer.effect_id_with_native_work(work)?.into_bytes(),
-                    );
-                    observer
-                        .observe_allocation_with_native_work(attempt, work)
-                        .await?
-                        .ok_or_else(|| {
-                            invalid("Pi root has no authenticated successful allocation output")
-                        })?
-                }
+            let allocation = if let Some(allocation) = driver.root_output().await? { allocation } else {
+                let observer = self.root_observer(None, work).await?;
+                let attempt = EffectAttemptId::from_bytes(
+                    observer.effect_id_with_native_work(work)?.into_bytes(),
+                );
+                observer
+                    .observe_allocation_with_native_work(attempt, work)
+                    .await?
+                    .ok_or_else(|| {
+                        invalid("Pi root has no authenticated successful allocation output")
+                    })?
             };
             (allocation, handles)
         };
@@ -204,7 +201,7 @@ impl PiSession {
             let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
                 &self.resources.store, workspace.id(), &mut accounting,
             ).await?.ok_or(RootError::NativeSource {
-                source: acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                source: Box::new(acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable),
                 custody: None,
             })?;
             original.validate_root_binding(workspace.id(), expected)?;
@@ -230,7 +227,7 @@ impl PiSession {
                 .state(&mut accounting)
                 .await
                 .map_err(|source| RootError::NativeSource {
-                    source,
+                    source: Box::new(source),
                     custody: None,
                 })?;
             let original =
@@ -279,7 +276,7 @@ impl PiSession {
                     )
                     .await
                     .map_err(|(source, custody)| match source {
-                        acyclic_fs::WorkspaceLineageError::Workspace(source) => RootError::NativeWorkspace { source, custody },
+                        acyclic_fs::WorkspaceLineageError::Workspace(source) => RootError::NativeWorkspace { source: Box::new(source), custody },
                         source => RootError::Storage(display(source)),
                     })?,
             );
@@ -314,7 +311,7 @@ impl PiSession {
                 )
                 .await
                 .map_err(|(source, custody)| match source {
-                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => RootError::NativeFilesystem { source, custody },
+                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => RootError::NativeFilesystem { source: Box::new(source), custody },
                     source => RootError::Storage(display(source)),
                 })?,
         );

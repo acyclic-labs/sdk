@@ -135,17 +135,16 @@ pub(crate) async fn inspect_operator(
                     reason: "file evidence requires 1..262144 bytes",
                 });
             }
-            if let Some(cursor) = &evidence.cursor {
-                if cursor.operation != prepared.command.sdk_operation
+            if let Some(cursor) = &evidence.cursor
+                && (cursor.operation != prepared.command.sdk_operation
                     || cursor.path != evidence.path
                     || prepared.command.root.as_deref() != Some(cursor.root.as_str())
-                    || cursor.generation != prepared.imported
+                    || cursor.generation != prepared.imported)
                 {
                     return Err(denied(
                         "file evidence cursor changed its original operation, Root, path or generation",
                     ));
                 }
-            }
         }
         let projection = crate::pi_operator::evidence::read_imported_selected_files(
             protected,
