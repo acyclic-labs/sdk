@@ -51,7 +51,7 @@ pub(crate) async fn read_imported_selected_files(
         || descriptor.session != binding.native_session_id
         || descriptor.source_snapshot.workspace_id != root.workspace.workspace().id()
         || created.repository_workspace_id != root.workspace.workspace().id().into_bytes()
-        || created.native_root_identity != root.physical.source.inner().root_identity().to_bytes()
+        || created.native_root_identity != root.physical.source.root_identity().to_bytes()
         || storage_name != root.workspace.workspace().name().as_str()
     {
         return Err(denied("file evidence changed its original selected import"));

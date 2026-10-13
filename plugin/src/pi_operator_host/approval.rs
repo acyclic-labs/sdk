@@ -74,7 +74,8 @@ pub(crate) async fn open_prepared_approval(
     validate_descriptor(protected, descriptor, work)?;
     runtime.verify_owner_with_native_work(protected, work)?;
     protected.validate_root(binding, work)?;
-    let (task, fence) = context.owned_task_binding_with_native_work(work)?;
+    let (task, fence) =
+        context.owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?;
     if task != protected.policy().root_task
         || owner.task_id() != task
         || descriptor.session != binding.native_session_id
@@ -156,13 +157,12 @@ pub(crate) async fn require_resolved_approval(
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     let (journal, id) = conversation_journal(filesystem, stream, protected, descriptor, work)?;
-    ToolApprovalVerifier::verify_with_native_work(
+    ToolApprovalVerifier::verify(
         &journal,
         id,
         descriptor.operation,
         pi_operator::parse_digest(descriptor.approval_digest)?,
-        work,
-    )?
+    )
     .await
 }
 

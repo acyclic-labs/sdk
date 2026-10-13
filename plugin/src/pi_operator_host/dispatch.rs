@@ -11,9 +11,7 @@ impl crate::pi_host::PiControlHost<'_> {
         reconcile: bool,
         work: &NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
-        context
-            .verify_original_execution_owner_with_native_work(work)?
-            .await?;
+        context.verify_original_execution_owner(work).await?;
         let (request, _request_custody) =
             PiOperatorRequest::from_value_with_native_work(&payload, work)?;
         drop(payload);
@@ -84,7 +82,7 @@ impl crate::pi_host::PiControlHost<'_> {
             };
             owner.verify(false, &mut Some(&mut history)).await?;
             journal
-                .resolve_interaction_with_native_work(id, &response, &responder.0.2, work)?
+                .resolve_interaction(id, response, &responder.0.2)
                 .await?;
             owner.verify(false, &mut Some(&mut history)).await?;
         }
@@ -95,13 +93,12 @@ impl crate::pi_host::PiControlHost<'_> {
             }
             return ready(&status_response(&prepared, "declined", None), work);
         }
-        ToolApprovalVerifier::verify_with_native_work(
+        ToolApprovalVerifier::verify(
             &journal,
             id,
             prepared.operation,
             pi_operator::parse_digest(&prepared.approval_digest)?,
-            work,
-        )?
+        )
         .await?;
         let kind = work.display(&format_args!("acyclic.pi.writeback"))?;
         let publish = WorkflowCommand {

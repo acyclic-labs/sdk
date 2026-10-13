@@ -11,11 +11,7 @@ impl PiNativeCommandHost {
         if let Some(entry) = self.find_entry(task) {
             entry.operation_cancellation.cancel();
         }
-        self.runtime
-            .runtime
-            .task_host()
-            .cancel(task, Some(work))
-            .await
+        self.runtime.runtime.task_host().cancel(task).await
     }
 
     pub(crate) async fn drain_stopped_child(
@@ -58,12 +54,24 @@ impl PiNativeCommandHost {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         drop(handles);
         if let Some(effect) = effect {
-            let outcome = effect.owner.outcome_with_native_work(work)?.await?;
+            let outcome = self
+                .runtime
+                .runtime
+                .task_host()
+                .outcome_with_native_work(task, work)?
+                .await?;
             if outcome.0.is_none() {
                 let workflow = self
                     .runtime
                     .runtime
-                    .workflow_journal(task, effect.context.owned_task_fence()?)
+                    .workflow_journal(
+                        task,
+                        effect
+                            .context
+                            .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
+                            .1
+                            .clone(),
+                    )
                     .await?;
                 effect
                     .journal

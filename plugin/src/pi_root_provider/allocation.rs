@@ -72,7 +72,7 @@ impl PiRootProvider {
                 key.0,
                 (
                     physical.source.reference(),
-                    physical.source.inner().root_identity().to_bytes(),
+                    physical.source.root_identity().to_bytes(),
                 ),
             );
         }
@@ -198,7 +198,7 @@ impl PiRootProvider {
                     )
                     .await?;
                 if physical.source.reference().identity != input.0.identity
-                    || physical.source.inner().root_identity().to_bytes() != input.1
+                    || physical.source.root_identity().to_bytes() != input.1
                 {
                     return Err(Self::native_failure(
                         "resumed root source differs from original allocation",
@@ -277,12 +277,11 @@ impl PiRootProvider {
                     acyclic_fs::WorkCounters::UNCHARGED,
                 )?;
                 slot.absorb(&mut owned_key.1)?;
-                let workspace = workspace.into_arc(
-                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                        work,
-                        cancellation: work.cancellation(),
-                    },
-                )?;
+                work.charge(WorkCounters {
+                    allocation_operations: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                let workspace = Arc::new(workspace);
                 state.handles.insert(
                     owned_key.0,
                     PiRootHandle {

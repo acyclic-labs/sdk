@@ -468,12 +468,11 @@ impl<'a> PiForkCoordinator<'a> {
             false,
             work,
         )?;
-        let workspace = workspace
-            .into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work,
-                cancellation: work.cancellation(),
-            })
-            .map_err(crate::pi_fork_host::native_lazy_error)?;
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: 1,
+            ..acyclic_fs::WorkCounters::UNCHARGED
+        })?;
+        let workspace = Arc::new(workspace);
         let mut prepared = PreparedPiFork {
             binding: binding.0,
             report,
