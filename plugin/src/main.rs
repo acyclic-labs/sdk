@@ -66,7 +66,7 @@ use acyclic_fs::{
     Generation, GitCommand, GitCommandOutput, GitCompatRepository, GitDirtyState,
     GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef,
     GitIgnorePolicy, GitPublicationRecord, GitTreeRef, IdempotencyKey, JoinOutcome, LazyMount,
-    LazyWorkspace, LineageMultiRootPublicationAuthorizer, LivePublicationObservation,
+    LazyWorkspace, LineageMultiRootPublicationAuthorizer,
     LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
     MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
     MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,

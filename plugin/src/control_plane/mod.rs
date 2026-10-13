@@ -28,8 +28,6 @@ pub(crate) use routes::*;
 pub(crate) use leases::*;
 pub(crate) use state::*;
 pub(crate) use lifecycle::*;
-pub(crate) use root::*;
-pub(crate) use git::*;
 #[cfg(test)]
 #[path = "../root_allocation_tests.rs"]
 mod root_allocation_tests;

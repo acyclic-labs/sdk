@@ -314,7 +314,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn readonly_journal_owner(
+    /// Opens the protected original readonly task owner on the supplied work.
+    pub async fn readonly_journal_owner(
         self: &Arc<Self>,
         task: TaskId,
         work: &acyclic_fs::NativeMaterializationWork,

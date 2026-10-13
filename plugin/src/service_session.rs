@@ -6,7 +6,6 @@ use acyclic_harness::{
     Error as RootError, Outcome, TaskId,
     conversation::FileRef,
     filesystem::FilesystemHost,
-    runtime::{DurableTaskHost, task_id_for_admission},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 
