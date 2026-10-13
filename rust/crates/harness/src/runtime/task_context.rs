@@ -127,6 +127,22 @@ impl TaskContext {
         context.into_shared()
     }
 
+    /// Borrows the immutable admission retained by this context's original owner.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn admission(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&TaskAdmissionRecord>> {
+        self.require_original_native_work(work)?;
+        let Some(owner) = &self.owned_mailbox else {
+            return Ok(None);
+        };
+        self.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(
+            work,
+        )?))?;
+        Ok(Some(owner.admission().0))
+    }
+
     /// Borrows the task and fence from this context's original owner.
     #[cfg(feature = "filesystem")]
     pub fn owned_task_binding(

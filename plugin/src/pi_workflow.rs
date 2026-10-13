@@ -6,7 +6,7 @@ use acyclic_harness::{
     conversation::FileRef,
     distributed::{WorkPull, Worker},
     filesystem::{TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
-    runtime::TaskContext,
+    runtime::{TaskContext, TaskStateProvider},
     scheduler::LeaseFence,
     workflow::{MachineTransition, WorkflowCommand},
 };
@@ -19,14 +19,21 @@ impl PiControlHost<'_> {
         let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
             return Err(boundary("Pi driver requires its original admitted root"));
         };
-        pi_recovery::authenticate_pi_task(
-            &self.runtime.runtime,
-            binding,
-            pi_recovery::PiTaskOrigin::RootState(self.retained),
-            &self.work,
-            self.runtime.definition.identity(),
-        )
-        .await?;
+        {
+            let admission = self
+                .runtime
+                .runtime
+                .task_host()
+                .observe_admission_with_native_work(binding.task_id, &self.work)?
+                .await?;
+            pi_recovery::authenticate_pi_task(
+                &admission.0,
+                binding,
+                pi_recovery::PiTaskOrigin::RootState(self.retained),
+                &self.work,
+                self.runtime.definition.identity(),
+            )?;
+        }
         let (recovered, custody) = {
             let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(
                 &self.work,
