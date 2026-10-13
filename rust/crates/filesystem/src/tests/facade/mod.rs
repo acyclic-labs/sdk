@@ -1,12 +1,10 @@
 use super::*;
-use crate::kernel::{InlineFileData, LogicalName, MAXIMUM_GENERATION_ROOT_BYTES, NameEncoding};
-use crate::memory::MemoryObjectStore as TestMemoryObjectStore;
+use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
 };
 use crate::storage::{
-    AuthorityFailure, AuthorityResult, CreateAuthorityOutcome, ObjectFailure, ObjectRead,
-    ObjectReadRequest, ObjectResult, ObjectWrite, object_digest,
+    CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite, object_digest,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};

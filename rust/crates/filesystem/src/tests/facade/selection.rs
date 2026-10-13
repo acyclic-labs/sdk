@@ -71,7 +71,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
 async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
-    use crate::workspace::{ForkOptions, WorkspaceError};
+    use crate::workspace::ForkOptions;
     let fs = Fs::memory();
     let workspace = fs
         .create_workspace("selected-fork-closure-controls", B, &cancel)
