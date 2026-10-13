@@ -424,7 +424,7 @@ fn wait_for_child(
     timeout: std::time::Duration,
 ) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
     let result = child.wait(timeout);
-    child.terminate()?;
+    child.terminate(None)?;
     Ok(result?)
 }
 
