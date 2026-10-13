@@ -71,11 +71,66 @@ where
             {
                 #[cfg(unix)]
                 {
-                    host_root.0.hard_link(
-                        super::work::host_path(&existing.0),
-                        super::work::host_path(&host_path.0),
-                        &mut work,
-                    )
+                    (|| {
+                        use crate::native_host::NativeHostWork as _;
+                        use crate::NativeTreeMaterializationError as Error;
+                        use std::os::fd::AsRawFd as _;
+                        let source = super::work::host_path(&existing.0);
+                        let destination = super::work::host_path(&host_path.0);
+                        let mut work = &work;
+                        let source_parent = host_root.0.open_dir_held(
+                            source.parent().ok_or(Error::InvalidLayout)?,
+                            &mut work,
+                        )?;
+                        let destination_parent = host_root.0.open_dir_held(
+                            destination.parent().ok_or(Error::InvalidLayout)?,
+                            &mut work,
+                        )?;
+                        crate::native_host::unix_name(
+                            source.file_name().ok_or(Error::InvalidLayout)?,
+                            &mut work,
+                            |source, work| {
+                                crate::native_host::unix_name(
+                                    destination.file_name().ok_or(Error::InvalidLayout)?,
+                                    work,
+                                    |destination, work| loop {
+                                        let linked = work.attempt_io(
+                                            WorkCounters {
+                                                backend_write_operations: 1,
+                                                ..WorkCounters::UNCHARGED
+                                            },
+                                            || {
+                                                #[allow(
+                                                    unsafe_code,
+                                                    reason = "held parents and funded names outlive linkat"
+                                                )]
+                                                // SAFETY: both parents and terminated names remain live.
+                                                let status = unsafe {
+                                                    libc::linkat(
+                                                        source_parent.as_raw_fd(),
+                                                        source.as_ptr(),
+                                                        destination_parent.as_raw_fd(),
+                                                        destination.as_ptr(),
+                                                        0,
+                                                    )
+                                                };
+                                                if status == 0 {
+                                                    Ok(())
+                                                } else {
+                                                    Err(std::io::Error::last_os_error())
+                                                }
+                                            },
+                                        );
+                                        match linked {
+                                            Err(Error::Io(error))
+                                                if error.kind() == std::io::ErrorKind::Interrupted => {}
+                                            result => return result,
+                                        }
+                                    },
+                                )
+                            },
+                        )
+                    })()
                 }
                 #[cfg(windows)]
                 {

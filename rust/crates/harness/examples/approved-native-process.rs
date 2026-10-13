@@ -293,10 +293,10 @@ where
         (&destination, "destination", true),
     ] {
         let generation = files
-            .resolve(&workspace_ref(
-                volume.provider().clone(),
-                &volume.storage_name(&mut None)?,
-            )?)
+            .resolve(
+                &workspace_ref(volume.provider().clone(), &volume.storage_name(&mut None)?)?,
+                None,
+            )
             .await?
             .generation;
         selections.push((volume, generation, path, writable));
@@ -553,7 +553,7 @@ where
         destination.provider().clone(),
         &destination.storage_name(&mut None)?,
     )?;
-    let published = files.read(&reference, None, "/output.txt", 128).await;
+    let published = files.read(&reference, None, "/output.txt", 128, None).await;
     if expected {
         if published?.as_ref() != b"public native consumer" {
             return Err("destination was not published".into());

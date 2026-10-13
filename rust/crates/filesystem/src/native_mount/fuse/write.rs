@@ -12,7 +12,7 @@ impl FuseProjection {
             (None, None) => Ok(()),
             (Some(original), Some(current)) if Arc::ptr_eq(original, &current) => {
                 crate::native_mount::adapter::CallbackRuntime::existing()?
-                    .verify_native_callback_write_guard(original.as_ref(), work)
+                    .verify_callback(work, || original.check_write(work))
             }
             _ => Err(NativeMountError::ControlPending),
         }

@@ -345,7 +345,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
 ) -> Result<(), crate::demand::DemandError> {
     work.check()?;
     for change in changes {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
         if cfg!(target_os = "macos") || matches!(change, crate::source_watch::HostChange::Everything) {
             state.lock().map_err(|_| NativeWatchError::StatePoisoned)?
                 .invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
@@ -420,7 +420,7 @@ impl NativeEventDelivery {
         }
         if state.invalidation.is_some() { return Ok(()); }
         for excluded in &state.excluded {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             if let Ok(path) = excluded.strip_prefix(&self.context.root)
                 && relative.starts_with(path)
             {
@@ -471,7 +471,7 @@ impl NativeEventDelivery {
                 state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
                 return Ok(());
             }
-            work.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
             let change = if mask & libc::IN_MOVED_TO != 0 {
                 let pending = state.pending_rename.take().expect("matched native rename cookie");
                 QueuedWatchChange {
@@ -1267,7 +1267,7 @@ impl NativeWatch {
             unreachable!("Windows always uses its original held source");
             #[cfg(not(windows))]
             {
-                work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })
+                work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })
                     .map_err(demand_watch_error)?;
                 let mut adapter = adapter;
                 adapter.watch(&root, if options.recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive })
@@ -1390,7 +1390,7 @@ impl NativeWatch {
         let result = (|| {
             grow_watch_path_with_work(&mut candidate, &self.root, work, &mut candidate_bytes)?;
             for component in directory.components() {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 let (name, name_bytes) = watch_host_name_with_work(component, work)?;
                 let mut host_components = Path::new(&name).components();
                 if !matches!(host_components.next(), Some(Component::Normal(_)))
@@ -1404,7 +1404,7 @@ impl NativeWatch {
                 drop(name);
                 work.release(name_bytes)?;
                 grown?;
-                work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
                 let metadata = match candidate.symlink_metadata() {
                     Ok(metadata) => metadata,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1424,7 +1424,7 @@ impl NativeWatch {
                 }
             }
             match &self.watcher {
-                NativeWatchDriver::Source { watcher, .. } => {
+                NativeWatchDriver::Source(watcher) => {
                     if !watcher.is_exact() {
                         return Err(NativeWatchError::BoundedObservationUnavailable.into());
                     }
@@ -1451,7 +1451,7 @@ impl NativeWatch {
         let NativeWatchDriver::Source(watcher) = &self.watcher else { return Ok(()); };
         watcher.unadmit_with_work(Path::new(""), work)?;
         while self.watched_directories.len() > 1 {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
             drop(removed);
         }
@@ -2538,7 +2538,7 @@ fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
             let mut bytes = 0_usize;
             let mut decoded_items = 0_u64;
             for decoded in char::decode_utf16(units.clone()) {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 let decoded = decoded.map_err(|_| NativeWatchError::UnrepresentablePath)?;
                 bytes = bytes.checked_add(decoded.len_utf8()).ok_or(WorkError::Overflow)?;
                 decoded_items = decoded_items.checked_add(1).ok_or(WorkError::Overflow)?;

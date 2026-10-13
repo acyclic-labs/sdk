@@ -81,6 +81,3 @@ use records::*;
 mod accounting;
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-pub(crate) use records::{stream_key, stream_path};

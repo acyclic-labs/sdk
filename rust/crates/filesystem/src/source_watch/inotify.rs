@@ -447,19 +447,6 @@ fn owned(descriptor: i32) -> Result<OwnedFd, DemandError> {
 }
 
 impl NativeSourceWatch {
-    pub(crate) fn start_platform(
-        directory: &crate::native_host::HostRoot,
-        delivery: Arc<Delivery>,
-    ) -> io::Result<Self> {
-        let cancellation = crate::cancellation::CancellationToken::new();
-        Self::start_driver(
-            directory, delivery, &mut DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
-        ).map_err(|error| match error {
-            DemandError::Io(error) => error,
-            error => io::Error::other(error),
-        })
-    }
-
     pub(crate) fn start_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>, work: &mut W,
     ) -> Result<Self, DemandError> {
@@ -759,7 +746,7 @@ impl NativeSourceWatch {
         } else if self.shared.delivery.birth_matches(work) {
             self.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner).extend_for(suffix, work)?;
         } else {
-            work.preflight(suffix)?;
+            work.admit(suffix)?;
         }
         if !prepaid { work.check()?; }
         if wait.is_some_and(crate::CancellationToken::is_cancelled) {
@@ -1651,10 +1638,13 @@ mod admission_tests {
     }
 
     fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
-        NativeSourceWatch::start_platform(
-            &crate::native_host::HostRoot::open(root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
-            Arc::new(Delivery::new(Arc::new(Ignored))),
-        )
+        let mut work = crate::native_host::ordinary_work();
+        let host = crate::native_host::HostRoot::open(root, &mut work)
+            .map_err(crate::native_host::ordinary_error)?;
+        let delivery = Delivery::new_with_work(Arc::new(Ignored), &mut work)
+            .map_err(crate::native_host::ordinary_error)?;
+        NativeSourceWatch::start_driver(&host, Arc::new(delivery), &mut work)
+            .map_err(crate::native_host::ordinary_error)
     }
 
     #[test]
@@ -1981,8 +1971,10 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::NativeMaterializationWork,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("live original callback");
-                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
+                assert!(work.shares_ledger(&crate::NativeMaterializationWork::from_meter(
+                    original.clone(),
+                )));
                 work.started_io(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                 self.invoked.store(true, Ordering::Release);
                 self.cancellation.cancel();
@@ -2058,8 +2050,10 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::NativeMaterializationWork,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("the actual reader retains its original");
-                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
+                assert!(work.shares_ledger(&crate::NativeMaterializationWork::from_meter(
+                    original.clone(),
+                )));
                 let watch = self.watch.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(watch);
                 self.invoked.store(true, Ordering::Release);
