@@ -163,18 +163,74 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<JoinPlan<A, O>, WorkspaceError> {
+        self.plan_exact(source, target, None, work, cancellation)
+            .await
+    }
+
+    /// Reconstructs exact join endpoints under the original durable retry key.
+    pub async fn plan_for_replay_at<W: crate::facade::FsWork>(
+        self,
+        source: &Generation<A, O>,
+        target: &Generation<A, O>,
+        key: IdempotencyKey,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<JoinPlan<A, O>, WorkspaceError> {
+        self.plan_exact(source, target, Some(key), work, cancellation)
+            .await
+    }
+
+    async fn plan_exact<W: crate::facade::FsWork>(
+        self,
+        source: &Generation<A, O>,
+        target: &Generation<A, O>,
+        key: Option<IdempotencyKey>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<JoinPlan<A, O>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             self.validate_endpoints(source, target)?;
-            let (target_head_id, target_authority_head) = self
-                .target
-                .volume
-                .fs
-                .workspace_head_state(&self.target.volume, &mut accounting, cancellation)
-                .await?;
-            if target.id != target_head_id {
-                return Err(WorkspaceError::StaleTarget);
-            }
+            let original = if let Some(key) = key {
+                self.target
+                    .volume
+                    .fs
+                    .workspace_operation_generation(
+                        &self.target.volume,
+                        key.operation_id(),
+                        &mut accounting,
+                        cancellation,
+                    )
+                    .await?
+                    .0
+                    .map(|(_, commit)| commit)
+            } else {
+                None
+            };
+            let target_authority_head = if let Some(commit) = original {
+                crate::Head {
+                    epoch: commit.epoch,
+                    sequence: crate::Sequence::new(
+                        commit
+                            .sequence
+                            .get()
+                            .checked_sub(1)
+                            .ok_or(WorkspaceError::IncompatibleWorkspace)?,
+                    ),
+                    digest: commit.previous_digest,
+                }
+            } else {
+                let (id, head) = self
+                    .target
+                    .volume
+                    .fs
+                    .workspace_head_state(&self.target.volume, &mut accounting, cancellation)
+                    .await?;
+                if key.is_none() && target.id != id {
+                    return Err(WorkspaceError::StaleTarget);
+                }
+                head
+            };
             let copied = copy_work((2 * std::mem::size_of::<Generation<A, O>>()) as u64);
             accounting.admit(copied)?;
             let source = source.clone();

@@ -92,7 +92,7 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
         &cancellation
     ))
     .await?;
-    let repeated = (work!(objects, put(first_id, first_bytes), B, &cancellation)).await?;
+    (work!(objects, put(first_id, first_bytes), B, &cancellation)).await?;
 
     let (second_id, second_bytes) = object(b"x");
     let bounded = (work!(objects, put(second_id, second_bytes), B, &cancellation))

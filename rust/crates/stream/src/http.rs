@@ -26,6 +26,15 @@ pub struct HttpStream {
     maximum: usize,
 }
 impl HttpStream {
+    /// Acknowledges an opaque hosted transport receipt.
+    pub async fn acknowledge_delivery(&self, delivery_token: Bytes) -> Result<(), StreamError> {
+        self.request(
+            "delivery/acknowledge",
+            wire::AcknowledgeDeliveryRequest { delivery_token }.encode_to_vec(),
+        )
+        .await?;
+        Ok(())
+    }
     /// Creates an HTTPS client; loopback HTTP is permitted for local test servers.
     pub fn new(
         endpoint: &str,
