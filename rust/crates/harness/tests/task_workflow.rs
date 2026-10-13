@@ -1423,7 +1423,7 @@ async fn worker_restart_with_options(
                 );
                 assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
                 if with_child {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let reference = runtime
                         .task_host()
                         .observe_admission(task)
@@ -1459,7 +1459,7 @@ async fn worker_restart_with_options(
                     ));
                 }
                 if with_mail_send {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let file = serde_json::from_value(
                         runtime.task_host().observe_admission(task).await?.input,
                     )
@@ -1585,7 +1585,7 @@ async fn worker_restart_with_options(
                     ));
                 }
                 if with_tool && !with_model_approval {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let admission = runtime.task_host().observe_admission(task).await?;
                     let file = serde_json::from_value(admission.input)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -2236,7 +2236,7 @@ async fn stock_restart_with_publication_fault(
         reader.verify(&input_file).await?;
         assert!(matches!(
             harness
-                .durable_context(task, operation)
+                .durable_context(task, operation, None)
                 .await?
                 .read_file(&input_file, None)
                 .await,
@@ -2428,7 +2428,7 @@ async fn stock_restart_with_publication_fault(
                 stream_provider.arm_execution(3, mode);
             }
             let interrupted = if direct_executor {
-                let admitted_context = harness.durable_context(task, operation).await?;
+                let admitted_context = harness.durable_context(task, operation, None).await?;
                 let previous = StockExecutor::new(
                     Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                     model.clone(),
@@ -2750,7 +2750,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let parcel = request.messages.iter().flat_map(|message| message.content.file_refs())
                 .find(|file| file.path() == parcel_path).ok_or_else(|| Error::NotFound("selected model parcel".into()))?;
             assert_eq!(parcel.descriptor(), selected.as_ref().unwrap().payload.descriptor());
-            assert_eq!(runtime.harness().durable_context(task, operation).await?.read_file(parcel, None).await?.as_ref(), b"first steering");
+            assert_eq!(runtime.harness().durable_context(task, operation, None).await?.read_file(parcel, None).await?.as_ref(), b"first steering");
         }
         if phase == 3 {
             let Some(Outcome::Succeeded(value)) = runtime.task_host().outcome(task).await? else {

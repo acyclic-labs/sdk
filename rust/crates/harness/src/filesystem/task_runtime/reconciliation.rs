@@ -91,9 +91,9 @@ where
                 let context = if let Some(io) = io {
                     let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native context requires original work"))?;
                     WorkerContext::Native(self.task_context_for_original_owner_with_native_work(task, &fence, true, work).await?)
-                } else { WorkerContext::Ordinary(self.harness.durable_context(task, operation).await?) };
+                } else { WorkerContext::Ordinary(self.harness.durable_context(task, operation, None).await?) };
                 #[cfg(target_arch = "wasm32")]
-                let context = WorkerContext::Ordinary(self.harness.durable_context(task, operation).await?);
+                let context = WorkerContext::Ordinary(self.harness.durable_context(task, operation, None).await?);
                 for command in transition.commands.iter().take(maximum_commands as usize) {
                     self.owner_observed(task, &fence, true, io).await?;
                     #[cfg(not(target_arch = "wasm32"))]

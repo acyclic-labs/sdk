@@ -102,8 +102,8 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let retained = state.observe_admission(task_id).await?;
-        let context = self.durable_context(task_id, retained.operation_id).await?;
-        definition.open(Arc::new(context), &fence, journal)?.await
+        let context = self.durable_context(task_id, retained.operation_id, None).await?;
+        definition.open(context, &fence, journal)?.await
     }
 
     /// Builds the stock child request from the existing registered metadata.
@@ -304,10 +304,7 @@ impl AgentHarness {
             &admission.task.version,
             &mut None,
         )?);
-        let context = Arc::new(
-            self.durable_context(task_id, admission.operation_id)
-                .await?,
-        );
+        let context = self.durable_context(task_id, admission.operation_id, None).await?;
         definition.open_workflow(context, fence, journal)?.await
     }
 

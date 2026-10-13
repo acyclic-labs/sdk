@@ -231,7 +231,7 @@ impl WorkerTurn {
 }
 
 pub(super) enum WorkerContext {
-    Ordinary(TaskContext),
+    Ordinary(Arc<TaskContext>),
     #[cfg(not(target_arch = "wasm32"))]
     Native(Arc<crate::runtime::TaskContext>),
 }
@@ -1324,8 +1324,9 @@ where
         let owner = self.host.journal_owner(task, &(fence), None).await?;
         let context = self
             .harness
-            .durable_context(task, OperationId::from_bytes(task.into_bytes()))
+            .durable_context(task, OperationId::from_bytes(task.into_bytes()), None)
             .await?;
+        let context = Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
         context.with_owned_mailbox(
             task,
             Arc::new(TaskJournalMailbox {
@@ -1457,7 +1458,7 @@ where
         } else {
             crate::runtime::NativeContextPurpose::Dispatch { fence, mailbox }
         };
-        let (context, custody) = self
+        let context = self
             .harness
             .open_durable_context(
                 task,
@@ -1465,10 +1466,7 @@ where
                 crate::runtime::ContextSource::Native { work, purpose },
             )
             .await?;
-        context.into_native_shared(
-            custody.expect("native owner context retains its original custody"),
-            work,
-        )
+        Ok(context)
     }
 
     /// Opens the original owner-fenced journal and returns its exact task/turn namespace.
@@ -2116,22 +2114,22 @@ where
                     "native wait context requires original observer",
                 )
             })?;
-            let (context, custody) = self
+            let context = self
                 .harness
-                .durable_context_with_native_work(task, admission.operation_id, work)
+                .durable_context(task, admission.operation_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
                 .await?;
-            WorkerContext::Native(context.into_native_shared(custody, work)?)
+            WorkerContext::Native(context)
         } else {
             WorkerContext::Ordinary(
                 self.harness
-                    .durable_context(task, admission.operation_id)
+                    .durable_context(task, admission.operation_id, None)
                     .await?,
             )
         };
         #[cfg(target_arch = "wasm32")]
         let context = WorkerContext::Ordinary(
             self.harness
-                .durable_context(task, admission.operation_id)
+                .durable_context(task, admission.operation_id, None)
                 .await?,
         );
         #[cfg(not(target_arch = "wasm32"))]
@@ -2296,11 +2294,11 @@ where
                         .await?,
                 )
             } else {
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?)
+                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id, None).await?)
             };
             #[cfg(target_arch = "wasm32")]
             let context =
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?);
+                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id, None).await?);
             #[cfg(not(target_arch = "wasm32"))]
             let mut session = if let WorkerContext::Native(context) = &context {
                 let work =
@@ -2662,7 +2660,7 @@ where
                     )
                     .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                     commands
-                        .execute(context.clone(), fence.clone(), command.clone(), payload)
+                        .execute(context.as_ref().clone(), fence.clone(), command.clone(), payload)
                         .await
                 }
             };

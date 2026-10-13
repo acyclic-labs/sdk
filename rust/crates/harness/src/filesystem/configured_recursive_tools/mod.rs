@@ -346,7 +346,7 @@ where
     ) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>> {
         Box::pin(async move {
             self.preparation_source(
-                &crate::filesystem::task_runtime::WorkerContext::Ordinary(context.clone()),
+                &crate::filesystem::task_runtime::WorkerContext::Ordinary(Arc::new(context.clone())),
                 token,
                 cancellation,
                 false,

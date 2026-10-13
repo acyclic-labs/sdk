@@ -525,7 +525,7 @@ where
             },
             runtime
                 .harness()
-                .durable_context(task_id, OperationId::from_bytes(task_id.into_bytes()))
+                .durable_context(task_id, OperationId::from_bytes(task_id.into_bytes()), None)
                 .await?,
             approvals.clone(),
             false,
@@ -626,7 +626,7 @@ where
             },
             runtime
                 .harness()
-                .durable_context(seed.task, OperationId::from_bytes(seed.task.into_bytes()))
+                .durable_context(seed.task, OperationId::from_bytes(seed.task.into_bytes()), None)
                 .await?,
             journal,
             true,
