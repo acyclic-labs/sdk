@@ -56,9 +56,11 @@ impl Expected {
     }
 }
 
+type ExpectedRequests = Arc<Mutex<VecDeque<Expected>>>;
+
 struct Fake {
     identity: Identity,
-    expected: Arc<Mutex<VecDeque<Expected>>>,
+    expected: ExpectedRequests,
     requests: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -97,7 +99,7 @@ impl Drop for Fake {
 }
 
 async fn handle(
-    State((expected, requests)): State<(Arc<Mutex<VecDeque<Expected>>>, Arc<AtomicUsize>)>,
+    State((expected, requests)): State<(ExpectedRequests, Arc<AtomicUsize>)>,
     request: Request,
 ) -> Response {
     requests.fetch_add(1, Ordering::Relaxed);
@@ -198,7 +200,7 @@ async fn bearer_is_private_redacted_and_never_overwrites_an_existing_file() {
         .bearer(&store, "org-1", &output)
         .await
         .expect("bearer");
-    assert_eq!(result["account_id"], "account-1");
+    assert_eq!(result.get("account_id"), Some(&json!("account-1")));
     assert!(!result.to_string().contains("private.token.signature"));
     assert_eq!(
         fs::read_to_string(&output).expect("output"),
@@ -307,7 +309,7 @@ async fn bearer_refreshes_expiry_and_401_without_changing_the_post() {
             .bearer(&store, "org-1", &output)
             .await
             .expect("mint after rotation");
-        assert_eq!(result["account_id"], "account-1");
+        assert_eq!(result.get("account_id"), Some(&json!("account-1")));
         assert_eq!(
             fs::read_to_string(output).expect("bearer"),
             "private.token.signature"
