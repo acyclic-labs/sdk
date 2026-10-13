@@ -4,9 +4,10 @@ use super::allocation::{
     AllocationError, AllocationLedger, KernelAccounting, KernelOwnedAllocation,
 };
 use super::codec::{DecodedPageKind, DecodedPageShape};
-use super::file_read::{ReadOwned, release_read_allocation};
+use super::file_read::{ReadOwned, read_store_error, release_read_allocation};
 use super::persistent_btree::{Child, Format, Page};
 use super::{CanonicalDecodeError, DecodeLimits};
+use crate::FsError;
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
@@ -21,7 +22,6 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
-use thiserror::Error;
 
 pub(crate) struct OwnedPage<F: Format> {
     pub(crate) page: PageLease<F>,
@@ -43,7 +43,7 @@ impl<F: Format> OwnedPage<F> {
         self,
         source: super::allocation::KernelOwnedAllocation,
         accounting: &mut super::allocation::KernelAccounting<'_>,
-    ) -> Result<((Page<F>, u64), super::allocation::KernelOwnedAllocation), crate::FsError> {
+    ) -> Result<((Page<F>, u64), super::allocation::KernelOwnedAllocation), FsError> {
         let input = super::file_read::ReadOwned {
             value: self,
             custody: source,
@@ -57,7 +57,7 @@ impl<F: Format> OwnedPage<F> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if accounting.native_work().is_some() {
                     let cloned = super::file_read::decode_owned(accounting, |steps| {
-                        clone_page::<F, crate::FsError>(&page, &mut |step| steps(step))
+                        clone_page::<F>(&page, &mut |step| steps(step))
                     })?;
                     let bytes = match &cloned.1 {
                         super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => {
@@ -72,9 +72,8 @@ impl<F: Format> OwnedPage<F> {
                     .expect("the native page clone uses the original step engine");
                 allocations
                     .claim_bytes(logical_bytes, u64::from(logical_bytes != 0), work, budget)
-                    .map_err(|error| accounted_leaf_error(Error::Allocation(error)))?;
-                charge_copy(logical_bytes, &budget, allocations, work)
-                    .map_err(accounted_leaf_error)?;
+                    .map_err(allocation_error)?;
+                charge_copy(logical_bytes, &budget, allocations, work)?;
                 Ok((
                     ((*page).clone(), logical_bytes),
                     super::allocation::KernelOwnedAllocation::Standalone,
@@ -84,30 +83,8 @@ impl<F: Format> OwnedPage<F> {
     }
 }
 
-#[derive(Debug, Error)]
-pub(crate) enum Error {
-    #[error("persistent page allocation failed")]
-    AllocationFailed,
-    #[error(transparent)]
-    Allocation(#[from] AllocationError),
-    #[error(transparent)]
-    Storage(#[from] ObjectStoreError),
-    #[error(transparent)]
-    Decode(#[from] CanonicalDecodeError),
-    #[error(transparent)]
-    Work(#[from] WorkError),
-}
-
-fn accounted_leaf_error(error: Error) -> crate::FsError {
-    match error {
-        Error::AllocationFailed => CanonicalDecodeError::AllocationFailed.into(),
-        Error::Allocation(error) => {
-            error.into_work_or(CanonicalDecodeError::AllocationFailed.into())
-        }
-        Error::Storage(error) => super::file_read::read_store_error(error),
-        Error::Decode(error) => error.into(),
-        Error::Work(error) => error.into(),
-    }
+fn allocation_error(error: AllocationError) -> FsError {
+    error.into_work_or(CanonicalDecodeError::AllocationFailed.into())
 }
 
 fn retained_bytes(read: &ObjectRead) -> u64 {
@@ -117,8 +94,8 @@ fn retained_bytes(read: &ObjectRead) -> u64 {
     }
 }
 
-fn invalid_batch_result() -> Error {
-    Error::Storage(ObjectStoreError::Rejected(
+fn invalid_batch_result() -> FsError {
+    read_store_error(ObjectStoreError::Rejected(
         "object store returned an invalid page batch".to_owned(),
     ))
 }
@@ -132,7 +109,7 @@ fn charge_copy(
     budget: &WorkBudget,
     allocations: &mut AllocationLedger,
     work: &mut WorkCounters,
-) -> Result<(), Error> {
+) -> Result<(), FsError> {
     match work.charge(
         &WorkCounters {
             bytes_copied: copied,
@@ -143,7 +120,7 @@ fn charge_copy(
         Ok(()) => Ok(()),
         Err(WorkError::Overflow) => Err(WorkError::Overflow.into()),
         Err(error) => {
-            allocations.release(copied)?;
+            allocations.release(copied).map_err(allocation_error)?;
             Err(error.into())
         }
     }
@@ -156,7 +133,7 @@ mod decode;
 pub(crate) use batch::read_pages_with_accounting;
 use cache::admit_decoded_with_accounting;
 pub(crate) use cache::read_page_with_accounting;
-use decode::{claim_read_allocation, clone_page, decode_read_with_custody};
+use decode::{claim_read_allocation, clone_page};
 pub(crate) use decode::{clone_key, clone_value, decode_read_with_accounting};
 
 #[cfg(all(test, feature = "memory"))]

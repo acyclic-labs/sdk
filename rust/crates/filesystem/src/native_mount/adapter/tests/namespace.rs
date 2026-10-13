@@ -260,9 +260,18 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     for round in 1..=ROUNDS {
         source.runtime.wait(|| {
             Box::pin(async {
-                let mut checkout = source.checkout.lock().await;
+                let (mut candidate, epoch, stamp) = source
+                    .checkout
+                    .candidate(
+                        None,
+                        &mut NativeDemandCarrier::Native(&work),
+                        work.cancellation(),
+                        Some(&source.cancellation),
+                    )
+                    .await?;
                 for path in &pair {
-                    checkout
+                    candidate
+                        .checkout
                         .change_content(
                             path.clone(),
                             ContentChange::Write {
@@ -277,7 +286,18 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
                 }
-                Ok::<_, MountSourceError>(())
+                source
+                    .checkout
+                    .install_change(
+                        candidate,
+                        epoch,
+                        stamp,
+                        ViewChange::Everything,
+                        &work,
+                        &source.cancellation,
+                        source.native_callback_guard.clone(),
+                    )
+                    .await
             })
         })?;
     }
