@@ -15,9 +15,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             ));
         }
         self.verify_task_lease(false).await?;
-        let summary_proof = self
-            .preparer
-            .prepare_bound_summary(&request, self.io.as_ref())?;
+        let summary_proof = request.preparation.summary.as_ref().map(|_| {
+            &self
+                .preparer
+                .summary
+                .as_ref()
+                .expect("request checked its Summary context")
+                .prepared
+        });
         let journal = self.claim(&request).await?;
         if let Some(report) = read_report(
             &self.preparer.host,
@@ -414,25 +419,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .iter()
                         .find(|provider| provider.provider() == selection.revision.provider())
                     {
-                        if let Some(committed) =
-                            self.capture_result(&journal, index, selection).await?
-                        {
-                            committed
-                        } else {
-                            let captured = if self.start_capture(&journal, &request, index).await? {
-                                self.verify_task_lease(false).await?;
-                                provider.capture(&request, selection).await?
-                            } else {
-                                provider
-                                    .reconcile(&request, selection)
-                                    .await?
-                                    .ok_or(Error::Indeterminate(request.operation_id))?
-                            };
-                            self.commit_capture_result(
-                                &journal, &request, index, selection, captured,
-                            )
+                        self.capture(&journal, &request, index, selection, provider.as_ref())
                             .await?
-                        }
                     } else {
                         Capture::Unsupported(stock_string_copy(
                             "resource capture provider is not installed",

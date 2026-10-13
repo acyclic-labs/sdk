@@ -1,6 +1,6 @@
 use super::*;
 use crate::filesystem::default_tools::{
-    decode, encode, recursive_command_outbox, recursive_reject,
+    decode, encode, recursive_reject,
 };
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use crate::wire::ErrorCode;
@@ -137,12 +137,15 @@ impl ForkPreparationMachine {
                         "fork preparation initial trigger changed",
                     ));
                 }
+                let operation_id = command.operation_id;
+                let mut commands = Vec::new();
+                crate::executor::stock_vec_push(&mut commands, command, io)?;
                 (
                     Some(State::Waiting {
-                        operation_id: command.operation_id,
+                        operation_id,
                         request_digest,
                     }),
-                    recursive_command_outbox(command, io)?,
+                    commands,
                     MachineStatus::Suspended,
                 )
             }

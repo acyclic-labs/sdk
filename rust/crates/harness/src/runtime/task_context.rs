@@ -87,7 +87,7 @@ pub struct TaskContext {
     pub(super) owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
     pub(super) output_content: Option<ContentBindings>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_metadata_source: Option<native_context::NativeMetadataSource>,
+    pub(super) native_purpose: Option<IssuedContextPurpose>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -106,7 +106,7 @@ impl Clone for TaskContext {
             output_content: self.output_content.clone(),
             model_steps: Arc::clone(&self.model_steps),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_metadata_source: None,
+            native_purpose: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         }
@@ -143,7 +143,7 @@ impl TaskContext {
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            self.native_metadata_source = None;
+            self.native_purpose = None;
         }
         self.output_content = Some(binding);
         Ok(self)
@@ -161,35 +161,6 @@ impl TaskContext {
         self.with_content_bindings(binding)
     }
 
-    /// Returns only the exact creator-authenticated handles already admitted to this task.
-    pub fn created_content_bindings(&self, volume: &VolumeRef) -> Result<ContentBindings> {
-        volume.validate(&mut None)?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            if !self
-                .scope
-                .grants()
-                .contains(&volume.capability(operation, &mut None)?)
-            {
-                return Err(Error::Unauthorized(
-                    "task lacks original created-content read/write authority".into(),
-                ));
-            }
-        }
-        let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
-            Error::Unauthorized("volume has no authenticated task creation binding".into())
-        })?;
-        if binding
-            .writer
-            .as_ref()
-            .is_none_or(|writer| writer.volume() != volume)
-        {
-            return Err(Error::Unauthorized(
-                "created content lacks its exact admitted writer".into(),
-            ));
-        }
-        Ok(binding.clone())
-    }
-
     #[cfg(feature = "filesystem")]
     pub(crate) fn with_owned_mailbox(
         mut self,
@@ -203,7 +174,7 @@ impl TaskContext {
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            self.native_metadata_source = None;
+            self.native_purpose = None;
         }
         self.owned_mailbox = Some(mailbox);
         Ok(self)
@@ -253,7 +224,7 @@ impl TaskContext {
         self.owned_interactions = Some(router);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            self.native_metadata_source = None;
+            self.native_purpose = None;
         }
         Ok(self)
     }
@@ -318,27 +289,6 @@ impl TaskContext {
         }
         let mut child = self.scoped(grants, limits)?;
         child.harness = child.harness.bind_model(model, provider)?;
-        Ok(child)
-    }
-
-    /// Places newly admitted descendants on another qualified provider.
-    pub fn scoped_execution(
-        &self,
-        grants: Capabilities,
-        limits: Limits,
-        execution: Arc<dyn ExecutionProvider>,
-    ) -> Result<Self> {
-        if self.durable_task.is_some() {
-            return Err(Error::Unsupported(
-                "durable execution override requires a recorded effect".into(),
-            ));
-        }
-        let mut child = self.scoped(grants, limits)?;
-        child.harness = self.harness.scoped_execution(
-            child.scope.grants().clone(),
-            child.scope.limits(),
-            execution,
-        )?;
         Ok(child)
     }
 

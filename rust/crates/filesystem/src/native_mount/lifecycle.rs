@@ -129,64 +129,35 @@ pub(super) fn start_native_mount_prepared_with_meter(
         destination_guard: None,
         startup_source_watch: None,
         #[cfg(windows)]
-        warm_namespace: storage.retired.as_ref().and_then(|old| {
-            old.namespace_outcome
-                .as_ref()
-                .and_then(projfs::ProjFsNamespaceOutcome::qualification)
-        }),
+        warm_namespace: None,
     });
     let mut driver = None;
     #[cfg(windows)]
-    let mut namespace_binding = None;
-    #[cfg(windows)]
-    let lineage_admission = source
-        .native_namespace_lineage()
-        .map(|lineage| {
-            let mut carrier = adapter::NativeDemandCarrier::Native(work);
-            let mut inputs = adapter::InputBuffers::new(&mut carrier)?;
-            let root = inputs.clone_namespace(lineage.root.components(), lineage.limits)?;
-            let lazy_root = lineage.lazy_root.map(|text| {
-                inputs.copy_bytes(text.as_bytes()).map(|bytes| String::from_utf8(bytes).expect("canonical lazy root is UTF-8"))
-            }).transpose()?;
-            {
-                let mut gate = lineage.capture_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if storage.retired.is_some() && (!gate.fresh_for_namespace() || lineage.capture_cancellation.is_cancelled()) {
-                    return Err(MountSourceError::Stale);
-                }
-                gate.namespace_bound = true;
-            }
-            namespace_binding = Some(NativeMountNamespaceBinding {
-                owner: lineage.owner.clone(), root, native_original: lineage.native_original.cloned(),
-                lazy_owner: lineage.lazy_owner.clone(), lazy_root,
-                _custody: inputs.retain().expect("native namespace allocation"),
-            });
-            Ok::<_, MountSourceError>(())
-        })
-        .transpose()
-        .map(|_| ())
-        .map_err(NativeMountError::from);
-    #[cfg(not(windows))]
-    let lineage_admission: Result<(), NativeMountError> = Ok(());
-    let result = lineage_admission.and_then(|()| {
-        start_driver_into(
-            &request,
-            source,
-            work,
-            &mut driver,
-            &mut retirement,
-            |packet| {
-                let _services = adapter::CallbackRuntime::existing()?;
-                work.state.lock().check()?;
-                MountDestinationGuard::acquire_with_work(
-                    &request.destination,
-                    allow_nonempty,
-                    work,
-                    &mut packet.destination_guard,
-                    false,
-                )
-            },
-        )
-    });
+    if let Some(lineage) = source.native_namespace_lineage() {
+        lineage
+            .capture_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .namespace_bound = true;
+    }
+    let result = start_driver_into(
+        &request,
+        source,
+        work,
+        &mut driver,
+        &mut retirement,
+        |packet| {
+            let _services = adapter::CallbackRuntime::existing()?;
+            work.state.lock().check()?;
+            MountDestinationGuard::acquire_with_work(
+                &request.destination,
+                allow_nonempty,
+                work,
+                &mut packet.destination_guard,
+                false,
+            )
+        },
+    );
     // A prebirth rejection leaves its packet here. An accepted loop owns it
     // even on failure; the retained driver signals that same owner to retire.
     let (destination_guard, retained_source, startup_source_watch) = match retirement {
@@ -201,10 +172,6 @@ pub(super) fn start_native_mount_prepared_with_meter(
     owner.driver = driver;
     owner.destination_guard = destination_guard;
     owner.startup_source_watch = startup_source_watch;
-    #[cfg(windows)]
-    {
-        owner.namespace_binding = namespace_binding;
-    }
     match result {
         Ok(()) => {
             drop(storage);

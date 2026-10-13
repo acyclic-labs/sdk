@@ -32,21 +32,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         self.check_request(request, io, self.task_preparation.as_deref())?;
         let mut grants = self.reference_grants(request, io).await?;
         if request.preparation.summary.is_some() {
-            let summary = self.prepare_bound_summary(request, io)?.ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "summary source was not authenticated",
-                )
-            })?;
-            let (_, references) = crate::filesystem::summary_fork::split_references(&summary, io)?;
+            let summary = &self
+                .summary
+                .as_ref()
+                .expect("request checked its Summary context")
+                .prepared;
+            let (_, references) = crate::filesystem::summary_fork::split_references(summary, io)?;
             add_summary_readers(request, &mut grants, &references, io)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && let Some(task) = &self.task_preparation
         {
-            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
+            task.verify(
+                false,
+                Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+            )?
+            .await?;
         }
         Ok(grants)
     }
@@ -70,7 +72,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = native
             && let Some(task) = &self.task_preparation
         {
-            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
+            task.verify(
+                false,
+                Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+            )?
+            .await?;
         }
         let controller = self.controller(io.filter(|io| io.original_native_work().is_some()))?;
         let (grants, custody) = controller
@@ -97,13 +103,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     }
 
     /// Builds the exact created identities and their allocation journal proofs.
-    pub(crate) fn creation_allocations(&self, request: &ForkRequest, preparation: crate::TaskId,
-        io: Option<&PreparationIo>) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
+    pub(crate) fn creation_allocations(
+        &self,
+        request: &ForkRequest,
+        preparation: crate::TaskId,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.check_request(request, io, self.task_preparation.as_deref())?;
         } else {
             let mut history = io.map(PreparationIo::history_io);
-            request.validate(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))?;
+            request.validate(
+                &mut history
+                    .as_mut()
+                    .map(|history| history as &mut dyn crate::store::history::HistoryIo),
+            )?;
             for volume in creation_volumes(request) {
                 if volume.provider() != &self.host.provider {
                     return Err(stock_boundary(
@@ -117,10 +131,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let count = creation_volumes(request).count();
         let mut proofs = crate::model::vec_with_capacity(count, io)?;
         for volume in creation_volumes(request) {
-            let resource = bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
+            let resource =
+                bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
-                provider: match io { Some(io) => self.host.provider.clone_with_io(io)?, None => self.host.provider.clone() },
-                preparation, resource, evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
+                provider: match io {
+                    Some(io) => self.host.provider.clone_with_io(io)?,
+                    None => self.host.provider.clone(),
+                },
+                preparation,
+                resource,
+                evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
             });
         }
         Ok(proofs)

@@ -33,7 +33,7 @@ fn native_string_copy_and_vector_growth_denials_preserve_actual_prefix() {
     ));
     assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
 
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::<u8>::new();
     assert!(matches!(
         crate::store::history::reserve(&mut bytes, 16, &mut io),
         Err(Error::NativeWork {
@@ -69,7 +69,7 @@ fn sdk_output_adoption_rejects_foreign_custody_and_releases_original_bytes() {
         let before = producer.live_allocation_bytes();
         let meter = producer.runtime_meter();
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(&meter, 8).unwrap();
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::<u8>::new();
         bytes.try_reserve_exact(8).unwrap();
         allocation.reconcile_capacity(bytes.capacity()).unwrap();
         meter.admit_codec(0, 8, 0).unwrap();
@@ -257,7 +257,7 @@ fn accepted_sdk_guard_overprefix_keeps_source_guard_and_never_widens_closed_pool
         crate::filesystem::PreparationIo::from_native_work(&work)
             .expect("first original SDK allocator"),
     );
-    let mut oversized = Vec::new();
+    let mut oversized = Vec::<u8>::new();
     crate::store::history::reserve(&mut oversized, 16, &mut oversized_preparation)
         .expect("real oversized SDK backing");
     let oversized_guard = oversized_preparation
@@ -267,7 +267,7 @@ fn accepted_sdk_guard_overprefix_keeps_source_guard_and_never_widens_closed_pool
         crate::filesystem::PreparationIo::from_native_work(&work)
             .expect("second original SDK allocator"),
     );
-    let mut bounded = Vec::new();
+    let mut bounded = Vec::<u8>::new();
     crate::store::history::reserve(&mut bounded, 8, &mut bounded_preparation)
         .expect("real bounded SDK backing");
     let bounded_guard = bounded_preparation.into_custody().expect("native custody");
@@ -430,7 +430,7 @@ fn accepted_virtual_release_keeps_actual_buffer_claim_until_genuine_guard_transf
         crate::filesystem::PreparationIo::from_native_work(&work)
             .expect("original pre-action allocator"),
     );
-    let mut dto = Vec::new();
+    let mut dto = Vec::<u8>::new();
     crate::store::history::reserve(&mut dto, 16, &mut preparation)
         .expect("actual original-ledger buffer allocation");
     assert_eq!(dto.capacity(), 16);

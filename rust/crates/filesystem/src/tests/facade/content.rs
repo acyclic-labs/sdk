@@ -244,7 +244,7 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
             "{name} is bound"
         );
     }
-    let read = (checkout.read_file_range_by_id(
+    let read = (checkout.read_file_range(
         existing,
         ByteRange {
             offset: 0,

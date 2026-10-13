@@ -87,27 +87,6 @@ impl NativePublicationSnapshot {
             cut.shadows,
         )))
     }
-    pub(crate) const fn unchanged(
-        context: NativeSnapshotContext,
-        generation: crate::GenerationId,
-    ) -> Self {
-        Self {
-            operation: None,
-            context,
-            generation,
-        }
-    }
-    pub(crate) const fn published(
-        context: NativeSnapshotContext,
-        operation: crate::OperationId,
-        generation: crate::GenerationId,
-    ) -> Self {
-        Self {
-            operation: Some(operation),
-            context,
-            generation,
-        }
-    }
 }
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
@@ -123,10 +102,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if self.source.reference() != cut.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
-        Ok(NativePublicationSnapshot::unchanged(
-            NativeSnapshotContext::Lazy(cut),
-            generation.id(),
-        ))
+        Ok(NativePublicationSnapshot {
+            context: NativeSnapshotContext::Lazy(cut),
+            operation: None,
+            generation: generation.id(),
+        })
     }
     pub(crate) async fn publication_cut(
         &self,

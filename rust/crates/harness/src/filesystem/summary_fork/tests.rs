@@ -31,7 +31,7 @@ fn rewritten_context_retains_only_the_replacement_file() -> Result<()> {
         "replacement.txt".into(),
         &mut None,
     )?;
-    let key = crate::contract::canonical_json_digest(&source, u64::MAX, &mut None)?;
+    let key = crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?;
     let mut context = Context::default();
     context.metadata.insert("payload".into(), source);
     let replacements = BTreeMap::from([(key, replacement)]);
@@ -39,7 +39,7 @@ fn rewritten_context_retains_only_the_replacement_file() -> Result<()> {
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(10_000, 1_000_000),
         &cancellation,
-    )?;
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let rewritten = rewritten_context(&context, &replacements, Some(&io))?;
     assert_eq!(rewritten.metadata["payload"], replacements[&key]);

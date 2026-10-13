@@ -701,10 +701,10 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     bindings.state = Some(Arc::new(TestTaskState(task_scope)));
     let runtime = bindings.build()?;
     let first_context = runtime
-        .durable_context(first_task, OperationId::from_bytes([63; 16]))
+        .durable_context(first_task, OperationId::from_bytes([63; 16]), None)
         .await?;
     let other_context = runtime
-        .durable_context(other_task, OperationId::from_bytes([64; 16]))
+        .durable_context(other_task, OperationId::from_bytes([64; 16]), None)
         .await?;
     let projection_context = first_context.clone();
     for _ in 0..2 {

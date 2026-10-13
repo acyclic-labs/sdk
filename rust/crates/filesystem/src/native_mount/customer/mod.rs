@@ -5,7 +5,7 @@ use super::{
     CheckoutMountSource, LazyMountSource, MountFilesystem, MountPath, NativeMountError,
     NativeMountRequest, NativeMountSession, SharedCheckout,
 };
-use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
+use crate::demand::{DemandSource, SourceNodeKind};
 use crate::kernel::FileKind;
 use crate::kernel::KernelAccounting;
 use crate::model::{CheckoutMode, GenerationSelector};

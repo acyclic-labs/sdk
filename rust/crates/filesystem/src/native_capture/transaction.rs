@@ -11,7 +11,7 @@ pub(super) async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObject
     const PAGE: u32 = 256;
     let limits = checkout.volume_config().limits;
     // Descendants that carried their own hint are already queued (absent paths are captured deepest first); a second remove of the same path would find its source missing.
-    let mut queued = CaptureMap::new();
+    let mut queued = Vec::new();
     for mutation in mutations.iter() {
         {
             capture_charge(
@@ -23,10 +23,10 @@ pub(super) async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObject
             )
         }?;
         if let AuthoredMutation::Remove { path, .. } = mutation
-            && !queued.contains_key_measured(path, meter)?
+            && capture_position(&queued, path, meter)?.is_err()
         {
             let path = clone_capture_path(path, meter)?;
-            queued.insert_measured(path, (), meter)?;
+            capture_replace(&mut queued, path, (), meter)?;
         }
     }
     let mut found: Vec<(NamespacePath, FileRecord)> = Vec::new();
@@ -38,7 +38,7 @@ pub(super) async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObject
             capture_reserve(pending, 1, meter)?;
             pending.push(clone_capture_path(&child, meter)?);
         }
-        if !queued.contains_key_measured(&child, meter)? {
+        if capture_position(&queued, &child, meter)?.is_err() {
             capture_reserve(&mut found, 1, meter)?;
             found.push((child, entry.record));
         } else {
@@ -289,7 +289,9 @@ pub(super) fn append_final_state(
             return Err(CaptureError::UnsupportedKind);
         }
     }
-    let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
+    let observed = source_root
+        .stat(host_path, &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
     ensure_same_host_node(&snapshot, &observed)?;
     meter.native.clone().check().map_err(capture_demand_error)
 }

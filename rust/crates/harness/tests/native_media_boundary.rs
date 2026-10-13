@@ -1435,7 +1435,7 @@ where
         }
         let original = runtime.task_host().observe_admission(task).await?;
         assert_eq!(original.extensions.as_ref(), scope.extensions());
-        let context = runtime.harness().durable_context(task, admission).await?;
+        let context = runtime.harness().durable_context(task, admission, None).await?;
         assert_eq!(context.scope().extensions(), scope.extensions());
         let writable = acyclic_harness::runtime::Bindings {
             tasks: tasks.clone(),
@@ -1454,7 +1454,7 @@ where
         }
         .build(None,
         )?
-        .durable_context(task, admission)
+        .durable_context(task, admission, None)
         .await?;
         let arguments = serde_json::to_value(&conversion_input)
             .map_err(|error| Error::Invalid(error.to_string()))?;

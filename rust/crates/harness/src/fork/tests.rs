@@ -353,7 +353,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     seed.inherited_context = vec![inherited.clone()];
     seed.attached_agents.push(attached);
     let access = seed.attached_read_capabilities(attached)?;
-    assert!(access.contains(&inherited.read_capability()?));
+    assert!(access.contains(&inherited.read_capability(&mut None)?));
     assert!(
         !access.contains(
             &seed

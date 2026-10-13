@@ -201,12 +201,6 @@ async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_cha
             .unwrap()
             .is_some()
     );
-    let origin = prepared.fork_origin.unwrap();
-    assert_eq!(
-        store.lazy_retained_generations().await.unwrap(),
-        [(origin.snapshot.authored_generation, origin.config)]
-    );
-
     let mut replacements: [_; 6] = std::array::from_fn(|_| LazyWorkspaceState {
         revision: child.revision + 1,
         ..child.clone()

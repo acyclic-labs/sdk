@@ -183,7 +183,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         quota.adopt(stream.1)?;
         let tail = tail(client, &stream.0, quota.work()).await?.unwrap_or(0);
         quota.transfer();
-        let operation = self.record(stream, 0, &mut quota).await?;
+        let operation = operations::publication_record(self.client, stream, 0, &mut quota).await?;
         let Some(operation) = operation else {
             return if tail == 0 {
                 Ok((false, 0))
@@ -220,8 +220,7 @@ impl<P: StreamProvider> Tree<'_, P> {
             Some((&observation.effect_id, 36)),
             quota.work(),
         )?;
-        let record = self
-            .record(stream, position, &mut quota)
+        let record = operations::publication_record(self.client, stream, position, &mut quota)
             .await?
             .ok_or_else(|| Error::Storage("terminal transition is missing".into()))?;
         super::effect_heads::charge(&mut used, record.value.len() as u64, maximum)?;
@@ -250,8 +249,7 @@ impl<P: StreamProvider> Tree<'_, P> {
             .ok_or_else(|| Error::Invalid("effect revision must be positive".into()))?;
         let mut quota = CodecQuota::from_retained(work, 0);
         let stream = path(authority, "harness/v2/", None, quota.work())?;
-        let record = self
-            .record(stream, position, &mut quota)
+        let record = operations::publication_record(self.client, stream, position, &mut quota)
             .await?
             .ok_or_else(|| Error::Storage("terminal canonical event is missing".into()))?;
         let expected = crate::wire_codec::encode_event(authority, event, quota.work())?;

@@ -1,13 +1,13 @@
 use super::*;
 
 pub(super) fn order_host_checkout_union(
-    mut observed: CaptureMap<Option<HostStat>>,
-    checkout_paths: CaptureMap<()>,
+    mut observed: Vec<(NamespacePath, Option<HostStat>)>,
+    checkout_paths: Vec<(NamespacePath, ())>,
     maximum: usize,
     meter: &CaptureWorkScope,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
-    let checkout_bytes = checkout_paths.storage_bytes();
-    for (path, ()) in checkout_paths.entries {
+    let checkout_bytes = vector_bytes(&checkout_paths);
+    for (path, ()) in checkout_paths {
         capture_charge(
             meter,
             WorkCounters {
@@ -15,13 +15,13 @@ pub(super) fn order_host_checkout_union(
                 ..WorkCounters::UNCHARGED
             },
         )?;
-        match observed.position_measured(&path, meter)? {
+        match capture_position(&observed, &path, meter)? {
             Ok(_) => capture_drop_path(path, meter)?,
             Err(index) => {
                 if observed.len() >= maximum {
                     return Err(CaptureError::InvalidOptions);
                 }
-                observed.insert_at(index, path, None, meter)?;
+                capture_insert_at(&mut observed, index, path, None, meter)?;
             }
         }
     }
@@ -30,10 +30,10 @@ pub(super) fn order_host_checkout_union(
         .clone()
         .release(checkout_bytes)
         .map_err(capture_demand_error)?;
-    let observed_bytes = observed.storage_bytes();
+    let observed_bytes = vector_bytes(&observed);
     let mut observations = capture_vec(observed.len(), meter)?;
     let mut paths = capture_vec(observed.len(), meter)?;
-    for (path, observation) in observed.entries {
+    for (path, observation) in observed {
         meter.native.clone().check().map_err(capture_demand_error)?;
         observations.push(observation);
         paths.push(path);
@@ -131,7 +131,7 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     root: NamespacePath,
     policy: &CapturePolicy,
     maximum: usize,
-    paths: &mut CaptureMap<()>,
+    paths: &mut Vec<(NamespacePath, ())>,
     cancellation: &CancellationToken,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
@@ -163,12 +163,12 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
 }
 
 pub(super) fn append_scanned_path(
-    paths: &mut CaptureMap<()>,
+    paths: &mut Vec<(NamespacePath, ())>,
     path: NamespacePath,
     maximum: usize,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    let index = match paths.position_measured(&path, meter)? {
+    let index = match capture_position(paths, &path, meter)? {
         Ok(_) => return capture_drop_path(path, meter),
         Err(index) => index,
     };
@@ -182,7 +182,7 @@ pub(super) fn append_scanned_path(
             ..WorkCounters::UNCHARGED
         },
     )?;
-    paths.insert_at(index, path, (), meter)
+    capture_insert_at(paths, index, path, (), meter)
 }
 
 pub(super) fn validate_path_count(

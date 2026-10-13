@@ -238,7 +238,7 @@ impl MountDestinationGuard {
         // registry or fence creation can mutate the destination namespace.
         let (cleanup_name, birth_cleanup) = {
             let mut terminated = [0u8; NATIVE_FENCE_NAME_BYTES + 1];
-            let mut copied = native.reserve_work(crate::WorkCounters {
+            let copied = native.reserve_work(crate::WorkCounters {
                 bytes_copied: NATIVE_FENCE_NAME_BYTES as u64,
                 ..crate::WorkCounters::UNCHARGED
             })?;

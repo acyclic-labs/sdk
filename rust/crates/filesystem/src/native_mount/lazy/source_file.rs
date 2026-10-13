@@ -183,7 +183,7 @@ where
         maximum_bytes: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.observe(work, false, |file, node, carrier| {
+        self.observe(work, false, |file, node, _| {
             if let Some(file) = file {
                 return file.read_up_to_with_meter(offset, maximum_bytes, work);
             }

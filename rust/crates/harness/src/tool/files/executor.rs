@@ -39,16 +39,17 @@ impl FileTool {
             }
             Self::Write => {
                 let input: WriteFileInput = decode(&invocation.arguments, None)?.0;
-                task.stage_file_once(
-                    invocation.operation_id,
-                    &input.path,
-                    input.text.as_bytes(),
-                    &input.media_type,
-                    &input.display_name,
-                    None,
-                )
-                .await
-                .map(|(file, _)| file)?
+                context
+                    .stage_file_once(
+                        invocation.operation_id,
+                        &input.path,
+                        input.text.as_bytes(),
+                        &input.media_type,
+                        &input.display_name,
+                        None,
+                    )
+                    .await
+                    .map(|(file, _)| file)?
             }
             Self::Patch {
                 maximum_work,
@@ -320,6 +321,7 @@ impl ToolExecutor for FileTool {
                 ))
             });
         };
+
         Box::pin(self.run(context, invocation))
     }
 
@@ -335,6 +337,7 @@ impl ToolExecutor for FileTool {
                 ))
             });
         };
+
         // Reads always use the original immutable ref; publications resolve the existing operation receipt before attempting a generation-checked CAS.
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
     }

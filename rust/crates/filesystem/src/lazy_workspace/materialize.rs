@@ -24,15 +24,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         if length > maximum {
                             return Err(LazyWorkspaceError::TooLarge);
                         }
-                        let content = self
-                            .stage_regular_source_content(
-                                &transaction.checkout,
-                                &namespace.value,
-                                source,
-                                &node,
+                        let mut source = DemandBlobSource {
+                            provider: self.source.as_ref(),
+                            source,
+                            path: &namespace.value,
+                            version: node.version,
+                            offset: 0,
+                            length,
+                            work: None,
+                            failure: None,
+                        };
+                        let content = transaction
+                            .checkout
+                            .stage_content_with_accounting(
+                                &mut source,
+                                length.max(1),
                                 ctx,
+                                cancellation(ctx),
                             )
-                            .await?;
+                            .await
+                            .map_err(|error| {
+                                source.failure.take().map_or_else(
+                                    || LazyWorkspaceError::from(error),
+                                    LazyWorkspaceError::Demand,
+                                )
+                            })?;
+                        if content.logical_bytes() != length {
+                            return Err(DemandError::StaleVersion.into());
+                        }
                         let file_id = Some(self.source_file_id(&node.file_identity, ctx)?);
                         AuthoredMutation::CreateFileFromContent {
                             path: namespace.value,
@@ -52,7 +71,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                                 path,
                                 None,
                                 maximum,
-                                crate::model::GenerationSelector::Head,
                                 ctx,
                             )
                             .await?;
@@ -143,40 +161,5 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             pending.retire(ctx)?;
         }
         result
-    }
-    pub(super) async fn stage_regular_source_content(
-        &self,
-        checkout: &crate::Checkout<A, O>,
-        path: &NamespacePath,
-        source: SourceReference,
-        node: &SourceNode,
-        ctx: &mut KernelAccounting<'_>,
-    ) -> Result<crate::StagedContent, LazyWorkspaceError> {
-        let length = node
-            .logical_bytes
-            .ok_or(LazyWorkspaceError::NotRegularFile)?;
-        let mut source = DemandBlobSource {
-            provider: self.source.as_ref(),
-            source,
-            path,
-            version: node.version,
-            offset: 0,
-            length,
-            work: None,
-            failure: None,
-        };
-        let staged = checkout
-            .stage_content_with_accounting(&mut source, length.max(1), ctx, cancellation(ctx))
-            .await
-            .map_err(|error| {
-                source.failure.take().map_or_else(
-                    || LazyWorkspaceError::from(error),
-                    LazyWorkspaceError::Demand,
-                )
-            })?;
-        if staged.logical_bytes() != length {
-            return Err(DemandError::StaleVersion.into());
-        }
-        Ok(staged)
     }
 }

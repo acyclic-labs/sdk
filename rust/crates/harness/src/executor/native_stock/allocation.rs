@@ -46,33 +46,6 @@ pub(in crate::executor) fn stock_selection_copy(
     })
 }
 
-pub(in crate::executor) fn stock_compaction_copy(
-    value: &crate::context::CompactionPolicy,
-    io: Option<&PreparationIo>,
-) -> Result<crate::context::CompactionPolicy> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        return Ok(match value {
-            crate::context::CompactionPolicy::Disabled => {
-                crate::context::CompactionPolicy::Disabled
-            }
-            crate::context::CompactionPolicy::Threshold(policy) => {
-                let (retention, custody) =
-                    crate::context::clone_retention_native(&policy.retention, work)?;
-                io.absorb_native_custody(custody)?;
-                crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
-                    response_reserve_tokens: policy.response_reserve_tokens,
-                    recent_tokens: policy.recent_tokens,
-                    retention,
-                })
-            }
-        });
-    }
-    Ok(value.clone())
-}
-
 pub(crate) fn stock_vec_push<T>(
     values: &mut Vec<T>,
     value: T,

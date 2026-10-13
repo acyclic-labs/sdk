@@ -254,7 +254,7 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
         }
         let maximum =
             usize::try_from(options.maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
-        let mut paths = CaptureMap::new();
+        let mut paths = Vec::new();
         for path in &canonical {
             let path = clone_capture_path(path, meter)?;
             append_scanned_path(&mut paths, path, maximum, meter)?;
@@ -292,7 +292,7 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
                 if source_root.identity() != expected_identity {
                     return Err(CaptureError::RootChanged);
                 }
-                let mut observed = CaptureMap::new();
+                let mut observed = Vec::new();
                 collect_host_subtree_roots(
                     &source_root,
                     profile,
@@ -385,33 +385,28 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
-    let work = &native;
-    let meter = &work.state;
-    let completed = { meter.lock().work };
     if checkout.has_pending_mutations() {
         return Err(OperationFailure::new(
             CaptureError::DirtyCheckout,
-            completed,
+            native.receipt(),
         ));
     }
     if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
         return Err(OperationFailure::new(
             CaptureError::InvalidOptions,
-            completed,
+            native.receipt(),
         ));
     }
     cancellation
         .check()
-        .map_err(|error| OperationFailure::new(error.into(), completed))?;
-    let (checked, completed) = {
-        let held = meter.lock();
-        (held.check(), held.work)
-    };
-    checked.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))?;
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    native
+        .with_original_leaf(|work| work.check())
+        .map_err(|error| OperationFailure::new(capture_demand_error(error), native.receipt()))?;
     let mut candidate = checkout
-        .private_candidate(work, cancellation)
-        .map_err(|error| OperationFailure::new(CaptureError::from(error), work.receipt()))?;
-    let scope = CaptureWorkScope::new(work)?;
+        .private_candidate(&native, cancellation)
+        .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
+    let scope = CaptureWorkScope::new(&native)?;
     let meter = &scope;
     let result = (async {
         let maximum =
@@ -419,9 +414,9 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let source_root = open_source_root(options, meter)?;
         let limits = checkout.volume_config().limits;
         let profile = checkout.volume_config().profile;
-        let mut paths = CaptureMap::new();
+        let mut paths = Vec::new();
 
-        let mut observed = CaptureMap::new();
+        let mut observed = Vec::new();
         let root = NamespacePath::new(Vec::new(), limits).map_err(CaptureError::from)?;
         collect_host_walk_measured(
             &source_root,
@@ -461,7 +456,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), work.receipt()))?;
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     Ok(receipt)
 }
 

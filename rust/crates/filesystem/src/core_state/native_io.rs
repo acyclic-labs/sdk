@@ -54,7 +54,7 @@ pub(crate) fn reserve<T>(
         Ok(())
     };
     let copy_result = {
-        let mut copy = copying;
+        let copy = copying;
         copy.record_completed(crate::WorkCounters {
             bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64,
             ..crate::WorkCounters::UNCHARGED
