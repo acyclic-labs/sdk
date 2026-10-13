@@ -144,11 +144,15 @@ fork_join_conformance() {
 
 case "$lane" in
   gate)
-    # These crates have independent workspaces and are absent from the root.
+    nextest --workspace --all-features --locked
+    ;;
+  docs)
+    # Independent workspaces qualify alongside the root workspace.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
+    ;;
+  generation)
     cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
     node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
-    nextest --workspace --all-features --locked
     ;;
   preflight)
     head="$(git rev-parse HEAD)"

@@ -10,6 +10,26 @@
     "scope": "both"
   },
   {
+    "lane": "docs",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "scope": "both"
+  },
+  {
+    "lane": "generation",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "scope": "both"
+  },
+  {
     "lane": "linux",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,

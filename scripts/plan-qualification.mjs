@@ -191,7 +191,7 @@ const output = (name, value) => {
   console.log(`${name}=${text}`);
 };
 const readLanes = () => JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
-const reusableCore = lane => ["gate", "typescript", "policy"].includes(lane.lane) &&
+const reusableCore = lane => ["gate", "docs", "generation", "typescript", "policy"].includes(lane.lane) &&
   ["core", "both"].includes(lane.scope) && !lane.source_bound;
 
 function fingerprints() {
