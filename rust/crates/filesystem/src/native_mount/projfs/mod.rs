@@ -7,6 +7,7 @@
 )]
 
 use super::provider_stack;
+use super::view_ledger::same_work;
 use super::{
     DIRECTORY_PAGE_SIZE, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
     MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin,

@@ -526,7 +526,7 @@ where
                 paths
                     .1
                     .absorb(&mut path.1)
-                    .map_err(|error| MaterializeError::NativeWork(error))?;
+                    .map_err(MaterializeError::NativeWork)?;
                 paths.0.push(path.0);
             }
             materialize_source(

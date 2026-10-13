@@ -345,7 +345,7 @@ impl NativeMountSession {
                 match &work {
                     NativeSessionStopWork::Meter(meter) => guard.release(&mut &**meter)?,
                     NativeSessionStopWork::AcceptedWait(wait) => {
-                        guard.release_cleanup(Some(wait))?
+                        guard.release_cleanup(Some(wait))?;
                     }
                 }
                 drop(self.destination_guard.take());
