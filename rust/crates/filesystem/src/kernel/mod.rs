@@ -160,6 +160,7 @@ pub use mutation::{
     FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{
     NamespacePath, NamespacePathError};
+pub(crate) use namespace_path::NamespacePathStep;
 pub(crate) use path_access::{
     lookup_path_async_with_accounting, lookup_paths_async_with_accounting, lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting, observe_paths_async_with_accounting};
 pub use path_access::{
