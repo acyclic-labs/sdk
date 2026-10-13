@@ -215,7 +215,6 @@ jobs:
       actions: read
       pull-requests: read
     with:
-      force: true
       source_ref: ${{ inputs.source_sha }}
       release_tag: ""
 

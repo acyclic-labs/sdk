@@ -4,189 +4,125 @@
     "runner": "blacksmith-16vcpu-ubuntu-2404",
     "workers": 16,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "both"
+    "artifact_path": ""
   },
   {
     "lane": "docs",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "both"
+    "artifact_path": ""
   },
   {
     "lane": "generation",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "both"
+    "artifact_path": ""
   },
   {
     "lane": "linux",
     "runner": "blacksmith-16vcpu-ubuntu-2404",
     "workers": 16,
     "artifact": "packages-linux",
-    "artifact_path": "packages",
-    "inputs": "repository",
-    "source_bound": true,
-    "scope": "full"
+    "artifact_path": "packages"
   },
   {
     "lane": "linux-runtime",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": true,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "web",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
-  },
-  {
-    "lane": "typescript",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
-    "artifact": "",
-    "artifact_path": "",
-    "inputs": "typescript",
-    "source_bound": false,
-    "scope": "core"
+    "artifact_path": ""
   },
   {
     "lane": "linux-arm64",
     "runner": "blacksmith-32vcpu-ubuntu-2404-arm",
     "workers": 32,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "linux-arm64-bindings",
     "runner": "blacksmith-4vcpu-ubuntu-2404-arm",
     "workers": 4,
     "artifact": "packages-linux-arm64",
-    "artifact_path": "packages",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "artifact_path": "packages"
   },
   {
     "lane": "linux-musl",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "linux-arm64-musl",
     "runner": "blacksmith-4vcpu-ubuntu-2404-arm",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "windows",
     "runner": "blacksmith-16vcpu-windows-2025",
     "workers": 16,
     "artifact": "stream-native-windows",
-    "artifact_path": "stream-native-bundle",
-    "inputs": "product",
-    "source_bound": true,
-    "scope": "full"
+    "artifact_path": "stream-native-bundle"
   },
   {
     "lane": "windows-rust",
     "runner": "blacksmith-32vcpu-windows-2025",
     "workers": 32,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": true,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "windows-fork-join",
     "runner": "blacksmith-16vcpu-windows-2025",
     "workers": 16,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": true,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "windows-napi",
     "runner": "blacksmith-4vcpu-windows-2025",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "windows-arm64",
     "runner": "blacksmith-4vcpu-windows-2025",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "windows-clippy",
     "runner": "blacksmith-4vcpu-windows-2025",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "artifact_path": ""
   },
   {
     "lane": "macos",
     "runner": "blacksmith-12vcpu-macos-15",
     "workers": 12,
     "artifact": "packages-macos",
-    "artifact_path": "packages",
-    "inputs": "repository",
-    "source_bound": true,
-    "scope": "full"
+    "artifact_path": "packages"
   },
   {
     "lane": "policy",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,
     "artifact": "",
-    "artifact_path": "",
-    "inputs": "policy",
-    "source_bound": false,
-    "scope": "both"
+    "artifact_path": ""
   }
 ]

@@ -414,22 +414,6 @@ case "$lane" in
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/harness' test:client:browser
     ;;
-  typescript)
-    # Family admission resolves the locked Cargo graph offline before WASM
-    # compilation, so a cold runner needs the dependency index and crates first.
-    cargo fetch --locked
-    # Pull requests and main pushes only; full runs cover this in the linux
-    # lane. As there, check:generated runs after `bun run test` has built the
-    # uncommitted packages. It compares tracked surfaces with immutable HEAD
-    # blobs and validates freshly generated runtimes for all six packages.
-    source scripts/ensure-bun.sh
-    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
-    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
-    bun install --frozen-lockfile
-    client_bindings
-    bun run test
-    bun run check:generated
-    ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
       ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then
