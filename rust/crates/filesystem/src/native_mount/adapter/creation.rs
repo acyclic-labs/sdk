@@ -21,7 +21,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         drop(inputs);
         let mut inspector = candidate
             .checkout
-            .inspector(work, cancellation)
+            .inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
             .map_err(MountSourceError::Filesystem)?;
         let created = inspector
             .lookup_no_follow_with_metadata(&path, work, cancellation)

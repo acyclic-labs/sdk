@@ -827,7 +827,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let producer = checkout.private_candidate(&original, &cancellation)?;
+        let producer = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         let custody = producer.private_control_custody();
         let meter = (&original.state);
         let baseline = original.live_allocation_bytes();

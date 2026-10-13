@@ -19,7 +19,7 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     validate_path_count(paths, options)
         .map_err(|error| OperationFailure::new(error, native.receipt()))?;
     let mut candidate = checkout
-        .private_candidate(&native, cancellation)
+        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let result = async {
@@ -103,7 +103,7 @@ pub(super) async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: As
             return Err(CaptureError::InvalidOptions);
         }
         let receipt = CaptureReceipt::default();
-        let candidate = checkout.private_candidate(meter, &cancellation)?;
+        let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(meter, &cancellation), &cancellation)?;
         (receipt, candidate, unique)
     };
     let observed = observe_unique_paths(unique, &source_root, &cancellation, meter)?;
@@ -172,7 +172,7 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
     let mut candidate = checkout
-        .private_candidate(&native, cancellation)
+        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     let result = capture_subtrees_with_native_work(
         &mut candidate,
@@ -392,7 +392,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .with_original_leaf(|work| work.check())
         .map_err(|error| OperationFailure::new(capture_demand_error(error), native.receipt()))?;
     let mut candidate = checkout
-        .private_candidate(&native, cancellation)
+        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
         .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let meter = &scope.native;
@@ -472,7 +472,7 @@ pub async fn capture_watch_batch<
         )?,
     };
     let mut candidate = checkout
-        .private_candidate(&native, cancellation)
+        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let result = capture_watch_batch_in_scope(

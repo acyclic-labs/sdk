@@ -173,15 +173,3 @@ impl DependencyLedger {
         )
     }
 }
-#[cfg(feature = "native-mount")]
-impl<A, O> Checkout<A, O> {
-    /// Drains only the undelivered receipt report, never the operative ledger.
-    pub(crate) fn proof_data_take_completed_work(&self) -> WorkCounters {
-        self.dependencies.data_custody.take_completed_data_work()
-    }
-
-    /// Custody control only; retaining this never retains a proof allocation.
-    pub(crate) fn proof_data_custody(&self) -> Arc<ProofDataCustody> {
-        Arc::clone(&self.dependencies.data_custody)
-    }
-}

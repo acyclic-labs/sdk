@@ -17,23 +17,8 @@ pub(crate) struct PreparedCandidateAdoption {
 }
 
 impl<A, O> Checkout<A, O> {
-    /// Prepares the exact candidate proof under the original caller's limits.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn prepare_candidate_adoption<W: FsWork>(
-        &self,
-        base: &Self,
-        candidate: &Self,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Option<PreparedCandidateAdoption>, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result =
-            self.prepare_candidate_adoption_with_accounting(base, candidate, &mut accounting);
-        budget.finish(result, &accounting)
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(super) fn prepare_candidate_adoption_with_accounting(
+    pub(crate) fn prepare_candidate_adoption(
         &self,
         base: &Self,
         candidate: &Self,
@@ -97,44 +82,19 @@ impl<A, O> Checkout<A, O> {
 
     #[cfg(feature = "native-mount")]
     pub(super) fn candidate_base_unchanged(&self, base: &Self) -> bool {
-        let Self {
-            volume: _,
-            generation_root,
-            base_root,
-            root,
-            authority_head,
-            authored_operation_id,
-            live_operation_id,
-            last_commit,
-            publication_closure: _,
-            prepared_merge_parent,
-            dependencies: _,
-            proof_owned_bytes: _,
-            mode,
-        } = self;
-        *generation_root == base.generation_root
-            && *base_root == base.base_root
-            && *root == base.root
-            && *authority_head == base.authority_head
-            && *authored_operation_id == base.authored_operation_id
-            && *live_operation_id == base.live_operation_id
-            && *last_commit == base.last_commit
-            && *prepared_merge_parent == base.prepared_merge_parent
-            && *mode == base.mode
+        self.generation_root == base.generation_root
+            && self.base_root == base.base_root
+            && self.root == base.root
+            && self.authority_head == base.authority_head
+            && self.authored_operation_id == base.authored_operation_id
+            && self.live_operation_id == base.live_operation_id
+            && self.last_commit == base.last_commit
+            && self.prepared_merge_parent == base.prepared_merge_parent
+            && self.mode == base.mode
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(crate) fn private_candidate<W: FsWork>(
-        &self,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Self, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = self.private_candidate_with_accounting(&mut accounting, cancellation);
-        budget.finish(result, &accounting)
-    }
-
     pub(super) fn checkout_custody(
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -158,7 +118,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(Arc::new(ProofDataCustody::default()))
     }
 
-    pub(crate) fn private_candidate_with_accounting(
+    pub(crate) fn private_candidate(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -344,46 +304,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self
     }
 
-    /// Constructs an observing alias with independently admitted roots.
+    /// Constructs a read-only alias retaining observations on the original proof.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn observer<W: FsWork>(
+    pub(crate) fn observer(
         &self,
-        budget: W,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> W::Output<Self, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = (|| -> Result<Self, FsError> {
-            let accounting = &mut accounting;
-            cancellation.check()?;
-            if !self.tracks_observations() {
-                let mut checkout =
-                    self.private_candidate_with_accounting(accounting, cancellation)?;
-                checkout.mode = CheckoutMode::read_only_pinned();
-                return Ok(checkout);
-            }
-            let custody = Self::checkout_custody(accounting, cancellation)?;
-            accounting.check()?;
-            let dependencies = self.dependencies.observing_with_custody(custody);
-            self.replica(dependencies, CheckoutMode::read_only_pinned(), accounting)
-        })();
-        budget.finish(result, &accounting)
+    ) -> Result<Self, FsError> {
+        cancellation.check()?;
+        if !self.tracks_observations() {
+            return self.inspector(accounting, cancellation);
+        }
+        let custody = Self::checkout_custody(accounting, cancellation)?;
+        accounting.check()?;
+        let dependencies = self.dependencies.observing_with_custody(custody);
+        self.replica(dependencies, CheckoutMode::read_only_pinned(), accounting)
     }
 
     /// Constructs an isolated read-only candidate.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn inspector<W: FsWork>(
+    pub(crate) fn inspector(
         &self,
-        budget: W,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> W::Output<Self, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = self
-            .private_candidate_with_accounting(&mut accounting, cancellation)
+    ) -> Result<Self, FsError> {
+        self.private_candidate(accounting, cancellation)
             .map(|mut checkout| {
                 checkout.mode = CheckoutMode::read_only_pinned();
                 checkout
-            });
-        budget.finish(result, &accounting)
+            })
     }
 
     fn replica(
