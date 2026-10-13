@@ -156,7 +156,9 @@ impl ProjectSourceAuthorization {
         let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
         let native_snapshot = match &self.native_snapshot {
             Some(snapshot) => {
-                let (value, bytes) = crate::wire_codec::CodecQuota::produce(quota.work(), |copy_quota| crate::core::copy_value(snapshot, copy_quota))?;
+                let (value, bytes) = crate::wire_codec::CodecQuota::produce(quota.work(), |copy_quota| crate::core::copy(snapshot, copy_quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+}))?;
                 quota.adopt(bytes)?;
                 Some(value)
             }

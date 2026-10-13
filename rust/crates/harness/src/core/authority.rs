@@ -144,7 +144,7 @@ impl Scope {
     /// Copies the immutable grant under the caller's optional ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
-            copy_owned(self, quota, |scope, _| scope.logical_owned_bytes())
+            copy(self, quota, |scope, _| scope.logical_owned_bytes())
         })
         .map(|(scope, _)| scope)
     }
@@ -243,7 +243,9 @@ impl AuthorityIssuer {
     ) -> Result<Scope> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let id = copying::copy_text(id, &mut quota)?;
-        let capabilities = copying::copy_capabilities(capabilities, &mut quota)?;
+        let capabilities = copy(capabilities, &mut quota, |value: &Capabilities, _| {
+            value.logical_owned_bytes()
+        })?;
         let issuer = copying::copy_text(&self.id, &mut quota)?;
         let mut scope = Scope {
             id,

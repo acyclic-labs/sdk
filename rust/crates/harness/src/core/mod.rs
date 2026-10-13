@@ -31,16 +31,16 @@ mod snapshot;
 mod tests;
 pub(in crate::core) use crate::fork::copy_seed;
 pub(crate) use copying::{
-    copy_authority, copy_boxed, copy_capabilities, copy_configuration, copy_copy_vector,
-    copy_effect, copy_event, copy_interaction_outcome, copy_owned, copy_provider, copy_reference,
-    copy_resolution, copy_resource, copy_text, copy_ticket, copy_value, copy_vector,
-    reserve_copy_vector,
+    copy, copy_authority, copy_boxed, copy_copy_vector, copy_event, copy_provider, copy_resource,
+    copy_text, copy_vector, reserve_copy_vector,
 };
 pub(crate) use ownership::inspect_metadata;
 #[cfg(feature = "filesystem")]
 pub(crate) use ownership::resource_creation_clone_reservation;
 pub(in crate::core) use ownership::*;
-pub(crate) use ownership::{event_owned_bytes, owned_buffer, owned_bytes, owned_sum, owned_vector};
+pub(crate) use ownership::{
+    event_owned_bytes, owned_buffer, owned_bytes, owned_effect, owned_sum, owned_vector,
+};
 pub use snapshot::Snapshot;
 
 pub use authority::{
