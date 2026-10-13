@@ -172,7 +172,14 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
     let present = customer_path("/present", config)?;
     let absent = customer_path("/absent", config)?;
 
-    let reader = generation.reader().await?;
+    let reader = unbounded!(
+        generation.workspace(),
+        checkout(
+            GenerationSelector::Exact(generation.id()),
+            CheckoutMode::read_only_pinned()
+        )
+    )?
+    .pinned_reader()?;
     let descriptions = reader
         .describe_files(
             &[present, absent],

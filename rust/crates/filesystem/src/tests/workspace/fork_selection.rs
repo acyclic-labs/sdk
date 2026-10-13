@@ -247,7 +247,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
         ForkOptions::from_generation(unbounded!(parent, head())?, IdempotencyKey::new()),
     )
     .await?;
-    unbounded!(child, remove("/omitted"))?;
+    child.remove("/omitted").await?;
     let plan = unbounded!(child.join_into(&parent), plan())?;
     assert!(matches!(
         plan.apply(
@@ -272,7 +272,7 @@ proptest::proptest! {
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             let fs = Fs::memory();
             let parent = unbounded!(fs, create_workspace("hardlink-parent"))?;
-            unbounded!(parent, write("/file", OwnedBytes::copy_from_slice(&bytes)))?;
+            parent.write("/file", OwnedBytes::copy_from_slice(&bytes)).await?;
             let mut transaction = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
             unbounded!(transaction, hard_link("/file", "/alias"))?;
             commit(&mut transaction).await?;
@@ -282,7 +282,7 @@ proptest::proptest! {
             assert_eq!(unbounded!(child, read("/file", 64))?.as_ref(), bytes.as_slice());
             if carry_alias { assert_eq!(unbounded!(child, read("/alias", 64))?.as_ref(), bytes.as_slice()); }
             else { assert!(unbounded!(child, read("/alias", 64)).is_err()); }
-            unbounded!(child, write("/file", OwnedBytes::from_static(b"changed")))?;
+            child.write("/file", OwnedBytes::from_static(b"changed")).await?;
             if carry_alias { assert_eq!(unbounded!(child, read("/alias", 64))?.as_ref(), b"changed"); }
             assert_eq!(unbounded!(parent, read("/alias", 64))?.as_ref(), bytes.as_slice());
             Ok(())

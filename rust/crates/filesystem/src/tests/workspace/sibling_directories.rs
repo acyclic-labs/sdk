@@ -37,7 +37,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         {
             JoinOutcome::Applied(_) => {}
             JoinOutcome::Conflicted { conflicts, .. } => {
-                let described = plan.describe_conflicts(&conflicts, false).await?;
+                let described = plan.describe_conflicts(conflicts, false).await?;
                 panic!("join conflicted: {:?}", described.conflicts);
             }
             _ => panic!("join did not apply"),
@@ -83,7 +83,8 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     }
     let base = unbounded!(main, head())?;
     let fork = |name: &'static str, base: &Generation<_, _>| {
-        main.fork(
+        fork_workspace(
+            &main,
             name,
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
         )
@@ -109,7 +110,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             )
             .await?;
         if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
-            let described = plan.describe_conflicts(&conflicts, false).await?;
+            let described = plan.describe_conflicts(conflicts, false).await?;
             panic!("sibling join conflicted: {:?}", described.conflicts);
         }
     }
@@ -151,7 +152,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     else {
         return Err("a mode conflict on the shared directory was not reported".into());
     };
-    let described = plan.describe_conflicts(&conflicts, truncated).await?;
+    let described = plan.describe_conflicts(conflicts, truncated).await?;
     assert_eq!(described.conflicts.len(), 1);
     assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Metadata);
     Ok(())

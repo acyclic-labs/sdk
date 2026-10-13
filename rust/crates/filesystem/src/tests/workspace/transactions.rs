@@ -100,7 +100,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        disjoint.rebase(16).await?,
+        unbounded!(disjoint, rebase(16))?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
@@ -131,7 +131,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     let TransactionRebase::Conflicted {
         conflicts,
         truncated,
-    } = overlap.rebase(16).await?
+    } = unbounded!(overlap, rebase(16))?
     else {
         return Err("overlapping mutation rebased unsafely".into());
     };
@@ -162,7 +162,7 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        transaction.rebase(16).await?,
+        unbounded!(transaction, rebase(16))?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(

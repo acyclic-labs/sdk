@@ -36,7 +36,7 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
         let applied = match outcome {
             JoinOutcome::Applied(_) => true,
             JoinOutcome::Conflicted { conflicts, .. } => {
-                let described = plan.describe_conflicts(&conflicts, false).await?;
+                let described = plan.describe_conflicts(conflicts, false).await?;
                 panic!("{label} join conflicted: {:?}", described.conflicts);
             }
             _ => false,
@@ -96,7 +96,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
             {
                 JoinOutcome::Applied(_) => Vec::new(),
                 JoinOutcome::Conflicted { conflicts, .. } => plan
-                    .describe_conflicts(&conflicts, false)
+                    .describe_conflicts(conflicts, false)
                     .await?
                     .conflicts
                     .into_iter()
@@ -130,7 +130,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         // Folded into the file main already holds: nothing left to publish.
         JoinOutcome::NoChanges(_) => {}
         JoinOutcome::Conflicted { conflicts, .. } => {
-            let described = plan.describe_conflicts(&conflicts, false).await?;
+            let described = plan.describe_conflicts(conflicts, false).await?;
             panic!(
                 "an identical independent creation must fold: {:?}",
                 described.conflicts

@@ -210,7 +210,8 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("main-ranges"))?;
-    unbounded!(main, write("/shared", OwnedBytes::from(vec![b'a'; 128])))?;
+    main.write("/shared", OwnedBytes::from(vec![b'a'; 128]))
+        .await?;
     let agent = fork_workspace(
         &main,
         "agent-ranges",

@@ -11,7 +11,7 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
     let first = parent
-        .fork(
+        .fork::<_, _, WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen.clone(), key),
             crate::PublicationPermit::Unrestricted,
@@ -26,7 +26,7 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     child.write_text("/file", "later child").await?;
     let advanced_child = unbounded!(child, head())?;
     let retry = parent
-        .fork(
+        .fork::<_, _, WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen, key),
             crate::PublicationPermit::Unrestricted,
@@ -117,10 +117,15 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     assert_ne!(current.id(), original_generation.id());
     let generation = unbounded!(workspace, operation_generation(key))?
         .ok_or("original operation disappeared")?;
-    let record = fs.authority().find_operation(
-        workspace.authority_id(), key.operation_id(),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
-    ).await?.ok_or("original operation record disappeared")?;
+    let record = fs
+        .authority()
+        .find_operation(
+            workspace.authority_id(),
+            key.operation_id(),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await?
+        .ok_or("original operation record disappeared")?;
     assert_eq!(generation.id(), original_generation.id());
     assert_eq!(record.operation_id, key.operation_id());
     let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
@@ -149,11 +154,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     );
     assert!(
         workspace
-            .operation_generation(
-                IdempotencyKey::new(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .operation_generation(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation,)
             .await?
             .value
             .is_none()

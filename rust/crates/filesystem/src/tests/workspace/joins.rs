@@ -85,22 +85,27 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
     };
-    let witness = plan.commit_witness(&joined, idempotency_key)?;
-    assert!(main.verify_join_commit(&witness).await?);
+    let witness = value!(plan.commit_witness(
+        &joined,
+        idempotency_key,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new()
+    ))?;
+    assert!(unbounded!(main, verify_join_commit(&witness))?);
     let mut forged = serde_json::to_value(witness)?;
     forged["source_generation"] =
         serde_json::to_value(crate::GenerationId::new(crate::Digest::ZERO))?;
     let forged: crate::JoinCommitWitness = serde_json::from_value(forged)?;
-    assert!(!main.verify_join_commit(&forged).await?);
+    assert!(!unbounded!(main, verify_join_commit(&forged))?);
     assert_eq!(
         unbounded!(main, operation_generation(idempotency_key))?
             .ok_or("join operation was not recoverable")?
             .id(),
-        joined.id()
+        joined.generation.id()
     );
     assert!(unbounded!(main, operation_generation(IdempotencyKey::new()))?.is_none());
     assert_eq!(
-        unbounded!(joined, read("/base", 16))?,
+        unbounded!(joined.generation, read("/base", 16))?,
         OwnedBytes::from_static(b"base")
     );
     assert_eq!(
@@ -128,7 +133,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         JoinOutcome::AlreadyApplied(_)
     ));
     main.write_text("/after-join", "later").await?;
-    assert!(main.verify_join_commit(&witness).await?);
+    assert!(unbounded!(main, verify_join_commit(&witness))?);
     let ordinary_key = IdempotencyKey::new();
     let mut ordinary = unbounded!(main, begin_transaction(ordinary_key))?;
     ordinary.write_text("/ordinary", "not a join").await?;
@@ -142,7 +147,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     impostor["operation_id"] = serde_json::to_value(ordinary_key.operation_id())?;
     impostor["result_generation"] = serde_json::to_value(ordinary_generation.id())?;
     let impostor: crate::JoinCommitWitness = serde_json::from_value(impostor)?;
-    assert!(!main.verify_join_commit(&impostor).await?);
+    assert!(!unbounded!(main, verify_join_commit(&impostor))?);
     Ok(())
 }
 
