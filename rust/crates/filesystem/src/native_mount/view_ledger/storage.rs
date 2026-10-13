@@ -6,7 +6,7 @@ use crate::demand::NativeMountAllocationCustody;
 pub(super) fn vector<T>(
     count: usize,
     carrier: &mut NativeDemandCarrier<'_>,
-) -> Result<(Vec<T>, Option<std::sync::Arc<NativeMountAllocationCustody>>), MountSourceError> {
+) -> Result<(Vec<T>, Option<Arc<NativeMountAllocationCustody>>), MountSourceError> {
     carrier
         .with_work(|work| work.check())
         .map_err(mount_demand_error)?;
@@ -56,7 +56,7 @@ pub(super) struct ChangePositions {
     floor: u64,
     latest: HashMap<u64, u64>,
     // Physical backing drops before its original allocation owner.
-    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    custody: Option<Arc<NativeMountAllocationCustody>>,
 }
 
 pub(super) fn record(
@@ -130,36 +130,7 @@ pub(super) fn unchanged_since(
             <= stamp.0
     })
 }
-pub(super) fn grow_vector<T>(
-    entries: &mut Vec<T>,
-    owner: &mut Option<std::sync::Arc<NativeMountAllocationCustody>>,
-    capacity: usize,
-    carrier: &mut NativeDemandCarrier<'_>,
-) -> Result<(), MountSourceError> {
-    let bytes = entries
-        .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let borrowed = adopt_backing(owner.as_deref(), bytes, carrier)?;
-    let result = (|| {
-        let (mut next, custody) = vector(capacity, carrier)?;
-        charge(
-            carrier,
-            copy_work(
-                (entries.len() as u64)
-                    .checked_mul(std::mem::size_of::<T>() as u64)
-                    .ok_or(crate::WorkError::Overflow)?,
-            ),
-        )?;
-        next.append(entries);
-        drop(std::mem::replace(entries, next));
-        drop(std::mem::replace(owner, custody));
-        Ok(())
-    })();
-    result.and(release_backing(borrowed, carrier))
-}
-
-fn adopt_backing(
+pub(super) fn adopt_backing(
     owner: Option<&NativeMountAllocationCustody>,
     bytes: u64,
     carrier: &mut NativeDemandCarrier<'_>,
@@ -179,7 +150,7 @@ fn adopt_backing(
     }
 }
 
-fn release_backing(
+pub(super) fn release_backing(
     bytes: u64,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {

@@ -251,11 +251,7 @@ impl From<DemandError> for MaterializeError {
             DemandError::Work(error) => MaterializeError::Work(error),
             DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
             DemandError::Io(error) => MaterializeError::Io(error),
-            #[cfg(target_os = "linux")]
-            DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
-            #[cfg(target_os = "macos")]
-            DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
-            #[cfg(windows)]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
             error => MaterializeError::Demand(error),
         }

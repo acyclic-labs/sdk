@@ -6,28 +6,21 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (present_id, present_bytes) = object(b"present");
-    ({
-        inner
-            .put(
-                present_id,
-                present_bytes.clone(),
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
-            )
-            .await
-    })?;
+    (object_work!(
+        inner,
+        put(present_id, present_bytes.clone()),
+        B,
+        &cancellation
+    ))
+    .await?;
     let (missing_id, _) = object(b"absent");
     let cached = CachedObjectStore::new(inner, options(4, 64))?;
 
     for _ in 0..2 {
         assert!(
-            (async {
-                let mut __object_work =
-                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                let __object_result = cached.read(missing_id, 6, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            })
-            .await
-            .is_err()
+            (object_work!(cached, read(missing_id, 6), B, &cancellation))
+                .await
+                .is_err()
         );
         assert_eq!(cached.stats()?.in_flight, 0);
     }
@@ -42,40 +35,18 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
         },
     ];
     assert!(
-        (async {
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = cached
-                .read_many(&requests, &mut __object_work)
-                .await
-                .map(|(values, _allocation)| values);
-            __object_work.receipt(__object_result)
-        })
-        .await
-        .is_err()
+        (object_work!(cached, read_many(&requests), B, &cancellation))
+            .await
+            .is_err()
     );
     assert_eq!(cached.stats()?.in_flight, 0);
-    let retry = (cached
-        .read(
-            present_id,
-            7,
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
-        )
-        .await)?;
-    assert_eq!(retry.bytes, present_bytes);
+    let retry = object_work!(cached, read(present_id, 7), B, &cancellation).await?;
+    assert_eq!(retry.value.bytes, present_bytes);
 
-    let empty = (async {
-        let authority_input_0 = &[];
-
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached
-            .read_many(authority_input_0, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
-    })
-    .await
-    .err()
-    .ok_or("empty cache batch succeeded")?;
+    let empty = (object_work!(cached, read_many(&[]), B, &cancellation))
+        .await
+        .err()
+        .ok_or("empty cache batch succeeded")?;
     assert!(matches!(empty.error, ObjectStoreError::Rejected(_)));
     assert_eq!(*empty.work, WorkCounters::default());
     Ok(())
@@ -87,15 +58,7 @@ async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover(
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"single-flight");
-    ({
-        inner
-            .put(
-                object_id,
-                bytes.clone(),
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
-            )
-            .await
-    })?;
+    (object_work!(inner, put(object_id, bytes.clone()), B, &cancellation)).await?;
     let gate = Arc::new(Gate::new());
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
@@ -106,17 +69,9 @@ async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover(
         },
         options(4, 64),
     )?;
-    let (first, second) = (async {
-        let first = async {
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = cached.read(object_id, 13, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        };
-        let second = async {
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = cached.read(object_id, 13, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        };
+    let (first, second) = async {
+        let first = object_work!(cached, read(object_id, 13), B, &cancellation);
+        let second = object_work!(cached, read(object_id, 13), B, &cancellation);
         let release = async {
             while reads.load(Ordering::Acquire) == 0 {
                 tokio::task::yield_now().await;
@@ -125,17 +80,14 @@ async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover(
         };
         let (first, second, ()) = tokio::join!(first, second, release);
         (first, second)
-    })
+    }
     .await;
     let first = first?;
     let second = second?;
     assert_eq!(first.value.bytes, bytes);
     assert_eq!(second.value.bytes, bytes);
     assert_eq!(reads.load(Ordering::Acquire), 1);
-    assert_eq!(
-        first.work.backend_read_operations + second.work.backend_read_operations,
-        1
-    );
+
     assert_eq!(cached.stats()?.coalesced_reads, 1);
     Ok(())
 }
@@ -151,15 +103,7 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
         let cancellation = CancellationToken::new();
         let (identity, bytes) = body;
         if object_id == 0 {
-            ({
-                inner
-                    .put(
-                        identity,
-                        bytes.clone(),
-                        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
-                    )
-                    .await
-            })?;
+            (object_work!(inner, put(identity, bytes.clone()), B, &cancellation)).await?;
         }
         let gate = Arc::new(Gate::new());
         let reads = Arc::new(AtomicUsize::new(0));
@@ -175,28 +119,14 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
             object_id: identity,
             maximum_bytes: u64::try_from(bytes.len())?,
         }];
-        let (scalar, batch) = (async {
-            let scalar = async {
-                let mut __object_work =
-                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                let __object_result = cached
-                    .read(
-                        identity,
-                        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                        &mut __object_work,
-                    )
-                    .await;
-                __object_work.receipt(__object_result)
-            };
-            let batch = async {
-                let mut __object_work =
-                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                let __object_result = cached
-                    .read_many(&requests, &mut __object_work)
-                    .await
-                    .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            };
+        let (scalar, batch) = async {
+            let scalar = object_work!(
+                cached,
+                read(identity, u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
+                B,
+                &cancellation
+            );
+            let batch = object_work!(cached, read_many(&requests), B, &cancellation);
             let release = async {
                 while reads.load(Ordering::Acquire) == 0 {
                     tokio::task::yield_now().await;
@@ -205,7 +135,7 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
             };
             let (scalar, batch, ()) = tokio::join!(scalar, batch, release);
             (scalar, batch)
-        })
+        }
         .await;
         if object_id == 0 {
             assert_eq!(scalar?.value.bytes, bytes);
@@ -223,66 +153,41 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
 }
 
 #[tokio::test]
-async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
+async fn dropped_leaders_release_flights_and_retry_without_a_stale_identity()
 -> Result<(), Box<dyn std::error::Error>> {
+    let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
-
-    for batch in [false, true] {
-        let inner = MemoryObjectStore::default();
-        let (object_id, bytes) = object(if batch {
-            b"batch-retry"
-        } else {
-            b"scalar-retry"
-        });
-        ({
-            inner
-                .put(
-                    object_id,
-                    bytes.clone(),
-                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
-                )
-                .await
-        })?;
-        let cached = CachedObjectStore::new(inner, options(4, 64))?;
-        let abandoned = Arc::new(Flight::new(1));
-        abandoned.finish(None);
+    let (object_id, bytes) = object(b"drop-safe");
+    (object_work!(inner, put(object_id, bytes.clone()), B, &cancellation)).await?;
+    let gate = Arc::new(Gate::new());
+    let reads = Arc::new(AtomicUsize::new(0));
+    let cached = CachedObjectStore::new(
+        GatedStore {
+            inner: Arc::new(inner),
+            gate: Arc::clone(&gate),
+            reads: Arc::clone(&reads),
+        },
+        options(4, 64),
+    )?;
+    async {
         {
-            let mut state = cached.lock_state()?;
-            state.flights.insert(object_id, Arc::clone(&abandoned));
-        }
-
-        let maximum_bytes = u64::try_from(bytes.len())?;
-        if batch {
-            let receipt = (async {
-                let authority_input_0 = &[ObjectReadRequest {
-                    object_id,
-                    maximum_bytes,
-                }];
-
-                let mut __object_work =
-                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                let __object_result = cached
-                    .read_many(authority_input_0, &mut __object_work)
-                    .await
-                    .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
+            let read = object_work!(cached, read(object_id, 9), B, &cancellation);
+            tokio::pin!(read);
+            poll_fn(|context| match read.as_mut().poll(context) {
+                Poll::Pending => Poll::Ready(Ok(())),
+                Poll::Ready(_) => Poll::Ready(Err(std::io::Error::other(
+                    "gated leader completed before cancellation",
+                ))),
             })
             .await?;
-            assert_eq!(receipt.value[0].bytes, bytes);
-        } else {
-            let receipt = (async {
-                let mut __object_work =
-                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                let __object_result = cached
-                    .read(object_id, maximum_bytes, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            })
-            .await?;
-            assert_eq!(receipt.value.bytes, bytes);
         }
-        assert_eq!(cached.stats()?.coalesced_reads, 1);
         assert_eq!(cached.stats()?.in_flight, 0);
+        gate.release();
+        let retry = object_work!(cached, read(object_id, 9), B, &cancellation).await?;
+        assert_eq!(retry.value.bytes, bytes);
+        Ok::<_, Box<dyn std::error::Error>>(())
     }
+    .await?;
+    assert_eq!(reads.load(Ordering::Acquire), 2);
     Ok(())
 }

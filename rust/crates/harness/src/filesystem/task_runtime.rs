@@ -2156,10 +2156,10 @@ where
                 )
                 .await?;
         } else {
-            self.host.wake_command(task, slot.revision, waiting).await?;
+            self.host.wake_command(task, slot.revision, waiting, &mut None).await?;
         }
         #[cfg(target_arch = "wasm32")]
-        self.host.wake_command(task, slot.revision, waiting).await?;
+        self.host.wake_command(task, slot.revision, waiting, &mut None).await?;
         Ok(true)
     }
 
@@ -2306,10 +2306,10 @@ where
                 wake
             } else {
                 wake_custody = None;
-                self.host.workflow_input(task, fence).await?
+                self.host.workflow_input(task, fence, None).await?
             };
             #[cfg(target_arch = "wasm32")]
-            let mut wake = self.host.workflow_input(task, fence).await?;
+            let mut wake = self.host.workflow_input(task, fence, None).await?;
             let mut advanced = 0;
             loop {
                 let revision = session.checkpoint().revision;

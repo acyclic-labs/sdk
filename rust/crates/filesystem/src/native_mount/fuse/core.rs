@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::view_ledger::same_work;
 
 #[derive(Default)]
 pub(super) struct FuseHandlerReports {
@@ -18,17 +19,6 @@ pub(super) fn fuse_verify_callback_guard(
         .verify_native_callback_guard(guard.as_ref(), work)
 }
 
-pub(super) fn fuse_same_native_view(
-    left: &crate::NativeMaterializationWork,
-    right: &crate::NativeMaterializationWork,
-) -> bool {
-    left.shares_allocation_context(right)
-        && left.capture_origin.as_ref().map(Weak::as_ptr)
-            == right.capture_origin.as_ref().map(Weak::as_ptr)
-        && left.invocation.as_ref().map(Arc::as_ptr) == right.invocation.as_ref().map(Arc::as_ptr)
-        && left.execution.as_ref().map(Arc::as_ptr) == right.execution.as_ref().map(Arc::as_ptr)
-}
-
 pub(super) fn fuse_native_source_original(
     source: &dyn MountFilesystem,
     candidate: Option<&crate::NativeMaterializationWork>,
@@ -36,7 +26,7 @@ pub(super) fn fuse_native_source_original(
     let original = source.native_original_work()?;
     if let Some(original) = &original {
         if let Some(candidate) = candidate
-            && !fuse_same_native_view(original, candidate)
+            && !same_work(original, candidate)
         {
             return Err(NativeMountError::ControlPending);
         }
@@ -47,8 +37,6 @@ pub(super) fn fuse_native_source_original(
 
 pub(super) struct ProjectionCore {
     pub(super) source: Arc<dyn MountFilesystem>,
-    pub(super) handler_budget: crate::WorkBudget,
-    pub(super) handler_cancellation: crate::CancellationToken,
     pub(super) startup_meter: Mutex<crate::native_mount::NativeMountMeterActivation>,
     pub(super) handler_failed: AtomicBool,
     pub(super) handler_error: Mutex<FuseHandlerReports>,
@@ -57,7 +45,6 @@ pub(super) struct ProjectionCore {
     pub(super) invalidation: Condvar,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
-    pub(super) notifier: OnceLock<Notifier>,
     pub(super) _allocation: crate::NativeAllocation,
     pub(super) callback_guard: Option<Arc<dyn crate::native_mount::NativeMountCallbackGuard>>,
     pub(super) source_original_work: Option<crate::NativeMaterializationWork>,
@@ -82,7 +69,7 @@ impl NativeMountWorkScope {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .enter(meter)?;
-        core.invalidation.notify_all();
+        let _state = core.state_to_finish();
         Ok(Self {
             core: Arc::clone(core),
             meter: meter.clone(),
@@ -102,14 +89,14 @@ impl Drop for NativeMountWorkScope {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .leave(&self.meter, self.generation);
+        let _state = self.core.state_to_finish();
     }
 }
 
 impl ProjectionCore {
     pub(super) fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        self.invalidation.notify_all();
+        let _state = self.state_to_finish();
     }
 
     pub(super) fn new(
@@ -160,14 +147,8 @@ impl ProjectionCore {
         state
             .inode_by_file
             .insert(root.node.file_id, (ROOT_INODE, identity_storage));
-        let (handler_budget, handler_cancellation) = {
-            let work = native.state.lock();
-            (work.budget, work.cancellation().clone())
-        };
         Ok(Arc::new(Self {
             source,
-            handler_budget,
-            handler_cancellation,
             startup_meter: Mutex::new(crate::native_mount::NativeMountMeterActivation::default()),
             handler_failed: AtomicBool::new(false),
             handler_error: Mutex::new(FuseHandlerReports::default()),
@@ -176,7 +157,6 @@ impl ProjectionCore {
             invalidation: Condvar::new(),
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),
-            notifier: OnceLock::new(),
             _allocation: allocation,
             callback_guard,
             source_original_work,
@@ -208,13 +188,11 @@ impl ProjectionCore {
     }
 
     pub(super) fn take_handler_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
-        let first = self
-            .handler_error
+        self.handler_error
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .first_fatal
-            .take();
-        first.or_else(|| self.state_to_finish().invalidation.failure.take())
+            .take()
     }
 
     pub(super) fn completed_callback_work(&self) -> crate::WorkCounters {
@@ -271,7 +249,7 @@ impl ProjectionCore {
         let current = fuse_native_source_original(self.source.as_ref(), candidate)?;
         match (&self.source_original_work, &current) {
             (None, None) => (),
-            (Some(original), Some(current)) if fuse_same_native_view(original, current) => (),
+            (Some(original), Some(current)) if same_work(original, current) => (),
             _ => return Err(NativeMountError::ControlPending),
         }
         let selected = candidate.cloned();
@@ -309,11 +287,11 @@ impl ProjectionCore {
             crate::native_mount::run_native_mount_handler_on_meter(&meter, run)
                 .map_err(|cause| (cause, meter.state.lock().work))
         } else {
-            let result = crate::native_mount::run_native_mount_handler(
-                self.handler_budget,
-                &self.handler_cancellation,
-                run,
-            );
+            let (budget, cancellation) = {
+                let work = self._allocation.work().state.lock();
+                (work.budget, work.cancellation().clone())
+            };
+            let result = crate::native_mount::run_native_mount_handler(budget, &cancellation, run);
             let work = match &result {
                 Ok(receipt) => &receipt.work,
                 Err(failure) => &failure.1,

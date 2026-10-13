@@ -413,11 +413,8 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<()> {
-        let bytes = self
-            .mail_bytes(sender, recipient, message_id, payload, None)
-            .await?;
-        self.publish_mail(sender, recipient, message_id, bytes, None, None, None)
-            .await
+        let bytes = self.prepare_mail(sender, recipient, message_id, payload, None).await?.0;
+        self.publish_mail(sender, recipient, message_id, bytes, None, None).await
     }
 
     async fn inbox(

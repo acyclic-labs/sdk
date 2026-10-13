@@ -738,7 +738,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
             match (result, cleanup) {
                 (Ok(value), Ok(())) => Ok(value),
-                (Ok(_), Err(error)) => Err(restore_demand_error(error)),
+                (Ok(_), Err(error)) => Err(MaterializeError::from(error)),
                 (Err(error), Ok(())) => Err(error),
                 (Err(primary), Err(cleanup)) => {
                     *cleanup_slot.0 = primary;

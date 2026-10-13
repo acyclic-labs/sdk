@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
     bytes: &[u8],
-    schema: crate::executor::json::JsonValueSchema,
+    schema: &'static crate::executor::json::JsonValueSchema,
     typed_slot: u64,
     work: &'loan mut Option<&'io mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(T, crate::wire_codec::CodecQuota<'loan, 'io>)> {

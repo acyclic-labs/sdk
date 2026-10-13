@@ -4,7 +4,7 @@ struct FollowState {
     next: u64,
     changed: watch::Receiver<u64>,
     done: bool,
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
 }
 impl FollowState {
     fn failed(&mut self, error: &StreamError) {

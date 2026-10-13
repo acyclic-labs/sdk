@@ -172,12 +172,12 @@ struct CountingNoopTool {
 }
 
 impl ToolExecutor for CountingNoopTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         self.executions.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(ToolResult { value: Value::Null }) })
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(None) })
     }
@@ -402,10 +402,10 @@ impl TaskStateProvider for TestTaskState {
 }
 
 impl ToolExecutor for NoopTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async { Ok(ToolResult { value: Value::Null }) })
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Ok(None) })
     }
 }

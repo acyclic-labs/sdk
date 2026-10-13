@@ -4,7 +4,7 @@ pub(super) fn order_host_checkout_union(
     mut observed: Vec<(NamespacePath, Option<HostStat>)>,
     checkout_paths: Vec<(NamespacePath, ())>,
     maximum: usize,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
     let checkout_bytes = vector_bytes(&checkout_paths);
     for (path, ()) in checkout_paths {
@@ -26,7 +26,6 @@ pub(super) fn order_host_checkout_union(
         }
     }
     meter
-        .native
         .clone()
         .release(checkout_bytes)
         .map_err(capture_demand_error)?;
@@ -34,12 +33,11 @@ pub(super) fn order_host_checkout_union(
     let mut observations = capture_vec(observed.len(), meter)?;
     let mut paths = capture_vec(observed.len(), meter)?;
     for (path, observation) in observed {
-        meter.native.clone().check().map_err(capture_demand_error)?;
+        meter.clone().check().map_err(capture_demand_error)?;
         observations.push(observation);
         paths.push(path);
     }
     meter
-        .native
         .clone()
         .release(observed_bytes)
         .map_err(capture_demand_error)?;
@@ -60,7 +58,7 @@ pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObject
     checkout: &mut Checkout<A, O>,
     root: NamespacePath,
     page_size: u32,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
     mut visit: impl FnMut(
         &NamespacePath,
         &crate::DirectoryRecordEntry,
@@ -72,7 +70,7 @@ pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObject
     while let Some(directory) = pending.pop() {
         let mut after = None;
         loop {
-            let cancellation = meter.native.cancellation().clone();
+            let cancellation = meter.cancellation().clone();
             let page = checkout
                 .list_directory_records(
                     &directory,
@@ -80,7 +78,7 @@ pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObject
                         .as_ref()
                         .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     page_size,
-                    &meter.native,
+                    meter,
                     &cancellation,
                 )
                 .await?;
@@ -106,11 +104,7 @@ pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObject
             if let Some(previous) = after.take() {
                 let bytes = previous.retained_bytes() as u64;
                 drop(previous);
-                meter
-                    .native
-                    .clone()
-                    .release(bytes)
-                    .map_err(capture_demand_error)?;
+                meter.clone().release(bytes).map_err(capture_demand_error)?;
             }
             let has_more = page.0.has_more;
             drop(page);
@@ -132,10 +126,9 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     policy: &CapturePolicy,
     maximum: usize,
     paths: &mut Vec<(NamespacePath, ())>,
-    cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    cancellation.check()?;
+    meter.cancellation().check()?;
     walk_checkout_subtree(checkout, root, 1024, meter, |directory, entry, pending| {
         capture_charge(
             meter,
@@ -166,7 +159,7 @@ pub(super) fn append_scanned_path(
     paths: &mut Vec<(NamespacePath, ())>,
     path: NamespacePath,
     maximum: usize,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let index = match capture_position(paths, &path, meter)? {
         Ok(_) => return capture_drop_path(path, meter),
@@ -200,10 +193,10 @@ pub(super) fn validate_path_count(
 
 pub(super) fn open_source_root(
     options: &CaptureOptions,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<HostRoot, CaptureError> {
-    let root = HostRoot::open(&options.source_root, &mut meter.native.clone())
-        .map_err(capture_demand_error)?;
+    let root =
+        HostRoot::open(&options.source_root, &mut meter.clone()).map_err(capture_demand_error)?;
     if root.identity() != options.expected_root_identity {
         return Err(CaptureError::RootChanged);
     }

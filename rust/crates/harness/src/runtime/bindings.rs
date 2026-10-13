@@ -177,39 +177,34 @@ impl Bindings {
             ));
         }
         let native = task_original_work(startup)?;
-        if self.fork_preparer.is_some() && !self.scope.grants().contains(capability::FORK_PUBLISH) {
-            return Err(crate::conversation::content_error(
-                startup,
+        for (invalid, code, reason) in [
+            (
+                self.fork_preparer.is_some()
+                    && !self.scope.grants().contains(capability::FORK_PUBLISH),
                 crate::wire::ErrorCode::Unauthorized,
                 "fork preparer requires fork:publish in the root scope",
-            ));
-        }
-        if self.execution.is_some() && self.durable_host.is_some() {
-            return Err(crate::conversation::content_error(
-                startup,
+            ),
+            (
+                self.execution.is_some() && self.durable_host.is_some(),
                 crate::wire::ErrorCode::Conflict,
                 "execution route and durable host are both bound",
-            ));
-        }
-        if native.is_some()
-            && self.execution.is_some()
-            && (self.state.is_none() || self.spawner.is_none())
-        {
-            return Err(crate::conversation::content_error(
-                startup,
+            ),
+            (
+                native.is_some()
+                    && self.execution.is_some()
+                    && (self.state.is_none() || self.spawner.is_none()),
                 crate::wire::ErrorCode::Unsupported,
                 "native route requires owned state and spawner bindings",
-            ));
-        }
-        let durable_ready = self.durable_host.is_some()
-            || self.execution.is_some()
-            || (self.state.is_some() && self.spawner.is_some());
-        if self.concurrency == 0 {
-            return Err(crate::conversation::content_error(
-                startup,
+            ),
+            (
+                self.concurrency == 0,
                 crate::wire::ErrorCode::Invalid,
                 "runtime concurrency must be positive",
-            ));
+            ),
+        ] {
+            if invalid {
+                return Err(crate::conversation::content_error(startup, code, reason));
+            }
         }
         crate::model::charge_items(startup, 1)?;
         crate::executor::with_history_io(startup, |work| self.scope.run_limits().validate(work))?;
@@ -221,19 +216,22 @@ impl Bindings {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(work), Some(policy)) = (native, &self.policy) {
             policy.supports_native_policy(work)?;
-            let identity = policy.identity_with_native_work(work)?;
-            check_policy_metadata(&identity.0, &identity.1, work)?;
-            validate_policy_identity(&identity.0, startup)?;
+            let (identity, custody) = policy.identity_with_native_work(work)?;
+            check_policy_metadata(&identity, &custody, work)?;
+            validate_policy_identity(&identity, startup)?;
             startup
                 .expect("native startup observer")
-                .absorb_native_custody(identity.1)?;
-            policy_identity = Some(identity.0);
+                .absorb_native_custody(custody)?;
+            policy_identity = Some(identity);
         }
         if native.is_none()
             && let Some(identity) = &policy_identity
         {
             validate_policy_identity(identity, startup)?;
         }
+        let durable_ready = self.durable_host.is_some()
+            || self.execution.is_some()
+            || (self.state.is_some() && self.spawner.is_some());
         if self.resumable_tools.definitions().next().is_some() && !durable_ready {
             return Err(crate::conversation::content_error(
                 startup,
@@ -270,48 +268,23 @@ impl Bindings {
                 }
             }
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let dependency_io = native
-            .map(crate::filesystem::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let dependency_observer = dependency_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let dependency_observer = None;
-        super::dependencies::validate_task_dependencies(&self, dependency_observer)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        drop(dependency_io);
-        let execution = self.execution;
-        let bound_state = self
+        super::dependencies::validate_task_dependencies(&self, startup)?;
+        let state = self
             .state
-            .or_else(|| execution.as_ref().map(|route| route.state()));
-        let bound_spawner = self
+            .or_else(|| self.execution.as_ref().map(|route| route.state()))
+            .or_else(|| {
+                self.durable_host
+                    .as_ref()
+                    .map(|host| Arc::clone(host) as Arc<dyn TaskStateProvider>)
+            });
+        let spawner = self
             .spawner
-            .or_else(|| execution.as_ref().map(|route| route.spawner()));
-        let Self {
-            tasks,
-            tools,
-            resumable_tools,
-            scope,
-            concurrency,
-            durable_host: host,
-            interactions,
-            interaction_resolver,
-            content,
-            artifacts,
-            policy,
-            fork_preparer,
-            ..
-        } = self;
-        let concurrency = scope.concurrency_bound(concurrency);
-        let spawner = bound_spawner.or_else(|| {
-            host.as_ref()
-                .map(|host| Arc::clone(host) as Arc<dyn TaskSpawner>)
-        });
-        let state = bound_state.or_else(|| {
-            host.as_ref()
-                .map(|host| Arc::clone(host) as Arc<dyn TaskStateProvider>)
-        });
+            .or_else(|| self.execution.as_ref().map(|route| route.spawner()))
+            .or_else(|| {
+                self.durable_host
+                    .as_ref()
+                    .map(|host| Arc::clone(host) as Arc<dyn TaskSpawner>)
+            });
         if spawner.is_some() && state.is_none() {
             return Err(crate::conversation::content_error(
                 startup,
@@ -319,35 +292,35 @@ impl Bindings {
                 "durable spawner requires a state/observation host",
             ));
         }
-        if let Some(route) = &execution {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(route) = &self.execution {
             let identity = match native {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Some(work) => std::borrow::Cow::Borrowed(route.identity_with_native_work(work)?),
-                None => std::borrow::Cow::Owned(route.identity()),
+                _ => std::borrow::Cow::Owned(route.identity()),
             };
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let identity = route.identity();
             validate_policy_identity(&identity, startup)?;
         }
-        let fork_preparer = fork_preparer
+        let concurrency = self.scope.concurrency_bound(self.concurrency);
+        let fork_preparer = self
+            .fork_preparer
             .map(|preparer| ForkBinding::new(preparer, startup))
             .transpose()?;
         let mut runtime = AgentHarness {
             live: TaskGroup::new(concurrency, native)?,
-            tasks,
-            tools,
-            resumable_tools,
-            scope,
+            tasks: self.tasks,
+            tools: self.tools,
+            resumable_tools: self.resumable_tools,
+            scope: self.scope,
             concurrency,
-            host,
+            host: self.durable_host,
             state,
             spawner,
-            execution,
-            interactions,
-            interaction_resolver,
-            content,
-            artifacts,
-            policy,
+            execution: self.execution,
+            interactions: self.interactions,
+            interaction_resolver: self.interaction_resolver,
+            content: self.content,
+            artifacts: self.artifacts,
+            policy: self.policy,
             policy_identity,
             model: None,
             context: ContextPipeline::default(),

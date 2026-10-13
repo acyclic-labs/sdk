@@ -153,7 +153,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 preparation_task: origin.preparation_task,
                 intended_child: origin.intended_child,
                 admission_digest: origin.admission_digest,
-                source_grants: crate::core::copy_capabilities(&origin.source_grants, &mut quota)?,
+                source_grants: crate::core::copy(&origin.source_grants, &mut quota, |value: &crate::Capabilities, _| value.logical_owned_bytes())?,
                 request_digest: origin.request_digest,
                 creation_fence: crate::scheduler::LeaseFence {
                     reservation_id: crate::core::copy_text(

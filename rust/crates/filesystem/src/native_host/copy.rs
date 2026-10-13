@@ -2,18 +2,15 @@ use super::*;
 
 pub(super) const STAGING_PREFIX: &str = ".acyclic-copy-";
 
-pub(super) async fn copy_windows_file_worker(
+pub(super) async fn copy_windows_file(
     source_root: HostRoot,
     source_path: std::path::PathBuf,
     staged: &std::sync::Arc<StagedWindowsFile>,
-    receiver: &tokio::sync::oneshot::Sender<io::Result<()>>,
 ) -> io::Result<()> {
     use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
     use fs::FILE_ATTRIBUTE_REPARSE_POINT;
     const CHUNK: usize = 1024 * 1024;
-    if receiver.is_closed() {
-        return Err(io::ErrorKind::Interrupted.into());
-    }
+    // The blocking clone and submitted I/O retain the held file through completion.
     let target = std::sync::Arc::clone(staged);
     let (source, length, cloned) = acyclic_native_runtime::run_blocking_io(
         move || {
@@ -23,7 +20,7 @@ pub(super) async fn copy_windows_file_worker(
             })?
             .into_std();
             let stat = source_root.stat_file(&source, &mut work)?;
-            if !stat.file_type().is_file()
+            if (stat.file_type() != crate::demand::SourceNodeKind::RegularFile)
                 || stat.raw.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
             {
                 return Err(DemandError::InvalidRequest);
@@ -37,9 +34,6 @@ pub(super) async fn copy_windows_file_worker(
     .expect("unmetered task construction cannot fail")
     .await?
     .map_err(ordinary_error)?;
-    if receiver.is_closed() {
-        return Err(io::ErrorKind::Interrupted.into());
-    }
     if cloned {
         return Ok(());
     }
@@ -48,9 +42,6 @@ pub(super) async fn copy_windows_file_worker(
         NativeFile::from_file(staged.guard.try_clone()?, None).map_err(|(error, _)| error)?;
     let mut offset = 0;
     while offset < length {
-        if receiver.is_closed() {
-            return Err(io::ErrorKind::Interrupted.into());
-        }
         let requested = (length - offset).min(CHUNK as u64) as usize;
         let bytes = source
             .read_batch_async(vec![OwnedRead {

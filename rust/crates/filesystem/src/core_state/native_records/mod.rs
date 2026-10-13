@@ -136,35 +136,6 @@ pub(super) fn native_record_owned_bytes(value: &RecordValue, work: &Work) -> Res
     })
 }
 
-fn read<T: Logged>(path: &Path, work: &Work) -> Result<Option<Owned<RecordValue>>, Error> {
-    let Some((value, mut allocation)) = measured_read_file::<Option<T>>(path, work)? else {
-        return Ok(None);
-    };
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let value = value.into_value();
-    allocation.resize(native_record_owned_bytes(&value, work)?)?;
-    Ok(Some((value, allocation)))
-}
-
-pub(super) fn read_native_record(
-    key: RecordKey,
-    path: &Path,
-    work: &Work,
-    cxl: &CancellationToken,
-) -> Result<Option<Owned<RecordValue>>, Error> {
-    check(work, cxl)?;
-    match key {
-        RecordKey::Context(_) => read::<WorkspaceContext>(path, work),
-        RecordKey::Children(_) => read::<ContextChildren>(path, work),
-        RecordKey::ChildCount(_) => read::<ContextChildCount>(path, work),
-        RecordKey::ChildIndex => read::<ContextChildIndex>(path, work),
-        RecordKey::Lineage(_) => read::<WorkspaceLineageRecord>(path, work),
-        RecordKey::LazyWorkspace(_) => read::<LazyWorkspaceState>(path, work),
-    }
-}
-
 pub(super) fn load<T: Logged>(
     root: &Namespace,
     log: &mut CoreLog,
@@ -172,11 +143,10 @@ pub(super) fn load<T: Logged>(
     work: &Work,
     cxl: &CancellationToken,
 ) -> Result<Option<Owned<T>>, Error> {
-    let Some((value, allocation)) = log.get_native_value(root, T::key(id), work, cxl)? else {
-        return Ok(None);
-    };
-    let value = T::from_value(value).ok_or(Error::Integrity)?;
-    Ok(Some((value, allocation)))
+    check(work, cxl)?;
+    let value = log.get::<T>(root, id, None, Some(cxl))?;
+    check(work, cxl)?;
+    Ok(value.map(|(value, allocation)| (value, allocation.expect("native record allocation"))))
 }
 
 pub(super) fn compare_native_lineage(

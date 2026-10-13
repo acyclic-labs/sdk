@@ -212,8 +212,8 @@ impl LocalListFilesTool {
             .await?;
         _page_custody = custody;
         let wire = list_files_page_wire(&generation, &page)?;
-        let (value, custody) = crate::tool::value(&wire, maximum_bytes, work)?;
-        let output = (ToolResult { value }, custody);
+        let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
+        let output = (ToolResult { value }, custody.expect("native list result"));
         let mut cached = Self::native_result_copy(&output.0, maximum_bytes, work)?;
         let slot_bytes = (std::mem::size_of::<(OperationId, ListFilesObservation)>()
             - std::mem::size_of::<Value>()) as u64;
@@ -262,7 +262,7 @@ impl ToolExecutor for LocalListFilesTool {
         require_volume_grant(scope, &self.volume, VolumeOperation::Read)
     }
 
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
             let admission_digest = crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
@@ -328,8 +328,7 @@ impl ToolExecutor for LocalListFilesTool {
 
     fn reconcile<'a>(
         &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             let observed = self.observed.lock().await;
             let admission_digest = crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
@@ -471,9 +470,8 @@ impl ToolProjection for LocalListFilesTool {
                     value: &result.value,
                 },
                 acyclic_stream::MAX_RECORD_BYTES as u64,
-                work,
-            )
-            .map(|(value, custody)| (value, Some(custody)));
+                Some(work),
+            );
         }
         Ok((
             serde_json::json!({"kind":"json","value":result.value}),

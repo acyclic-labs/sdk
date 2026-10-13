@@ -60,6 +60,7 @@ fn assert_reference(projection: &Value, expected: &FileRef) -> Result<()> {
 
 #[test]
 fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> Result<()> {
+    let mut work = super::super::edit::AlgorithmWork::new(None, 0)?;
     let file = file()?;
     let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
     let read = ReadResult {
@@ -68,7 +69,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
             "ababa",
             TextRange { start: 1, end: 4 },
             READ,
-            &mut super::super::edit::AlgorithmWork::ordinary(),
+            &mut work,
         )?,
     };
     let result = ToolResult {
@@ -77,7 +78,12 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = ReadProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
-        crate::executor::validate_json_schema_value(&mode.schema::<ReadResult>()?, &projected, "read projection", &mut None)?;
+        crate::executor::validate_json_schema_value(
+            &mode.schema::<ReadResult>()?,
+            &projected,
+            "read projection",
+            &mut None,
+        )?;
         if mode == ProjectionMode::Full {
             assert_eq!(projected, json!({"kind":"json","value":result.value}));
         } else {
@@ -87,12 +93,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     let search = SearchResult {
         file: file.clone(),
         query: "a".into(),
-        matches: super::super::text::literal_search(
-            "ababa",
-            "a",
-            SEARCH,
-            &mut super::super::edit::AlgorithmWork::ordinary(),
-        )?,
+        matches: super::super::text::literal_search("ababa", "a", SEARCH, &mut work)?,
     };
     assert_eq!(search.matches.total_matches, 3);
     assert_eq!(search.matches.omitted_matches, 1);
@@ -102,7 +103,12 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = SearchProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
-        crate::executor::validate_json_schema_value(&mode.schema::<SearchResult>()?, &projected, "search projection", &mut None)?;
+        crate::executor::validate_json_schema_value(
+            &mode.schema::<SearchResult>()?,
+            &projected,
+            "search projection",
+            &mut None,
+        )?;
         if mode == ProjectionMode::Full {
             assert_eq!(projected, json!({"kind":"json","value":result.value}));
         } else {
@@ -144,7 +150,12 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
             crate::executor::compile_json_schema(schema, "typed text tool", &mut None)?;
         }
         assert!(
-            crate::executor::validate_json_schema_value(&tool.definition.projection_schema, &json!({"file":file()?}), "bare result", &mut None)
+            crate::executor::validate_json_schema_value(
+                &tool.definition.projection_schema,
+                &json!({"file":file()?}),
+                "bare result",
+                &mut None
+            )
             .is_err()
         );
     }
@@ -174,7 +185,7 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
     let empty = RuntimeScope::new(Capabilities::default(), Limits::default())?;
     assert!(adapter.authorize(None, &input).is_err());
     assert!(adapter.authorize(Some(&empty), &input).is_err());
-    let grants = Capabilities::new([file.read_capability( &mut None)?]);
+    let grants = Capabilities::new([file.read_capability(&mut None)?]);
     let scope = RuntimeScope::new(grants, Limits::default())?;
     assert_eq!(adapter.preflight(&scope, &input)?, file);
     for range in [json!({"start":4,"end":1}), json!({"start":0,"end":6})] {

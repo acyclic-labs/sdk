@@ -41,9 +41,9 @@ mod open;
 pub(crate) use open::*;
 mod mutation;
 pub(crate) use mutation::*;
-mod metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 mod macos_metadata;
+mod metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 pub(crate) use macos_metadata::*;
 mod stat;
@@ -53,9 +53,9 @@ pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
 #[cfg(unix)]
-mod linux_metadata;
+mod unix_metadata;
 #[cfg(unix)]
-pub(crate) use linux_metadata::*;
+pub(crate) use unix_metadata::*;
 mod links;
 pub(crate) use links::*;
 mod unix_stat;
@@ -90,7 +90,7 @@ pub use reader::HostStatReader;
 pub use root::HostRoot;
 #[cfg(target_os = "macos")]
 pub use sparse::punch_hole;
-pub use stat::{HostDataRange, HostFileType, HostListedEntry, HostStat};
+pub use stat::{HostDataRange, HostListedEntry, HostStat};
 #[cfg(windows)]
 pub use yielding::{Yielded, YieldingFile};
 #[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
@@ -111,3 +111,8 @@ mod windows_clone_tests;
 #[cfg(all(test, windows))]
 #[path = "tests_yielding.rs"]
 mod yielding_tests;
+
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+use test_support::{test_path, test_root};

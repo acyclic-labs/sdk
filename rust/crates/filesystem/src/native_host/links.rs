@@ -212,7 +212,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
         let (mut bytes, target, allocation) =
-            with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
                 read_link_buffer(parent, leaf, maximum, work)
             })?;
         bytes.truncate(target.end);
@@ -240,16 +240,10 @@ impl HostRoot {
             .ok_or(DemandError::NativeWorkUnavailable)?;
         NativeHostWork::check(&original)?;
         let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
-        #[cfg(unix)]
         let (bytes, target, allocation) =
-            with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
                 read_link_buffer(parent, leaf, maximum, work)
             })?;
-        #[cfg(windows)]
-        let (bytes, target, allocation) = {
-            let (parent, leaf) = wide_parent_leaf(path)?;
-            read_link_buffer(&self.open_dir_held(parent, work)?, leaf, maximum, work)?
-        };
         if let Err(error) = ownership.retain(allocation, work) {
             drop(bytes);
             work.release(allocation)?;

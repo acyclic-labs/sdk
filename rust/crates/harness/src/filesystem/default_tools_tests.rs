@@ -675,8 +675,8 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             arguments: json!({}),
         };
         assert!(tool.executor.authorize(None, &invocation).is_err());
-        assert!(tool.executor.execute(invocation.clone()).await.is_err());
-        assert!(tool.executor.reconcile(invocation).await.is_err());
+        assert!(tool.executor.execute(invocation.clone(), None).await.is_err());
+        assert!(tool.executor.reconcile(invocation, None).await.is_err());
     }
     assert!(registry.tools.get("bash", None, None)?.is_none());
     Ok(())

@@ -60,7 +60,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .partition_work(crate::WorkCounters {
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
-            })
+            }, None)
             .map_err(MountSourceError::NativeWork)?;
         Ok(Self {
             checkout,

@@ -210,11 +210,19 @@ pub(super) fn core_snapshot(store: &LocalCoreStateStore) -> CoreSnapshot {
         .with_log(|log| {
             Ok(CoreSnapshot {
                 contexts: load_all_contexts(&namespace, log)?,
-                children: log.get::<ContextChildren>(&namespace, CRASH_PARENT, None)?,
-                child_count: log.get::<ContextChildCount>(&namespace, CRASH_PARENT, None)?,
+                children: log
+                    .get::<ContextChildren>(&namespace, CRASH_PARENT, None, None)?
+                    .map(|(value, _)| value),
+                child_count: log
+                    .get::<ContextChildCount>(&namespace, CRASH_PARENT, None, None)?
+                    .map(|(value, _)| value),
                 index_ready: context_children_index_ready(&namespace, log)?,
-                lineage: log.get::<WorkspaceLineageRecord>(&namespace, CRASH_WORKSPACE, None)?,
-                lazy: log.get::<LazyWorkspaceState>(&namespace, CRASH_WORKSPACE, None)?,
+                lineage: log
+                    .get::<WorkspaceLineageRecord>(&namespace, CRASH_WORKSPACE, None, None)?
+                    .map(|(value, _)| value),
+                lazy: log
+                    .get::<LazyWorkspaceState>(&namespace, CRASH_WORKSPACE, None, None)?
+                    .map(|(value, _)| value),
             })
         })
         .expect("recovered snapshot")
@@ -472,9 +480,7 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
         file_id: crate::FileId::from_bytes([0xa1; 16]),
         priority: 0,
         record: vec![1, 2, 3],
-        metadata: crate::WorkspaceMetadata::from_engine(
-            crate::kernel::FileMetadata::default(),
-        ),
+        metadata: crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default()),
         left: empty_shadows,
         right: empty_shadows,
     };

@@ -47,6 +47,6 @@ async fn apply_authored<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             work.cancellation(),
         )
         .await
-        .map_err(fs_error)?;
+        .map_err(MountSourceError::from)?;
     Ok(())
 }

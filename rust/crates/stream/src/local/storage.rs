@@ -1,5 +1,5 @@
 async fn run_owned_initialization<T, F>(
-    span: &obs::OwnedSpan,
+    span: &obs::OperationSpan,
     initialize: F,
 ) -> Result<T, LocalStreamError>
 where

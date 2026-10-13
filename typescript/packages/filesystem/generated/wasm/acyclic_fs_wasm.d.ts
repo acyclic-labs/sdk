@@ -510,21 +510,9 @@ export class BrowserChangeSet {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Stable path-independent records and namespace binding changes.
-     */
     changes(): BrowserGenerationDiffResult;
-    /**
-     * Composes contiguous immutable deltas by diffing their outer endpoints.
-     */
     compose(next: BrowserChangeSet, maximum_changes: number): Promise<BrowserChangeSet>;
-    /**
-     * Exact immutable base endpoint.
-     */
     readonly from: BrowserGeneration;
-    /**
-     * Exact immutable resulting endpoint.
-     */
     readonly to: BrowserGeneration;
 }
 
@@ -535,229 +523,61 @@ export class BrowserCheckout {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Applies one ordered sparse mutation batch atomically within this volume.
-     */
     applyTransaction(operations: TransactionOperation[]): Promise<BrowserTransactionResult>;
-    /**
-     * Builds an immutable candidate generation without publishing authority.
-     */
     checkpoint(): Promise<BrowserCheckpointResult>;
-    /**
-     * Clones one logical range by immutable extent reference.
-     */
     cloneFileRange(source: string, source_offset: bigint, destination: string, destination_offset: bigint, length: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Clones one logical range between stable file identities.
-     */
     cloneFileRangeById(source_file_id: Uint8Array, source_offset: bigint, destination_file_id: Uint8Array, destination_offset: bigint, length: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Checkpoints and conditionally publishes this private overlay.
-     */
     commit(operation_id: Uint8Array, lease: BrowserOperationWindowLease | undefined): Promise<BrowserCommitResult>;
-    /**
-     * Creates an exact POSIX character or block device identity.
-     */
     createDevice(path: string, kind: string, major: number, minor: number): Promise<BrowserMutationResult>;
-    /**
-     * Creates one empty directory in the private COW overlay.
-     */
     createDirectory(path: string): Promise<BrowserMutationResult>;
-    /**
-     * Creates one regular file in the private COW overlay.
-     */
     createFile(path: string, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Creates an opaque exact Windows reparse-point payload.
-     */
     createReparsePoint(path: string, payload: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Creates an exact empty special namespace entry.
-     */
     createSpecial(path: string, kind: string): Promise<BrowserMutationResult>;
-    /**
-     * Creates one symbolic link with exact opaque target bytes.
-     */
     createSymbolicLink(path: string, target: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Discards the private overlay and returns to its immutable base.
-     */
     discard(): Promise<BrowserMutationResult>;
-    /**
-     * Builds a deterministic complete manifest for resumable transfer.
-     */
     exportManifest(): Promise<BrowserExportManifestResult>;
-    /**
-     * Creates one hard link within the volume.
-     */
     hardLink(source: string, destination: string): Promise<BrowserMutationResult>;
-    /**
-     * Returns one bounded ordered directory page.
-     */
     listDirectory(path: string, after: string | null | undefined, maximum_entries: number): Promise<BrowserDirectoryPageResult>;
-    /**
-     * Returns one bounded directory page with records and metadata fetched in batches.
-     */
     listDirectoryRecords(path: string, after: string | null | undefined, maximum_entries: number): Promise<BrowserDirectoryRecordPageResult>;
-    /**
-     * Returns one bounded ordered named-attribute page.
-     */
     listNamedAttributes(path: string, after_class: string | null | undefined, after_name: Uint8Array | null | undefined, maximum_entries: number): Promise<BrowserNamedAttributePageResult>;
-    /**
-     * Resolves a bounded path batch with shared authenticated frontiers.
-     */
     lookupBatchNoFollow(paths: BrowserPathBatch): Promise<BrowserBatchLookupResult>;
-    /**
-     * Resolves one canonical absolute path without following links.
-     */
     lookupNoFollow(path: string): Promise<BrowserLookupResult>;
-    /**
-     * Applies and publishes one direct-live transaction with bounded safe retries.
-     */
     mutateLive(operations: TransactionOperation[], operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveTransactionResult>;
-    /**
-     * Plans one bounded sparse range without reading file content blobs.
-     */
     planFileExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserExtentPlanResult>;
-    /**
-     * Plans one bounded sparse range by stable file identity.
-     */
     planFileExtentsById(file_id: Uint8Array, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserExtentPlanResult>;
-    /**
-     * Allocates sparse holes without replacing existing content.
-     */
     preallocateFile(path: string, offset: bigint, length: bigint, keep_size: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Allocates sparse holes by stable file identity.
-     */
     preallocateFileById(file_id: Uint8Array, offset: bigint, length: bigint, keep_size: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Prepares a bounded two-parent merge against the current authority head.
-     */
     prepareMerge(theirs: Uint8Array, maximum_changes: number, maximum_conflicts: number): Promise<BrowserMergePreparationResult>;
-    /**
-     * Reads one exact logical regular-file range.
-     */
     readFileRange(path: string, offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Reads one exact logical range by stable file identity.
-     */
     readFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Reads one complete candidate file record by stable identity.
-     */
     readFileRecordById(file_id: Uint8Array): Promise<BrowserFileRecordReadResult>;
-    /**
-     * Reads complete canonical metadata bytes for one path.
-     */
     readMetadata(path: string): Promise<BrowserMetadataResult>;
-    /**
-     * Reads complete canonical metadata by stable file identity.
-     */
     readMetadataById(file_id: Uint8Array): Promise<BrowserMetadataResult>;
-    /**
-     * Reads one exact named attribute value.
-     */
     readNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<BrowserNamedAttributeResult>;
-    /**
-     * Reads one opaque Windows reparse-point payload without interpreting it.
-     */
     readReparsePoint(path: string): Promise<BrowserFileReadResult>;
-    /**
-     * Reads one symbolic link's exact opaque target bytes without following it.
-     */
     readSymbolicLink(path: string): Promise<BrowserFileReadResult>;
-    /**
-     * Safely advances to head and sparsely replays private mutations.
-     */
     rebaseHead(maximum_conflicts: number): Promise<BrowserRebaseResult>;
-    /**
-     * Explicitly advances a clean manual checkout to the authority head.
-     */
     refreshHead(): Promise<BrowserCheckpointResult>;
-    /**
-     * Explicitly performs observation-safe synchronization for a live checkout.
-     */
     refreshLive(): Promise<BrowserCheckpointResult>;
-    /**
-     * Removes one namespace binding.
-     */
     remove(path: string, expected_file_id?: Uint8Array | null): Promise<BrowserMutationResult>;
-    /**
-     * Removes one exact named attribute.
-     */
     removeNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Atomically renames one binding within the volume.
-     */
     rename(source: string, destination: string, replace: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Changes one regular file's logical length.
-     */
     resizeFile(path: string, logical_bytes: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Changes logical length by stable file identity.
-     */
     resizeFileById(file_id: Uint8Array, logical_bytes: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Resolves an ordered path batch once into immutable generation-bound handles.
-     */
     resolveFiles(paths: BrowserPathBatch): Promise<BrowserResolvedFiles>;
-    /**
-     * Resumes an unresolved direct-live transaction with the same operation identity.
-     */
     resumeLive(operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveMutationResult>;
-    /**
-     * Finds the next sparse data or hole boundary without reading file bodies.
-     */
     seekFileExtent(path: string, offset: bigint, target: string): Promise<BrowserExtentSeekResult>;
-    /**
-     * Finds the next sparse boundary by stable file identity.
-     */
     seekFileExtentById(file_id: Uint8Array, offset: bigint, target: string): Promise<BrowserExtentSeekResult>;
-    /**
-     * Atomically replaces metadata and optional logical size for one path.
-     */
     setAttributes(path: string, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<BrowserMutationResult>;
-    /**
-     * Atomically replaces metadata and optional logical size by file identity.
-     */
     setAttributesById(file_id: Uint8Array, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<BrowserMutationResult>;
-    /**
-     * Atomically replaces complete canonical metadata for one path.
-     */
     setMetadata(path: string, canonical_bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Replaces complete canonical metadata by stable file identity.
-     */
     setMetadataById(file_id: Uint8Array, canonical_bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Returns one complete no-follow file record and canonical metadata.
-     */
     statNoFollow(path: string): Promise<BrowserStatResult>;
-    /**
-     * Replaces one logical file range in the private COW overlay.
-     */
     writeFile(path: string, offset: bigint, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Replaces one logical range by stable file identity.
-     */
     writeFileById(file_id: Uint8Array, offset: bigint, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Inserts or replaces one exact named attribute.
-     */
     writeNamedAttribute(path: string, attribute_class: string, name: Uint8Array, bytes: Uint8Array, mode: string): Promise<BrowserMutationResult>;
-    /**
-     * Punches a hole or records physically allocated zeros.
-     */
     zeroFileRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Punches a hole or records allocated zero by stable file identity.
-     */
     zeroFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Returns exact bounded work used to acquire this checkout handle.
-     */
     readonly acquisitionWork: BrowserWorkCounters;
 }
 
@@ -768,69 +588,21 @@ export class BrowserFs {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Discards resident acceleration without changing persistent state.
-     */
     clearObjectCache(): void;
-    /**
-     * Releases browser handles. Durable state remains in the selected browser stores.
-     */
     close(): void;
-    /**
-     * Creates both generation-fenced speculation engines over this
-     */
     createSpeculation(volume_id: Uint8Array, generation_id: Uint8Array, options: any): BrowserSpeculation;
-    /**
-     * Creates one independently configured volume.
-     */
     createVolume(options: any): Promise<BrowserVolume>;
-    /**
-     * Idempotently creates one caller-selected volume identity.
-     */
     createVolumeWithId(volume_id: Uint8Array, options: any): Promise<BrowserVolume>;
-    /**
-     * Creates or idempotently reopens one named workspace.
-     */
     createWorkspace(name: string): Promise<BrowserWorkspace>;
-    /**
-     * Exports one bounded manifest-ordered immutable-object page.
-     */
     exportGenerationBatch(manifest: any, cursor: bigint, maximum_objects: number, maximum_object_bytes: bigint): Promise<GenerationTransferBatchResult>;
-    /**
-     * Exports one exact authenticated immutable object for resumable transfer.
-     */
     exportObject(object_id: Uint8Array, maximum_bytes: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Idempotently imports one manifest-aligned immutable-object page.
-     */
     importGenerationBatch(manifest: any, cursor: bigint, objects: any, maximum_objects: number): Promise<GenerationTransferCursorResult>;
-    /**
-     * Idempotently imports one immutable object under its authenticated identity.
-     */
     importObject(object_id: Uint8Array, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Exact process-local immutable-object accelerator telemetry.
-     */
     objectCacheStats(): any;
-    /**
-     * Opens one previously created or restored persistent volume.
-     */
     openVolume(volume_id: Uint8Array): Promise<BrowserVolume>;
-    /**
-     * Opens one existing named workspace.
-     */
     openWorkspace(name: string): Promise<BrowserWorkspace>;
-    /**
-     * Opens a coordinator on the exact persistent authority; construction acquires no lease.
-     */
     operationWindows(): BrowserOperationWindowCoordinator;
-    /**
-     * Restores authority only after authenticating a complete imported closure.
-     */
     restoreVolume(manifest: any, operation_id: Uint8Array): Promise<BrowserVolume>;
-    /**
-     * Exact backend facts selected during open.
-     */
     readonly capabilities: any;
 }
 
@@ -842,58 +614,14 @@ export class BrowserGeneration {
     free(): void;
     [Symbol.dispose](): void;
     listDirectory(path: string, after: any | null | undefined, maximum_entries: number): Promise<BrowserWorkspaceDirectoryPage>;
-    /**
-     * Retains this exact generation under one opaque identity.
-     */
     pin(identity: string): Promise<BrowserGeneration>;
     planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
-    /**
-     * Reads one complete file from this exact immutable state.
-     */
     read(path: string, maximum_bytes: bigint): Promise<Uint8Array>;
     readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
     readSymbolicLink(path: string): Promise<Uint8Array>;
     stat(path: string): Promise<BrowserWorkspaceStat>;
-    /**
-     * Content-addressed generation identity.
-     */
     readonly id: Uint8Array;
-    /**
-     * Owning opaque workspace identity.
-     */
     readonly workspaceId: Uint8Array;
-}
-
-/**
- * Browser-safe Git-shaped compatibility history over the canonical Rust state machine.
- */
-export class BrowserGitCompatRepository {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Validates and canonicalizes a Rust Git output before JS projection.
-     */
-    canonicalizeOutputJson(value_json: string): string;
-    /**
-     * Validates and canonicalizes a durable pending transition before JS
-     */
-    canonicalizePendingTransitionJson(value_json: string): string;
-    /**
-     * Parses and executes a Git-shaped argv command using the Rust source of truth.
-     */
-    executeArgvJson(argv: string[], workspace_generation: Uint8Array, default_author: string, now_seconds: bigint): Promise<string>;
-    /**
-     * Executes one typed command encoded with the public serde contract.
-     */
-    executeJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
-    /**
-     * Executes a natural JavaScript Git command through the Rust
-     */
-    executePublicJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
-    /**
-     * Creates process-local compatibility state for one SDK workspace.
-     */
-    constructor(workspace_id: Uint8Array);
 }
 
 /**
@@ -903,17 +631,8 @@ export class BrowserJoinPlan {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Applies this immutable plan through one exact target-head CAS.
-     */
     apply(if_target: Uint8Array, idempotency_key?: Uint8Array | null): Promise<BrowserJoinResult>;
-    /**
-     * Exact discovered common ancestor.
-     */
     readonly commonAncestor: Uint8Array;
-    /**
-     * Target generation observed while planning.
-     */
     readonly targetHead: Uint8Array;
 }
 
@@ -924,33 +643,12 @@ export class BrowserOperationWindowCoordinator {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Opens an overlapping lease through the shared Rust transition.
-     */
     begin(workspace_id: Uint8Array, parent: Uint8Array, owner: string, now_millis: bigint, expires_at_millis: bigint, lease_id?: Uint8Array | null): Promise<BrowserOperationWindowLease>;
-    /**
-     * Closes a lease; the final closer owns reconciliation.
-     */
     finish(lease: BrowserOperationWindowLease, now_millis: bigint): Promise<BrowserOperationWindowClose>;
-    /**
-     * Closes and completes deferred workspace reconciliation through the existing coordinator.
-     */
     finishWorkspace(workspace: BrowserWorkspace, lease: BrowserOperationWindowLease, now_millis: bigint, options: BrowserOperationReconcileOptions): Promise<BrowserWorkspaceOperationClose>;
-    /**
-     * Inspects the current durable phase without acquiring authority.
-     */
     inspect(workspace_id: Uint8Array): Promise<BrowserOperationWindowPhase>;
-    /**
-     * Coalesces an authenticated parent advance.
-     */
     observeParent(workspace_id: Uint8Array, parent: Uint8Array): Promise<boolean>;
-    /**
-     * Recovers expired leases and interrupted reconciliation without rerunning external effects.
-     */
     recoverWorkspace(workspace: BrowserWorkspace, now_millis: bigint, options: BrowserOperationReconcileOptions): Promise<BrowserWorkspaceRebaseResult | undefined>;
-    /**
-     * Extends the exact live lease; its previous publication permit is fenced.
-     */
     renew(lease: BrowserOperationWindowLease, now_millis: bigint, expires_at_millis: bigint): Promise<BrowserOperationWindowLease>;
 }
 
@@ -961,25 +659,10 @@ export class BrowserResolvedFile {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Reads one exact logical range without another namespace lookup.
-     */
     readRange(offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Reads opaque symbolic-link target bytes without another namespace lookup.
-     */
     readSymbolicLink(): Promise<BrowserFileReadResult>;
-    /**
-     * Terminal file kind authenticated by the pinned generation.
-     */
     readonly kind: FileKind;
-    /**
-     * Logical content length authenticated by the pinned generation.
-     */
     readonly logicalBytes: bigint;
-    /**
-     * Complete canonical metadata authenticated by the pinned generation.
-     */
     readonly metadataCanonicalBytes: Uint8Array;
 }
 
@@ -990,17 +673,8 @@ export class BrowserResolvedFiles {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Transfers one generation-bound handle to JavaScript. Each index may be taken once.
-     */
     take(index: number): BrowserResolvedFile | undefined;
-    /**
-     * Number of original-order results.
-     */
     readonly length: number;
-    /**
-     * Exact work receipt for the shared namespace traversal.
-     */
     readonly work: BrowserWorkCounters;
 }
 
@@ -1011,41 +685,14 @@ export class BrowserSpeculation {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Cooperatively cancels future residency execution from this owner.
-     */
     cancel(): void;
-    /**
-     * Executes one admitted residency prediction through the browser's
-     */
     executeResidency(operation_id: Uint8Array): Promise<BrowserResidencyExecution>;
-    /**
-     * Records terminal usefulness for one promotion operation.
-     */
     finishPromotion(operation_id: Uint8Array, useful: boolean): void;
-    /**
-     * Records terminal usefulness for one residency operation.
-     */
     finishResidency(operation_id: Uint8Array, useful: boolean): void;
-    /**
-     * Returns exact payload-free metrics for both engines.
-     */
     metrics(): BrowserSpeculationMetrics;
-    /**
-     * Records foreground demand and admits one authenticated successor.
-     */
     observe(observation: any): BrowserAdmissionResult;
-    /**
-     * Plans one bounded promotion from exact caller-observed location facts.
-     */
     planPromotion(request: any): BrowserPromotionAdmission;
-    /**
-     * Atomically preempts both engines before recording foreground bytes.
-     */
     preemptForForeground(bytes: bigint): BrowserSpeculationPreemption;
-    /**
-     * Atomically fences both engines onto a new immutable generation.
-     */
     replaceGeneration(generation_id: Uint8Array): BrowserSpeculationPreemption;
 }
 
@@ -1056,65 +703,20 @@ export class BrowserTransaction {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Clones one immutable range without reading file bytes.
-     */
     cloneRange(source: string, source_offset: bigint, destination: string, destination_offset: bigint, length: bigint): Promise<void>;
-    /**
-     * Publishes the complete candidate through one idempotent head CAS.
-     */
     commit(lease: BrowserOperationWindowLease | undefined): Promise<BrowserWorkspaceCommit>;
-    /**
-     * Clones one complete regular file without copying its body.
-     */
     copy(source: string, destination: string): Promise<void>;
-    /**
-     * Creates every absent directory on one canonical path.
-     */
     createDirAll(path: string): Promise<void>;
-    /**
-     * Creates exactly one empty directory.
-     */
     createDirectory(path: string): Promise<void>;
-    /**
-     * Creates one symbolic link with an opaque target.
-     */
     createSymbolicLink(path: string, target: Uint8Array): Promise<void>;
-    /**
-     * Creates one same-workspace hard link.
-     */
     hardLink(source: string, destination: string): Promise<void>;
-    /**
-     * Preallocates one sparse range without replacing content.
-     */
     preallocate(path: string, offset: bigint, length: bigint, keep_size: boolean): Promise<void>;
-    /**
-     * Safely advances this retained candidate and sparsely replays its work.
-     */
     rebase(maximum_conflicts: number): Promise<BrowserTransactionRebase>;
-    /**
-     * Removes one existing namespace binding inside this transaction.
-     */
     remove(path: string): Promise<void>;
-    /**
-     * Atomically renames one namespace binding inside this transaction.
-     */
     rename(source: string, destination: string): Promise<void>;
-    /**
-     * Changes one regular file's logical length.
-     */
     resize(path: string, logical_bytes: bigint): Promise<void>;
-    /**
-     * Creates or replaces one complete file inside this transaction.
-     */
     write(path: string, bytes: Uint8Array): Promise<void>;
-    /**
-     * Replaces one sparse regular-file range.
-     */
     writeRange(path: string, offset: bigint, bytes: Uint8Array): Promise<void>;
-    /**
-     * Punches a hole or installs allocated zeros over one exact range.
-     */
     zeroRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<void>;
 }
 
@@ -1125,21 +727,9 @@ export class BrowserVolume {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Opens the volume head with explicit access and consistency semantics.
-     */
     checkout(options: any): Promise<BrowserCheckout>;
-    /**
-     * Computes one bounded Merkle-aware semantic generation diff.
-     */
     diffGenerations(before: Uint8Array, after: Uint8Array, maximum_changes: number): Promise<BrowserGenerationDiffResult>;
-    /**
-     * Returns exact bounded work used to acquire this volume handle.
-     */
     readonly acquisitionWork: BrowserWorkCounters;
-    /**
-     * Returns the canonical 16-byte volume identity.
-     */
     readonly id: Uint8Array;
 }
 
@@ -1150,77 +740,26 @@ export class BrowserWorkspace {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Begins one sparse atomic transaction at the current workspace head.
-     */
     beginTransaction(idempotency_key?: Uint8Array | null): Promise<BrowserTransaction>;
-    /**
-     * Retains the current generation under one human-readable label.
-     */
     checkpoint(label: string): Promise<BrowserGeneration>;
-    /**
-     * Terminally removes this mutable workspace head.
-     */
     delete(idempotency_key?: Uint8Array | null): Promise<string>;
-    /**
-     * Computes one immutable bounded semantic delta between exact generations.
-     */
     diff(from: BrowserGeneration, to: BrowserGeneration, maximum_changes: number): Promise<BrowserChangeSet>;
-    /**
-     * Forks the current generation into an independent named workspace.
-     */
     fork(destination: string, idempotency_key?: Uint8Array | null): Promise<BrowserWorkspace>;
-    /**
-     * Creates an independent workspace at one caller-selected exact generation.
-     */
     forkAt(destination: string, generation: BrowserGeneration, options: BrowserForkOptions): Promise<BrowserWorkspace>;
-    /**
-     * Reopens an authenticated exact retained generation without moving the head.
-     */
     generation(id: Uint8Array): Promise<BrowserGeneration>;
-    /**
-     * Current immutable generation identity.
-     */
     head(): Promise<Uint8Array>;
-    /**
-     * Builds one immutable side-effect-free plan for joining this workspace into a target.
-     */
     joinInto(target: BrowserWorkspace, options: any): Promise<BrowserJoinPlan>;
-    /**
-     * Advances this fork onto its source workspace's current generation.
-     */
     liveRebase(idempotency_key: Uint8Array | null | undefined, maximum_generations: number, maximum_changes: number, maximum_conflicts: number): Promise<BrowserWorkspaceRebaseResult>;
-    /**
-     * Retains the current generation under one opaque stable identity.
-     */
     pin(identity: string): Promise<BrowserGeneration>;
     planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
-    /**
-     * Reads one complete regular file under a byte bound.
-     */
     read(path: string, maximum_bytes: bigint): Promise<Uint8Array>;
     readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
     readSymbolicLink(path: string): Promise<Uint8Array>;
-    /**
-     * Removes one existing path atomically.
-     */
     remove(path: string): Promise<BrowserWorkspaceCommit>;
     stat(path: string): Promise<BrowserWorkspaceStat>;
-    /**
-     * Synchronizes prior operations and returns the exact immutable head.
-     */
     sync(): Promise<BrowserGeneration>;
-    /**
-     * Atomically creates or replaces one complete file.
-     */
     write(path: string, bytes: Uint8Array): Promise<BrowserWorkspaceCommit>;
-    /**
-     * Stable opaque workspace identity.
-     */
     readonly id: Uint8Array;
-    /**
-     * Canonical workspace name.
-     */
     readonly name: string;
 }
 
@@ -1230,41 +769,14 @@ export class BrowserWorkspace {
 export class BrowserWorkspaceContextRegistry {
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Adopts one parent-authorized root without enumerating its contents.
-     */
     adoptRoot(context_id: Uint8Array, root_wire: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Recursively tombstones a direct-child subtree.
-     */
     discardSubtree(parent_context_id: Uint8Array, child_context_id: Uint8Array, maximum: number): Promise<Uint8Array>;
-    /**
-     * Creates an in-process registry. Host persistence can be injected by
-     */
     constructor();
-    /**
-     * Registers an exact direct child from the shared serde contract.
-     */
     registerChild(context_id: Uint8Array, parent_context_id: Uint8Array, roots_wire: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Registers one root context from the shared serde contract.
-     */
     registerRoot(context_id: Uint8Array, roots_wire: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Releases one root after callers have settled its filesystem changes.
-     */
     removeRoot(context_id: Uint8Array, root_id: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Resolves one context as stable JSON.
-     */
     resolve(context_id: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Freezes or resumes one durable context.
-     */
     setActive(context_id: Uint8Array, active: boolean): Promise<Uint8Array>;
-    /**
-     * Advances one root binding after a compatibility branch switch.
-     */
     setWorkspace(context_id: Uint8Array, root_id: Uint8Array, workspace_id: Uint8Array, workspace_name: string, parent_workspace_id?: Uint8Array | null): Promise<Uint8Array>;
 }
 
@@ -1336,7 +848,6 @@ export interface InitOutput {
     readonly __wbg_browsercheckout_free: (a: number, b: number) => void;
     readonly __wbg_browserfs_free: (a: number, b: number) => void;
     readonly __wbg_browsergeneration_free: (a: number, b: number) => void;
-    readonly __wbg_browsergitcompatrepository_free: (a: number, b: number) => void;
     readonly __wbg_browserjoinplan_free: (a: number, b: number) => void;
     readonly __wbg_browseroperationwindowcoordinator_free: (a: number, b: number) => void;
     readonly __wbg_browserresolvedfile_free: (a: number, b: number) => void;
@@ -1431,12 +942,6 @@ export interface InitOutput {
     readonly browsergeneration_readSymbolicLink: (a: number, b: number, c: number) => any;
     readonly browsergeneration_stat: (a: number, b: number, c: number) => any;
     readonly browsergeneration_workspaceId: (a: number) => [number, number];
-    readonly browsergitcompatrepository_canonicalizeOutputJson: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly browsergitcompatrepository_canonicalizePendingTransitionJson: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly browsergitcompatrepository_executeArgvJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
-    readonly browsergitcompatrepository_executeJson: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly browsergitcompatrepository_executePublicJson: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly browsergitcompatrepository_new: (a: number, b: number) => [number, number, number];
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
     readonly browserjoinplan_targetHead: (a: number) => [number, number];

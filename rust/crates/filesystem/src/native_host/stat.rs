@@ -8,42 +8,12 @@ pub struct HostDataRange {
     pub length: u64,
 }
 
-/// Native file kind.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HostFileType(u32);
-impl HostFileType {
-    pub fn is_dir(self) -> bool {
-        self.0 == 0o040000
-    }
-    pub fn is_file(self) -> bool {
-        self.0 == 0o100000
-    }
-    pub fn is_symlink(self) -> bool {
-        self.0 == 0o120000
-    }
-    pub fn is_fifo(self) -> bool {
-        self.0 == 0o010000
-    }
-    pub fn is_socket(self) -> bool {
-        self.0 == 0o140000
-    }
-    pub fn is_char_device(self) -> bool {
-        self.0 == 0o020000
-    }
-    pub fn is_block_device(self) -> bool {
-        self.0 == 0o060000
-    }
-}
-
 /// No-follow native metadata with the host's identity bits preserved.
 #[derive(Clone)]
 #[cfg_attr(windows, derive(Copy, Debug))]
 pub struct HostStat {
     /// Native Unix fields.
-    #[cfg(target_os = "linux")]
-    pub raw: rustix::fs::Stat,
-    /// Native Unix fields.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     pub raw: libc::stat,
     /// Native Windows file-record fields.
     #[cfg(windows)]
@@ -51,8 +21,6 @@ pub struct HostStat {
     /// Volume containing the file record.
     #[cfg(windows)]
     pub volume_serial_number: u32,
-    #[cfg(unix)]
-    len: u64,
     #[cfg(unix)]
     created: Option<cap_std::time::SystemTime>,
 }
@@ -66,31 +34,39 @@ impl std::fmt::Debug for HostStat {
     }
 }
 impl HostStat {
-    pub fn file_type(&self) -> HostFileType {
+    pub fn file_type(&self) -> crate::demand::SourceNodeKind {
+        use crate::demand::SourceNodeKind as Kind;
         #[cfg(unix)]
         {
-            HostFileType(self.raw.st_mode as u32 & 0o170000)
+            match self.raw.st_mode as u32 & 0o170000 {
+                0o040000 => Kind::Directory,
+                0o100000 => Kind::RegularFile,
+                0o120000 => Kind::SymbolicLink,
+                0o010000 => Kind::Fifo,
+                0o140000 => Kind::Socket,
+                0o020000 => Kind::CharacterDevice,
+                0o060000 => Kind::BlockDevice,
+                _ => Kind::Unsupported,
+            }
         }
         #[cfg(windows)]
         {
-            HostFileType(
-                if matches!(self.raw.ReparseTag, 0xA000_0003 | 0xA000_000C) {
-                    0o120000
-                } else if self.raw.FileAttributes & fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
-                    0o040000
-                } else {
-                    0o100000
-                },
-            )
+            if matches!(self.raw.ReparseTag, 0xA000_0003 | 0xA000_000C) {
+                Kind::SymbolicLink
+            } else if self.raw.FileAttributes & fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                Kind::Directory
+            } else {
+                Kind::RegularFile
+            }
         }
     }
     pub fn is_dir(&self) -> bool {
-        self.file_type().is_dir()
+        (self.file_type() == crate::demand::SourceNodeKind::Directory)
     }
     pub fn len(&self) -> u64 {
         #[cfg(unix)]
         {
-            self.len
+            self.raw.st_size as u64
         }
         #[cfg(windows)]
         {
@@ -155,22 +131,18 @@ impl HostStat {
         }
     }
     #[cfg(unix)]
-    pub(super) fn from_stat(
-        #[cfg(target_os = "linux")] raw: rustix::fs::Stat,
-        #[cfg(target_os = "macos")] raw: libc::stat,
-    ) -> io::Result<Self> {
-        let len =
-            u64::try_from(raw.st_size).map_err(|_| io::Error::other("negative file length"))?;
+    pub(super) fn from_stat(raw: libc::stat) -> io::Result<Self> {
+        u64::try_from(raw.st_size).map_err(|_| io::Error::other("negative file length"))?;
         #[cfg(target_os = "linux")]
         let created = None;
         #[cfg(target_os = "macos")]
         let created = unix_time(raw.st_birthtime, raw.st_birthtime_nsec).ok();
-        Ok(Self { raw, len, created })
+        Ok(Self { raw, created })
     }
     #[cfg(target_os = "linux")]
-    pub(super) fn from_statx(stat: rustix::fs::Statx) -> io::Result<Self> {
+    pub(super) fn from_statx(stat: rustix::fs::Statx) -> Self {
         // SAFETY: native stat consists only of integers and integer arrays.
-        let mut raw: rustix::fs::Stat = unsafe { std::mem::zeroed() };
+        let mut raw: libc::stat = unsafe { std::mem::zeroed() };
         raw.st_mode = stat.stx_mode as _;
         raw.st_size = stat.stx_size as _;
         raw.st_dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor) as _;
@@ -190,11 +162,7 @@ impl HostStat {
         } else {
             None
         };
-        Ok(Self {
-            raw,
-            len: stat.stx_size,
-            created,
-        })
+        Self { raw, created }
     }
     #[cfg(windows)]
     pub(super) fn from_stat_information(
@@ -283,8 +251,7 @@ pub(crate) fn stat_file<W: NativeHostWork>(
     #[cfg(windows)]
     {
         let (identity, _) = file_identity_and_length(file, work)?;
-        let volume = u32::try_from(identity.device)
-            .map_err(|_| io::Error::other("native volume serial exceeds u32"))?;
+        let volume = identity.device as u32;
         stat_windows_file(file, volume, work)
     }
 }

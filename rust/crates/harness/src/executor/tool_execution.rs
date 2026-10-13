@@ -1,8 +1,7 @@
 use super::*;
+use crate::wire::ErrorCode::{Conflict, Invalid, Unauthorized};
 
 impl StockExecution<'_> {
-    /// Replays or resolves one tool invocation and appends its message.
-    #[allow(clippy::too_many_lines, reason = "atomic tool admission and recovery")]
     pub(super) async fn settle_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
@@ -20,18 +19,11 @@ impl StockExecution<'_> {
             tool.projection.supports_native_projection(Some(work))?;
         }
         let capability = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(
-                format_args!("tool:call:{}", tool.definition.name),
-                work,
-            )
+            preparation_format(format_args!("tool:call:{}", tool.definition.name), work)
         })?;
         if !self.stock.tool_scope.grants().contains(&capability) {
             return Err(if stock_is_native(self.io) {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "scope lacks the tool capability",
-                )
+                stock_boundary(self.io, Unauthorized, "scope lacks the tool capability")
             } else {
                 Error::Unauthorized(format!("scope lacks {capability}"))
             });
@@ -44,16 +36,16 @@ impl StockExecution<'_> {
                 .min(self.stock.tool_scope.limits().file_bytes),
             self.io,
         )?;
-        let mut tool_context = self.invocation_context(&invocation)?;
+        let mut context = self.invocation_context(&invocation)?;
         stock_authorize_tool(
             tool,
-            tool_context.as_ref(),
+            context.as_ref(),
             &self.stock.tool_scope,
             &invocation,
             self.io,
         )?;
-        crate::executor::with_history_io(self.io, |work| {
-            crate::executor::validate_json_schema_value(
+        with_history_io(self.io, |work| {
+            validate_json_schema_value(
                 &tool.definition.input_schema,
                 &invocation.arguments,
                 "tool input",
@@ -65,72 +57,66 @@ impl StockExecution<'_> {
             .await?;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolStarted {
-                step: event_step,
+                step: recorded,
                 call_id,
-                invocation: existing,
-            } if *event_step == step && call_id == &invocation.call_id => Some(existing),
+                invocation: reference,
+            } if *recorded == step && call_id == &invocation.call_id => Some(reference),
             _ => None,
         });
-        if let Some(existing) = started
-            && retain_preparation(load_json::<ToolInvocation>(journal, existing, self.io).await?)
+        if let Some(reference) = started
+            && load_json::<ToolInvocation>(journal, reference, self.io)
+                .await?
+                .0
                 != invocation
         {
             return Err(stock_boundary(
                 self.io,
-                crate::wire::ErrorCode::Conflict,
+                Conflict,
                 "tool call identity is bound to another invocation",
             ));
         }
         if let Some(reason) = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolFailed {
-                step: event_step,
+                step: recorded,
                 call_id,
                 reason,
-            } if *event_step == step && call_id == &invocation.call_id => Some(*reason),
+            } if *recorded == step && call_id == &invocation.call_id => Some(*reason),
             _ => None,
         }) {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                reason.message(),
-            ));
+            return Err(stock_boundary(self.io, Invalid, reason.message()));
         }
-        let completed_tool = records.iter().find_map(|record| match &record.event {
+        let completed = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolCompleted {
-                step: event_step,
+                step: recorded,
                 call_id,
                 result,
                 projection,
-            } if *event_step == step && call_id == &invocation.call_id => {
-                Some((result, projection))
-            }
+            } if *recorded == step && call_id == &invocation.call_id => Some((result, projection)),
             _ => None,
         });
-        if completed_tool.is_some() && started.is_none() {
+        if completed.is_some() && started.is_none() {
             return Err(stock_boundary(
                 self.io,
-                crate::wire::ErrorCode::Invalid,
+                Invalid,
                 "completed tool has no admitted invocation",
             ));
         }
         if self.stock.reconciliation_only && started.is_none() {
             return Err(Error::Indeterminate(operation_id));
         }
-        let content = if let Some(completed) = completed_tool {
-            let result =
-                retain_preparation(load_json::<ToolResult>(journal, completed.0, self.io).await?);
-            crate::executor::with_history_io(self.io, |work| {
-                crate::executor::validate_json_schema_value(
+        let content = if let Some((result, projection)) = completed {
+            let result = load_json::<ToolResult>(journal, result, self.io).await?;
+            with_history_io(self.io, |work| {
+                validate_json_schema_value(
                     &tool.definition.output_schema,
-                    &result.value,
+                    &result.0.value,
                     "tool output",
                     work,
                 )
             })?;
-            let projection =
-                retain_preparation(load_json::<Value>(journal, completed.1, self.io).await?);
+            let projection = load_json::<Value>(journal, projection, self.io).await?;
             tool.definition
-                .validate_projection(&projection, self.stock.limits, self.io)?
+                .validate_projection(&projection.0, self.stock.limits, self.io)?
         } else {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(progress) = self
@@ -172,39 +158,28 @@ impl StockExecution<'_> {
                                 TaskId::from_bytes(operation_id.into_bytes()),
                                 |(_, task, _)| *task,
                             );
-                            let ((approval_operation, request), _request_hold) =
-                                tool_approval_request(
-                                    task,
-                                    self.stock.policy_identity.as_ref().ok_or_else(|| {
-                                        Error::Conflict("stock policy identity is missing".into())
-                                    })?,
-                                    &tool.definition,
+                            let ((approval_operation, request), _hold) = tool_approval_request(
+                                task,
+                                self.stock.policy_identity.as_ref().ok_or_else(|| {
+                                    Error::Conflict("stock policy identity is missing".into())
+                                })?,
+                                &tool.definition,
+                                &invocation,
+                                (prompt, None),
+                                None,
+                            )?;
+                            if let Some(progress) = self
+                                .settle_approval(
+                                    journal,
+                                    operation_id,
+                                    approval_operation,
+                                    &request,
                                     &invocation,
-                                    (prompt, None),
-                                    None,
-                                )?;
-                            let approval =
-                                crate::executor::with_history_io(self.io, |work| crate::durable_host::task_interaction_id(task, approval_operation, work))?;
-                            journal
-                                .open_interaction(approval, &request, self.io)?
-                                .await?;
-                            let Some(outcome) =
-                                journal.interaction_outcome(approval, self.io)?.await?
-                            else {
-                                if started.is_some() {
-                                    return Err(Error::Indeterminate(invocation.operation_id));
-                                }
-                                return Ok(ExecutionProgress::Pending(invocation.operation_id));
-                            };
-                            match check_tool_approval(outcome) {
-                                Ok(()) => {}
-                                Err(Error::InteractionRejected(reason)) if started.is_none() => {
-                                    return Ok(ExecutionProgress::Rejected(reason));
-                                }
-                                Err(Error::InteractionRejected(_)) => {
-                                    return Err(Error::Indeterminate(invocation.operation_id));
-                                }
-                                Err(error) => return Err(error),
+                                    started.is_some(),
+                                )
+                                .await?
+                            {
+                                return Ok(progress);
                             }
                         }
                     }
@@ -214,25 +189,25 @@ impl StockExecution<'_> {
                 false
             } else {
                 let key = with_history_io(self.io, |work| {
-                    crate::executor::preparation_format(
+                    preparation_format(
                         format_args!("tool:{step}:{}:invocation", invocation.call_id),
                         work,
                     )
                 })?;
-                let invocation_ref =
+                let reference =
                     stage_json(journal, operation_id, &key, &invocation, self.io).await?;
                 let (tail, current) = self
                     .tool_records(journal, operation_id, step, &invocation.call_id)
                     .await?;
                 if current.iter().any(|record| {
                     matches!(&record.event,
-                    ExecutionEvent::ToolStarted { step: event_step, call_id, .. }
-                        if *event_step == step && call_id == &invocation.call_id)
+                    ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
+                        if *recorded == step && call_id == &invocation.call_id)
                 }) {
                     return Err(Error::Indeterminate(operation_id));
                 }
                 let key = with_history_io(self.io, |work| {
-                    crate::executor::preparation_format(
+                    preparation_format(
                         format_args!(
                             "tool:{step}:{}:claim:{}",
                             invocation.call_id,
@@ -244,7 +219,7 @@ impl StockExecution<'_> {
                 let event = ExecutionEvent::ToolStarted {
                     step,
                     call_id: stock_string_copy(&invocation.call_id, self.io)?,
-                    invocation: invocation_ref,
+                    invocation: reference,
                 };
                 match journal
                     .append_if_tail(operation_id, tail, &key, &event, self.io)?
@@ -253,12 +228,12 @@ impl StockExecution<'_> {
                     Ok(true) => {
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         if let Some(work) = self.native_work() {
-                            tool_context
+                            context
                                 .as_ref()
                                 .ok_or_else(|| {
                                     stock_boundary(
                                         self.io,
-                                        crate::wire::ErrorCode::Unauthorized,
+                                        Unauthorized,
                                         "native tool acceptance has no issued context",
                                     )
                                 })?
@@ -272,170 +247,100 @@ impl StockExecution<'_> {
                     Err(error) => return Err(error),
                 }
             };
-            let result = if claimed {
-                let execution =
-                    stock_execute_tool(tool, &mut tool_context, &invocation, self.io).await;
-                match execution {
-                    Ok(result) => result,
-                    Err(error) if error.is_native_failure() => return Err(error),
-                    Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                        return Err(Error::Indeterminate(operation_id));
-                    }
-                    Err(_) => {
-                        self.record_tool_failure(
-                            journal,
-                            operation_id,
-                            step,
-                            &invocation.call_id,
-                            ToolFailureKind::ExecutorRejected,
-                        )
-                        .await?;
-                        return Err(stock_boundary(
-                            self.io,
-                            crate::wire::ErrorCode::Invalid,
-                            ToolFailureKind::ExecutorRejected.message(),
-                        ));
-                    }
-                }
+            let execution = if claimed {
+                stock_execute_tool(tool, &mut context, &invocation, self.io)
+                    .await
+                    .map(Some)
             } else {
-                let reconciliation =
-                    stock_reconcile_tool(tool, &mut tool_context, &invocation, self.io).await;
-                match reconciliation {
-                    Ok(Some(result)) => result,
-                    Err(error) if error.is_native_failure() => return Err(error),
-                    Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                        return Err(Error::Indeterminate(operation_id));
-                    }
-                    Err(_) => {
-                        self.record_tool_failure(
+                stock_reconcile_tool(tool, &mut context, &invocation, self.io).await
+            };
+            let result = match execution {
+                Ok(Some(result)) => result,
+                Err(error) if error.is_native_failure() => return Err(error),
+                Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                Err(error) => {
+                    return self
+                        .reject_tool_call(
                             journal,
                             operation_id,
                             step,
                             &invocation.call_id,
                             ToolFailureKind::ExecutorRejected,
+                            error,
                         )
-                        .await?;
-                        return Err(stock_boundary(
-                            self.io,
-                            crate::wire::ErrorCode::Invalid,
-                            ToolFailureKind::ExecutorRejected.message(),
-                        ));
-                    }
+                        .await;
                 }
             };
-            if let Err(error) = crate::executor::with_history_io(self.io, |work| {
-                crate::executor::validate_json_schema_value(
+            if let Err(error) = with_history_io(self.io, |work| {
+                validate_json_schema_value(
                     &tool.definition.output_schema,
                     &result.value,
                     "tool output",
                     work,
                 )
             }) {
-                if error.is_native_failure() {
-                    return Err(error);
-                }
-                self.record_tool_failure(
-                    journal,
-                    operation_id,
-                    step,
-                    &invocation.call_id,
-                    ToolFailureKind::InvalidOutput,
-                )
-                .await?;
-                return Err(stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    ToolFailureKind::InvalidOutput.message(),
-                ));
+                return self
+                    .reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::InvalidOutput,
+                        error,
+                    )
+                    .await;
             }
             let (projection, content) =
                 match stock_project_tool(tool, &invocation, &result, self.stock.limits, self.io) {
                     Ok(projected) => projected,
                     Err(error) => {
-                        return stock_tool_rejection(
-                            self,
-                            journal,
-                            operation_id,
-                            step,
-                            &invocation.call_id,
-                            ToolFailureKind::ProjectionRejected,
-                            error,
-                        )
-                        .await;
+                        return self
+                            .reject_tool_call(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation.call_id,
+                                ToolFailureKind::ProjectionRejected,
+                                error,
+                            )
+                            .await;
                     }
                 };
-            let key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("tool:{step}:{}:result", invocation.call_id),
-                    work,
+            let result = self
+                .publish_tool_payload(
+                    journal,
+                    operation_id,
+                    step,
+                    &invocation.call_id,
+                    "result",
+                    &result,
                 )
-            })?;
-            let result_ref = stage_json(journal, operation_id, &key, &result, self.io).await;
-            let result_ref = match result_ref {
-                Ok(reference) => reference,
-                Err(error) if error.is_native_failure() => return Err(error),
-                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                    return Err(Error::Indeterminate(operation_id));
-                }
-                Err(_) => {
-                    self.record_tool_failure(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        ToolFailureKind::PublicationRejected,
-                    )
-                    .await?;
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        ToolFailureKind::PublicationRejected.message(),
-                    ));
-                }
-            };
-            let key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("tool:{step}:{}:projection", invocation.call_id),
-                    work,
+                .await?;
+            let projection = self
+                .publish_tool_payload(
+                    journal,
+                    operation_id,
+                    step,
+                    &invocation.call_id,
+                    "projection",
+                    &projection,
                 )
-            })?;
-            let projection_ref =
-                stage_json(journal, operation_id, &key, &projection, self.io).await;
-            let projection_ref = match projection_ref {
-                Ok(reference) => reference,
-                Err(error) if error.is_native_failure() => return Err(error),
-                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                    return Err(Error::Indeterminate(operation_id));
-                }
-                Err(_) => {
-                    self.record_tool_failure(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        ToolFailureKind::PublicationRejected,
-                    )
-                    .await?;
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        ToolFailureKind::PublicationRejected.message(),
-                    ));
-                }
-            };
+                .await?;
             let (tail, current) = self
                 .tool_records(journal, operation_id, step, &invocation.call_id)
                 .await?;
             if current.iter().any(|record| {
                 matches!(&record.event,
-                ExecutionEvent::ToolCompleted { step: event_step, call_id, .. }
-                    | ExecutionEvent::ToolFailed { step: event_step, call_id, .. }
-                    if *event_step == step && call_id == &invocation.call_id)
+                ExecutionEvent::ToolCompleted { step: recorded, call_id, .. }
+                    | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
+                    if *recorded == step && call_id == &invocation.call_id)
             }) {
                 return Err(Error::Indeterminate(operation_id));
             }
             let key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(
+                preparation_format(
                     format_args!(
                         "tool:{step}:{}:completed:{}",
                         invocation.call_id,
@@ -447,8 +352,8 @@ impl StockExecution<'_> {
             let event = ExecutionEvent::ToolCompleted {
                 step,
                 call_id: stock_string_copy(&invocation.call_id, self.io)?,
-                result: result_ref,
-                projection: projection_ref,
+                result,
+                projection,
             };
             match journal
                 .append_if_tail(operation_id, tail, &key, &event, self.io)?
@@ -470,7 +375,7 @@ impl StockExecution<'_> {
                 content,
             }),
         };
-        crate::executor::with_history_io(self.io, |work| {
+        with_history_io(self.io, |work| {
             message.content.validate_limits(self.stock.limits, work)
         })?;
         stock_vec_push(prior_messages, message, self.io)?;

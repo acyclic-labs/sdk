@@ -203,7 +203,7 @@ impl NativeSourceWatch {
             let terminal = active.as_mut().map(|credit| credit.partition_work(WorkCounters {
                 backend_read_operations: 1, backend_write_operations: 5,
                 ..WorkCounters::UNCHARGED
-            })).transpose().map_err(crate::native_name::original_name_error)?;
+            }, None)).transpose().map_err(crate::native_name::original_name_error)?;
             if !native_original { reserve_cleanup(work, 2, 5)?; }
             let overlapped_bytes = size_of::<OVERLAPPED>() as u64;
             work.claim_allocation(overlapped_bytes, u64::from((overlapped_bytes) != 0), crate::WorkCounters::UNCHARGED)?;

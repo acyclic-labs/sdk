@@ -32,7 +32,7 @@ impl Reducer {
     pub(crate) fn mark_indexed_terminal_effect_with_work(
         &mut self,
         event: &Event,
-        _work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        _work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let EventPayload::EffectResolved { observation } = &event.payload else {
             return Ok(());
@@ -102,7 +102,7 @@ impl Reducer {
         verifier: AuthorityVerifier,
         effect_id: EffectId,
         events: &[Event],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(EffectState, u64)> {
         let metadata_owned = if work.is_some() {
             (authority.id.capacity() as u64)
@@ -111,7 +111,7 @@ impl Reducer {
         } else {
             0
         };
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, metadata_owned);
+        let mut quota = CodecQuota::from_retained(work, metadata_owned);
         let mut projection = Self::new(authority, verifier, SchemaRegistry::default());
         let mut previous = 0;
         for event in events {

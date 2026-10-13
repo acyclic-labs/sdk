@@ -158,7 +158,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
             digest: [9; 32],
         },
         decision: ToolPolicyDecision::RequireApproval {
-            prompt: "Approve Î» ðŸ¦€?".into(),
+            prompt: "Approve ÃŽÂ» Ã°Å¸Â¦â‚¬?".into(),
         },
     };
     let definition = ToolDefinition {
@@ -173,7 +173,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
         operation_id: OperationId::new(),
         call_id: "provider-call".into(),
         name: definition.name.clone(),
-        arguments: serde_json::json!({"z":[true,null],"a":"Î»"}),
+        arguments: serde_json::json!({"z":[true,null],"a":"ÃŽÂ»"}),
     };
     (policy, definition, invocation)
 }
@@ -203,31 +203,6 @@ impl ResumableMachine for TestMachine {
             commands: Vec::new(),
             status: crate::workflow::MachineStatus::Suspended,
         })
-    }
-}
-
-pub(super) struct StateOnlyProvider;
-
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl TaskStateProvider for StateOnlyProvider {
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        None
-    }
-    async fn observe_admission(
-        &self,
-        _task_id: TaskId,
-    ) -> Result<TaskAdmissionRecord> { Err(Error::Unsupported("state-only test provider".into()))
-    }
-    async fn resume_scope(
-        &self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-    ) -> Result<RuntimeScope> { Err(Error::Unsupported("state-only test provider".into()))
-    }
-    async fn outcome(&self, _task_id: TaskId) -> Result<Option<Outcome<Value>>> { Err(Error::Unsupported("state-only test provider".into()))
-    }
-    async fn cancel(&self, _task_id: TaskId) -> Result<()> { Err(Error::Unsupported("state-only test provider".into()))
     }
 }
 

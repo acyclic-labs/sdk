@@ -4,7 +4,6 @@ pub(super) struct CheckoutCandidate<A, O> {
     pub(super) operation: Option<OperationId>,
 }
 
-/// Paths whose bindings a candidate was prepared to change.
 #[derive(Clone, Copy)]
 pub(super) enum InstallScope<'a> {
     Paths(&'a [NamespacePath]),
@@ -95,7 +94,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
                 .clone_namespace(&path.components()[..length], base.volume_config().limits)?;
             for checkout in [base, candidate] {
                 if let Some(record) = checkout
-                    .inspector(&native, cancellation)?
+                    .inspector(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)?
                     .lookup_no_follow(&prefix, &native, cancellation)
                     .await?
                     .record

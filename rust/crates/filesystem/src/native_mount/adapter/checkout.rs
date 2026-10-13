@@ -15,7 +15,6 @@ pub struct SharedCheckoutGuard<'a, A, O> {
     state: tokio::sync::RwLockWriteGuard<'a, SharedCheckoutState<A, O>>,
 }
 
-/// One callback's shared admission to the checkout's current view.
 pub(super) struct SharedCheckoutObservation<'a, A, O> {
     _view: ViewReadLease,
     state: tokio::sync::RwLockReadGuard<'a, SharedCheckoutState<A, O>>,
@@ -33,7 +32,6 @@ pub struct SharedCheckoutState<A, O> {
     )>,
     publication: MountPublication,
     ledger: Arc<ViewLedger>,
-    /// The file table every change up to now has been recorded against.
     recorded_view: ObjectId,
 }
 
@@ -122,7 +120,6 @@ impl<A, O> SharedCheckout<A, O> {
         }
     }
 
-    /// Admits one callback alongside other readers of the current view.
     pub(super) async fn observe(
         &self,
         owner: CallbackOwner,
@@ -150,12 +147,10 @@ impl<A, O> SharedCheckout<A, O> {
         }
     }
 
-    /// Whether a native durability request (`fsync`, or a close that
     pub(super) async fn publishes_at_native_boundary(&self) -> bool {
         self.state.read().await.publishes_at_native_boundary()
     }
 
-    /// Begins an optimistic transaction on a copy of the current candidate.
     pub(super) async fn candidate(
         &self,
         operation: Option<OperationId>,
