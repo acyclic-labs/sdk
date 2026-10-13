@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { posix } from "node:path";
@@ -779,9 +779,9 @@ test("Linux package qualification uses sixteen workers without changing publicat
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
 });
 
-test("web browser commands overlap and every child failure fails qualification", () => {
+test("web browser commands overlap, finish before shell exit and retain named timings", () => {
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
-  const start = source.indexOf("    browser_pids=()");
+  const start = source.indexOf("    browser_qualification() {");
   const end = source.indexOf("    ;;", start);
   assert.ok(start > source.indexOf("bun run --filter '@acyclic-labs/harness' build"));
   assert.ok(end > start);
@@ -792,12 +792,28 @@ test("web browser commands overlap and every child failure fails qualification",
   const bash = process.platform === "win32"
     ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
   try {
-    for (const failure of ["none", "fs", "mcp", "client"]) {
-      const fixture = `${root}/${failure}`;
+    for (const scenario of [
+      { failure: "none", earlyExit: false }, { failure: "fs", earlyExit: false },
+      { failure: "mcp", earlyExit: false }, { failure: "client", earlyExit: false },
+      { failure: "fs", earlyExit: true },
+    ]) {
+      const { failure, earlyExit } = scenario;
+      const fixture = `${root}/${failure}-${earlyExit}`;
       mkdirSync(fixture);
+      const body = earlyExit ? commands.replace(
+        'if wait "$browser_pid"; then :; else browser_status=1; fi', 'wait "$browser_pid" || exit 1') : commands;
       const result = spawnSync(bash, ["-c", `set -euo pipefail
 fixture='${fixture}'
+observability="$fixture"
 fail_id='${failure}'
+parent_pid="$BASHPID"
+on_exit() {
+  if [[ "$BASHPID" != "$parent_pid" ]]; then return; fi
+  for child in fs mcp client; do
+    if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
+  done
+}
+trap on_exit EXIT
 bun() {
   case "$*" in
     *"@acyclic-labs/fs"*) id=fs ;;
@@ -812,10 +828,14 @@ bun() {
     sleep 0.01
   done
   [[ -f "$fixture/fs" && -f "$fixture/mcp" && -f "$fixture/client" ]] || return 97
+  if [[ "$id" != "$fail_id" ]]; then
+    case "$id" in fs) sleep 0.03 ;; mcp) sleep 0.08 ;; client) sleep 0.2 ;; esac
+  fi
+  touch "$fixture/$id.done"
   printf 'completed:%s\\n' "$id"
   [[ "$id" != "$fail_id" ]]
 }
-${commands}
+${body}
 printf 'joined\\n'
 `], { encoding: "utf8", timeout: 10000 });
       assert.equal(result.error, undefined);
@@ -826,8 +846,25 @@ printf 'joined\\n'
       assert.deepEqual(events.filter(event => event.startsWith("completed:")).sort(),
         ["completed:client", "completed:fs", "completed:mcp"]);
       assert.equal(events.includes("joined"), failure === "none");
+      if (earlyExit) {
+        assert.match(result.stdout, /unfinished-at-exit:/, "mutation must expose unfinished cleanup");
+      } else {
+        assert.doesNotMatch(result.stdout, /unfinished-at-exit:/);
+        const summary = spawnSync(process.execPath, ["scripts/ci-summary.mjs", fixture], {
+          encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: "" },
+        });
+        assert.equal(summary.status, 0, summary.stderr);
+        assert.ok(summary.stdout.includes("### Parallel browser checks"));
+        for (const browser of [{ id: "fs", command: "bun run --filter @acyclic-labs/fs test:browser" },
+          { id: "mcp", command: "bun run --filter @acyclic-labs/harness test:browser:mcp" },
+          { id: "client", command: "bun run --filter @acyclic-labs/harness test:client:browser" }]) {
+          const row = summary.stdout.split("\n").find(line => line.includes(browser.command)) ?? assert.fail("missing browser timing");
+          assert.ok(row.includes(browser.id === failure ? "exit 1" : "passed"));
+        }
+      }
     }
   } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
     rmSync(root, { recursive: true, force: true });
   }
 });

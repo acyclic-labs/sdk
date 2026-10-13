@@ -408,11 +408,18 @@ case "$lane" in
     bun run --filter '@acyclic-labs/stream' build
     bun run --filter '@acyclic-labs/harness' build
     export CHROME="$(command -v google-chrome || command -v chromium)"
+    browser_qualification() {
+      local name="$1" start="$EPOCHREALTIME" status=0
+      shift
+      "$@" || status=$?
+      printf '%s\t%s\t%s\t%s\0' "$start" "$EPOCHREALTIME" "$status" "$*" >"$observability/browser-$name.tsv"
+      return "$status"
+    }
     browser_pids=()
     # Each driver owns its server and profile; overlap their browser cleanup.
-    bun run --filter '@acyclic-labs/fs' test:browser & browser_pids+=("$!")
-    bun run --filter '@acyclic-labs/harness' test:browser:mcp & browser_pids+=("$!")
-    bun run --filter '@acyclic-labs/harness' test:client:browser & browser_pids+=("$!")
+    browser_qualification fs bun run --filter '@acyclic-labs/fs' test:browser & browser_pids+=("$!")
+    browser_qualification mcp bun run --filter '@acyclic-labs/harness' test:browser:mcp & browser_pids+=("$!")
+    browser_qualification client bun run --filter '@acyclic-labs/harness' test:client:browser & browser_pids+=("$!")
     browser_status=0
     for browser_pid in "${browser_pids[@]}"; do
       if wait "$browser_pid"; then :; else browser_status=1; fi
