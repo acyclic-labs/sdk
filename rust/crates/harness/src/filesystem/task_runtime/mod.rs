@@ -275,6 +275,33 @@ struct TaskJournalMailbox<P: StreamProvider> {
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl TaskContext {
+    /// Reuses the original journal owner under its issued ledger and current fence.
+    pub fn journal_owner<P: StreamProvider + 'static>(
+        &self,
+        fence: &LeaseFence,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let (_, original_fence) = self.owned_task_binding(Some(&io))?;
+        let mailbox = self
+            .owned_mailbox
+            .as_ref()
+            .expect("validated original owner");
+        let mailbox = (mailbox.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<TaskJournalMailbox<P>>()
+            .filter(|mailbox| {
+                original_fence == fence && mailbox.owner.native_shared_work_matches(work)
+            })
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native task owner differs from its original runtime, fence or ledger",
+            })?;
+        Ok(Arc::clone(&mailbox.owner))
+    }
+}
+
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(
         &self,
