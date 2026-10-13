@@ -18,7 +18,7 @@ async fn delayed_objects_are_invisible_until_bounded_flush()
         return Err("delayed object became visible before flush".into());
     };
     assert!(matches!(missing.error, ObjectStoreError::Missing));
-    let flushed = (simulation.flush_object_visibility(B, &cancellation),).await?;
+    let flushed = (simulation.flush_object_visibility(B, &cancellation)).await?;
     assert_eq!(flushed.value, 1);
     let visible = (work!(objects, read(object_id, 64), B, &cancellation)).await?;
     assert_eq!(visible.value.bytes, bytes);
@@ -100,7 +100,7 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
         .err()
         .ok_or("delayed-object bound was ignored")?;
     assert!(matches!(bounded.error, ObjectStoreError::Rejected(_)));
-    let flushed = (simulation.flush_object_visibility(B, &cancellation),).await?;
+    let flushed = (simulation.flush_object_visibility(B, &cancellation)).await?;
     assert_eq!(flushed.value, 1);
     Ok(())
 }

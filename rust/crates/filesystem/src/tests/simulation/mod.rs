@@ -67,7 +67,7 @@ fn assert_authority_before_work<T>(
     Ok(())
 }
 
-fn exercise_authority_before_work(
+async fn exercise_authority_before_work(
     fault: Option<SimulationFault>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
@@ -175,7 +175,7 @@ fn assert_object_before_work<T>(
     Ok(())
 }
 
-fn exercise_object_before_work(
+async fn exercise_object_before_work(
     fault: Option<SimulationFault>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
