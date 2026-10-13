@@ -223,30 +223,39 @@ impl PiRootProvider {
         Ok(Some((scratch.0, operation, scratch.1)))
     }
 
-    pub(super) async fn creation_with_native_work(
-        &self,
+    pub(super) fn creation_with_native_work<'a>(
+        &'a self,
         effect: EffectId,
         attempt: EffectAttemptId,
-        resource: &str,
-        volume: &VolumeRef,
+        resource: &'a str,
+        volume: &'a VolumeRef,
         config: VolumeConfig,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<LocalGeneration>> {
-        let operation =
-            self.creation_operation_with_native_work(effect, attempt, resource, work)?;
-        let name = {
-            let mut io =
-                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-            let value = volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody()?)
-        };
-        let io = PreparationIo::from_native_work(work)?;
-        let (generation, recorded) = self
-            .fs
-            .workspace_for_creation_operation(name.0, config, operation, &io, io.cancellation())
-            .await;
-        recorded?;
-        generation.map_err(Error::from)
+        work: &'a NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<Option<LocalGeneration>>> + Send + 'a {
+        async move {
+            let operation =
+                self.creation_operation_with_native_work(effect, attempt, resource, work)?;
+            let name = {
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    PreparationIo::from_native_work(work)?,
+                );
+                let value = volume.storage_name(&mut Some(&mut io))?;
+                (value, io.into_custody()?)
+            };
+            let io = PreparationIo::from_native_work(work)?;
+            let (generation, recorded) = self
+                .fs
+                .workspace_for_creation_operation(
+                    name.0,
+                    config,
+                    operation,
+                    &io,
+                    work.cancellation(),
+                )
+                .await;
+            recorded?;
+            generation.map_err(Error::from)
+        }
     }
 
     pub(super) fn scratch_creation_with_native_work(

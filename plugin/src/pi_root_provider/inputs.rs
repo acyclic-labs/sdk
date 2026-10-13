@@ -46,25 +46,27 @@ fn validate_pi_input_media(
 }
 
 /// Same original upload key and protected bootstrap grant as stage_pi_input, with the caller's original native ledger owning both codec and publication.
-pub(crate) async fn stage_pi_input<T: Serialize>(
-    owner: &PiOwnerConfig,
-    filesystem: &Host,
+pub(crate) fn stage_pi_input<'a, T: Serialize + Sync>(
+    owner: &'a PiOwnerConfig,
+    filesystem: &'a Host,
     operation: OperationId,
-    label: &str,
-    value: &T,
-    work: &NativeMaterializationWork,
-) -> Result<(FileRef, NativeAllocation)> {
-    stage_pi_input_namespace_with_native_work(
-        owner,
-        filesystem,
-        operation,
-        label,
-        value,
-        work,
-        ROOT_INPUT_DIRECTORY,
-        "input",
-    )
-    .await
+    label: &'a str,
+    value: &'a T,
+    work: &'a NativeMaterializationWork,
+) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a {
+    async move {
+        stage_pi_input_namespace_with_native_work(
+            owner,
+            filesystem,
+            operation,
+            label,
+            value,
+            work,
+            ROOT_INPUT_DIRECTORY,
+            "input",
+        )
+        .await
+    }
 }
 
 pub(crate) async fn stage_pi_operator_input<T: Serialize>(
