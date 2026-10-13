@@ -219,14 +219,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                         .iter()
                         .chain(seed.reference_grants.iter().map(|grant| &grant.file))
                         .chain(&seed.attachment_manifests)
-                        .chain(seed.summary.iter().flat_map(|summary| {
-                            std::iter::once(&summary.context)
-                                .chain(&summary.payloads)
-                                .chain(&summary.references)
-                        }))
                     {
                         if file.volume().provider() == &self.host.provider {
                             self.require_seed_file(seed, file, &io).await?;
+                        }
+                    }
+                    if let Some(summary) = &seed.summary {
+                        for file in std::iter::once(&summary.context)
+                            .chain(&summary.payloads)
+                            .chain(&summary.references)
+                        {
+                            if file.volume().provider() == &self.host.provider {
+                                self.require_seed_file(seed, file, &io).await?;
+                            }
                         }
                     }
                 }

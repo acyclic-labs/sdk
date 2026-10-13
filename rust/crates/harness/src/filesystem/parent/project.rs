@@ -317,6 +317,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 plan.plan
                     .apply_with_native_work(
                         options,
+                        &[],
                         acyclic_fs::PublicationPermit::Unrestricted,
                         work,
                         work.cancellation(),
@@ -341,7 +342,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let options = Self::merge_options(plan, project_join_key(operation_id, None)?);
         let outcome = if selections.is_empty() {
             plan.plan
-                .apply(options, acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(
+                    options,
+                    BTreeMap::new(),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                )
                 .await
                 .map_err(map_error)?
         } else {
@@ -408,7 +413,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 let root = std::mem::size_of::<serde_json::Value>() as u64;
                 io.retain_owned(root)?;
                 let root_hold = io.guard_owned(root)?;
-                let diagnostics = io.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes())?;
+                let diagnostics =
+                    io.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes())?;
                 let statement = match crate::executor::json::json_value_bounded(
                     &witness,
                     crate::executor::json::JsonBounds {
@@ -499,7 +505,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<MergePlan> {
         self.require_merge_plan(plan, None)?;
         plan.plan
-            .describe_conflicts(conflicts, truncated)
+            .describe_conflicts(conflicts.to_vec(), truncated)
             .await
             .map_err(map_error)
     }

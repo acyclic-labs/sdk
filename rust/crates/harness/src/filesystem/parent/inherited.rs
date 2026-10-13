@@ -401,7 +401,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let copy = crate::core::copy_copy_vector(attached_agents, &mut quota)?;
             quota.transfer();
-            Ok(copy)
+            Ok::<_, Error>(copy)
         })?;
         let prefix = InheritedConversationPrefix {
             format_version: 3,

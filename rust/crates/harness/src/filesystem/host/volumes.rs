@@ -59,6 +59,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(paths) => options.inherit_paths(paths),
             None => options,
         };
+        let mut guard = |_| {
+            std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                value: (),
+                work: acyclic_fs::WorkCounters::default(),
+            }))
+        };
         let forked = source_workspace
             .fork(
                 &child_name,
@@ -66,12 +72,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::default(),
-                    }))
-                },
+                &mut guard,
             )
             .await
             .map(|receipt| receipt.value)

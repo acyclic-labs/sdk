@@ -254,7 +254,7 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
 {
     use crate::distributed::SchedulerPayloadStore as _;
     let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
-    let scheduler = crate::filesystem::FilesystemSchedulerPayloadStore::new(
+    let scheduler = crate::filesystem::FilesystemContentPublisher::new(
         storage.host.clone(),
         &(storage.volume),
         &storage.issuer.verifier(&mut None).expect("verifier copy"),

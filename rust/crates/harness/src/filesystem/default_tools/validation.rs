@@ -315,21 +315,18 @@ pub(super) async fn validate_fork_binding<
             })?,
         io,
     )?;
-    let bytes = 'read: {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            break 'read context.read_file_with_native_work(&file, work).await?;
-        }
-        break 'read context
-            .read_file_measured(
-                &file,
+    let ordinary;
+    let io = match io {
+        Some(io) => Some(io),
+        None => {
+            ordinary = PreparationIo::from_budget(
                 acyclic_fs::performance::work_budget(binding.limits.work, binding.limits.bytes),
                 cancellation,
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+            )?;
+            Some(&ordinary)
+        }
     };
+    let bytes = context.read_file(&file, io).await?;
     if let Some(pointer) = &binding.child_message_file_pointer {
         reject_if(
             !pointer.starts_with('/'),

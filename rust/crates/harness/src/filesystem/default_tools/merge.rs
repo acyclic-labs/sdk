@@ -213,9 +213,12 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             crate::wire::ErrorCode::Unauthorized,
             "receipt names another effect",
         )?;
-        let copy =
-            crate::executor::with_history_io(io, |work| receipt.clone_with_work_and_custody(work))?
-                .0;
+        let copy = crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let copy = receipt.copy(&mut quota)?;
+            quota.transfer();
+            Ok::<_, Error>(copy)
+        })?;
         let copy = recursive_box(copy, io)?;
         let key = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(

@@ -75,8 +75,13 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                         };
                         let command = WorkflowCommand {
                             operation_id: command.operation_id,
-                            kind: crate::executor::stock_string_copy(&command.kind, Some(&temporary))?,
-                            payload: crate::executor::with_history_io(Some(&temporary), |work| command.payload.copy(work))?,
+                            kind: crate::executor::stock_string_copy(
+                                &command.kind,
+                                Some(&temporary),
+                            )?,
+                            payload: crate::executor::with_history_io(Some(&temporary), |work| {
+                                command.payload.copy(work)
+                            })?,
                         };
                         let payload = crate::executor::with_history_io(Some(&temporary), |work| {
                             crate::wire_codec::CodecQuota::produce(work, |quota| {
@@ -212,39 +217,37 @@ pub(super) async fn retained_payload(
     cancellation: &CancellationToken,
     io: Option<&PreparationIo>,
 ) -> Result<Value> {
+    let ordinary;
+    let io = match io {
+        Some(io) => io,
+        None => {
+            ordinary = PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(maximum, maximum),
+                cancellation,
+            )?;
+            &ordinary
+        }
+    };
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+    if let Some(work) = io.original_native_work() {
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1,
             ..Default::default()
         })?;
-        reject_if(
-            file.descriptor().byte_length()
-                > maximum.min(context.effective_scope().limits().file_bytes),
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "retained recursive payload exceeds its bound",
-        )?;
-        let bytes = context.read_file_with_native_work(file, work).await?;
-        return Ok(crate::filesystem::retain_decoded(
-            io.expect("native payload").decode(
-                std::marker::PhantomData::<Value>,
-                &bytes,
-                crate::wire::ErrorCode::Storage,
-            )?,
-        ));
     }
-    let bytes = context
-        .task()
-        .read_file_measured(
-            file,
-            acyclic_fs::performance::work_budget(maximum, maximum),
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
+    reject_if(
+        file.descriptor().byte_length()
+            > maximum.min(context.effective_scope().limits().file_bytes),
+        Some(io),
+        crate::wire::ErrorCode::Invalid,
+        "retained recursive payload exceeds its bound",
+    )?;
+    let bytes = context.read_file(file, Some(io)).await?;
+    Ok(crate::filesystem::retain_decoded(io.decode(
+        std::marker::PhantomData::<Value>,
+        &bytes,
+        crate::wire::ErrorCode::Storage,
+    )?))
 }
 pub(super) async fn stage<T: Serialize>(
     context: &ToolContext,
@@ -284,36 +287,17 @@ pub(super) async fn stage<T: Serialize>(
         crate::executor::preparation_format(format_args!("{label}.json"), work)
     })?;
     display_hold = io.guard_owned(display.capacity() as u64)?;
-    let result = 'stage: {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            let (file, custody) = context
-                .stage_file_once_with_native_work(
-                    operation,
-                    &path,
-                    &bytes,
-                    "application/json",
-                    &display,
-                    work,
-                )
-                .await?;
-            io.absorb_native_custody(custody)?;
-            break 'stage Ok(file);
-        }
-        io.receive_content(
-            context
-                .stage_file_once_measured(
-                    operation,
-                    &path,
-                    &bytes,
-                    "application/json",
-                    &display,
-                    io.remaining()?,
-                    cancellation,
-                )
-                .await,
+    let result = context
+        .stage_file_once(
+            operation,
+            &path,
+            &bytes,
+            "application/json",
+            &display,
+            Some(io),
         )
-    };
+        .await
+        .map(|(file, _)| file);
     drop((display, display_hold));
     drop((path, path_hold));
     result

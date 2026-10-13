@@ -273,12 +273,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let proof = owner
                 .authenticated_root_binding_with_native_work(work)
                 .await?;
+            let admission = owner.original_root_admission_with_native_work(work).await?;
             verifier.verify_audience(proof.0.audience(), &mut Some(&mut &io))?;
             crate::core::inspect_metadata(
-                &(scope.capabilities(), &owner.admission.grants),
+                &(scope.capabilities(), &admission.0.grants),
                 &mut Some(&mut &io),
             )?;
-            if scope.capabilities() != owner.input_grants()
+            if scope.capabilities() != &admission.0.grants
                 || scope.agent() != Some(proof.0.agent())
                 || volume.provider() != &self.provider
                 || volume.class() != crate::conversation::VolumeClass::AgentPrivate

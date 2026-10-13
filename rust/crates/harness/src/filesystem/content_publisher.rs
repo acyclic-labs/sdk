@@ -2,7 +2,7 @@ use super::fork_preparer::FilesystemRootBootstrapAllocation;
 use super::{FilesystemHost, PreparationIo, UploadRecord};
 use crate::executor::stock_boundary;
 use crate::{
-    Error, IdempotencyKey, OperationId, Result,
+    IdempotencyKey, OperationId, Result,
     conversation::{
         BoundedContentFuture, ContentGrant, ContentHold, ContentPublisher, FileRef,
         VolumeOperation, VolumeRef,

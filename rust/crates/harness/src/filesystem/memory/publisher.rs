@@ -26,8 +26,9 @@ impl ContentPublisher for MemoryContentPublisher {
         BoundedContentFuture::new(io, || async move {
             let persisted = self
                 .files
-                .publish_once(
+                .publish(
                     operation_id,
+                    None,
                     path,
                     bytes,
                     media_type,
@@ -65,7 +66,17 @@ impl ContentPublisher for MemoryContentPublisher {
         BoundedContentFuture::new(io, || async move {
             let persisted = self
                 .files
-                .replace(operation_id, source, bytes, io, None, None)
+                .publish(
+                    operation_id,
+                    Some(source),
+                    source.path(),
+                    bytes,
+                    source.descriptor().media_type(),
+                    source.display_name(),
+                    io,
+                    None,
+                    None,
+                )
                 .await?;
             let hold = io
                 .map(|io| io.guard_owned(persisted.logical_owned_bytes()?))
