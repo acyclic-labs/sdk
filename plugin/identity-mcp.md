@@ -29,6 +29,7 @@ All tools take an empty object:
 | `identity_whoami` | Read the current identity, refreshing expired access automatically. |
 | `identity_orgs` | Read visible organizations, refreshing expired access automatically. |
 | `identity_refresh` | Rotate the session refresh token or renew an agent-only certificate with its key. |
+| `identity_logout` | Revoke the OAuth session and clear its local tokens and pending approval; retain agent keys. |
 
 Relay the approval URL and code to the user between the two login calls.
 Device codes remain inside the MCP process. Pending approvals are scoped to

@@ -90,6 +90,7 @@ acyclic-plugin signup --agent [--json]
 acyclic-plugin whoami [--json]
 acyclic-plugin orgs [--json]
 acyclic-plugin refresh [--json]
+acyclic-plugin logout [--json]
 acyclic-plugin identity-mcp
 ```
 
@@ -104,6 +105,8 @@ and org reads require the resulting session. See the
 code on stderr, waits for approval, and saves the session. With `--json`, stdout
 contains one JSON result or error; device approval instructions on stderr are
 also JSON. Identity results never include access or refresh tokens.
+`acyclic-plugin logout` revokes the OAuth session and clears local session tokens,
+preserving agent keys. Failed revocation retains credentials for retry.
 
 The credential file defaults to `~/.acyclic/identity.json`. Override it with
 `ACYCLIC_IDENTITY_FILE` or `--credentials PATH`. Filenames ending in `.lock` or

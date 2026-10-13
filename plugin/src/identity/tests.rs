@@ -21,6 +21,17 @@ struct Expected {
 }
 
 impl Expected {
+    fn revoke(bearer: &'static str) -> Self {
+        Self {
+            method: "POST",
+            path: "/v1/identity/revoke",
+            bearer: Some(bearer),
+            fields: vec![],
+            status: StatusCode::NO_CONTENT,
+            response: Value::Null,
+        }
+    }
+
     fn token(fields: Vec<(&'static str, &'static str)>, response: Value) -> Self {
         Self {
             method: "POST",
@@ -101,7 +112,7 @@ async fn handle(
             .map(|bearer| format!("Bearer {bearer}"))
             .as_deref()
     );
-    if !expected.fields.is_empty() {
+    if expected.method == "POST" || !expected.fields.is_empty() {
         assert_eq!(
             request.headers().get("content-type").expect("content type"),
             "application/json"
@@ -584,6 +595,124 @@ fn agent_credentials(endpoint: &str) -> Credentials {
             "birth": "birth", "certificate": "certificate", "tier": "agent", "expires_at": 900}}
     }))
     .expect("agent credentials")
+}
+
+#[tokio::test]
+async fn logout_revokes_the_session_and_preserves_agent_keys() {
+    for retain_agent in [false, true] {
+        let fake = Fake::start(vec![Expected::revoke("access")]).await;
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(&directory.path().join("identity.json")).expect("store");
+        let mut credentials = agent_credentials(&fake.identity.endpoint);
+        credentials.session = Some(session("access", "refresh", now().expect("time") + 900));
+        if !retain_agent {
+            credentials.agent = None;
+        }
+        store.save(&credentials).expect("credentials");
+        assert_eq!(
+            fake.identity.logout(&store).await.expect("logout"),
+            json!({"authenticated": false})
+        );
+        if retain_agent {
+            let saved = store.credentials(&fake.identity.endpoint).expect("agent");
+            assert!(saved.session.is_none());
+            assert_eq!(
+                serde_json::to_value(saved.agent).expect("agent key"),
+                serde_json::to_value(credentials.agent).expect("original agent key")
+            );
+        } else {
+            assert!(!store.path.exists());
+        }
+        fake.done();
+    }
+}
+
+#[tokio::test]
+async fn logout_refreshes_expired_or_refused_access_once() {
+    for expired in [false, true] {
+        let mut expected = vec![];
+        if !expired {
+            let mut refused = Expected::revoke("access");
+            refused.status = StatusCode::UNAUTHORIZED;
+            refused.response = json!({"error": "invalid session"});
+            expected.push(refused);
+        }
+        expected.push(Expected::token(
+            refresh_fields("refresh"),
+            tokens("new-access", "new-refresh"),
+        ));
+        expected.push(Expected::revoke("new-access"));
+        let fake = Fake::start(expected).await;
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(&directory.path().join("identity.json")).expect("store");
+        store
+            .write(
+                &fake.identity.endpoint,
+                session(
+                    "access",
+                    "refresh",
+                    if expired {
+                        0
+                    } else {
+                        now().expect("time") + 900
+                    },
+                ),
+            )
+            .expect("session");
+        fake.identity.logout(&store).await.expect("logout");
+        assert!(!store.path.exists());
+        fake.done();
+    }
+}
+
+#[tokio::test]
+async fn failed_revocation_keeps_credentials_for_retry() {
+    for status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::OK] {
+        let mut refused = Expected::revoke("access");
+        refused.status = status;
+        refused.response = json!({"error": "unavailable", "error_description": "refresh-secret"});
+        let fake = Fake::start(vec![refused, Expected::revoke("access")]).await;
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(&directory.path().join("identity.json")).expect("store");
+        store
+            .write(
+                &fake.identity.endpoint,
+                session("access", "refresh-secret", now().expect("time") + 900),
+            )
+            .expect("session");
+        let before = fs::read(&store.path).expect("credentials");
+        let error = fake.identity.logout(&store).await.expect_err("refused");
+        assert!(!error.json().to_string().contains("refresh-secret"));
+        assert_eq!(fs::read(&store.path).expect("retained credentials"), before);
+        fake.identity.logout(&store).await.expect("retry");
+        assert!(!store.path.exists());
+        fake.done();
+    }
+}
+
+#[tokio::test]
+async fn logout_without_a_session_preserves_agent_registration() {
+    let fake = Fake::start(vec![]).await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    assert_eq!(
+        fake.identity
+            .logout(&store)
+            .await
+            .expect("already logged out"),
+        json!({"authenticated": false})
+    );
+    assert!(!store.path.exists());
+    let mut credentials = agent_credentials(&fake.identity.endpoint);
+    credentials.session = None;
+    store.save(&credentials).expect("agent");
+    let before = fs::read(&store.path).expect("agent bytes");
+    fake.identity
+        .logout(&store)
+        .await
+        .expect("agent-only logout");
+    assert_eq!(fs::read(&store.path).expect("retained agent"), before);
+    fake.done();
 }
 
 #[tokio::test]

@@ -20,7 +20,7 @@ const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub(crate) fn is_command(command: &str) -> bool {
     matches!(
         command,
-        "login" | "signup" | "whoami" | "orgs" | "refresh" | "identity-mcp"
+        "login" | "logout" | "signup" | "whoami" | "orgs" | "refresh" | "identity-mcp"
     )
 }
 
@@ -691,6 +691,49 @@ impl Identity {
         store.write(&self.endpoint, next)
     }
 
+    async fn logout(&self, store: &Store) -> Result<Value, Error> {
+        let credentials = match store.credentials(&self.endpoint) {
+            Ok(credentials) => credentials,
+            Err(error) if error.code == "login_required" => {
+                return Ok(json!({"authenticated": false}));
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(mut session) = credentials.session else {
+            return Ok(json!({"authenticated": false}));
+        };
+        let refreshed = session.expires_at <= now()?.saturating_add(30);
+        if refreshed {
+            session = self.refresh(store, &session).await?;
+        }
+        let request = |session: &Session| {
+            self.client
+                .post(format!("{}/v1/identity/revoke", self.endpoint))
+                .bearer_auth(&session.access_token)
+                .json(&json!({}))
+        };
+        let mut response = request(&session)
+            .send()
+            .await
+            .map_err(|_| Error::new("transport_error", "identity revocation failed"))?;
+        if response.status() == StatusCode::UNAUTHORIZED && !refreshed {
+            session = self.refresh(store, &session).await?;
+            response = request(&session)
+                .send()
+                .await
+                .map_err(|_| Error::new("transport_error", "identity revocation failed"))?;
+        }
+        if response.status() != StatusCode::NO_CONTENT {
+            Self::decode(response).await?;
+            return Err(Error::new(
+                "invalid_response",
+                "invalid revocation response",
+            ));
+        }
+        store.clear()?;
+        Ok(json!({"authenticated": false}))
+    }
+
     async fn get(&self, store: &Store, path: &str) -> Result<Value, Error> {
         let mut session = store.read(&self.endpoint)?;
         let refreshed = session.expires_at <= now()?.saturating_add(30);
@@ -874,6 +917,7 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
         "signup" if options.agent => identity.signup(&store).await,
         "whoami" => identity.get(&store, "/v1/identity/session").await,
         "orgs" => identity.get(&store, "/v1/identity/orgs").await,
+        "logout" => identity.logout(&store).await,
         _ => Err(Error::new("usage_error", "unsupported identity command")),
     }
 }

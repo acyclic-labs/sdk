@@ -47,6 +47,11 @@ test('native JSON login, reads and explicit refresh share rotated credentials', 
       if (!refresh) assert.equal(createHash('sha256').update(fields.code_verifier).digest('base64url'), challenge);
       result = { access_token: refresh ? 'access-2' : 'access-1',
         refresh_token: refresh ? 'refresh-2' : 'refresh-1', token_type: 'Bearer', expires_in: 900 };
+    } else if (request.url === '/v1/identity/revoke') {
+      assert.equal(request.method, 'POST');
+      assert.deepEqual(fields, {});
+      assert.equal(request.headers.authorization, 'Bearer access-2');
+      response.writeHead(204); response.end(); return;
     } else if (request.url === '/v1/identity/session') result = { user: { id: 'user-1' } };
     else if (request.url === '/v1/identity/orgs') result = { orgs: [{ id: 'org-1' }] };
     else { response.statusCode = 404; result = { error: 'not_found' }; }
@@ -80,6 +85,13 @@ test('native JSON login, reads and explicit refresh share rotated credentials', 
     const failure = await run(['whoami', ...args, '--unexpected']);
     assert.equal(failure.code, 1);
     assert.equal(JSON.parse(failure.stdout).error, 'usage_error');
+    const logout = await run(['logout', ...args]);
+    assert.equal(logout.code, 0, logout.stderr);
+    assert.deepEqual(JSON.parse(logout.stdout), { authenticated: false });
+    await assert.rejects(readFile(credentials), { code: 'ENOENT' });
+    const repeated = await run(['logout', ...args]);
+    assert.equal(repeated.code, 0, repeated.stderr);
+    assert.equal(requests.filter(request => request.path === '/v1/identity/revoke').length, 1);
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

@@ -33,6 +33,11 @@ test('stdio identity MCP completes device login and shares session operations', 
       if (fields.grant_type !== 'refresh_token') assert.equal(createHash('sha256').update(fields.code_verifier).digest('base64url'), challenge);
       result = { access_token: 'access-secret', refresh_token: 'refresh-secret',
         token_type: 'Bearer', expires_in: 900 };
+    } else if (request.url === '/v1/identity/revoke') {
+      assert.equal(request.method, 'POST');
+      assert.deepEqual(fields, {});
+      assert.equal(request.headers.authorization, 'Bearer access-secret');
+      response.writeHead(204); response.end(); return;
     } else if (request.url === '/v1/identity/session') result = { user: { id: 'user-1' } };
     else if (request.url === '/v1/identity/orgs') result = { orgs: [{ id: 'org-1' }] };
     else { response.statusCode = 404; result = { error: 'not_found' }; }
@@ -74,6 +79,9 @@ test('stdio identity MCP completes device login and shares session operations', 
     assert.equal((await call('identity_refresh')).structuredContent.authenticated, true);
     assert.equal(requests[2].bearer, 'Bearer access-secret');
     assert.equal(requests[4].fields.refresh_token, 'refresh-secret');
+    assert.equal((await call('identity_logout')).structuredContent.authenticated, false);
+    await assert.rejects(readFile(join(directory, 'identity.json')), { code: 'ENOENT' });
+    assert.equal((await call('identity_whoami')).isError, true);
     assert.ok(!JSON.stringify(login).includes('device-secret'));
     assert.ok(!stderr.includes('secret'));
     child.stdin.end();

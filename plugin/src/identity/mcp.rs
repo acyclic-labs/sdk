@@ -156,6 +156,11 @@ impl Server {
             "identity_signup" => self.identity.signup(&store).await,
             "identity_whoami" => self.identity.get(&store, "/v1/identity/session").await,
             "identity_orgs" => self.identity.get(&store, "/v1/identity/orgs").await,
+            "identity_logout" => {
+                let result = self.identity.logout(&store).await?;
+                self.pending = None;
+                Ok(result)
+            }
             "identity_refresh" => {
                 if store
                     .credentials(&self.identity.endpoint)?
@@ -185,6 +190,7 @@ fn tools() -> Vec<Value> {
         ("identity_whoami", "Show the current signed-in identity; refresh expired access automatically."),
         ("identity_orgs", "List organizations visible to the signed-in identity."),
         ("identity_refresh", "Rotate the stored session refresh token or renew the agent certificate."),
+        ("identity_logout", "Revoke the OAuth session and clear local session tokens; retain the agent key."),
     ].iter().map(|(name, description)| json!({"name": name, "description": description,
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
         "annotations": {"readOnlyHint": false, "destructiveHint": false,
@@ -427,7 +433,7 @@ mod tests {
                 .and_then(Value::as_array)
                 .expect("tools")
                 .len(),
-            6
+            7
         );
         let unknown = server
             .request(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -441,6 +447,29 @@ mod tests {
             .await
             .expect("bad args");
         assert_eq!(bad.pointer("/error/code"), Some(&json!(-32602)));
+    }
+
+    #[tokio::test]
+    async fn logout_forgets_pending_device_approval() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut server = server(directory.path().join("identity.json"));
+        let device = serde_json::from_value(json!({"device_code": "device", "user_code": "code",
+            "verification_uri": "https://example.test", "expires_in": 60}))
+        .expect("device");
+        server.pending = Some((device, tokio::time::Instant::now()));
+        assert_eq!(
+            server.call("identity_logout").await.expect("logout"),
+            json!({"authenticated": false})
+        );
+        assert!(server.pending.is_none());
+        assert_eq!(
+            server
+                .call("identity_login_complete")
+                .await
+                .expect_err("approval forgotten")
+                .code,
+            "login_required"
+        );
     }
 
     #[tokio::test]

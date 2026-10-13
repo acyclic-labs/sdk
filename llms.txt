@@ -129,6 +129,8 @@ approve in their browser; the CLI then saves the session.
 `acyclic-plugin whoami --json` returns the signed-in identity. `acyclic-plugin orgs --json`
 lists organizations. These commands refresh expiring access tokens automatically.
 `acyclic-plugin refresh --json` explicitly rotates the stored refresh token.
+`acyclic-plugin logout --json` revokes the OAuth session and clears its local tokens,
+preserving agent keys. Failed revocation retains credentials for retry.
 Commands exit nonzero on errors. Never read or expose the credential file to a
 model. If refresh fails, sign in again instead of replaying the old refresh token.
 
@@ -145,7 +147,7 @@ registration; rerun signup with that file to recover the same receipt using its 
 Run `acyclic-plugin identity-mcp --endpoint ORIGIN` as a stdio MCP server. It uses the
 same credential file as the CLI. `identity_login` returns approval instructions;
 relay them to the user, then call `identity_login_complete` to save the approved
-session. `identity_whoami`, `identity_orgs`, and `identity_refresh` expose the
+session. `identity_whoami`, `identity_orgs`, `identity_refresh`, and `identity_logout` expose the
 corresponding CLI operations. Token secrets stay inside the server.
 
 `identity_signup` creates the same agent registration; `identity_refresh`
