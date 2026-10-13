@@ -101,7 +101,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.root_scope
             .narrow(scope.grants().clone(), scope.limits())?
             .with_run_limits(scope.run_limits(), &mut None)?;
-        self.validate_parent_scope(parent, &scope).await?;
+        self.validate_parent_scope(parent, &scope, &mut None)
+            .await?;
         if parent.is_some() {
             require_descendant_grant(scope.grants(), &identity)?;
         }
@@ -335,15 +336,38 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self,
         parent: Option<TaskId>,
         scope: &RuntimeScope,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(parent) = parent {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let admitted = self
-                .admission(OperationId::from_bytes(parent.into_bytes()), &mut None)
+                .admission(OperationId::from_bytes(parent.into_bytes()), quota.work())
                 .await?;
-            RuntimeScope::new(admitted.grants, admitted.limits)?
-                .with_run_limits(admitted.run_limits, &mut None)?
-                .narrow(scope.grants().clone(), scope.limits())?
-                .with_run_limits(scope.run_limits(), &mut None)?;
+            if quota.work().is_some() {
+                quota.adopt(
+                    std::mem::size_of::<TaskAdmissionRecord>() as u64
+                        + admitted.logical_owned_bytes()?,
+                )?;
+            }
+            let parent = RuntimeScope::new(admitted.grants, admitted.limits)?
+                .with_run_limits(admitted.run_limits, quota.work())?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(native) = quota
+                .work()
+                .as_deref()
+                .and_then(|io| io.original_native_work())
+            {
+                parent.validate_narrowing_with_native_work(
+                    scope.grants(),
+                    &scope.limits(),
+                    native,
+                )?;
+            } else {
+                parent.narrow(scope.grants().clone(), scope.limits())?;
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            parent.narrow(scope.grants().clone(), scope.limits())?;
+            parent.validate_run_limit_attenuation(&scope.run_limits(), quota.work())?;
         }
         Ok(())
     }
