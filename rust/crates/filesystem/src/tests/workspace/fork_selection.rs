@@ -11,16 +11,16 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     let child = fork_workspace(
         &parent,
         "scratch-child",
-        ForkOptions::from_generation(pinned.clone(), key).empty(),
+        ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
     )
     .await?;
     let initial = unbounded!(child, head())?;
     assert_eq!(unbounded!(initial, parents())?, vec![pinned.id()]);
-    assert!(child.list_directory("/", None, 1).await?.entries.is_empty());
+    assert!(unbounded!(child, list_directory("/", None, 1))?.0.entries.is_empty());
     let retried = fork_workspace(
         &parent,
         "scratch-child",
-        ForkOptions::from_generation(pinned.clone(), key).empty(),
+        ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
     )
     .await?;
     assert_eq!(unbounded!(retried, head())?.id(), initial.id());
@@ -43,7 +43,7 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
         idempotency_key: IdempotencyKey::new(),
     };
     assert!(matches!(
-        plan.apply(options, crate::PublicationPermit::Unrestricted)
+        plan.apply(options, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?,
         JoinOutcome::Applied(_)
     ));
@@ -95,13 +95,10 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         let target = unbounded!(parent, head())?;
         let plan = unbounded!(child.join_into(&parent), plan_at(&source, &target))?;
         assert!(matches!(
-            plan.apply(
-                ApplyOptions {
+            plan.apply(ApplyOptions {
                     if_target: target.id(),
                     idempotency_key: IdempotencyKey::new()
-                },
-                crate::PublicationPermit::Unrestricted
-            )
+                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Applied(_)
         ));
@@ -120,15 +117,12 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         assert_eq!(unbounded!(child, head())?.id(), source.id());
         child.write_text("/notes/keep.txt", "child again").await?;
         parent.write_text("/notes/keep.txt", "parent again").await?;
-        let plan = child.join_into(&parent).plan().await?;
+        let plan = child.join_into(&parent).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
-            plan.apply(
-                ApplyOptions {
+            plan.apply(ApplyOptions {
                     if_target: unbounded!(parent, head())?.id(),
                     idempotency_key: IdempotencyKey::new()
-                },
-                crate::PublicationPermit::Unrestricted
-            )
+                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Conflicted { .. }
         ));
@@ -182,13 +176,10 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
             let target = unbounded!(parent, head())?;
             let plan = unbounded!(source.join_into(&parent), plan_at(&selected_head, &target))?;
             assert!(matches!(
-                plan.apply(
-                    ApplyOptions {
+                plan.apply(ApplyOptions {
                         if_target: target.id(),
                         idempotency_key: IdempotencyKey::new()
-                    },
-                    crate::PublicationPermit::Unrestricted
-                )
+                    }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
                 .await?,
                 JoinOutcome::Applied(_)
             ));
@@ -211,13 +202,10 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
             )?;
             assert!(matches!(
                 repeated
-                    .apply(
-                        ApplyOptions {
+                    .apply(ApplyOptions {
                             if_target: repeated.target_head(),
                             idempotency_key: IdempotencyKey::new()
-                        },
-                        crate::PublicationPermit::Unrestricted
-                    )
+                        }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
                     .await?,
                 JoinOutcome::NoChanges(_)
             ));
@@ -233,15 +221,12 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
     )
     .await?;
     child.remove("/omitted").await?;
-    let plan = child.join_into(&parent).plan().await?;
+    let plan = child.join_into(&parent).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
-        plan.apply(
-            ApplyOptions {
+        plan.apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
-            },
-            crate::PublicationPermit::Unrestricted
-        )
+            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Applied(_)
     ));

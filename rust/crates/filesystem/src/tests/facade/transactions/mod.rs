@@ -106,7 +106,9 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
             })
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-    (checkout.apply_authored_bulk_transaction(created, B, &cancellation)).await?;
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(B, &cancellation);
+    let input = Checkout::<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>::admit_authored_input(created, &mut accounting)?;
+    checkout.apply_authored_bulk_transaction_with_accounting(input, &mut accounting, &cancellation).await?;
     for index in 0..5 {
         assert!(
             (checkout.lookup_no_follow(&path(&format!("bulk{index}"))?, B, &cancellation,))
@@ -116,7 +118,8 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
                 .is_some()
         );
     }
-    let failed = (checkout.apply_authored_bulk_transaction(
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(B, &cancellation);
+    let input = Checkout::<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>::admit_authored_input(
         vec![
             AuthoredMutation::CreateFile {
                 path: path("should-not-appear")?,
@@ -134,10 +137,9 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
                 metadata: FileMetadata::default(),
             },
         ],
-        B,
-        &cancellation,
-    ))
-    .await;
+        &mut accounting,
+    )?;
+    let failed = checkout.apply_authored_bulk_transaction_with_accounting(input, &mut accounting, &cancellation).await;
     assert!(failed.is_err());
     assert!(
         (checkout.lookup_no_follow(&path("should-not-appear")?, B, &cancellation,))

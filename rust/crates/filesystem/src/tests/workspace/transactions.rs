@@ -103,7 +103,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        disjoint.rebase(16).await?,
+        disjoint.rebase(16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
@@ -134,7 +134,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     let TransactionRebase::Conflicted {
         conflicts,
         truncated,
-    } = overlap.rebase(16).await?
+    } = overlap.rebase(16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
     else {
         return Err("overlapping mutation rebased unsafely".into());
     };
@@ -165,7 +165,7 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        transaction.rebase(16).await?,
+        transaction.rebase(16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
@@ -218,16 +218,11 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
         write_range("/tree/source", 1, OwnedBytes::from_static(b"Z"))
     )?;
     transaction
-        .zero_range(
-            "/tree/source",
-            crate::ByteRange {
+        .zero_range("/tree/source", crate::ByteRange {
                 offset: 2,
                 length: 2,
-            },
-            false,
-            false,
-        )
-        .await?;
+            }, false, false, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .preallocate(
             "/tree/source",
@@ -245,7 +240,7 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
         transaction,
         set_metadata("/tree/source", FileMetadata::default())
     )?;
-    transaction.resize("/tree/destination", 8).await?;
+    transaction.resize("/tree/destination", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         commit(&mut transaction).await?,
         TransactionCommit::Committed(_)
