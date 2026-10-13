@@ -226,7 +226,7 @@ impl SessionHandle {
                                             .0
                                             .open_session_directory(directory.0)
                                             .await
-                                            .map(Into::into)
+                                            .map(|control| SessionController::HostManaged(Box::new(control)))
                                             .map_err(Error::Storage),
                                     };
                                     if let Ok(recovered) = recovered {

@@ -266,14 +266,15 @@ impl ControlPlane {
                     .map_err(display)?;
                 let head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
                 let changes = workspace
-                    .diff(&base, &head, 100_000)
+                    .diff(&base, &head, 100_000, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(display)?;
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| display(failure.error))?;
                 let (root_files, root_bindings, paths) = if let Some(path) = requested_path {
                     let filter = agent_change_filter(path, &route, route_root, workspace.profile())?;
                     let paths = changes
                         .changed_paths(100_000, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                        .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                         .map_err(display)?
                         .into_iter()
                         .filter(|change| change.path.is_within(&filter))

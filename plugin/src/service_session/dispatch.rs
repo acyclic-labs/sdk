@@ -40,11 +40,11 @@ impl PiSession {
                 let caller = request
                     .arguments
                     .get("caller")
-                    .map(|value| {
-                        acyclic_harness::core::Scope::from_value_with_native_work(value, &work)
-                    })
-                    .transpose()?;
-                let task = if let Some((scope, _)) = &caller {
+                    .cloned()
+                    .map(serde_json::from_value::<acyclic_harness::core::Scope>)
+                    .transpose()
+                    .map_err(|error| RootError::Invalid(display(error)))?;
+                let task = if let Some(scope) = &caller {
                     pi_caller::verify(&owner, &self.state, scope, session, &work)?.task_id
                 } else {
                     if event != "SessionStart" || session != self.state.root_session_id {

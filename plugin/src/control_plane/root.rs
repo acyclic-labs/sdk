@@ -66,9 +66,10 @@ impl ControlPlane {
                     .open_workspace(&root_workspace_name(
                         &self.state.root_session_id,
                         &binding.path,
-                    ))
+                    ), WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(display)?;
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| display(failure.error))?;
                 if workspace.id().into_bytes() != binding.created()?.repository_workspace_id {
                     return Err("pending root workspace identity changed".to_owned());
                 }
@@ -351,7 +352,7 @@ impl ControlPlane {
                                 repository_workspace_id: workspace.workspace().id().into_bytes(),
                                 source_identity: source_reference.identity,
                                 source_epoch: source_reference.epoch,
-                                native_root_identity: source.inner().root_identity().to_bytes(),
+                                native_root_identity: source.root_identity().to_bytes(),
                             }),
                         },
                     );
@@ -441,7 +442,7 @@ impl ControlPlane {
                     repository_workspace_id: workspace.workspace().id().into_bytes(),
                     source_identity: source_reference.identity,
                     source_epoch: source_reference.epoch,
-                    native_root_identity: source.inner().root_identity().to_bytes(),
+                    native_root_identity: source.root_identity().to_bytes(),
                 }),
             };
             self.state.roots.insert(root_key(root_id), binding);

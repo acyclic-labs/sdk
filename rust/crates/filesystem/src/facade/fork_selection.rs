@@ -4,7 +4,7 @@ use super::*;
 use crate::kernel::{
     FileTableMutation, FileTablePage, TreeEntry, TreeMutation,
     apply_file_table_mutations_with_accounting, apply_tree_mutations_with_accounting,
-    encode_file_table_page, encode_tree_page, list_tree_entries_async_with_accounting,
+    encode_file_table_page, list_tree_entries_async_with_accounting,
     lookup_file_record_async_with_accounting,
 };
 use crate::workspace::{
@@ -24,7 +24,7 @@ fn selection_prefix(
     Ok(path.starts_with(prefix))
 }
 
-fn selection_push<T>(
+pub(super) fn selection_push<T>(
     values: &mut Owned<Vec<T>>,
     value: T,
     maximum: usize,
@@ -67,28 +67,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .transpose()?
                 .unwrap_or(0);
             let (allocation, admitted) = accounting.record_actual_owned(input_bytes)?;
-            let mut paths = (paths, allocation);
-            match &accounting {
-                KernelAccounting::Standalone { .. }
-                | KernelAccounting::BorrowedStandalone { .. } => cancellation.check()?,
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { .. } => {}
+            let paths = Owned::new(paths, allocation, input_bytes);
+            if readonly_standalone_live(&accounting).is_some() {
+                cancellation.check()?;
             }
             admitted?;
-            accounting.check()?;
             if !self.same_deployment(&source.workspace.volume.fs)
                 || !self.same_deployment(&initial.workspace.volume.fs)
             {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let selected = paths.0.take();
-            accounting.release_owned(&mut paths.1, input_bytes)?;
             let (expected, _) = self
                 .materialize_forked_generation_root(
                     source,
                     initial.workspace.id(),
-                    source.workspace.volume.config,
-                    selected,
+                    paths,
                     &mut accounting,
                     cancellation,
                 )
@@ -106,16 +99,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         source: &crate::Generation<A, O>,
         root: &GenerationRoot,
-        paths: Vec<String>,
+        paths: Owned<Vec<String>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, WorkspaceError> {
-        let baseline = readonly_standalone_live(accounting);
+        let baseline = readonly_standalone_live(accounting)
+            .map(|live| live.checked_sub(paths.bytes).ok_or(WorkError::Overflow))
+            .transpose()?;
         let result = async {
-            let input_bytes = workspace_owned_strings_bytes(&paths)?;
-            let (allocation, checked) = accounting.record_actual_owned(input_bytes)?;
-            let paths = Owned::new(paths, allocation, input_bytes);
-            checked?;
             let config = source.workspace.volume.config;
             let maximum = config.limits.maximum_mutations_per_batch as usize;
             if paths.value.len() > maximum {
@@ -275,21 +266,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         )?;
                     }
                     directory.retire(accounting)?;
-                    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| {
-                        encode_tree_page(
-                            &TreePage::Leaf(Vec::new()),
-                            config.limits.maximum_directory_page_entries,
-                            observe,
-                            FsError::EncodedAllocationFailed,
-                        )
-                    })?;
-                    let empty = self
-                        .put_encoded_with_accounting(
-                            ObjectKind::TreePage,
-                            encoded,
-                            accounting,
-                            cancellation,
-                        )
+                    let empty = checkout
+                        .value
+                        .stage_empty_tree_with_accounting(accounting, cancellation)
                         .await?;
                     let entries = if mutations.value.is_empty() {
                         empty
@@ -311,22 +290,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         payload: FilePayload::Directory { entries },
                         ..original
                     };
-                    let mut existing = None;
-                    for (index, prior) in overrides.value.iter().enumerate() {
-                        accounting.charge(WorkCounters {
-                            items_examined: 1,
-                            ..WorkCounters::UNCHARGED
-                        })?;
-                        if prior.file_id == record.file_id {
-                            existing = Some(index);
-                            break;
-                        }
-                    }
-                    if let Some(index) = existing {
-                        overrides.value[index] = record;
-                    } else {
-                        selection_push(&mut overrides, record, maximum, accounting)?;
-                    }
+                    selection_push(&mut overrides, record, maximum, accounting)?;
                 }
             }
             checkout.retire(accounting)?;
@@ -360,23 +324,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<ObjectId, WorkspaceError> {
         let mut pending = Owned::<Vec<FileId>>::allocate(0, accounting)?;
         selection_push(&mut pending, root.root_file_id, maximum, accounting)?;
-        let mut records = Owned::<Vec<(FileId, u64, Option<FileRecord>)>>::allocate(0, accounting)?;
-        selection_push(
-            &mut records,
-            (root.root_file_id, 1, None),
-            maximum,
-            accounting,
-        )?;
+        let mut records = Owned::<Vec<FileRecord>>::allocate(0, accounting)?;
         while let Some(id) = pending.value.pop() {
             let position = crate::kernel::binary_search_with_accounting(
                 &records.value,
                 accounting,
-                |entry| entry.0.cmp(&id),
-            )?
-            .map_err(|_| WorkspaceError::JoinLimit)?;
-            if records.value[position].2.is_some() {
+                |entry| entry.file_id.cmp(&id),
+            )?;
+            if let Ok(position) = position {
+                records.value[position].link_count = records.value[position]
+                    .link_count
+                    .checked_add(1)
+                    .ok_or(WorkspaceError::JoinLimit)?;
                 continue;
             }
+            let position = position.unwrap_err();
             let mut record = None;
             for entry in &overrides.value {
                 accounting.charge(WorkCounters {
@@ -388,7 +350,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     break;
                 }
             }
-            let record = match record {
+            let mut record = match record {
                 Some(record) => record,
                 None => {
                     let (record, allocation) = lookup_file_record_async_with_accounting(
@@ -405,7 +367,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     record.ok_or(WorkspaceError::NotFound)?
                 }
             };
-            records.value[position].2 = Some(record);
+            record.link_count = 1;
+            selection_push(&mut records, record, maximum, accounting)?;
+            accounting.charge(WorkCounters {
+                bytes_copied: ((records.value.len() - position) * size_of::<FileRecord>()) as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            records.value[position..].rotate_right(1);
             if let FilePayload::Directory { entries } = record.payload {
                 let mut cursor: Option<Owned<LogicalName>> = None;
                 loop {
@@ -430,36 +398,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         },
                     )?;
                     for entry in &page.value.entries {
-                        if pending.value.len() >= maximum {
-                            return Err(WorkspaceError::JoinLimit);
-                        }
-                        match crate::kernel::binary_search_with_accounting(
-                            &records.value,
-                            accounting,
-                            |record| record.0.cmp(&entry.file_id),
-                        )? {
-                            Ok(position) => {
-                                records.value[position].1 = records.value[position]
-                                    .1
-                                    .checked_add(1)
-                                    .ok_or(WorkspaceError::JoinLimit)?;
-                            }
-                            Err(position) => {
-                                selection_push(
-                                    &mut records,
-                                    (entry.file_id, 1, None),
-                                    maximum,
-                                    accounting,
-                                )?;
-                                accounting.charge(WorkCounters {
-                                    bytes_copied: ((records.value.len() - position)
-                                        * size_of::<(FileId, u64, Option<FileRecord>)>())
-                                        as u64,
-                                    ..WorkCounters::UNCHARGED
-                                })?;
-                                records.value[position..].rotate_right(1);
-                            }
-                        }
                         selection_push(&mut pending, entry.file_id, maximum, accounting)?;
                     }
                     let has_more = page.value.has_more;
@@ -492,12 +430,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         pending.retire(accounting)?;
         overrides.retire(accounting)?;
         let mut mutations = Owned::<Vec<FileTableMutation>>::allocate(0, accounting)?;
-        for (_, count, record) in &records.value {
-            let mut record = record.ok_or(WorkspaceError::NotFound)?;
-            record.link_count = *count;
+        for record in &records.value {
             selection_push(
                 &mut mutations,
-                FileTableMutation::Insert(record),
+                FileTableMutation::Insert(*record),
                 maximum,
                 accounting,
             )?;

@@ -112,7 +112,7 @@ impl ControlPlane {
                 fs: &self.fs,
                 store: &self.store,
                 current: workspace.clone(),
-                lazy_current: lazy_workspace.clone(),
+                lazy_current: &lazy_workspace,
                 repository_id,
                 ignore,
                 permit: lease.publication_permit(),
@@ -229,7 +229,6 @@ impl ControlPlane {
             let lazy_workspace = self
                 .roots
                 .get(&root_key(root_id))
-                .cloned()
                 .ok_or_else(|| "root workspace is unavailable".to_owned())?;
             let root_binding = self
                 .state
@@ -250,7 +249,7 @@ impl ControlPlane {
                     fs: &self.fs,
                     store: &self.store,
                     current: workspace.clone(),
-                    lazy_current: lazy_workspace.clone(),
+                    lazy_current: &lazy_workspace,
                     repository_id,
                     ignore,
                     permit: PublicationPermit::Unrestricted,

@@ -103,39 +103,5 @@ pub(super) fn destination_reclaim_child_waits_for_external_release()
     Ok(())
 }
 
-#[test]
-pub(super) fn destination_ownership_child_holds_lock_until_killed()
--> Result<(), Box<dyn std::error::Error>> {
-    let Some(destination) = std::env::var_os("ACYCLIC_FS_LOCK_CHILD_DESTINATION") else {
-        return Ok(());
-    };
-    let ready = std::env::var_os("ACYCLIC_FS_LOCK_CHILD_READY")
-        .ok_or("lock child readiness path is absent")?;
-    let _guard = MountDestinationGuard::acquire(Path::new(&destination))?;
-    std::fs::write(ready, b"ready")?;
-    loop {
-        std::thread::park();
-    }
-}
-
-/// Drives host mutations through finite access/sharing-denial windows.
-pub(super) fn mutate_as_a_user_would(
-    mut operation: impl FnMut() -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match operation() {
-            Err(error)
-                if (error.kind() == std::io::ErrorKind::PermissionDenied
-                    || cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
-                    && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            result => return result,
-        }
-    }
-}
-
 mod capture;
 mod fence;
