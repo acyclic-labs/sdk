@@ -42,8 +42,9 @@ fn native_event_round_trip_releases_custody() -> Result<()> {
 #[test]
 fn native_partial_payload_cause_keeps_original_guard_until_cause_drop() -> Result<()> {
     let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice()).unwrap();
+    envelope.event_type = "conversation_bound".into();
     envelope.canonical_payload_json =
-        br#"{"type":"conversation_bound","agent":"not-a-UUID"}"#.to_vec();
+        br#"{"kind":"conversation_bound","agent":"not-a-UUID"}"#.to_vec();
     let original =
         serde_json::from_slice::<EventPayload>(&envelope.canonical_payload_json).unwrap_err();
     let token = CancellationToken::new();

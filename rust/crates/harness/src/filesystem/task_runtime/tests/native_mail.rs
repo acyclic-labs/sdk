@@ -1,7 +1,6 @@
 use super::*;
 use crate::conversation::FileRef;
 use crate::filesystem::PreparationIo;
-use crate::runtime::TaskStateProvider;
 use crate::test_stream::LostSessionAck;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 use acyclic_stream::OwnedBytes;
@@ -12,10 +11,15 @@ type MailRuntime = FilesystemTaskRuntime<
     MemoryObjectBackend,
 >;
 
-const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024);
+pub(super) const BUDGET: WorkBudget =
+    acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024);
 fn work(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
-    NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })
+    NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, work)| {
+        Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        }
+    })
 }
 
 struct MailFixture {
@@ -30,6 +34,8 @@ impl MailFixture {
         let fixture = Fixture::new().await?;
         fixture.machine.native.store(true, Ordering::SeqCst);
         let sdk = Arc::new(LostSessionAck::default());
+        let metadata_work = work(BUDGET, &CancellationToken::new())?;
+        let metadata_io = PreparationIo::from_native_work(&metadata_work)?;
         let runtime = FilesystemTaskRuntime::open(
             Arc::clone(&sdk),
             fixture.filesystem.clone(),
@@ -52,7 +58,7 @@ impl MailFixture {
             None,
             &[],
             &ResumableToolRegistry::default(),
-            None,
+            Some(&metadata_io),
         )
         .await?;
         let payloads = FilesystemContentPublisher::new(
@@ -101,11 +107,15 @@ impl MailFixture {
             ));
             let lease = match runtime
                 .task_host()
-                .pull_work(&Worker {
-                    id: "native-mail-control".into(),
-                    available: ResourceRequest::default(),
-                    labels: BTreeMap::new(),
-                }, None, &mut None)
+                .pull_work(
+                    &Worker {
+                        id: "native-mail-control".into(),
+                        available: ResourceRequest::default(),
+                        labels: BTreeMap::new(),
+                    },
+                    None,
+                    &mut None,
+                )
                 .await?
             {
                 WorkPull::Claimed(lease) => lease,
@@ -275,9 +285,10 @@ async fn native_mail_cancellation_and_page_quota_deny_before_more_sdk_io() -> Re
     assert_eq!(original.receipt(), before);
     assert_eq!(fixture.sdk.io_snapshot().reads, 0);
     assert_eq!(fixture.sdk.io_snapshot().writes, 0);
-    let mut allowance = BUDGET;
-    allowance.allocation_operations = 0;
-    let denied = work(allowance, &CancellationToken::new())?;
+    let denied = work(BUDGET, &CancellationToken::new())?;
+    while denied.remaining()?.allocation_operations != 0 {
+        drop(denied.display(&"mail page allocation exhaustion")?);
+    }
     fixture.sdk.reset_io();
     assert!(matches!(
         fixture

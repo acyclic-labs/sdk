@@ -5,7 +5,6 @@
     reason = "durable recovery scenarios retain setup, fault injection and reopen assertions together"
 )]
 use acyclic_harness::runtime::InteractionResolver as _;
-use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::context::ContextPipeline;
@@ -394,7 +393,7 @@ async fn worker_child_admission_and_observation_share_one_slot_after_reopen() ->
 
 #[tokio::test]
 async fn passive_wakes_distinguish_successive_commands_at_one_checkpoint() -> Result<()> {
-    worker_restart(WorkerCommand::TimerThenMail).await
+    worker_restart(WorkerCommand::TimerThenTimer).await
 }
 
 #[tokio::test]
@@ -446,14 +445,23 @@ impl ToolPolicy for RestartPolicy {
         invocation: &'a ToolInvocation,
         _scope: &'a RuntimeScope,
         _io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_harness::NativeCustody)>> {
+    ) -> Result<
+        acyclic_harness::store::HistoryContentFuture<
+            'a,
+            (ToolPolicyDecision, acyclic_harness::NativeCustody),
+        >,
+    > {
         Ok(acyclic_harness::store::HistoryContentFuture::Ordinary {
             future: Box::pin(async move {
                 self.evaluated.fetch_add(1, Ordering::SeqCst);
                 let decision = if invocation.arguments.get("denied") == Some(&json!(true)) {
-                    ToolPolicyDecision::Deny { reason: "pinned policy denied".into() }
+                    ToolPolicyDecision::Deny {
+                        reason: "pinned policy denied".into(),
+                    }
                 } else if invocation.arguments.get("approval") == Some(&json!(true)) {
-                    ToolPolicyDecision::RequireApproval { prompt: "Approve this exact restore".into() }
+                    ToolPolicyDecision::RequireApproval {
+                        prompt: "Approve this exact restore".into(),
+                    }
                 } else {
                     ToolPolicyDecision::Allow
                 };
@@ -616,7 +624,7 @@ enum WorkerCommand {
     ApprovalWaitModel,
     ApprovalDeclinedModel,
     Timer,
-    TimerThenMail,
+    TimerThenTimer,
     MailSend,
     MailReceive,
     Child,
@@ -641,7 +649,7 @@ impl ResumableMachine for CommandMachine {
         if input.is_null() {
             if matches!(
                 self.command,
-                WorkerCommand::Child | WorkerCommand::TimerThenMail
+                WorkerCommand::Child | WorkerCommand::TimerThenTimer
             ) {
                 let commands =
                     if self.command == WorkerCommand::Child {
@@ -652,7 +660,7 @@ impl ResumableMachine for CommandMachine {
                     } else {
                         [
                             ("timer", TIMER_TASK_COMMAND_KIND, 26u8),
-                            ("mail", MAIL_RECEIVE_TASK_COMMAND_KIND, 27),
+                            ("second_timer", TIMER_TASK_COMMAND_KIND, 27),
                         ]
                     }
                     .into_iter()
@@ -706,7 +714,7 @@ impl ResumableMachine for CommandMachine {
                     .and_then(|values| {
                         values.get(usize::from(matches!(
                             self.command,
-                            WorkerCommand::Child | WorkerCommand::TimerThenMail
+                            WorkerCommand::Child | WorkerCommand::TimerThenTimer
                         )))
                     })
                     .and_then(|value| value.get("value"))
@@ -732,13 +740,13 @@ impl ResumableMachine for CommandMachine {
             };
             if self.command == WorkerCommand::Child {
                 assert_eq!(value, json!(7));
-            } else if matches!(
-                self.command,
-                WorkerCommand::MailReceive | WorkerCommand::TimerThenMail
-            ) {
+            } else if self.command == WorkerCommand::MailReceive {
                 assert_eq!(value.get("sequence"), Some(&json!(1)));
                 assert!(value.get("payload").is_some());
-            } else if matches!(self.command, WorkerCommand::Timer | WorkerCommand::MailSend) {
+            } else if matches!(
+                self.command,
+                WorkerCommand::Timer | WorkerCommand::TimerThenTimer | WorkerCommand::MailSend
+            ) {
                 assert!(value.is_null());
             } else if matches!(
                 self.command,

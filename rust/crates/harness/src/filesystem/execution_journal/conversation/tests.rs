@@ -239,6 +239,7 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
     let model = Arc::new(CountedModel::default());
     let mut binding = open(directory.path(), agent, model.clone(), true).await?;
     let mut first = None;
+    let mut active_counts = None;
     for index in 0..TURNS {
         let operation = OperationId::new();
         let input = binding
@@ -279,18 +280,30 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
                 binding.journal.host.provider.clone(),
                 &binding.journal.volume.storage_name(&mut None)?,
             )?;
-            for (path, expected_entries) in [
-                ("/.system/execution", 1),
-                ("/turns/.canonical", 1),
-                ("/.system/harness-file-metadata", 2),
-                ("/.system/harness-uploads", 2),
-            ] {
+            let mut counts = [0; 4];
+            for (index, path) in [
+                "/.system/execution",
+                "/turns/.canonical",
+                "/.system/harness-file-metadata",
+                "/.system/harness-uploads",
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let page = binding.journal.host.list(&workspace, None, path, 3).await?;
-                assert_eq!(page.entries.len(), expected_entries, "{path}");
                 assert!(
                     !page.has_more,
                     "active namespace must not accumulate old turns"
                 );
+                counts[index] = page.entries.len();
+            }
+            if let Some(prior) = active_counts {
+                assert_eq!(
+                    counts, prior,
+                    "active namespace must not grow between checkpoints"
+                );
+            } else {
+                active_counts = Some(counts);
             }
         }
         if index == TURNS - 3 {

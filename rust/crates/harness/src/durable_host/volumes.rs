@@ -114,21 +114,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ));
             }
             for content in &receipt.content {
-                let mut allocated = false;
-                for operation in &receipt.operations {
-                    if let Some(io) = quota.work().as_deref_mut() {
-                        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
-                            items: 1,
-                        })?;
-                    }
-                    allocated |= operation == "read" || operation == "write";
-                }
-                if !allocated
-                    || !matches!(
-                        content.volume.class(),
-                        VolumeClass::Project | VolumeClass::AgentPrivate
-                    )
-                {
+                if !matches!(
+                    content.volume.class(),
+                    VolumeClass::Project | VolumeClass::AgentPrivate
+                ) {
                     continue;
                 }
                 let origin = receipt.origin.intended_child;

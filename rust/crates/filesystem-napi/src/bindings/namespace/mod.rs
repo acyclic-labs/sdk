@@ -8,7 +8,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateFile {
-                path: path,
+                path,
                 bytes: (bytes::Bytes::from(bytes.to_vec())).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
@@ -22,7 +22,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
-                path: path,
+                path,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
         )?;
@@ -39,7 +39,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateSymbolicLink {
-                path: path,
+                path,
                 target: (bytes::Bytes::from(target.to_vec())).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
@@ -54,8 +54,8 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateEmptySpecial {
-                path: path,
-                kind: kind,
+                path,
+                kind,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
         )?;
@@ -77,10 +77,10 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDevice {
-                path: path,
-                kind: kind,
-                major: major,
-                minor: minor,
+                path,
+                kind,
+                major,
+                minor,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
         )?;
@@ -97,7 +97,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateReparsePoint {
-                path: path,
+                path,
                 payload: (bytes::Bytes::from(payload.to_vec())).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
@@ -141,9 +141,9 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             mutate(vec![acyclic_fs::kernel::Mutation::Rename {
-                source: source,
-                destination: destination,
-                replace: replace,
+                source,
+                destination,
+                replace,
             }],)
         )?;
         mutation_result(receipt.work)
@@ -160,8 +160,8 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             mutate(vec![acyclic_fs::kernel::Mutation::Link {
-                source: source,
-                destination: destination,
+                source,
+                destination,
             }],)
         )?;
         mutation_result(receipt.work)

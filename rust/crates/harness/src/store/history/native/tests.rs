@@ -83,15 +83,18 @@ fn accepted_completion_uses_only_reserved_credit() {
     io.copy_bytes(3).unwrap();
     let prefix = work.receipt();
     assert!(io.admit_copy(2).is_err());
-    assert!(io.copy_bytes(2).is_err());
     assert_eq!(work.receipt(), prefix);
+    assert!(io.copy_bytes(2).is_err());
+    assert_eq!(work.receipt().bytes_copied, 5);
     drop(io);
-    work.charge(WorkCounters {
-        bytes_copied: 1,
-        ..Default::default()
-    })
-    .unwrap();
-    assert_eq!(work.receipt().bytes_copied, 4);
+    assert!(
+        work.charge(WorkCounters {
+            bytes_copied: 1,
+            ..Default::default()
+        })
+        .is_err()
+    );
+    assert_eq!(work.receipt().bytes_copied, 5);
 }
 
 #[test]

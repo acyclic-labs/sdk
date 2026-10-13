@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut workers_grpc = workers::grpc::connect(
         endpoint,
         workers::BearerAuth::new(token)
-            .map_err(|()| workers::grpc::ConnectError::InvalidCredential)?,
+            .map_err(|_| workers::grpc::ConnectError::InvalidCredential)?,
         Some(ca.as_bytes()),
     )
     .await?;

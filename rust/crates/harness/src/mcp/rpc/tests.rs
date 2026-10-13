@@ -74,13 +74,15 @@ fn closed_dto_quota_denial_precedes_serde_and_does_not_report_allocator_calls() 
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 1,
         100,
     );
+    let before = work.receipt();
     assert!(matches!(
         check::<rmcp::model::GetPromptResult>(&json!({"messages":[]}), Some(&work)),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(_),
-            custody: None
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
         })
     ));
+    assert_eq!(work.receipt(), before);
     let bounded = native_work(1 << 20, 1);
     assert!(
         check::<rmcp::model::ReadResourceResult>(
