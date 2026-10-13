@@ -271,8 +271,6 @@ pub struct ToolContext {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) effective_scope: Option<(RuntimeScope, Option<acyclic_fs::NativeAllocation>)>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) accepted_native_tool: std::sync::OnceLock<()>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -289,8 +287,6 @@ impl Clone for ToolContext {
                 .effective_scope
                 .as_ref()
                 .map(|(scope, _)| (scope.clone(), None)),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            accepted_native_tool: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         }
@@ -364,8 +360,6 @@ impl ToolContext {
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             effective_scope: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            accepted_native_tool: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody,
         })

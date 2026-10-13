@@ -237,7 +237,7 @@ impl StockExecution<'_> {
                                         "native tool acceptance has no issued context",
                                     )
                                 })?
-                                .record_native_tool_acceptance(work)?;
+                                .validate_native_mcp_context(work)?;
                         }
                         true
                     }
