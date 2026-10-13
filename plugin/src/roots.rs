@@ -10,7 +10,7 @@ use acyclic_fs::NativeAllocation;
 
 pub(crate) type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
-pub(crate) type LocalLazySource = FilteredDemandSource<NativeDemandSource>;
+pub(crate) type LocalLazySource = NativeDemandSource;
 pub(crate) type LocalLazyWorkspace =
     LazyWorkspace<LocalAuthorityBackend, LocalObjectBackend, LocalLazySource, LocalCoreStateStore>;
 pub(crate) type LocalSingleMount =
@@ -186,7 +186,7 @@ impl SharedPhysicalRoot {
             .await
             .map_err(|error| format!("physical root validation worker failed: {error}"))?
             .map_err(display)?;
-        if current != self.source.inner().root_identity() {
+        if current != self.source.root_identity() {
             return Err(format!(
                 "physical root {} changed identity while it was in use",
                 display_path.display()
@@ -218,13 +218,7 @@ impl SharedPhysicalRoot {
             |prior_source, reference| {
                 let batch = poll()?;
                 let source = if observation_consumes_changes(&batch) {
-                    self.source
-                        .inner()
-                        .invalidate(&mut acyclic_fs::demand::DemandWork::new(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        ))
-                        .map_err(display)?
+                    self.source.invalidate()
                 } else {
                     prior_source
                 };
@@ -286,9 +280,6 @@ impl SharedPhysicalRoot {
                 reason: "physical root reference state is poisoned",
             },
             |prior_source, reference| {
-                self.source.inner()
-                    .validate_current(prior_source, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))
-                    .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
                     acyclic_harness::Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Storage,
@@ -301,7 +292,7 @@ impl SharedPhysicalRoot {
                 let (batch, allocation) = watcher
                     .poll_with_native_work_guarded(65_536, work, |batch| {
                         if observation_consumes_changes(batch) {
-                            source = self.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))?;
+                            source = self.source.invalidate();
                             // The SDK source epoch has really advanced. Keep
                             // shared state aligned even if later publication
                             // fails; the watcher preserves rescan on that error.

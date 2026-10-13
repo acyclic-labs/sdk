@@ -41,11 +41,10 @@ impl Fixture {
         std::fs::write(native.join("untouched.txt"), b"original native bytes").unwrap();
         let native = native.canonicalize().unwrap();
         let data = directory.path().join("service");
-        let (lock, configured, private, startup) =
-            crate::tests::configured_test_service_bootstrap(&data)
-                .await
-                .unwrap();
-        let (resources, _) = ServiceResources::open(data, configured, private, &startup)
+        let (lock, configured, startup) = crate::tests::configured_test_service_bootstrap(&data)
+            .await
+            .unwrap();
+        let (resources, _) = ServiceResources::open(data, configured, &startup)
             .await
             .unwrap();
         let session = resources.session_directory("root-provider");
@@ -175,8 +174,8 @@ impl Fixture {
             root,
         };
         drop(owner);
-        let owner = PiOwnerConfig::load_with_native_work(
-            &resources.private_state_root,
+        let owner = PiOwnerConfig::load(
+            &resources.data,
             session.strip_prefix(&resources.data).unwrap(),
             &startup,
         )
@@ -195,7 +194,7 @@ impl Fixture {
             stream.clone(),
             filesystem.clone(),
             &journal,
-            owner.authority_with_native_work(&startup).unwrap(),
+            owner.authority(&startup).unwrap(),
             &startup,
         )
         .await
@@ -232,7 +231,7 @@ impl Fixture {
         };
         let fence = LeaseFence::from(&lease.reservation);
         let preparation = PiRootPreparation::load(
-            &resources.private_state_root,
+            &resources.data,
             session.strip_prefix(&resources.data).unwrap(),
             &runtime,
             &filesystem,
@@ -246,7 +245,13 @@ impl Fixture {
         let journal = runtime
             .runtime
             .task_host()
-            .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(&startup)?))
+            .journal_owner(
+                task,
+                &fence,
+                Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                    &startup,
+                )?),
+            )
             .await
             .unwrap();
         let provider = root_provider(
@@ -277,7 +282,7 @@ impl Fixture {
         }
     }
 
-    pub(crate) async fn execute(&self) -> Result<(EffectStatus, NativeAllocation)> {
+    pub(crate) async fn execute(&self) -> Result<(EffectStatus, Option<NativeAllocation>)> {
         let content = acyclic_harness::runtime::content_residency_verifier(
             Arc::clone(&self.provider.preparation.context),
             self.provider.journal_owner.as_ref().unwrap().clone(),
@@ -295,11 +300,11 @@ impl Fixture {
             &self.startup,
         )?;
         effects
-            .run_task_effect_with_native_work(
+            .run_task_effect(
                 self.provider.execution_owner()?,
                 self.provider.preparation.command.operation_id,
                 &self.provider.preparation.plan,
-                &self.startup,
+                Some(&self.startup),
             )
             .await
     }
@@ -327,8 +332,8 @@ impl Fixture {
     }
 
     async fn reopen(&self) -> Arc<PiRootProvider> {
-        let owner = PiOwnerConfig::load_with_native_work(
-            &self.resources.private_state_root,
+        let owner = PiOwnerConfig::load(
+            &self.resources.data,
             self.session.strip_prefix(&self.resources.data).unwrap(),
             &self.startup,
         )
@@ -337,7 +342,7 @@ impl Fixture {
         .unwrap();
         let fence = LeaseFence::from(&self.lease.reservation);
         let preparation = PiRootPreparation::load(
-            &self.resources.private_state_root,
+            &self.resources.data,
             self.session.strip_prefix(&self.resources.data).unwrap(),
             &self.runtime,
             &self.filesystem,
@@ -352,7 +357,13 @@ impl Fixture {
             .runtime
             .runtime
             .task_host()
-            .journal_owner(self.request.binding.task_id, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(&self.startup)?))
+            .journal_owner(
+                self.request.binding.task_id,
+                &fence,
+                Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                    &self.startup,
+                )?),
+            )
             .await
             .unwrap();
         let (mut resources, _custody) =
@@ -798,11 +809,7 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
         fixture
             .resources
             .fs
-            .open_workspace(
-                &name,
-                &fixture.startup,
-                fixture.startup.cancellation()
-            )
+            .open_workspace(&name, &fixture.startup, fixture.startup.cancellation())
             .await
             .unwrap()
             .id(),
@@ -821,12 +828,10 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
     let (key, handle) = handles.iter().next().unwrap();
     let snapshot = handle
         .workspace
-        .snapshot(
-            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: &fixture.startup,
-                cancellation: fixture.startup.cancellation(),
-            },
-        )
+        .snapshot(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &fixture.startup,
+            cancellation: fixture.startup.cancellation(),
+        })
         .await
         .unwrap();
     for mutation in 0..6 {
@@ -859,7 +864,6 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
             volume,
             candidate,
             Arc::clone(&fixture.provider.preparation.context),
-            fixture.provider.execution_owner().unwrap(),
             &query,
         )
         .await;

@@ -1,6 +1,7 @@
 //! Original Pi admission, before any selected native root is opened.
 
 use super::*;
+use acyclic_harness::store::HistoryIo;
 use acyclic_harness::{
     AgentId, Capabilities, TaskId,
     conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
@@ -58,12 +59,12 @@ pub(crate) async fn register(
     work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
     let directory = resources.session_directory(session);
     let relative_directory = resources.private_session_data(&directory)?;
-    work.create_directories_with_native_work(&resources.private_state_root, relative_directory)?;
-    let mut previous =
-        load_state_with_native_work(&resources.private_state_root, relative_directory, work)?;
-    if !previous.0.0.root_session_id.is_empty() {
-        if previous.0.0.root_session_id != session
-            || !matches!(previous.0.0.task_binding, PluginTaskBinding::Pi(_))
+    fs::create_dir_all(&directory)
+        .map_err(|error| acyclic_harness::Error::Storage(display(error)))?;
+    let mut previous = load_state(&directory).map_err(acyclic_harness::Error::Storage)?;
+    if !previous.0.root_session_id.is_empty() {
+        if previous.0.root_session_id != session
+            || !matches!(previous.0.task_binding, PluginTaskBinding::Pi(_))
         {
             return Err(acyclic_harness::Error::Invalid(
                 "Pi original session selection differs".to_owned(),
@@ -84,41 +85,48 @@ pub(crate) async fn register(
         + std::mem::size_of::<(String, String)>()
         + std::mem::size_of::<(String, RootBinding)>()) as u64;
     let mut startup_custody = work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-    let mut provider_metadata =
-        ProviderRef::new_with_native_work("acyclic.pi", "filesystem", "1", work)?;
-    startup_custody.absorb(&mut provider_metadata.1)?;
-    let provider = &provider_metadata.0;
+    let mut metadata = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
+    let provider_metadata = ProviderRef::new(
+        metadata.clone_text("acyclic.pi")?,
+        metadata.clone_text("filesystem")?,
+        metadata.clone_text("1")?,
+        &mut Some(&mut metadata),
+    )?;
+    let provider = &provider_metadata;
     let task = TaskId::from_bytes(identity("task", session, work)?);
     let agent = AgentId::from_bytes(identity("agent", session, work)?);
     let root_id = identity("root", session, work)?;
     let context_id = identity("context", session, work)?;
     let root_label = work.display(&format_args!("{:032x}", u128::from_be_bytes(root_id)))?;
     let owner_label = work.display(&root_label.0)?;
-    let journal_metadata = VolumeRef::new_with_native_work(
-        &provider,
-        "journal",
+    let journal_metadata = VolumeRef::new(
+        provider.copy(&mut Some(&mut metadata))?,
+        metadata.clone_text("journal")?,
         VolumeClass::AgentPrivate,
-        &VolumeOwner::Agent(agent),
-        work,
+        VolumeOwner::Agent(agent),
+        &mut Some(&mut metadata),
     )?;
-    let journal = &journal_metadata.0;
-    let scratch_metadata = VolumeRef::new_with_native_work(
-        &provider,
-        "scratch",
+    let journal = &journal_metadata;
+    let scratch_metadata = VolumeRef::new(
+        provider.copy(&mut Some(&mut metadata))?,
+        metadata.clone_text("scratch")?,
         VolumeClass::AgentPrivate,
-        &VolumeOwner::Agent(agent),
-        work,
+        VolumeOwner::Agent(agent),
+        &mut Some(&mut metadata),
     )?;
-    let scratch = &scratch_metadata.0;
+    let scratch = &scratch_metadata;
     let project_owner = VolumeOwner::Project(owner_label.0);
-    let project_metadata = VolumeRef::new_with_native_work(
-        &provider,
-        "project",
+    let project_metadata = VolumeRef::new(
+        provider.copy(&mut Some(&mut metadata))?,
+        metadata.clone_text("project")?,
         VolumeClass::Project,
-        &project_owner,
-        work,
+        project_owner,
+        &mut Some(&mut metadata),
     )?;
-    let project = &project_metadata.0;
+    let project = &project_metadata;
+    startup_custody.absorb(&mut metadata.into_custody()?)?;
     let binding_session = work.display(session)?;
     let project_key = work.display(&root_label.0)?;
     let mut binding_io = acyclic_harness::store::HistoryWork::new(
@@ -249,13 +257,12 @@ pub(crate) async fn register(
         policy_io.into_custody()?,
         capabilities.1,
     );
-    let owner_path = work.path(relative_directory, Some(Path::new("pi-owner.v1")))?;
-    let owner_exists =
-        work.state_path_exists_with_native_work(&resources.private_state_root, &owner_path.0)?;
-    drop(owner_path);
+    let owner_exists = directory
+        .join("pi-owner.v1")
+        .try_exists()
+        .map_err(|error| acyclic_harness::Error::Storage(display(error)))?;
     let owner = if owner_exists {
-        let original =
-            PiOwnerConfig::load(&resources.private_state_root, relative_directory, work)?;
+        let original = PiOwnerConfig::load(&resources.data, relative_directory, work)?;
         if original.policy() != &policy.0 {
             return Err(acyclic_harness::Error::Unauthorized(
                 "Pi original root policy differs".to_owned(),
@@ -265,17 +272,17 @@ pub(crate) async fn register(
         drop(native_runtime);
         original
     } else {
-        let stream_path = work.path(relative_directory, Some(Path::new("stream")))?;
-        let stream_exists =
-            work.state_path_exists_with_native_work(&resources.private_state_root, &stream_path.0)?;
-        drop(stream_path);
+        let stream_exists = directory
+            .join("stream")
+            .try_exists()
+            .map_err(|error| acyclic_harness::Error::Storage(display(error)))?;
         if stream_exists {
             return Err(acyclic_harness::Error::Invalid(
                 "Pi original task storage exists but its owner credential is missing".to_owned(),
             ));
         }
         let owner = PiOwnerConfig::new(&policy.0, native_runtime.as_ref(), work)?;
-        owner.save_new_with_native_work(&resources.private_state_root, relative_directory, work)?;
+        owner.save_new(&resources.data, relative_directory, work)?;
         owner
     };
     let filesystem = acyclic_harness::filesystem::FilesystemHost::new(
@@ -362,13 +369,10 @@ pub(crate) async fn register(
         ..AdapterState::default()
     };
     // A catalog entry is published only after authenticated durable admission.
-    previous.0.1.save_with_native_work(
-        &resources.private_state_root,
-        relative_directory,
-        &state,
-        Survives::PowerLoss,
-        work,
-    )?;
+    previous
+        .1
+        .save(&directory, &state, Survives::PowerLoss)
+        .map_err(acyclic_harness::Error::Storage)?;
     drop(state);
     drop(request.root);
     drop(runtime);

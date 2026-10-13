@@ -206,13 +206,11 @@ impl PiSession {
         let component = crate::service_session::NativeCatalogComponent::Pending;
         let previous =
             self.install_native_catalog_custody(commit.child.task_id, component, pending.1);
-        if let Err(error) = self.slots.save_with_native_work(
-            &self.resources.private_state_root,
-            &self.relative_directory,
-            &self.state,
-            Survives::PowerLoss,
-            work,
-        ) {
+        if let Err(error) = self
+            .slots
+            .save(&self.directory, &self.state, Survives::PowerLoss)
+            .map_err(Error::Storage)
+        {
             self.state.pending.truncate(length);
             drop(self.take_native_catalog_custody(commit.child.task_id, component));
             if let Some(previous) = previous {
@@ -320,13 +318,11 @@ impl PiSession {
         self.state.routes.insert(decoded.0.0, decoded.0.1);
         let previous =
             self.install_native_catalog_custody(commit.child.task_id, route_component, decoded.1);
-        if let Err(error) = self.slots.save_with_native_work(
-            &self.resources.private_state_root,
-            &self.relative_directory,
-            &self.state,
-            Survives::PowerLoss,
-            work,
-        ) {
+        if let Err(error) = self
+            .slots
+            .save(&self.directory, &self.state, Survives::PowerLoss)
+            .map_err(Error::Storage)
+        {
             drop(self.state.routes.remove_entry(&commit.alias));
             drop(self.take_native_catalog_custody(commit.child.task_id, route_component));
             self.state.pending.insert(index, consumed);

@@ -153,10 +153,13 @@ mod tests {
             .project_volumes
             .first_key_value()
             .unwrap();
-        fixture
-            .context
-            .verify_original_volume_read_with_native_work(&fixture.journal, project, work)
-            .await?;
+        fixture.journal.require_volume_grant(
+            project,
+            acyclic_harness::conversation::VolumeOperation::Read,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )?;
         fixture
             .journal
             .verify(
@@ -193,7 +196,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(first.source.inner().root_identity(), expected);
+        assert_eq!(first.source.root_identity(), expected);
         assert_eq!(first.source.reference().identity, original.identity);
         assert!(first.source.reference().epoch > original.epoch);
         assert!(work.receipt().backend_read_operations > before.backend_read_operations);
@@ -216,7 +219,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(reopened.source.inner().root_identity(), expected);
+        assert_eq!(reopened.source.root_identity(), expected);
         assert_eq!(reopened.source.reference().identity, original.identity);
         assert!(reopened.source.reference().epoch > retained_epoch);
         assert!(close_native_watch(&reopened, &query).unwrap());
@@ -238,7 +241,7 @@ mod tests {
         assert!(close_native_watch(&physical, &work).unwrap());
         drop(physical);
         let held = work.live_allocation_bytes();
-        assert_eq!(source.inner().root_identity(), expected);
+        assert_eq!(source.root_identity(), expected);
         assert_eq!(source.reference().identity, original.identity);
         drop(source);
         assert!(work.live_allocation_bytes() < held);
@@ -379,7 +382,7 @@ mod tests {
             cause: acyclic_fs::NativeTreeMaterializationError::AllocationChanged { expected: old, actual },
             ..
         } if old == expected && actual != expected));
-        assert_eq!(physical.source.inner().root_identity(), expected);
+        assert_eq!(physical.source.root_identity(), expected);
         assert_eq!(physical.source.reference().identity, original.identity);
         assert!(close_native_watch(&physical, &work).unwrap());
     }
@@ -630,9 +633,9 @@ mod tests {
             let observed = watcher.poll_with_native_work_guarded(65_536, work, |batch| {
                 assert!(!matches!(batch, acyclic_fs::WatchBatch::Changes { changes, .. } if changes.is_empty()));
                 cancellation.cancel();
-                // Fail in the genuine native source invalidation, not an
-                // invented error or a facade around the numeric poll API.
-                physical.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work)).map(|_| ())
+                work.admit(WorkCounters::UNCHARGED)?;
+                physical.source.invalidate();
+                Ok::<_, acyclic_fs::NativeTreeMaterializationError>(())
             }).map_err(native_watch_error)?;
             drop(observed);
             Ok(())

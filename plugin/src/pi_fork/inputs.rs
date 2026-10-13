@@ -58,10 +58,14 @@ impl<'a> PiForkCoordinator<'a> {
         let actual = self
             .runtime
             .runtime
-            .readonly_task_context_with_native_work(self.owner.policy().root_task, work)
+            .harness()
+            .durable_context(
+                self.owner.policy().root_task,
+                OperationId::from_bytes(self.owner.policy().root_task.into_bytes()),
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )
             .await?;
         return actual
-            .1
             .read_file(
                 reference,
                 Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),

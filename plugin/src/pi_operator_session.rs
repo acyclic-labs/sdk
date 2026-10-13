@@ -9,11 +9,8 @@ impl PiSession {
         original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
     ) -> acyclic_harness::Result<ControlDispatchResponse> {
         let work = Self::query_work(original_native_work)?;
-        let owner = pi_owner::PiOwnerConfig::load(
-            &self.resources.private_state_root,
-            &self.relative_directory,
-            &work,
-        )?;
+        let owner =
+            pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, &work)?;
         self.runtime.verify_owner_with_native_work(&owner, &work)?;
         let request =
             pi_operator::PiOperatorRequest::from_value_with_native_work(arguments, &work)?;
@@ -71,11 +68,8 @@ impl PiSession {
         arguments: &Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<ControlDispatchResponse> {
-        let owner = pi_owner::PiOwnerConfig::load(
-            &self.resources.private_state_root,
-            &self.relative_directory,
-            work,
-        )?;
+        let owner =
+            pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if caller != owner.policy().root_task {
             return Err(RootError::NativeBoundary {

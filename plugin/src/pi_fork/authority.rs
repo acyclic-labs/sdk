@@ -239,9 +239,26 @@ impl<'a> PiForkCoordinator<'a> {
         acyclic_harness::resources::GenerationRef,
         acyclic_fs::NativeAllocation,
     )> {
-        context
-            .verify_original_volume_read_with_native_work(owner, volume, work)
-            .await?;
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        owner.require_volume_grant(
+            volume,
+            acyclic_harness::conversation::VolumeOperation::Read,
+            &mut Some(&mut io),
+        )?;
+        let read = volume.capability(
+            acyclic_harness::conversation::VolumeOperation::Read,
+            &mut Some(&mut io),
+        )?;
+        if context.durable_task_id() != Some(owner.task_id())
+            || !context.scope().grants().contains(&read)
+        {
+            return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "generation is outside the original task read scope",
+            });
+        }
         let name = {
             let mut io = acyclic_harness::store::HistoryWork::new(
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,

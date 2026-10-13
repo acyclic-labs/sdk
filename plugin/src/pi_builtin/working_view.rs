@@ -84,7 +84,7 @@ pub(super) fn select_native_path<'a, 'p>(
     &'p Path,
 )> {
     validate_path(path)?;
-    manifest.validate()?;
+    manifest.validate(None)?;
     let allowed = |mapping: &&acyclic_harness::filesystem::NativeVolumeMapping| {
         mapping.volume == binding.scratch.volume
             || binding
