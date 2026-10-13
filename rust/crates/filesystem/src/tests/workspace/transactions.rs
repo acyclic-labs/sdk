@@ -66,10 +66,7 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
         .write_text("/output/nested/status", "ready")
         .await?;
     assert!(matches!(
-        value!(exact_retry.commit::<WorkspaceError, _, _>(
-            None, crate::PublicationPermit::Unrestricted, selected_transaction_budget(),
-            &CancellationToken::new(), |_| std::future::ready(Err(crate::OperationFailure::before_work(WorkspaceError::from(FsError::MutationNotAllowed))))
-        ).await)?,
+        commit(&mut exact_retry).await?,
         TransactionCommit::AlreadyCommitted(retried) if retried.id() == generation.id()
     ));
 
@@ -103,7 +100,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        disjoint.rebase(16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+        unbounded!(disjoint, rebase(16))?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
@@ -134,7 +131,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     let TransactionRebase::Conflicted {
         conflicts,
         truncated,
-    } = overlap.rebase(16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
+    } = unbounded!(overlap, rebase(16))?
     else {
         return Err("overlapping mutation rebased unsafely".into());
     };
@@ -165,7 +162,7 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        transaction.rebase(16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+        unbounded!(transaction, rebase(16))?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
@@ -215,34 +212,40 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
     unbounded!(transaction, hard_link("/tree/source", "/tree/hard-link"))?;
     unbounded!(
         transaction,
-        write_range("/tree/source", 1, bytes::Bytes::from_static(b"Z"))
+        write_range("/tree/source", 1, OwnedBytes::from_static(b"Z"))
     )?;
-    transaction
-        .zero_range("/tree/source", crate::ByteRange {
+    unbounded!(
+        transaction,
+        zero_range(
+            "/tree/source",
+            crate::ByteRange {
                 offset: 2,
                 length: 2,
-            }, false, false, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction
-        .preallocate(
+            },
+            false,
+            false
+        )
+    )?;
+    unbounded!(
+        transaction,
+        preallocate(
             "/tree/source",
             crate::ByteRange {
                 offset: 0,
                 length: 6,
             },
-            true,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            true
         )
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction
-        .clone_range("/tree/source", 0, "/tree/destination", 1, 5, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    )?;
+    unbounded!(
+        transaction,
+        clone_range("/tree/source", 0, "/tree/destination", 1, 5)
+    )?;
     unbounded!(
         transaction,
         set_metadata("/tree/source", FileMetadata::default())
     )?;
-    transaction.resize("/tree/destination", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    unbounded!(transaction, resize("/tree/destination", 8))?;
     assert!(matches!(
         commit(&mut transaction).await?,
         TransactionCommit::Committed(_)

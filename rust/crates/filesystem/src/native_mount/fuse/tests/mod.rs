@@ -35,18 +35,18 @@ fn projection_core(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
 ) -> Result<Arc<super::ProjectionCore>, NativeMountError> {
-    let work = source
-        .native_original_work()?
-        .unwrap_or_else(fuse_fixture_work);
+    let original = source.native_original_work()?;
+    let setup = original.clone().unwrap_or_else(fuse_fixture_work);
     let root = source
-        .lookup_with_meter(&MountPath::root(), &work)?
+        .lookup_with_meter(&MountPath::root(), &setup)?
         .ok_or(libc::ENOENT)?;
-    let stamp = source.view_stamp_with_meter(&work)?;
-    let mut core = super::ProjectionCore::new(source, root, stamp, true, 0, 0, &work)?;
-    let configured = Arc::get_mut(&mut core).expect("fixture owns the new core");
-    configured.handler_budget = budget;
-    configured.handler_cancellation = cancellation.clone();
-    Ok(core)
+    let stamp = source.view_stamp_with_meter(&setup)?;
+    let work = match original {
+        Some(work) => work,
+        None => crate::NativeMaterializationWork::new(budget, cancellation)
+            .map_err(|(cause, _)| NativeMountError::from(cause))?,
+    };
+    super::ProjectionCore::new(source, root, stamp, true, 0, 0, &work)
 }
 
 mod cache;

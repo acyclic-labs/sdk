@@ -359,44 +359,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-    /// Reads one exact logical range by stable file identity.
-    pub async fn read_file_range_by_id<W: FsWork>(
-        &mut self,
-        file_id: FileId,
-        range: ByteRange,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<FileRangeRead, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            if range.length > self.volume.config.limits.maximum_read_bytes {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
-            let record = self
-                .lookup_file_record_by_id_with_accounting(file_id, &mut accounting, cancellation)
-                .await?
-                .ok_or(FsError::NotFound)?;
-            self.read_record_range_with_accounting(
-                record,
-                range,
-                range,
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
-        let result = result.map(|mut value| {
-            value.work = accounting.spent();
-            value
-        });
-        budget.finish(result, &accounting)
-    }
-
     /// Reads at most `maximum_bytes`, clipping to the current logical EOF.
-    pub async fn read_file_up_to_by_id<W: FsWork>(
+    pub async fn read_file_up_to<F: ContentFile, W: FsWork>(
         &mut self,
-        file_id: FileId,
+        file: F,
         offset: u64,
         maximum_bytes: u32,
         budget: W,
@@ -412,9 +378,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
             }
             let record = self
-                .lookup_file_record_by_id_with_accounting(file_id, &mut accounting, cancellation)
-                .await?
-                .ok_or(FsError::NotFound)?;
+                .lookup_content_record(&file, &mut accounting, cancellation)
+                .await?;
             if record.kind != FileKind::Regular {
                 return Err(FsError::FileRead(FileRangeReadError::NotRegular));
             }
@@ -429,7 +394,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if length == 0 {
                 if self.tracks_observations() && requested_range.length != 0 {
                     self.observe_base_regular_range_with_accounting(
-                        file_id,
+                        record.file_id,
                         requested_range,
                         &mut accounting,
                         cancellation,
@@ -503,36 +468,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
-    /// Reads one exact logical regular-file range without materializing holes
-    pub async fn read_file_range<W: FsWork>(
+    /// Reads one exact logical regular-file range without materializing holes.
+    pub async fn read_file_range<F: ContentFile, W: FsWork>(
         &mut self,
-        path: &NamespacePath,
+        file: F,
         range: ByteRange,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<FileRangeRead, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
-            .read_file_range_with_accounting(path, range, &mut accounting, cancellation)
+            .read_file_range_with_accounting(file, range, &mut accounting, cancellation)
             .await;
         budget.finish(result, &accounting)
     }
 
-    pub(crate) async fn read_file_range_with_accounting(
+    pub(crate) async fn read_file_range_with_accounting<F: ContentFile>(
         &mut self,
-        path: &NamespacePath,
+        file: F,
         range: ByteRange,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileRangeRead, FsError> {
         if range.length > self.volume.config.limits.maximum_read_bytes {
             return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
         }
-        let (lookup, allocation) = self
-            .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+        let record = self
+            .lookup_content_record(&file, accounting, cancellation)
             .await?;
-        drop(allocation);
-        let record = lookup.record.ok_or(FsError::NotFound)?;
         self.read_record_range_with_accounting(record, range, range, accounting, cancellation)
             .await
     }

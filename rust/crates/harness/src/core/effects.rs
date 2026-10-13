@@ -68,7 +68,14 @@ pub struct EffectAttestation {
 
 impl EffectAttestation {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| copying::copy_observation(self, quota))
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            copy(self, quota, |value: &EffectAttestation, work| {
+                if let EffectStatus::Succeeded { result } = &value.status {
+                    result.validate(work)?;
+                }
+                owned_bytes(value)
+            })
+        })
     }
 }
 

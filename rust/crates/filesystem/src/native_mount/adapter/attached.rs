@@ -142,7 +142,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut checkout = self.observer(work).await?;
             let read = checkout
-                .read_file_range_by_id(
+                .read_file_range(
                     self.file_id,
                     ByteRange {
                         offset,
@@ -153,11 +153,11 @@ where
                 )
                 .await?;
             let capacity = read.logical_owned_bytes();
-            NativeDemandCarrier::Native(work).finish_read(
-                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
-                work.cancellation(),
-                Some(&self.cancellation),
-            )
+            NativeDemandCarrier::Native(work)
+                .check(work.cancellation(), Some(&self.cancellation))?;
+            Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                read.bytes, capacity,
+            ))
         })
     }
 
@@ -170,7 +170,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut checkout = self.observer(work).await?;
             let read = checkout
-                .read_file_up_to_by_id(
+                .read_file_up_to(
                     self.file_id,
                     offset,
                     maximum_bytes,
@@ -179,11 +179,11 @@ where
                 )
                 .await?;
             let capacity = read.logical_owned_bytes();
-            NativeDemandCarrier::Native(work).finish_read(
-                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
-                work.cancellation(),
-                Some(&self.cancellation),
-            )
+            NativeDemandCarrier::Native(work)
+                .check(work.cancellation(), Some(&self.cancellation))?;
+            Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                read.bytes, capacity,
+            ))
         })
     }
 
@@ -196,7 +196,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut checkout = self.observer(work).await?;
             let position = checkout
-                .seek_file_extent_by_id(
+                .seek_file_extent(
                     self.file_id,
                     offset,
                     match target {

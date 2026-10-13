@@ -9,7 +9,6 @@ fn filtered_callback_error_does_not_overwrite_parent_errno() {
 use super::*;
 use crate::native_mount::MountPublication;
 use bytes::Bytes;
-use std::os::unix::fs::MetadataExt as _;
 use std::process::Command;
 
 unsafe extern "C" {
@@ -96,16 +95,10 @@ fn test_context(
     source: &Arc<MemorySource>,
     original: &Work,
 ) -> Result<DarwinMountContext, Box<dyn std::error::Error>> {
-    let root = source
-        .lookup_with_meter(&MountPath::root(), original)?
-        .ok_or("root absent")?;
-    let metadata = std::fs::metadata(".")?;
     Ok(DarwinMountContext::new(
         Arc::clone(source) as Arc<dyn MountFilesystem>,
         true,
-        metadata.uid(),
-        metadata.gid(),
-        root.node.file_id,
+        Path::new("."),
         original,
     )?)
 }

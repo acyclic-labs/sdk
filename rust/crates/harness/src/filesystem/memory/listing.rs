@@ -262,7 +262,7 @@ impl ToolExecutor for LocalListFilesTool {
         require_volume_grant(scope, &self.volume, VolumeOperation::Read)
     }
 
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
             let admission_digest = crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
@@ -328,8 +328,7 @@ impl ToolExecutor for LocalListFilesTool {
 
     fn reconcile<'a>(
         &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             let observed = self.observed.lock().await;
             let admission_digest = crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;

@@ -92,7 +92,7 @@ impl ProjectionCore {
             if self.stopping.load(Ordering::Acquire) {
                 return Err(NativeMountError::Lifecycle("session is stopped"));
             }
-            if self.handler_failed.load(Ordering::Acquire) || state.invalidation.failure.is_some() {
+            if self.handler_failed.load(Ordering::Acquire) {
                 return Err(NativeMountError::Lifecycle(
                     "FUSE invalidation previously failed",
                 ));
@@ -126,7 +126,6 @@ pub(super) struct InvalidationQueue {
     pub(super) deferred: FuseOwned<Vec<KernelCacheItem>>,
     pub(super) pending_tail: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     pub(super) in_flight: bool,
-    pub(super) failure: Option<(NativeMountError, crate::WorkCounters)>,
 }
 
 impl InvalidationQueue {
@@ -159,18 +158,11 @@ impl InvalidationQueue {
         }
     }
 
-    pub(super) fn finish(
-        &mut self,
-        through: Option<ViewStamp>,
-        dropped: Result<(), (NativeMountError, crate::WorkCounters)>,
-    ) {
+    pub(super) fn finish(&mut self, through: Option<ViewStamp>) {
         if self.pending_tail.as_slice().is_empty() {
             self.processed = self.processed.max(through);
         }
         self.in_flight = false;
-        if let Err(error) = dropped {
-            self.failure.get_or_insert(error);
-        }
     }
 }
 
@@ -181,13 +173,8 @@ impl ProjectionState {
         through: ViewStamp,
         work: &crate::NativeMaterializationWork,
     ) -> Result<FuseOwned<Vec<KernelCacheItem>>, NativeMountError> {
-        enum Action {
-            Inode(u64),
-            Negative { inode: u64, item: usize },
-            Binding { inode: u64, index: usize },
-        }
         let mut items = fuse_vec(0, work)?;
-        let mut actions = fuse_vec(0, work)?;
+        let mut bindings = fuse_vec(0, work)?;
         for (inode, entry) in &self.by_inode {
             work.charge(Items.delta(1))?;
             let file_id = entry.lookup.node.file_id;
@@ -196,9 +183,7 @@ impl ProjectionState {
                 && !source.unchanged_since_with_meter(anchor, Some(file_id), held, work)?
             {
                 fuse_reserve(&mut items, 1, work)?;
-                fuse_reserve(&mut actions, 1, work)?;
                 items.push(KernelCacheItem::Inode(*inode));
-                actions.push(Action::Inode(*inode));
             }
             for (name, held) in &entry.negative_children {
                 work.charge(Items.delta(1))?;
@@ -206,11 +191,6 @@ impl ProjectionState {
                 if !source.unchanged_since_with_meter(&path, None, *held, work)? {
                     let name = fuse_copy_bytes(name, work)?;
                     fuse_reserve(&mut items, 1, work)?;
-                    fuse_reserve(&mut actions, 1, work)?;
-                    actions.push(Action::Negative {
-                        inode: *inode,
-                        item: items.len(),
-                    });
                     items.push(KernelCacheItem::Entry {
                         parent: *inode,
                         name,
@@ -240,40 +220,32 @@ impl ProjectionState {
                             name,
                         });
                     }
-                    fuse_reserve(&mut actions, 1, work)?;
-                    actions.push(Action::Binding {
-                        inode: *inode,
-                        index,
-                    });
+                    fuse_reserve(&mut bindings, 1, work)?;
+                    bindings.push((*inode, index));
                 }
             }
         }
-        for action in actions.iter() {
-            match action {
-                Action::Inode(inode) => {
+        for item in items.iter() {
+            match item {
+                KernelCacheItem::Inode(inode) => {
                     self.by_inode
                         .get_mut(inode)
                         .expect("planned inode remains locked")
                         .kernel = Some(through)
                 }
-                Action::Binding { inode, index } => {
-                    self.by_inode
-                        .get_mut(inode)
-                        .expect("planned binding remains locked")
-                        .bindings[*index]
-                        .kernel = None
-                }
-                Action::Negative { inode, item } => {
-                    let KernelCacheItem::Entry { name, .. } = &items[*item] else {
-                        unreachable!("planned negative entry");
-                    };
-                    self.by_inode
-                        .get_mut(inode)
-                        .expect("planned directory remains locked")
-                        .negative_children
-                        .remove(name.as_slice());
+                KernelCacheItem::Entry { parent, name } => {
+                    if let Some(entry) = self.by_inode.get_mut(parent) {
+                        entry.negative_children.remove(name.as_slice());
+                    }
                 }
             }
+        }
+        for (inode, index) in bindings.iter() {
+            self.by_inode
+                .get_mut(inode)
+                .expect("planned binding remains locked")
+                .bindings[*index]
+                .kernel = None;
         }
         Ok(items)
     }
@@ -358,16 +330,11 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
             sdk_failure.take().map_or(Ok(()), Err)
         });
         let denied = result.is_err();
+        if let Err((cause, prefix)) = result {
+            core.retain_handler_failure((sdk_failure.unwrap_or(cause), prefix));
+        }
         let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if denied {
-            core.handler_failed.store(true, Ordering::Release);
-        }
-        if let Some(cause) = sdk_failure
-            && let Err(failure) = &result
-        {
-            state.invalidation.failure.get_or_insert((cause, failure.1));
-        }
-        state.invalidation.finish(completed_through, result);
+        state.invalidation.finish(completed_through);
         core.invalidation.notify_all();
         blocked = if denied { Some(wait_key) } else { None };
     }

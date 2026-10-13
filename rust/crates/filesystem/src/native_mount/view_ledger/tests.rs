@@ -155,17 +155,6 @@ fn folded_keys_invalidate_only_older_lookups() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn observers_learn_each_change_with_its_origin() -> Result<(), Box<dyn std::error::Error>> {
-    #[derive(Default)]
-    struct Recorded(Mutex<Vec<(ViewStamp, ViewOrigin)>>);
-
-    impl super::ViewObserver for Recorded {
-        fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
-            if let Ok(mut recorded) = self.0.lock() {
-                recorded.push((position, origin));
-            }
-        }
-    }
-
     let mut work = work();
     let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut work))?;
     let recorded = Arc::new(Recorded::default());
@@ -205,11 +194,13 @@ fn observers_learn_each_change_with_its_origin() -> Result<(), Box<dyn std::erro
 }
 
 #[derive(Default)]
-struct Counted(std::sync::atomic::AtomicUsize);
+struct Recorded(Mutex<Vec<(ViewStamp, ViewOrigin)>>);
 
-impl super::ViewObserver for Counted {
-    fn view_changed(&self, _: ViewStamp, _: ViewOrigin) {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+impl super::ViewObserver for Recorded {
+    fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
+        if let Ok(mut recorded) = self.0.lock() {
+            recorded.push((position, origin));
+        }
     }
 }
 
@@ -218,7 +209,7 @@ fn publication_delivers_to_final_live_observers_and_funds_late_registration()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut setup = work();
     let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
-    let early: Arc<dyn super::ViewObserver> = Arc::new(Counted::default());
+    let early: Arc<dyn super::ViewObserver> = Arc::new(Recorded::default());
     let dead = Arc::downgrade(&early);
     ledger.observe(dead.clone(), &mut NativeDemandCarrier::Borrowed(&mut setup))?;
     let original = crate::NativeMaterializationWork::from_meter(Arc::new(
@@ -227,14 +218,14 @@ fn publication_delivers_to_final_live_observers_and_funds_late_registration()
     let notification = ledger.prepare_everything_notification(&original)?;
     drop(early);
     assert!(dead.upgrade().is_none());
-    let counted = Arc::new(Counted::default());
+    let counted = Arc::new(Recorded::default());
     let late: Arc<dyn super::ViewObserver> = counted.clone();
     ledger.observe(
         Arc::downgrade(&late),
         &mut NativeDemandCarrier::Borrowed(&mut setup),
     )?;
     notification.record();
-    assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(counted.0.lock().map_err(|_| "poisoned")?.len(), 1);
     let next = ledger.prepare_everything_notification(&original)?;
     drop(next);
     assert!(ledger.prepare_everything_notification(&original).is_ok());
@@ -246,7 +237,7 @@ fn publication_notification_keeps_the_resource_byte_limit() -> Result<(), Box<dy
 {
     let mut setup = work();
     let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
-    let observer: Arc<dyn super::ViewObserver> = Arc::new(Counted::default());
+    let observer: Arc<dyn super::ViewObserver> = Arc::new(Recorded::default());
     ledger.observe(
         Arc::downgrade(&observer),
         &mut NativeDemandCarrier::Borrowed(&mut setup),
@@ -269,5 +260,39 @@ fn publication_notification_keeps_the_resource_byte_limit() -> Result<(), Box<dy
     ));
     assert_eq!(ledger.stamp(), before);
     assert!(ledger.prepare_everything_notification(&original).is_ok());
+    Ok(())
+}
+
+#[test]
+fn failed_record_cannot_vouch_for_an_old_lookup() -> Result<(), Box<dyn std::error::Error>> {
+    for observing in [false, true] {
+        let mut setup = work();
+        let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
+        let observer: Arc<dyn super::ViewObserver> = Arc::new(Recorded::default());
+        if observing {
+            ledger.observe(
+                Arc::downgrade(&observer),
+                &mut NativeDemandCarrier::Borrowed(&mut setup),
+            )?;
+        }
+        let stamp = ledger.stamp();
+        let node = FileId::new();
+        let mut denied = crate::demand::DemandWork::new(
+            crate::WorkBudget {
+                allocation_operations: 0,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &crate::CancellationToken::new(),
+        );
+        assert!(
+            ledger
+                .record(
+                    &ViewChange::Node(node),
+                    &mut NativeDemandCarrier::Borrowed(&mut denied)
+                )
+                .is_err()
+        );
+        assert!(!ledger.unchanged_since(&path(&["node"])?, Some(node), stamp, &mut setup)?);
+    }
     Ok(())
 }

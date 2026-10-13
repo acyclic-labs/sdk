@@ -151,37 +151,6 @@ pub(crate) async fn seek_record_extent_with_accounting<
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    /// Plans one bounded sparse range by stable file identity without reading
-    pub async fn plan_file_extents_by_id(
-        &mut self,
-        file_id: FileId,
-        range: ByteRange,
-        maximum_spans: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Option<ExtentPlan>> {
-        if maximum_spans == 0 || range.length > self.volume.config.limits.maximum_generation_bytes {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = async {
-            let record = self
-                .lookup_file_record_by_id_with_accounting(file_id, &mut accounting, cancellation)
-                .await?
-                .ok_or(FsError::NotFound)?;
-            self.plan_record_extents(record, range, maximum_spans, &mut accounting, cancellation)
-                .await
-                .map(|(plan, allocation)| {
-                    drop(allocation);
-                    plan
-                })
-        }
-        .await;
-        measured(result, &accounting)
-    }
-
     pub(super) async fn plan_record_extents(
         &mut self,
         record: FileRecord,
@@ -232,56 +201,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(planned)
     }
 
-    /// Finds the first sparse data or hole boundary by stable file identity.
-    pub async fn seek_file_extent_by_id<W: FsWork>(
-        &mut self,
-        file_id: FileId,
-        offset: u64,
-        target: ExtentSeekTarget,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Option<u64>, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            let accounting = &mut accounting;
-            let record = self
-                .lookup_file_record_by_id_with_accounting(file_id, accounting, cancellation)
-                .await?
-                .ok_or(FsError::NotFound)?;
-            let value = seek_record_extent_with_accounting(
-                &self.volume,
-                record,
-                offset,
-                target,
-                accounting,
-                cancellation,
-            )
-            .await?;
-            if self.tracks_observations() {
-                self.observe_identity_regions_with_accounting(
-                    [
-                        Some(DependencyRegion::SparseSeek {
-                            file_id,
-                            offset,
-                            target,
-                        }),
-                        None,
-                    ],
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            }
-            Ok(value)
-        }
-        .await;
-        budget.finish(result, &accounting)
-    }
-
     /// Plans the sparse physical representation of one exact regular-file range.
-    pub async fn plan_file_extents(
+    pub async fn plan_file_extents<F: ContentFile>(
         &mut self,
-        path: &NamespacePath,
+        file: F,
         range: ByteRange,
         maximum_spans: u32,
         budget: WorkBudget,
@@ -294,11 +217,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            let (lookup, allocation) = self
-                .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, false)
+            let record = self
+                .lookup_content_record(&file, &mut accounting, cancellation)
                 .await?;
-            drop(allocation);
-            let record = lookup.record.ok_or(FsError::NotFound)?;
             self.plan_record_extents(record, range, maximum_spans, &mut accounting, cancellation)
                 .await
                 .map(|(plan, allocation)| {
@@ -311,29 +232,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// Finds the first sparse data or hole boundary after one logical offset.
-    pub async fn seek_file_extent(
+    pub async fn seek_file_extent<F: ContentFile, W: FsWork>(
         &mut self,
-        path: &NamespacePath,
+        file: F,
         offset: u64,
         target: ExtentSeekTarget,
-        budget: WorkBudget,
+        budget: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<Option<u64>> {
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<Option<u64>, FsError> {
+        let mut accounting = budget.accounting(cancellation);
         let result = async {
-            let accounting = &mut accounting;
-            let (lookup, allocation) = self
-                .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+            let record = self
+                .lookup_content_record(&file, &mut accounting, cancellation)
                 .await?;
-            drop(allocation);
-            let record = lookup.record.ok_or(FsError::NotFound)?;
             let value = seek_record_extent_with_accounting(
                 &self.volume,
                 record,
                 offset,
                 target,
-                accounting,
+                &mut accounting,
                 cancellation,
             )
             .await?;
@@ -347,7 +264,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         }),
                         None,
                     ],
-                    accounting,
+                    &mut accounting,
                     cancellation,
                 )
                 .await?;
@@ -355,7 +272,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             Ok(value)
         }
         .await;
-        measured(result, &accounting)
+        budget.finish(result, &accounting)
     }
 }
 

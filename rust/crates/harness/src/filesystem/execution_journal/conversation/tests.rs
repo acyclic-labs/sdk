@@ -88,7 +88,7 @@ async fn open(
     )?;
     let volume = VolumeRef::new(
         provider.clone(),
-        "conversation",
+        "conversation".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,

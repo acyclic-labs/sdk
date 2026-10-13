@@ -1,4 +1,5 @@
 use super::*;
+use crate::demand::NativeMountAllocationCustody;
 
 pub(super) const READ_WORK: WorkCounters = WorkCounters {
     backend_read_operations: 1,
@@ -115,7 +116,7 @@ pub(super) fn retained_file(
 ) -> Result<
     (
         Arc<dyn MountOpenFile>,
-        Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
+        Option<Arc<NativeMountAllocationCustody>>,
     ),
     NativeMountError,
 > {
@@ -142,32 +143,6 @@ pub(super) fn retained_file(
             Err(cause.into())
         }
     }
-}
-
-pub(super) fn grow_bytes(
-    value: &mut DarwinOwned<Vec<u8>>,
-    required: usize,
-    work: &Work,
-) -> Result<(), NativeMountError> {
-    if required > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES {
-        return Err(driver_errno(libc::E2BIG));
-    }
-    if required <= value.capacity() {
-        return Ok(());
-    }
-    let capacity = value
-        .capacity()
-        .checked_mul(2)
-        .unwrap_or(required)
-        .max(required)
-        .min(MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES);
-    let copied = copy_work(value.len() as u64);
-    work.admit(copied)?;
-    let mut next = vector(work, capacity)?;
-    work.charge(copied)?;
-    next.extend_from_slice(value);
-    drop(std::mem::replace(value, next));
-    Ok(())
 }
 
 use acyclic_stream::OwnedBytes;

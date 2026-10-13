@@ -71,8 +71,12 @@ impl LocalCoreStateStore {
                 // A logged absence stays on disk as `null`.
                 let mut recorded = BTreeMap::new();
                 for workspace in workspaces {
-                    let lineage = log.get::<WorkspaceLineageRecord>(root, workspace, None)?;
-                    let lazy = log.get::<LazyWorkspaceState>(root, workspace, None)?;
+                    let lineage = log
+                        .get::<WorkspaceLineageRecord>(root, workspace, None, None)?
+                        .map(|(value, _)| value);
+                    let lazy = log
+                        .get::<LazyWorkspaceState>(root, workspace, None, None)?
+                        .map(|(value, _)| value);
                     let git = read_locked::<GitCompatState>(
                         &mut root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes())?,
                     )?;
@@ -136,7 +140,10 @@ impl LocalCoreStateStore {
                 let mut overlays = Vec::new();
                 let mut shadows = Vec::new();
                 for workspace in workspaces {
-                    let Some(state) = log.get::<LazyWorkspaceState>(root, workspace, None)? else {
+                    let Some(state) = log
+                        .get::<LazyWorkspaceState>(root, workspace, None, None)?
+                        .map(|(value, _)| value)
+                    else {
                         continue;
                     };
                     overlays.push(state.overlay);

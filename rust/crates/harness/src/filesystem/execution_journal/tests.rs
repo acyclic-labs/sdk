@@ -271,8 +271,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
     .enumerate()
     {
         let sequence = position as u64 + 1;
-        let file = publisher
-            .stage(
+        let file = crate::conversation::ContentPublisher::stage(publisher.as_ref(),
                 OperationId::new(),
                 &format!("messages/{sequence}.txt"),
                 format!("canonical-{sequence}").as_bytes(),

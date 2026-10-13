@@ -114,51 +114,27 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
-    /// Selects a trusted host-provided output binding under the unchanged task authority.
-    pub fn with_content_bindings(mut self, binding: ContentBindings) -> Result<Self> {
-        let writer = binding
-            .writer
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("output binding has no writer".into()))?;
-        if !self.scope.grants().contains(
-            &writer
-                .volume()
-                .capability(VolumeOperation::Write, &mut None)?,
-        ) {
-            return Err(Error::Unauthorized(
-                "task cannot select this output volume".into(),
-            ));
-        }
-        if let Some(sealed) = self.scope.created_content(Some(writer.volume())) {
-            if sealed
-                .writer
-                .as_ref()
-                .is_none_or(|original| !Arc::ptr_eq(original, writer))
-                || !Arc::ptr_eq(&sealed.reader, &binding.reader)
-            {
-                return Err(Error::Unauthorized(
-                    "output differs from authenticated created binding".into(),
-                ));
-            }
-        }
+    /// Selects an authenticated created destination without widening task authority.
+    pub async fn with_output_volume(self: &Arc<Self>, volume: &VolumeRef) -> Result<Arc<Self>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            self.native_purpose = None;
+        if let Some(io) = self.preparation_io()? {
+            return self
+                .project_output_volume(
+                    volume,
+                    io.original_native_work().expect("original context work"),
+                )
+                .await;
         }
-        self.output_content = Some(binding);
-        Ok(self)
-    }
-
-    /// Selects an existing authenticated created destination without cloning the harness, widening grants or acquiring another owner reservation.
-    pub fn with_output_volume(self, volume: &VolumeRef) -> Result<Self> {
-        let binding = self
-            .scope
-            .created_content(Some(volume))
-            .ok_or_else(|| {
-                Error::Unauthorized("output volume has no admitted creation binding".into())
-            })?
-            .clone();
-        self.with_content_bindings(binding)
+        let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
+            Error::Unauthorized("output volume has no admitted creation binding".into())
+        })?;
+        self.bound_content_writer(Some(binding), &self.scope, None)?;
+        let mut context = self.as_ref().clone();
+        context.output_content = Some(binding.clone());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        return context.into_shared();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        Ok(Arc::new(context))
     }
 
     #[cfg(feature = "filesystem")]

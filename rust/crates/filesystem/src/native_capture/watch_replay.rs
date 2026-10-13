@@ -4,7 +4,7 @@ pub(super) fn capture_watch_owned_bytes(
     changes: &[WatchChange],
     incoming: &crate::watch::WatchBatchOriginal,
     storage_bytes: u64,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<u64, CaptureError> {
     let mut bytes = storage_bytes;
     for (index, change) in changes.iter().enumerate() {
@@ -53,12 +53,12 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     options: &CaptureOptions,
     policy: &CapturePolicy,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<WatchCaptureReceipt, CaptureError> {
     // The facade opens fixed accounting leaves only; owned helpers and drops remain outside those short meter-meter loans.
     let cancellation = {
         cancellation.check()?;
-        meter.native.clone().check().map_err(capture_demand_error)?;
+        meter.clone().check().map_err(capture_demand_error)?;
         if let WatchBatch::Changes {
             changes,
             original: incoming,
@@ -74,15 +74,12 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             };
             let bytes = capture_watch_owned_bytes(changes, incoming, storage_bytes, meter)?;
             meter
-                .native
                 .with_original_leaf(|work| {
                     work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)
                 })
                 .map_err(capture_demand_error)?;
         }
-        meter
-            .native
-            .with_original_leaf(|work| work.cancellation().clone())
+        meter.with_original_leaf(|work| work.cancellation().clone())
     };
     let WatchBatch::Changes {
         original: incoming,
@@ -189,11 +186,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                 if capture_excludes(policy, path, meter)? {
                     let bytes = path.retained_bytes();
                     drop(change);
-                    meter
-                        .native
-                        .clone()
-                        .release(bytes)
-                        .map_err(capture_demand_error)?;
+                    meter.clone().release(bytes).map_err(capture_demand_error)?;
                     continue;
                 }
                 change
@@ -267,7 +260,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                     None
                 } else {
                     let source = checkout
-                        .lookup_no_follow(&from, &meter.native, &cancellation)
+                        .lookup_no_follow(&from, meter, &cancellation)
                         .await?;
                     source.record
                 };
@@ -310,7 +303,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     }
     if !changes_storage_native {
         meter
-            .native
             .clone()
             .release(changes_bytes)
             .map_err(capture_demand_error)?;
@@ -365,7 +357,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     }
     if !lookup_paths.is_empty() {
         let lookup = checkout
-            .lookup_batch_no_follow(&lookup_paths, &meter.native, &cancellation)
+            .lookup_batch_no_follow(&lookup_paths, meter, &cancellation)
             .await?;
 
         let lookup_paths_bytes =
@@ -383,7 +375,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                 }?
             {
                 let prior = checkout
-                    .lookup_no_follow(&prior_path, &meter.native, &cancellation)
+                    .lookup_no_follow(&prior_path, meter, &cancellation)
                     .await?;
                 record = prior.record;
                 capture_drop_path(prior_path, meter)?;
@@ -397,7 +389,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         }
         drop(lookup.1);
         meter
-            .native
             .clone()
             .release(lookup_paths_bytes)
             .map_err(capture_demand_error)?;
@@ -412,7 +403,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             capture_drop_path(to, meter)?;
         }
         meter
-            .native
             .clone()
             .release(storage_bytes)
             .map_err(capture_demand_error)
@@ -460,7 +450,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         .await?;
     }
     meter
-        .native
         .clone()
         .release(missing_bytes)
         .map_err(capture_demand_error)?;
@@ -479,7 +468,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     }?;
     mutations.extend(rename_mutations);
     meter
-        .native
         .clone()
         .release(rename_mutations_bytes)
         .map_err(capture_demand_error)?;
@@ -509,7 +497,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         .await?;
     }
     meter
-        .native
         .clone()
         .release(rename_records_bytes)
         .map_err(capture_demand_error)?;
@@ -525,7 +512,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         observed_ordinary.push((path, current, intent, observation));
     }
     meter
-        .native
         .clone()
         .release(ordinary_bytes)
         .map_err(capture_demand_error)?;
@@ -577,7 +563,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         .await?;
     }
     meter
-        .native
         .clone()
         .release(observed_bytes)
         .map_err(capture_demand_error)?;
@@ -586,7 +571,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         apply_capture_transaction(checkout, mutations, meter).await?;
     } else {
         // Compile binding changes before final-state mutations on one atomic candidate.
-        let mut candidate = checkout.private_candidate(&meter.native, &cancellation)?;
+        let mut candidate = checkout.private_candidate(meter, &cancellation)?;
         let final_state = {
             let count = mutations.len() - namespace_boundary;
             let bytes = count
@@ -596,22 +581,18 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                 bytes_copied: bytes,
                 ..WorkCounters::UNCHARGED
             };
-            crate::native_host::NativeHostWork::admit(&mut meter.native.clone(), copied)
+            crate::native_host::NativeHostWork::admit(&mut meter.clone(), copied)
                 .map_err(capture_demand_error)?;
             let mut final_state = capture_vec(count, meter)?;
             final_state.extend(mutations.drain(namespace_boundary..));
-            meter
-                .native
-                .clone()
-                .record(copied)
-                .map_err(capture_demand_error)?;
+            meter.clone().record(copied).map_err(capture_demand_error)?;
             final_state
         };
         apply_capture_transaction(&mut candidate, mutations, meter).await?;
         apply_capture_transaction(&mut candidate, final_state, meter).await?;
         {
             cancellation.check()?;
-            meter.native.clone().check().map_err(capture_demand_error)
+            meter.clone().check().map_err(capture_demand_error)
         }?;
         cancellation.commit_if_live(|| {
             *checkout = candidate;

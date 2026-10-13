@@ -270,18 +270,19 @@ pub(super) async fn publication<P: StreamProvider>(
     client: &Arc<P>,
     reducer: &crate::core::Reducer,
     event: &Event,
-    publication: &mut operations::IndexedPublication,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
+) -> Result<operations::IndexedPublication> {
     let authority = reducer.authority();
     let verifier = reducer.event_verifier();
     let tree = Tree { client, authority };
     let previous = reducer.revision();
     let mut quota = CodecQuota::from_retained(work, 0);
+    let bytes = crate::wire_codec::encode_event(authority, event, quota.work())?;
+    quota.adopt(bytes.capacity() as u64)?;
     let (mut root, mut used) = tree
         .root_at(verifier, previous, PUBLICATION_READ_BYTES, quota.work())
         .await?;
-    if let Some(effect) = crate::core::event_effect_id(&event.payload) {
+    let transition = if let Some(effect) = crate::core::event_effect_id(&event.payload) {
         let observed = tree
             .walk(
                 effect,
@@ -291,9 +292,9 @@ pub(super) async fn publication<P: StreamProvider>(
                 quota.work(),
             )
             .await?;
-        quota.adopt(
-            observed.0.capacity() as u64 * std::mem::size_of::<(Digest, u8, Digest)>() as u64,
-        )?;
+        let observed_owned =
+            observed.0.capacity() as u64 * std::mem::size_of::<(Digest, u8, Digest)>() as u64;
+        quota.adopt(observed_owned)?;
         let position = if matches!(
             event.payload,
             crate::core::EventPayload::EffectPlanned { .. }
@@ -315,35 +316,60 @@ pub(super) async fn publication<P: StreamProvider>(
                 .checked_add(1)
                 .ok_or_else(|| Error::Invalid("effect position overflows".into()))?
         };
+        let retained = quota.retained() - observed_owned;
         quota.transfer();
+        quota.adopt(retained)?;
         root = Some(
             tree.update(effect, (event.revision, position), observed, quota.work())
                 .await?,
         );
-        let stream = path(
-            authority,
-            "harness/v2/effect-transitions/",
-            Some((&effect, 36)),
-            quota.work(),
-        )?;
-        quota.adopt(stream.1)?;
-        let bytes = publication.set_effect_position_with_work(position, quota.work())?;
-        quota.transfer();
-        publication.push_index(stream, position, bytes, 0, quota.work())?;
-    }
-    if let Some(io) = quota.work().as_deref_mut() {
-        io.hashed_bytes(publication.bytes.len() as u64)?;
-    }
-    let canonical_digest = *blake3::hash(&publication.bytes).as_bytes();
-    let proof = verifier.effect_history_root_proof_with_work(
-        event.revision,
-        canonical_digest,
-        root,
+        Some((effect, position))
+    } else {
+        None
+    };
+    quota.transfer();
+    let mut publication = operations::IndexedPublication::new(
+        authority,
+        event,
+        bytes,
+        transition.map(|(_, position)| position),
         quota.work(),
     )?;
-    let stream = path(authority, HEADS, Some((&"cuts", 4)), quota.work())?;
-    let encoded = encode(&(root, proof), MAX_CERTIFICATE_BYTES, quota.work());
-    publication.add_derived_index_with_work(stream, previous, encoded, quota.work())
+    let result = async {
+        if let Some((effect, position)) = transition {
+            let stream = path(
+                authority,
+                "harness/v2/effect-transitions/",
+                Some((&effect, 36)),
+                quota.work(),
+            )?;
+            let bytes = publication.indexes[0].2.clone();
+            publication.push_index(stream, position, bytes, 0, quota.work())?;
+        }
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.hashed_bytes(publication.bytes.len() as u64)?;
+        }
+        let canonical_digest = *blake3::hash(&publication.bytes).as_bytes();
+        let proof = verifier.effect_history_root_proof_with_work(
+            event.revision,
+            canonical_digest,
+            root,
+            quota.work(),
+        )?;
+        let stream = path(authority, HEADS, Some((&"cuts", 4)), quota.work())?;
+        let encoded = encode(&(root, proof), MAX_CERTIFICATE_BYTES, quota.work());
+        publication.add_derived_index_with_work(stream, previous, encoded, quota.work())
+    }
+    .await;
+    match result {
+        Ok(()) => Ok(publication),
+        Err(error) => {
+            let retained = publication.retained_owned();
+            drop(publication);
+            operations::release_owned_after_drop(Err(error), retained, quota.work())
+        }
+    }
 }
+
 #[cfg(test)]
 mod tests;

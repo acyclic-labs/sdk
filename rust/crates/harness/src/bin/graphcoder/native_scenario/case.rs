@@ -99,7 +99,6 @@ pub(super) async fn prepare_case(
         stream_provider: stream_provider.clone(),
         private_volume: private.clone(),
         owner: owner.clone(),
-        observed_authorities: Vec::new(),
         generation: format!("qualification-{}", uuid::Uuid::new_v4()),
         limits,
         run_limits,

@@ -195,7 +195,7 @@ impl DemandWork {
     fn retain_observer(
         &mut self,
         token: Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<bool, DemandError> {
+    ) -> Result<Option<usize>, DemandError> {
         for entry in self.roots.observers.0.iter() {
             self.work.charge(
                 &WorkCounters {
@@ -205,7 +205,7 @@ impl DemandWork {
                 &self.budget,
             )?;
             if Arc::ptr_eq(&entry.0, &token) {
-                return Ok(false);
+                return Ok(None);
             }
         }
         insert(
@@ -214,8 +214,8 @@ impl DemandWork {
             &mut self.allocations,
             &mut self.work,
             self.budget,
-        )?;
-        Ok(true)
+        )
+        .map(Some)
     }
     pub(crate) fn retain_observer_custody(
         &mut self,
@@ -231,7 +231,7 @@ impl DemandWork {
         token: &Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
-        let inserted = self.retain_observer(token.clone())?;
+        let inserted = self.retain_observer(token.clone())?.is_some();
         let metadata = if inserted {
             self.allocations
                 .record_owned_bytes(token.logical_owned_bytes(), &mut self.work)
@@ -363,22 +363,15 @@ impl NativeDemandReadMeter {
             |work| work.check(),
         )
         .map_err(crate::materializer::native_materialization_work_error)?;
-        if work.owns_native_checkout_token(token)
-            || !token.bind_native_original(self)
-            || !work
-                .retain_observer(token.clone())
-                .map_err(crate::materializer::native_materialization_work_error)?
-        {
+        if work.owns_native_checkout_token(token) || !token.bind_native_original(self) {
             return Err(Error::InvalidLayout);
         }
+        let index = work
+            .retain_observer(token.clone())
+            .map_err(crate::materializer::native_materialization_work_error)?
+            .ok_or(Error::InvalidLayout)?;
         header.transfer_checkout_metadata(self, token.logical_owned_bytes())?;
-        work.roots
-            .observers
-            .0
-            .iter_mut()
-            .find(|entry| Arc::ptr_eq(&entry.0, token))
-            .expect("registered control")
-            .2 = Some(0);
+        work.roots.observers.0[index].2 = Some(0);
         Ok(token.clone())
     }
 }

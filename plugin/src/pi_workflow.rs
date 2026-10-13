@@ -236,13 +236,7 @@ impl PiControlHost<'_> {
             let key = self
                 .work
                 .display(&format_args!("acyclic.pi/control/{task}/{operation}"))?;
-            host.resume_workflow(
-                task,
-                wait.revision,
-                input.0,
-                acyclic_harness::IdempotencyKey::new(key.0)?,
-                Some(&self.work),
-            )
+            host.resume_workflow(task, wait.revision, input.0, acyclic_harness::IdempotencyKey::new(key.0)?, None, Some(&self.work))
             .await?;
             drop(key.1);
         }

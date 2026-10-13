@@ -247,28 +247,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
     ) -> Result<()> {
         self.check_authority(context, invocation, None)
     }
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async {
+
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
+let Some(context) = context else { return Box::pin(async {
             Err(Error::Unauthorized(
                 "recursive tools require their durable context".into(),
             ))
-        })
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async {
-            Err(Error::Unauthorized(
-                "recursive tools require their durable context".into(),
-            ))
-        })
-    }
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        }); };
+
         let cancellation = CancellationToken::new();
         let stop = InvocationCancellation(cancellation.clone());
         Box::pin(async move {
@@ -279,11 +266,13 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .ok_or(Error::Indeterminate(invocation.operation_id))
         })
     }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+let Some(context) = context else { return Box::pin(async {
+            Err(Error::Unauthorized(
+                "recursive tools require their durable context".into(),
+            ))
+        }); };
+
         let cancellation = CancellationToken::new();
         let stop = InvocationCancellation(cancellation.clone());
         Box::pin(async move {

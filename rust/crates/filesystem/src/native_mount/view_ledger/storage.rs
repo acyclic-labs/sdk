@@ -6,7 +6,7 @@ use crate::demand::NativeMountAllocationCustody;
 pub(super) fn vector<T>(
     count: usize,
     carrier: &mut NativeDemandCarrier<'_>,
-) -> Result<(Vec<T>, Option<std::sync::Arc<NativeMountAllocationCustody>>), MountSourceError> {
+) -> Result<(Vec<T>, Option<Arc<NativeMountAllocationCustody>>), MountSourceError> {
     carrier
         .with_work(|work| work.check())
         .map_err(mount_demand_error)?;
@@ -56,7 +56,7 @@ pub(super) struct ChangePositions {
     floor: u64,
     latest: HashMap<u64, u64>,
     // Physical backing drops before its original allocation owner.
-    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    custody: Option<Arc<NativeMountAllocationCustody>>,
 }
 
 pub(super) fn record(
@@ -69,19 +69,19 @@ pub(super) fn record(
     if !positions.latest.is_empty() {
         charge(carrier, scan_work(1))?;
     }
-    let fold =
-        positions.latest.len() >= MAXIMUM_TRACKED_KEYS && !positions.latest.contains_key(&key);
-    if !fold
-        && positions.latest.len() == positions.latest.capacity()
-        && !positions.latest.contains_key(&key)
-    {
-        let count = positions
+    if let Some(at) = positions.latest.get_mut(&key) {
+        *at = (*at).max(position.0);
+        return Ok(());
+    }
+    if positions.latest.len() >= MAXIMUM_TRACKED_KEYS {
+        charge(carrier, scan_work(positions.latest.len() as u64))?;
+        let floor = positions.floor;
+        positions.floor = positions
             .latest
-            .capacity()
-            .max(4)
-            .checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?
-            .min(MAXIMUM_TRACKED_KEYS);
+            .drain()
+            .fold(floor, |floor, (_, at)| floor.max(at));
+    } else if positions.latest.len() == positions.latest.capacity() {
+        let count = (positions.latest.capacity().max(4) * 2).min(MAXIMUM_TRACKED_KEYS);
         let old_bytes = map_bytes(positions.latest.capacity())?;
         let ChangePositions {
             latest, custody, ..
@@ -112,26 +112,7 @@ pub(super) fn record(
         let released = release_backing(borrowed, carrier);
         result.and(released)?;
     }
-    charge(
-        carrier,
-        crate::WorkCounters {
-            items_examined: if fold {
-                positions.latest.len() as u64
-            } else {
-                0
-            },
-            ..crate::WorkCounters::UNCHARGED
-        },
-    )?;
-    if fold {
-        let floor = positions.floor;
-        positions.floor = positions
-            .latest
-            .drain()
-            .fold(floor, |floor, (_, at)| floor.max(at));
-    }
-    let at = positions.latest.entry(key).or_insert(0);
-    *at = (*at).max(position.0);
+    positions.latest.insert(key, position.0);
     Ok(())
 }
 
@@ -151,7 +132,7 @@ pub(super) fn unchanged_since(
 }
 pub(super) fn grow_vector<T>(
     entries: &mut Vec<T>,
-    owner: &mut Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    owner: &mut Option<Arc<NativeMountAllocationCustody>>,
     capacity: usize,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {

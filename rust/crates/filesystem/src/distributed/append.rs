@@ -229,6 +229,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 guard.as_deref_mut(),
             )
             .await;
+        if work.is_native() && result.is_ok() {
+            work.check()?;
+        }
         if !work.is_native() {
             let retained = gate.as_str().len() as u64
                 + records.as_str().len() as u64

@@ -117,6 +117,7 @@ pub(in crate::filesystem) use default_tools::{
 pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
+    observe_preparation,
     BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationRoot,
     NativeViewPublicationError, NativeVolumeView,
 };

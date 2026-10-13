@@ -6,17 +6,7 @@ pub(super) fn native_mount_name(
     inputs.items(1)?;
     let bytes = match (name.encoding(), std::env::consts::OS) {
         (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos")
-        | (NameEncoding::WindowsUtf16Le, "windows") => {
-            let delta = crate::WorkCounters {
-                bytes_copied: name.as_bytes().len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            inputs.admit(delta)?;
-            let mut bytes = inputs.vec(name.as_bytes().len())?;
-            bytes.extend_from_slice(name.as_bytes());
-            inputs.record(delta)?;
-            bytes
-        }
+        | (NameEncoding::WindowsUtf16Le, "windows") => inputs.copy_bytes(name.as_bytes())?,
         (NameEncoding::Utf8, "windows") => {
             let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
                 MountSourceError::Invalid("authenticated UTF-8 name is malformed".into())
