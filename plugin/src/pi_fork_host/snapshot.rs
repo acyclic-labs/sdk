@@ -86,7 +86,6 @@ impl crate::pi_host::PiControlHost<'_> {
                 reason: "Root source freeze changed its guarded watcher observation",
             });
         }
-        drop(rebound);
         drop(observed.0);
         Ok((frozen, observed.1))
     }

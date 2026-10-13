@@ -11,8 +11,8 @@ use crate::{
 };
 use acyclic_fs::NativeAllocation;
 use acyclic_fs::{
-    CancellationToken, Digest, GenerationId, LazySnapshotRef, MeasuredResult,
-    NativeMaterializationWork, OperationReceipt, PublicationPermit, WorkBudget, WorkCounters,
+    CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork,
+    PublicationPermit, WorkBudget, WorkCounters,
 };
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;
@@ -28,12 +28,10 @@ use acyclic_harness::{
     filesystem::{
         BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
         NativeProcessAuthority, NativeProcessProvider, NativeVolumeNamespace, NativeVolumeView,
-        RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection,
-        TaskWorkerAttempt, workspace_ref,
+        TaskCommandHost, TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt,
     },
-    fork::ForkReport,
     resources::GenerationRef,
-    runtime::{ContentBindings, DurableTaskHost, TaskAdmissionRecord, TaskContext},
+    runtime::{ContentBindings, TaskAdmissionRecord, TaskContext},
     scheduler::{LeaseFence, ResourceRequest},
     store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand,
@@ -192,30 +190,10 @@ fn view_volume_share(budget: WorkBudget, volumes: u64) -> Result<WorkBudget> {
     )
 }
 
-fn accept<T>(
-    result: MeasuredResult<OperationReceipt<T>, Error>,
-    meter: &NativeMaterializationWork,
-) -> Result<T> {
-    match result {
-        Ok(receipt) => {
-            meter.spent(receipt.work)?;
-            remaining(meter)?;
-            Ok(receipt.value)
-        }
-        Err(failure) => {
-            meter.spent(*failure.work)?;
-            Err(failure.error)
-        }
-    }
-}
-
-fn remaining(meter: &NativeMaterializationWork) -> Result<WorkBudget> {
-    meter.remaining().map_err(acyclic_harness::Error::from)
-}
 fn native_construction(
     (cause, work): (acyclic_fs::NativeTreeMaterializationError, WorkCounters),
 ) -> Error {
-    Error::NativeConstruction { cause, work }
+    Error::NativeConstruction { cause, work: Box::new(work) }
 }
 fn unauthorized(reason: &'static str) -> Error {
     Error::NativeBoundary {

@@ -16,6 +16,10 @@ use std::time::{Duration, Instant};
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 const WARM_REPETITIONS: usize = 9;
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one comparative end-to-end scenario shares native and mounted toolchain setup"
+)]
 #[tokio::test]
 #[ignore = "local-only real mount, Cargo, and Lean/Lake performance qualification"]
 async fn native_and_mounted_cargo_and_lake_workloads() {

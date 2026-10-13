@@ -100,8 +100,8 @@ impl PreparationIo {
             #[cfg(not(target_arch = "wasm32"))]
             if matches!(self, PreparationIo::Owned { budget, .. } if *budget == WorkBudget::UNBOUNDED) {
                 return match error {
-                    Error::NativeWorkspace { source, .. } => map_error(source),
-                    Error::NativeFilesystem { source, .. } => map_error(WorkspaceError::Filesystem(source)),
+                    Error::NativeWorkspace { source, .. } => map_error(*source),
+                    Error::NativeFilesystem { source, .. } => map_error(WorkspaceError::Filesystem(*source)),
                     error => error,
                 };
             }

@@ -299,8 +299,8 @@ pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> 
                 #[cfg(not(target_arch = "wasm32"))]
                 if io.and_then(super::PreparationIo::original_native_work).is_some() {
                     return Error::NativeFilesystem {
-                        source: acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
-                            acyclic_fs::kernel::NamespacePathError::Name(error))), custody: None,
+                        source: Box::new(acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
+                            acyclic_fs::kernel::NamespacePathError::Name(error)))), custody: None,
                     };
                 }
                 Error::Invalid(error.to_string())

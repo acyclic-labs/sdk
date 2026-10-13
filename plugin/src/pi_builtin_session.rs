@@ -130,7 +130,7 @@ impl PiSession {
         };
         let payload = pi_root_provider::guarded_pi_value(request, MAXIMUM_BUILTIN_BYTES * 2, work)?;
         let _payload_custody = payload.1;
-        let operation = request.operation(owner.policy().root_task, &work)?;
+        let operation = request.operation(owner.policy().root_task, work)?;
         let staged = pi_root_provider::stage_pi_input(
             owner,
             &self.filesystem,

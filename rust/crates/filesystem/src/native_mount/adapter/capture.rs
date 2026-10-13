@@ -2,16 +2,16 @@ use super::*;
 
 fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
     match error {
-        crate::CaptureError::Kernel(
+        crate::CaptureError::Kernel(error) => match *error {
             FsError::Work(error)
-            | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)),
-        ) => MountSourceError::Work(error),
-        crate::CaptureError::Kernel(FsError::NativeKernel(error)) => {
-            MountSourceError::NativeWork(error)
-        }
-        crate::CaptureError::Kernel(FsError::Cancelled(_)) => MountSourceError::Cancelled,
-        crate::CaptureError::Kernel(FsError::SourceSnapshotStale) => MountSourceError::Stale,
-        crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
+            | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)) => {
+                MountSourceError::Work(error)
+            }
+            FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
+            FsError::Cancelled(_) => MountSourceError::Cancelled,
+            FsError::SourceSnapshotStale => MountSourceError::Stale,
+            error => MountSourceError::Filesystem(error),
+        },
         error => engine_error(error),
     }
 }

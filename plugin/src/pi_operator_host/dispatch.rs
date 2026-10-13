@@ -25,13 +25,14 @@ impl crate::pi_host::PiControlHost<'_> {
         )
         .await?;
         let PiOperatorBody::Approval {
-            mut prepared,
+            prepared,
             digest,
             decision,
         } = request.body
         else {
             return Err(denied("inspect cannot dispatch a Root command"));
         };
+        let mut prepared = *prepared;
         drop(request.operator);
         drop(request.session_id);
         let root = self.protected.policy().root_task;

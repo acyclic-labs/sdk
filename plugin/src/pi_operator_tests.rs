@@ -143,7 +143,7 @@ fn operator_proof_binds_body_owner_and_agent_and_cannot_be_replaced_by_a_native_
         .unwrap()
         .issuer
         .issue(
-            &parsed.0.operator.id(),
+            parsed.0.operator.id(),
             parsed.0.operator.capabilities(),
             Some(acyclic_harness::AgentId::from_bytes([99; 16])),
             None,

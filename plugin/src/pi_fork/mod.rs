@@ -12,7 +12,6 @@ use crate::{
 use acyclic_fs::{
     CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork,
 };
-use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
@@ -24,7 +23,7 @@ use acyclic_harness::{
     filesystem::{FORK_PREPARE_TASK_COMMAND_KIND, ForkPreparationLimits},
     fork::{ForkReport, ForkRequest},
     resource_preparation::ResourcePreparationRequest,
-    runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
+    runtime::{TaskAdmissionRecord, task_id_for_admission},
     scheduler::{LeaseFence, ResourceRequest},
     source_authorization::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
@@ -269,7 +268,7 @@ impl<'a> PiForkCoordinator<'a> {
     }
 }
 
-/// RootService's explicit same-session selected-PROJECT policy.
+/// `RootService`'s explicit same-session selected-PROJECT policy.
 struct PiProjectSourcePolicy<'a> {
     coordinator: &'a PiForkCoordinator<'a>,
     source: Arc<LocalLazyWorkspace>,
@@ -289,7 +288,7 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    Error::NativeWorkspace { source, custody }
+    Error::NativeWorkspace { source: Box::new(source), custody }
 }
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {

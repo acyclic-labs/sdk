@@ -42,7 +42,7 @@ fn allocations_and_selected_roles_are_explicit_and_bound() {
                     VolumeOwner::Agent(AgentId::from_bytes([2; 16])),
                     &mut None,
                 )
-                .unwrap()
+                .unwrap();
             }
             _ => {
                 let PiScratchAllocation::Created(creation) = &mut changed.scratch.allocation else {

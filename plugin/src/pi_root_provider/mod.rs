@@ -11,15 +11,19 @@ use super::{
         ROOT_INPUT_DIRECTORY,
     },
 };
+#[cfg(test)]
+use acyclic_fs::CancellationToken;
 use acyclic_fs::demand::{DemandSource, SourceReference};
 use acyclic_fs::{
-    CancellationToken, LazyWorkspaceStore, Lifecycle, NativeAllocation, NativeMaterializationWork,
+    LazyWorkspaceStore, Lifecycle, NativeAllocation, NativeMaterializationWork,
     NativeTreeMaterializationError, VolumeConfig, WorkBudget, WorkCounters, WorkError,
 };
+#[cfg(test)]
+use acyclic_harness::TaskId;
 use acyclic_harness::wire::ErrorCode;
 use acyclic_harness::{
     EffectAttemptId, EffectId, Error, IdempotencyKey, JsonBounds, JsonCodecCharge, OperationId,
-    Result, TaskId, canonical_json_bytes_bounded,
+    Result, canonical_json_bytes_bounded,
     conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
     core::{EffectGuarantee, EffectState, EffectStatus},
     durable_host::TaskJournalOwner,
@@ -34,7 +38,7 @@ use acyclic_harness::{
     sdk_json_diagnostic_bytes,
 };
 use acyclic_stream::{BoxProviderFuture, LocalStream};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -61,16 +65,13 @@ use inputs::{
     read_root_artifact_with_native_work,
 };
 pub(crate) use inputs::{
-    load_original_preparation_with_native_work, observe_pi_input,
-    observe_pi_root_input_with_native_work, stage_pi_input, stage_pi_operator_input,
+    load_original_preparation_with_native_work, observe_pi_input, stage_pi_input, stage_pi_operator_input,
     stage_pi_root_input_with_native_work,
 };
 pub(crate) use preparation::bind_root_output_context_with_native_work;
 pub(crate) use sources::{
     guard_root_preparation_source_with_native_work, prove_root_project_source_with_native_work,
 };
-
-/// Inline failure prefix: constructor denial never allocates a counter carrier.
 
 /// Actual handles returned by dispatch, never reconstructed from route IDs.
 pub(crate) struct PiRootHandle {

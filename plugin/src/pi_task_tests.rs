@@ -8,10 +8,9 @@ use crate::{AdapterState, PiTaskBinding, PluginTaskBinding};
 use acyclic_harness::{
     AgentId, Capabilities, TaskId,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    distributed::{WorkPull, Worker},
+    distributed::WorkPull,
     filesystem::FilesystemHost,
-    runtime::{TaskSpawner as _, TaskStateProvider},
-    scheduler::ResourceRequest,
+    runtime::TaskStateProvider,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};
@@ -74,7 +73,7 @@ async fn storage(
         .await
         .unwrap();
     (
-        FilesystemHost::new(raw, &provider, None).unwrap(),
+        FilesystemHost::new(raw, provider, None).unwrap(),
         Arc::new(
             LocalStream::open(path.join("stream"), LocalStreamLimits::default())
                 .await
@@ -191,7 +190,7 @@ async fn root_admission_is_original_and_does_not_start_work() {
                     VolumeOwner::Agent(foreign.agent_id),
                     &mut None,
                 )
-                .unwrap()
+                .unwrap();
             }
         }
         assert!(
@@ -345,7 +344,7 @@ async fn selected_root_recovery_requires_original_admission() {
         let mut changed = state.clone();
         match mutation {
             0 => {
-                changed.roots.get_mut(&key).unwrap().path = directory.path().join("foreign source")
+                changed.roots.get_mut(&key).unwrap().path = directory.path().join("foreign source");
             }
             1 => changed.root_context_id = [83; 16],
             _ => {

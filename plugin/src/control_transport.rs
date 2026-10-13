@@ -78,14 +78,10 @@ pub(crate) fn selected_cli_cwd(request: &ControlRequest) -> Result<PathBuf, Stri
 pub(crate) struct ControlEndpoint {
     pub(crate) shutdown: watch::Sender<bool>,
     pub(crate) task: tokio::task::JoinHandle<Result<(), String>>,
-    #[cfg(all(test, not(target_os = "linux")))]
-    pub(crate) accepted: Arc<tokio::sync::Notify>,
     #[cfg(all(unix, not(target_os = "linux")))]
     pub(crate) socket_path: PathBuf,
     #[cfg(target_os = "linux")]
     pub(crate) mailbox_path: PathBuf,
-    #[cfg(all(windows, test))]
-    pub(crate) pipe_path: String,
 }
 
 impl ControlEndpoint {
@@ -115,8 +111,6 @@ pub(crate) async fn start_control_endpoint(
     fs::create_dir_all(data).map_err(display)?;
     let ledger = Arc::new(ControlLedger::open(data)?);
     let (shutdown, receiver) = watch::channel(false);
-    #[cfg(all(test, not(target_os = "linux")))]
-    let accepted = Arc::new(tokio::sync::Notify::new());
 
     #[cfg(target_os = "linux")]
     {
@@ -151,22 +145,16 @@ pub(crate) async fn start_control_endpoint(
             ledger,
             shutdown.clone(),
             receiver,
-            #[cfg(test)]
-            Arc::clone(&accepted),
         ));
         Ok(ControlEndpoint {
             shutdown,
             task,
-            #[cfg(test)]
-            accepted,
             socket_path,
         })
     }
     #[cfg(windows)]
     {
         let pipe_path = windows_control_pipe_path(data);
-        #[cfg(test)]
-        let endpoint_pipe_path = pipe_path.clone();
         // The first instance exists before this returns, so a started
         // endpoint accepts connections at once.
         let first = create_current_user_pipe(&pipe_path, true).map_err(display)?;
@@ -177,16 +165,10 @@ pub(crate) async fn start_control_endpoint(
             ledger,
             shutdown.clone(),
             receiver,
-            #[cfg(test)]
-            Arc::clone(&accepted),
         ));
         Ok(ControlEndpoint {
             shutdown,
             task,
-            #[cfg(test)]
-            accepted,
-            #[cfg(test)]
-            pipe_path: endpoint_pipe_path,
         })
     }
 }
@@ -592,7 +574,6 @@ pub(crate) async fn serve_unix_control(
     ledger: Arc<ControlLedger>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
-    #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let mut connections = tokio::task::JoinSet::new();
     let result = loop {
@@ -611,8 +592,6 @@ pub(crate) async fn serve_unix_control(
                 connections.spawn(async move {
                     let _ = handle_control_connection(stream, control, ledger, connection_shutdown).await;
                 });
-                #[cfg(test)]
-                accepted.notify_one();
             }
             completed = connections.join_next(), if !connections.is_empty() => {
                 let _ = completed;
@@ -655,7 +634,6 @@ pub(crate) async fn serve_windows_control(
     ledger: Arc<ControlLedger>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
-    #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     // One instance listens at every moment: the next is created before a
     // connected one is handed to its task, since a client that finds no
@@ -692,8 +670,6 @@ pub(crate) async fn serve_windows_control(
         connections.spawn(async move {
             let _ = handle_control_connection(server, control, ledger, connection_shutdown).await;
         });
-        #[cfg(test)]
-        accepted.notify_one();
     };
     let _ = shutdown_sender.send(true);
     while connections.join_next().await.is_some() {}

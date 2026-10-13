@@ -243,12 +243,12 @@ impl PiNativeCommandHost {
 
     pub(crate) fn live_view(&self, task: TaskId) -> Option<Arc<PiNativeLiveView>> {
         let entry = self.find_entry(task)?;
-        let view = entry
+
+        entry
             .view
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        view
+            .clone()
     }
 
     /// The exact originally prepared child workspace, not a current-head reopen.

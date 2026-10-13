@@ -55,8 +55,8 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         )
         .await?;
     let identity = work.root_identity(Path::new(path))?;
-    if let Some(expected) = expected {
-        if identity != expected {
+    if let Some(expected) = expected
+        && identity != expected {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::AllocationChanged {
                     expected,
@@ -65,7 +65,6 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
                 custody: None,
             });
         }
-    }
     current_owner
         .verify(
             false,

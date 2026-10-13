@@ -120,7 +120,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::OriginalSnapshotUnavailable => {
             MountSourceError::OriginalSnapshotUnavailable
         }
-        LazyWorkspaceError::Demand(DemandError::Mount(error)) => error,
+        LazyWorkspaceError::Demand(DemandError::Mount(error)) => *error,
         LazyWorkspaceError::Demand(DemandError::Io(error)) => MountSourceError::Io(error, None),
         LazyWorkspaceError::NativeRecordIo(error, allocation) => {
             MountSourceError::Io(error, allocation)

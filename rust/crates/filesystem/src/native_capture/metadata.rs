@@ -29,7 +29,7 @@ pub(super) fn ensure_same_host_node(
         || expected.len() != observed.len()
         || expected_metadata != observed_metadata
     {
-        return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
+        return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
     }
     Ok(())
 }

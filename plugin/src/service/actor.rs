@@ -26,12 +26,8 @@ pub(crate) enum SessionCloseState {
 
 /// Readonly service metadata, never a native allocation or authority proof.
 pub(crate) enum SessionSnapshot {
-    HostManaged(AdapterState),
+    HostManaged(Box<AdapterState>),
     Pi {
-        original_task_id: acyclic_harness::TaskId,
-        pending_root_registration: bool,
-        roots_created: bool,
-        scratch_created: bool,
         routes: usize,
         leases: usize,
         pending_recovery: bool,
@@ -42,22 +38,12 @@ impl SessionSnapshot {
     fn observe(control: &SessionController) -> Self {
         let state = control.state();
         match &state.task_binding {
-            PluginTaskBinding::Pi(binding) => Self::Pi {
-                original_task_id: binding.task_id,
-                pending_root_registration: state.pending_root_registration,
-                roots_created: state
-                    .roots
-                    .values()
-                    .all(|root| matches!(root.allocation, RootAllocation::Created(_))),
-                scratch_created: matches!(
-                    binding.scratch.allocation,
-                    PiScratchAllocation::Created(_)
-                ),
+            PluginTaskBinding::Pi(_) => Self::Pi {
                 routes: state.routes.len(),
                 leases: state.leases.len(),
                 pending_recovery: !state.pending_discards.is_empty() || !state.pending.is_empty(),
             },
-            _ => Self::HostManaged(state.clone()),
+            _ => Self::HostManaged(Box::new(state.clone())),
         }
     }
 }
@@ -172,7 +158,10 @@ impl SessionHandle {
                                         &cancellation,
                                     )
                                     .map_err(
-                                        |(cause, work)| Error::NativeConstruction { cause, work },
+                                        |(cause, work)| Error::NativeConstruction {
+                                            cause,
+                                            work: Box::new(work),
+                                        },
                                     )?,
                                 );
                             }
@@ -226,7 +215,9 @@ impl SessionHandle {
                                             .0
                                             .open_session_directory(directory.0)
                                             .await
-                                            .map(|control| SessionController::HostManaged(Box::new(control)))
+                                            .map(|control| {
+                                                SessionController::HostManaged(Box::new(control))
+                                            })
                                             .map_err(Error::Storage),
                                     };
                                     if let Ok(recovered) = recovered {
@@ -266,10 +257,9 @@ impl SessionHandle {
                             *snapshot = next;
                         }
                         if let Err((Err(error), _)) = response.send((result, original_native_work))
+                            && undelivered_close_failure.is_none()
                         {
-                            if undelivered_close_failure.is_none() {
-                                undelivered_close_failure = Some(error);
-                            }
+                            undelivered_close_failure = Some(error);
                         }
                     }
                     #[cfg(test)]
