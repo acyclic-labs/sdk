@@ -736,3 +736,20 @@ test("Linux mount and fork/join qualification overlap packages on an independent
   const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
   assert.ok(action.includes("inputs.lane == 'linux-runtime' && format('sdk-sccache-v5-linux-"));
 });
+
+
+test("macOS workspace qualification uses all twelve CPUs without changing package evidence", () => {
+  const matrix = chooseLanes(lanes, { mainPush: false, force: true, marker: everywhere, retained: retainedAll }).matrix;
+  const macos = matrix.find(lane => lane.lane === "macos");
+  assert.equal(macos.runner, "blacksmith-12vcpu-macos-15");
+  assert.equal(macos.workers, 12);
+  assert.equal(macos.scope, "full");
+  assert.equal(macos.source_bound, true);
+  assert.equal(macos.artifact, "packages-macos");
+  assert.equal(macos.artifact_path, "packages");
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
+  for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
+    assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
+  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(macos.runner));
+});

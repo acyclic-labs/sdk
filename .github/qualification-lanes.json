@@ -151,8 +151,8 @@
   },
   {
     "lane": "macos",
-    "runner": "blacksmith-6vcpu-macos-15",
-    "workers": 4,
+    "runner": "blacksmith-12vcpu-macos-15",
+    "workers": 12,
     "artifact": "packages-macos",
     "artifact_path": "packages",
     "inputs": "repository",
