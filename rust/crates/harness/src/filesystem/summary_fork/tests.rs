@@ -1,4 +1,5 @@
 use super::*;
+use crate::Error;
 
 #[test]
 fn rewritten_context_retains_only_the_replacement_file() -> Result<()> {
@@ -39,7 +40,8 @@ fn rewritten_context_retains_only_the_replacement_file() -> Result<()> {
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(10_000, 1_000_000),
         &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let rewritten = rewritten_context(&context, &replacements, Some(&io))?;
     assert_eq!(rewritten.metadata["payload"], replacements[&key]);

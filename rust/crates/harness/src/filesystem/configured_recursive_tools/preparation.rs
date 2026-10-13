@@ -1,6 +1,6 @@
 use super::*;
 use crate::executor::stock_boundary;
-use crate::filesystem::{PreparationIo, task_runtime::WorkerContext};
+use crate::filesystem::PreparationIo;
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -11,7 +11,7 @@ where
 {
     pub(in crate::filesystem) async fn preparation(
         &self,
-        context: &WorkerContext,
+        context: &Arc<TaskContext>,
         token: &TaskResourcePreparation,
         cancellation: &CancellationToken,
         reconciliation_only: bool,
@@ -21,7 +21,7 @@ where
         if io.and_then(PreparationIo::original_native_work).is_some() {
             check_cancellation(cancellation, io)?;
         }
-        let reader = context.context();
+        let reader = context.as_ref();
         let preparation = token.request();
         crate::executor::with_history_io(io, |work| preparation.validate(work))?;
         let caller_task = preparation.child.parent.ok_or_else(|| {
@@ -55,6 +55,13 @@ where
         }
         let caller = self.caller(caller_task, io)?;
         self.check_caller_allocation(caller, io).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            io.check_json_byte_bound(
+                &preparation.payload,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+            )?;
+        }
         let request: ForkRequest = match io {
             Some(io) => crate::filesystem::retain_decoded(
                 io.value_decode_preparation(&preparation.payload, ErrorCode::Storage)?,
@@ -106,23 +113,8 @@ where
             .open(&caller.owner, Some(request.parent_revision), Some(observer))
             .await?
             .into_reducer();
-        #[cfg(not(target_arch = "wasm32"))]
-        if matches!(context, WorkerContext::Native(_))
-            && io.and_then(PreparationIo::original_native_work).is_none()
-        {
-            return Err(stock_boundary(
-                io,
-                ErrorCode::Unsupported,
-                "native source requires original IO",
-            ));
-        }
         let owner = self.source_owner(reader, cancellation, io).await?;
-        let shared = match context {
-            #[cfg(not(target_arch = "wasm32"))]
-            WorkerContext::Native(shared) => Arc::clone(shared),
-            WorkerContext::Ordinary(reader) => Arc::clone(reader),
-        };
-        let resolver = crate::runtime::content_residency_verifier(shared, owner, io)?;
+        let resolver = crate::runtime::content_residency_verifier(Arc::clone(context), owner, io)?;
         let verifier =
             crate::executor::with_history_io(io, |work| caller.owner.issuer.verifier(work))?;
         #[cfg(not(target_arch = "wasm32"))]

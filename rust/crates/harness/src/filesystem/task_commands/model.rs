@@ -12,7 +12,7 @@ where
     pub(super) async fn model_command(
         &self,
         task: TaskId,
-        context: WorkerContext,
+        context: Arc<TaskContext>,
         fence: &LeaseFence,
         turn: OperationId,
         payload: Value,
@@ -29,22 +29,15 @@ where
             )
         })?;
         let steering = if stock || command.mailbox_operation.is_some() {
-            let journal = match &context {
+            let journal = 'journal: {
                 #[cfg(not(target_arch = "wasm32"))]
-                WorkerContext::Native(_) => {
-                    self.runtime
-                        .workflow_journal_with_native_work(
-                            task,
-                            fence,
-                            io.expect("native observer")
-                                .original_native_work()
-                                .expect("native work"),
-                        )
-                        .await?
+                if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                    break 'journal self
+                        .runtime
+                        .workflow_journal_with_native_work(task, fence, work)
+                        .await?;
                 }
-                WorkerContext::Ordinary(_) => {
-                    self.runtime.workflow_journal(task, fence.clone()).await?
-                }
+                self.runtime.workflow_journal(task, fence.clone()).await?
             };
             let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
                 boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
@@ -73,34 +66,14 @@ where
         } else {
             None
         };
-        let (journal, operation) = match &context {
-            #[cfg(not(target_arch = "wasm32"))]
-            WorkerContext::Native(_) => {
-                let (journal, operation) = self
-                    .runtime
-                    .execution_journal_with_native_work(
-                        task,
-                        fence,
-                        turn,
-                        io.expect("native observer")
-                            .original_native_work()
-                            .expect("native work"),
-                    )
-                    .await?;
-                (Some(journal), operation)
-            }
-            WorkerContext::Ordinary(_) => (
-                if reconciliation_only {
-                    Some(
-                        self.runtime
-                            .execution_journal(task, fence.clone(), turn)
-                            .await?,
-                    )
-                } else {
-                    None
-                },
+        let (journal, operation) = if io.is_some() || reconciliation_only {
+            let (journal, operation) = self.command_journal(task, fence, turn, io).await?;
+            (Some(journal), operation)
+        } else {
+            (
+                None,
                 crate::filesystem::task_runtime::execution_operation(task, turn, io)?,
-            ),
+            )
         };
         if reconciliation_only
             && !was_dispatched(
@@ -141,17 +114,12 @@ where
         let result: Result<(
             crate::executor::ExecutionProgress<crate::executor::TurnOutput>,
             crate::NativeCustody,
-        )> = match context {
+        )> = 'execution: {
             #[cfg(not(target_arch = "wasm32"))]
-            WorkerContext::Native(context) => {
-                let io = io.expect("native observer");
+            if let Some(io) = io {
                 let work = io.original_native_work().expect("native work");
                 let context = match &command.selected_output_volume {
-                    Some(volume) => {
-                        context
-                            .with_output_volume(volume)
-                            .await?
-                    }
+                    Some(volume) => context.with_output_volume(volume).await?,
                     None => context,
                 };
                 let journal = journal.as_ref().expect("native journal");
@@ -176,9 +144,9 @@ where
                 let result = executor
                     .execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?
                     .await;
-                result.map(|(progress, custody)| (progress, Some(custody)))
+                break 'execution result.map(|(progress, custody)| (progress, Some(custody)));
             }
-            WorkerContext::Ordinary(_) => {
+            {
                 let execution = self
                     .runtime
                     .stock_execution(
@@ -241,7 +209,7 @@ where
     async fn steer(
         &self,
         task: TaskId,
-        context: &WorkerContext,
+        context: &TaskContext,
         fence: &LeaseFence,
         command: &mut ModelTaskCommand,
         latest: crate::workflow::WorkflowRecord,
@@ -275,13 +243,11 @@ where
         };
         drop(latest);
         let ordinary;
-        let reader = match context {
-            WorkerContext::Ordinary(_) => {
-                ordinary = self.runtime.task_context(task, fence.clone()).await?;
-                &ordinary
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            WorkerContext::Native(context) => context.as_ref(),
+        let reader = if io.is_some() {
+            context
+        } else {
+            ordinary = self.runtime.task_context(task, fence.clone()).await?;
+            &ordinary
         };
         // The durable reader authenticates the committed receive, cursor and original parcel.
         let bytes = reader
@@ -294,7 +260,11 @@ where
                     .map(|work| work as &mut dyn crate::store::history::HistoryIo),
             )
             .await?;
-        let operation = mail::received_copy_operation(task, receive, io)?;
+        let operation = super::super::recursive::derive_operation(
+            b"acyclic.harness.received-copy.v1\0",
+            &[task.into_bytes(), receive.into_bytes()],
+            io,
+        )?;
         let path = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(format_args!("mailbox/{receive}/parcel"), work)
         })?;

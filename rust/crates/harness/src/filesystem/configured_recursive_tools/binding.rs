@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::with_history_io;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
 where
@@ -6,57 +7,50 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn authenticate_caller<'a>(
+    pub(super) async fn authenticate<'a>(
         &'a self,
-        context: &TaskContext,
+        context: &ToolContext,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         project_read: bool,
-        io: Option<&crate::filesystem::PreparationIo>,
+        cancellation: &CancellationToken,
+        io: Option<&PreparationIo>,
     ) -> Result<&'a ConfiguredRecursiveCaller> {
-        use crate::executor::stock_boundary as failure;
-        use crate::wire::ErrorCode;
+        check_cancellation(cancellation, io)?;
+        let denied = |reason| failure(io, ErrorCode::Unauthorized, reason);
         #[cfg(not(target_arch = "wasm32"))]
         let scratch = io
-            .and_then(crate::filesystem::PreparationIo::original_native_work)
-            .map(crate::filesystem::PreparationIo::from_native_work)
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
             .transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let io = scratch.as_ref().or(io);
-        let task = context.durable_task_id().ok_or_else(|| {
-            failure(
-                io,
-                ErrorCode::Unauthorized,
-                "configured tool has no admitted caller",
-            )
-        })?;
+        let task = context
+            .durable_task_id()
+            .ok_or_else(|| denied("configured tool has no admitted caller"))?;
         let caller = self.caller(task, io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            let binding = context.owned_task_binding_with_native_work(work)?;
-            let owner = owner.ok_or_else(|| {
-                failure(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "native source has no original owner",
-                )
-            })?;
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            let retained;
+            let owner = match owner {
+                Some(owner) => owner,
+                None => {
+                    retained = self.source_owner(context.task(), cancellation, io).await?;
+                    &retained
+                }
+            };
+            let binding = context.task().owned_task_binding_with_native_work(work)?;
             owner.require_mail_scope(context.scope(), io)?;
-            let (owner_task, owner_fence) = owner.task_binding();
-            if owner_task != binding.0
-                || owner_fence != binding.1
-                || crate::executor::with_history_io(io, |work| {
-                    owner.authenticated_binding_agent(work)
-                })? != caller.owner.scope.agent()
+            if owner.task_binding() != binding
+                || with_history_io(io, |work| owner.authenticated_binding_agent(work))?
+                    != caller.owner.scope.agent()
             {
-                return Err(failure(
-                    io,
-                    ErrorCode::Unauthorized,
+                return Err(denied(
                     "source owner differs from its admitted current creator",
                 ));
             }
         }
         if self.check_caller_allocation(caller, io).await?
-            && !crate::executor::with_history_io(io, |work| {
+            && !with_history_io(io, |work| {
                 Ok::<_, Error>(context.scope().current_created_content(work)?.is_some_and(
                     |binding| {
                         binding.authority.as_ref() == Some(caller.owner.issuer.audience())
@@ -65,13 +59,11 @@ where
                 ))
             })?
         {
-            return Err(failure(
-                io,
-                ErrorCode::Unauthorized,
+            return Err(denied(
                 "configured descendant is not its admitted allocation",
             ));
         }
-        let verifier = crate::executor::with_history_io(io, |work| {
+        let verifier = with_history_io(io, |work| {
             let verifier = caller.owner.issuer.verifier(work)?;
             verifier.verify_scope_for_with_work(
                 caller.owner.issuer.audience(),
@@ -85,7 +77,13 @@ where
         {
             let granted = match io {
                 Some(io) => {
+                    crate::model::charge_items(Some(io), 1)?;
                     io.contains_capability(context.scope().grants(), volume, "volume:read:")?
+                        && io.contains_capability(
+                            context.effective_scope().grants(),
+                            volume,
+                            "volume:read:",
+                        )?
                 }
                 None => context
                     .scope()
@@ -93,13 +91,9 @@ where
                     .contains(&volume.capability(VolumeOperation::Read, &mut None)?),
             };
             if !granted {
-                return Err(failure(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "configured caller lacks its selected source read",
-                ));
+                return Err(denied("configured caller lacks its selected source read"));
             }
-            crate::executor::with_history_io(io, |work| {
+            with_history_io(io, |work| {
                 ContentGrant::authorize_volume(
                     &verifier,
                     &caller.owner.scope,
@@ -110,90 +104,86 @@ where
                 )
             })?;
         }
-        let _ = owner;
         Ok(caller)
     }
+
+    pub(super) async fn snapshots<'a>(
+        &self,
+        task: TaskId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<(
+        Vec<crate::durable_host::TaskVolumeSnapshot>,
+        Option<super::super::DecodeReservation<'a>>,
+    )> {
+        let mut history = io.map(PreparationIo::history_io);
+        let (snapshots, retained) = self
+            .runtime(io)?
+            .task_host()
+            .observe_volume_snapshots(
+                task,
+                &mut history.as_mut().map(|work| work as &mut dyn HistoryIo),
+            )
+            .await?;
+        let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+        Ok((snapshots, hold))
+    }
+
     pub(super) async fn check_caller_allocation(
         &self,
         caller: &ConfiguredRecursiveCaller,
-        io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<bool> {
         #[cfg(not(target_arch = "wasm32"))]
         let scratch = io
-            .and_then(crate::filesystem::PreparationIo::original_native_work)
-            .map(crate::filesystem::PreparationIo::from_native_work)
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
             .transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let io = scratch.as_ref().or(io);
-        let runtime = self.runtime(io)?;
-        let admitted = runtime.admission_observed(caller.task, io).await?;
-        if admitted.parent.is_none() {
+        if self
+            .runtime(io)?
+            .admission_observed(caller.task, io)
+            .await?
+            .parent
+            .is_none()
+        {
             return Ok(false);
         }
-        let ordinary;
-        #[cfg(not(target_arch = "wasm32"))]
-        let native;
-        let volumes = 'volumes: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work)
-            {
-                native = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = runtime
-                    .task_host().observe_volume_snapshots(caller.task, &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
-                break 'volumes native.0.as_slice();
-            }
-            ordinary = runtime.inspect_source(caller.task, caller.task).await?;
-            if ordinary.project()?.volume != caller.project {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "configured source is not its admitted Project",
-                ));
-            }
-            ordinary.volumes()
-        };
-        let (mut project, mut private, mut result) = (0, 0, 0);
-        for snapshot in volumes {
-            if let Some(io) = io {
-                io.codec_charge(
-                    crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 },
-                    true,
-                )?;
-            }
+        let (snapshots, _hold) = self.snapshots(caller.task, io).await?;
+        let (mut projects, mut project, mut private, mut result) = (0, 0, 0, 0);
+        for snapshot in &snapshots {
+            crate::model::charge_items(io, 1)?;
+            projects +=
+                usize::from(snapshot.volume.class() == crate::conversation::VolumeClass::Project);
             project += usize::from(snapshot.volume == caller.project);
             private += usize::from(snapshot.volume == caller.private_volume);
             result += usize::from(caller.result_volume.as_ref() == Some(&snapshot.volume));
         }
-        if project != 1 || private != 1 || (caller.result_volume.is_some() && result != 1) {
-            return Err(crate::executor::stock_boundary(
+        if projects != 1
+            || project != 1
+            || private != 1
+            || (caller.result_volume.is_some() && result != 1)
+        {
+            return Err(failure(
                 io,
-                crate::wire::ErrorCode::Unauthorized,
+                ErrorCode::Unauthorized,
                 "configured source differs from its admitted allocation",
             ));
         }
         Ok(true)
     }
+
     pub(super) fn bind_aggregate(
         &self,
         binding: &ConfiguredRecursiveAuthorityBinding,
         scope: &Scope,
         aggregate: StreamAggregate<P>,
         content: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
-        io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<StreamAggregate<P>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        io.map(|io| {
-            io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native aggregate binding requires original work",
-            })
-        })
-        .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let io = None;
+        native_io(io)?;
         let verifier = if io.is_some() || content.is_none() {
-            Some(crate::executor::with_history_io(io, |work| {
-                binding.issuer.verifier(work)
-            })?)
+            Some(with_history_io(io, |work| binding.issuer.verifier(work))?)
         } else {
             None
         };
@@ -214,10 +204,10 @@ where
             None,
             original,
         )?;
-        let history = crate::executor::with_history_io(io, |work| {
+        let history = with_history_io(io, |work| {
             StreamHistoryForkVerifier::new(&self.config.stream_provider, work)
         })?;
-        let forks = crate::executor::with_history_io(io, |work| {
+        let forks = with_history_io(io, |work| {
             CompositeForkVerifier::new(&[filesystem, history], work)
         })?;
         let mut aggregate = aggregate
@@ -230,50 +220,55 @@ where
         aggregate.set_limits(self.limits)?;
         Ok(aggregate)
     }
+
     pub(super) async fn source_owner(
         &self,
         context: &TaskContext,
         cancellation: &CancellationToken,
-        io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
+        let task = context.durable_task_id().ok_or_else(|| {
+            failure(
+                io,
+                ErrorCode::Unauthorized,
+                "recursive source has no original admitted reader",
+            )
+        })?;
+        let ordinary;
+        let fence = 'fence: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                break 'fence context.owned_task_binding_with_native_work(work)?.1;
+            }
+            ordinary = context.owned_task_fence()?;
+            &ordinary
+        };
+        let owner = self
+            .runtime(io)?
+            .task_host()
+            .journal_owner(task, fence, io)
+            .await?
+            .with_invocation_cancellation(cancellation);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            let (task, fence) = context.owned_task_binding_with_native_work(work)?;
-            let owner = self
-                .runtime(io)?
-                .task_host()
-                .journal_owner(task, fence, io)
-                .await?
-                .with_invocation_cancellation(cancellation);
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             owner.require_mail_scope(context.scope(), io)?;
             return owner.into_native_shared(work);
         }
-        let task = context.durable_task_id().ok_or_else(|| {
-            Error::Unauthorized("recursive source has no original admitted reader".into())
-        })?;
-        Ok(Arc::new(
-            self.runtime(io)?
-                .task_host()
-                .journal_owner(task, &(context.owned_task_fence()?), None)
-                .await?
-                .with_invocation_cancellation(cancellation),
-        ))
+        Ok(Arc::new(owner))
     }
+
     pub(super) fn resolver(
         &self,
         context: &ToolContext,
         owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-        io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if io
-            .and_then(crate::filesystem::PreparationIo::original_native_work)
-            .is_some()
-        {
+        if io.and_then(PreparationIo::original_native_work).is_some() {
             let context = context.native_task().ok_or_else(|| {
-                crate::executor::stock_boundary(
+                failure(
                     io,
-                    crate::wire::ErrorCode::Unauthorized,
+                    ErrorCode::Unauthorized,
                     "native source requires its original shared task context",
                 )
             })?;
