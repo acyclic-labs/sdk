@@ -34,59 +34,8 @@ impl TaskContext {
         }
     }
 
-    /// Pure support discovery for the original binding, before callback boxing or constructing an owned interaction request.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn supports_native_interactions(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.require_original_native_work(work)?;
-        if self.durable_task.is_some() {
-            if let Some(router) = &self.owned_interactions {
-                return router.supports_native_interactions(work);
-            }
-            self.harness
-                .state
-                .as_ref()
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "durable task state is not bound",
-                })?
-                .supports_native_interactions(work)
-        } else {
-            self.harness
-                .interactions
-                .as_ref()
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "local interaction router is not bound",
-                })?
-                .supports_native_interactions(work)
-        }
-    }
-
-    /// Routes an already-paid request through this context's original binding.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn interact_with_native_work(
-        &self,
-        operation_id: OperationId,
-        interaction: Interaction,
-        request_custody: acyclic_fs::NativeAllocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(InteractionOutcome, acyclic_fs::NativeAllocation)> {
-        self.interact_with_native_work_and_router(
-            operation_id,
-            interaction,
-            request_custody,
-            work,
-            None,
-            &self.scope,
-        )
-        .await
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) async fn interact_with_native_work_and_router(
+    pub(super) async fn route_native_interaction(
         &self,
         operation_id: OperationId,
         interaction: Interaction,
@@ -286,51 +235,5 @@ impl TaskContext {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "mail requires an original native task mailbox owner",
         })
-    }
-
-    /// Sends the same exact parcel with the original native owner and work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn send_with_native_work<'a>(
-        &'a self,
-        recipient: TaskId,
-        message_id: OperationId,
-        payload: &'a FileRef,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>,
-    > {
-        self.native_mailbox(work)?
-            .send_with_native_work(recipient, message_id, payload, work)
-    }
-
-    /// Reads a bounded original-owner inbox page without rebuilding a scope.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn inbox_with_native_work<'a>(
-        &'a self,
-        after: u64,
-        limit: usize,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<InboxItem>, acyclic_fs::NativeAllocation)>> {
-        let mailbox = self.native_mailbox(work)?;
-        if limit == 0 {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "inbox page bound is invalid",
-            });
-        }
-        mailbox.inbox_with_native_work(after, limit, work)
-    }
-
-    /// Queries an existing effect by identity and never redispatches it.
-    pub async fn reconcile_effect(&self, effect_id: EffectId) -> Result<crate::core::EffectStatus> {
-        let task = self.durable_task.ok_or_else(|| {
-            Error::Unsupported("effect reconciliation requires a durable task".into())
-        })?;
-        let host = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
-        host.reconcile_effect(task, effect_id).await
     }
 }

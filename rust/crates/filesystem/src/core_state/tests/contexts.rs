@@ -54,18 +54,14 @@ async fn corrupt_context_identity_cannot_enter_listing_cas_or_root_removal() {
         assert_eq!(std::fs::read(path).expect("unchanged bytes"), before);
     }
     assert!(
-        matches!(
-            listed.as_ref(),
-            Err(LocalCoreStateStoreError::ContextTransaction(_))
-        ) && matches!(
-            swapped.as_ref(),
-            Err(LocalCoreStateStoreError::ContextTransaction(_))
-        ) && matches!(
-            removed.as_ref(),
-            Ok(Err(crate::WorkspaceContextError::Store(
-                LocalCoreStateStoreError::ContextTransaction(_)
-            )))
-        ),
+        matches!(listed.as_ref(), Err(LocalCoreStateStoreError::Integrity))
+            && matches!(swapped.as_ref(), Err(LocalCoreStateStoreError::Integrity))
+            && matches!(
+                removed.as_ref(),
+                Ok(Err(crate::WorkspaceContextError::Store(
+                    LocalCoreStateStoreError::Integrity
+                )))
+            ),
         "corrupt discovery must fail closed, not retry: list={listed:?}, cas={swapped:?}, removal={removed:?}"
     );
 }
@@ -227,8 +223,7 @@ async fn context_discard_bounds_bucket_bytes_before_deserialization() {
 
     assert!(matches!(
         WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 2).await,
-        Err(LocalCoreStateStoreError::ContextTransaction(message))
-            if message.contains("exceeds its declared bound")
+        Err(LocalCoreStateStoreError::Integrity)
     ));
 }
 

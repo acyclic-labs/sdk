@@ -134,9 +134,8 @@ impl HostRoot {
             }
             Err(e) => return Err(e),
         };
-        if !stat_at(source.as_raw_fd(), c"", work)?
-            .file_type()
-            .is_file()
+        if stat_at(source.as_raw_fd(), c"", work)?.file_type()
+            != crate::demand::SourceNodeKind::RegularFile
         {
             return Err(DemandError::NotRegularFile);
         }
@@ -170,7 +169,7 @@ impl HostRoot {
             .open_file(source, nt::FILE_SYNCHRONOUS_IO_NONALERT, work)?
             .into_std();
         let stat = source_root.stat_file(&source, work)?;
-        if !stat.file_type().is_file()
+        if (stat.file_type() != crate::demand::SourceNodeKind::RegularFile)
             || stat.raw.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
         {
             return Err(DemandError::InvalidRequest);

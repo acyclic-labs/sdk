@@ -481,8 +481,7 @@ impl ToolContext {
     /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
     pub fn validate_native_mcp_context(&self, work: &NativeWork) -> Result<()> {
         let context = self.validate_native_bound_context(work)?;
-        if context.native_purpose != Some(IssuedContextPurpose::Dispatch)
-        {
+        if context.native_purpose != Some(IssuedContextPurpose::Dispatch) {
             return Err(native_context::boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "native context purpose does not permit MCP dispatch",
@@ -497,41 +496,15 @@ impl ToolContext {
     }
 
     pub(super) fn validate_native_bound_context(&self, work: &NativeWork) -> Result<&TaskContext> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        work.charge(acyclic_fs::WorkCounters::default())?;
         if !self.native_metadata_matches(work) {
             return Err(native_context::boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "MCP context has no original native tool metadata source",
             ));
         }
-        let Some(shared) = self.native_task() else {
-            return Err(native_context::boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "MCP context is not the original shared native task",
-            ));
-        };
-        let context = shared.as_ref();
-        context.require_original_native_work(work)?;
-        let Some((task, fence)) = context
-            .owned_mailbox
-            .as_ref()
-            .map(|owner| owner.task_binding())
-        else {
-            return Err(native_context::boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "MCP context has no borrowed original owner binding",
-            ));
-        };
-        if !context.original_task_binding_matches(task, fence) {
-            return Err(native_context::boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "MCP context differs from its original task and fence",
-            ));
-        }
+        let context = self.task();
+        context.owned_task_binding_with_native_work(work)?;
         Ok(context)
     }
 }

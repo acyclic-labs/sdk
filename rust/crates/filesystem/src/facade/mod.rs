@@ -126,7 +126,6 @@ use std::sync::{OnceLock, Weak};
 use thiserror::Error;
 
 mod fork_selection;
-mod fork_selection_work;
 
 #[cfg(all(test, feature = "memory"))]
 #[path = "../tests/facade/mod.rs"]

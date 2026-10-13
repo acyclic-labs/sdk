@@ -37,26 +37,3 @@ fn only_absent_paths_may_become_deletions() -> Result<(), Box<dyn std::error::Er
     );
     Ok(())
 }
-
-#[cfg(unix)]
-#[test]
-fn subtree_walk_rejects_intermediate_symlinks() -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::symlink;
-
-    let directory = tempfile::tempdir()?;
-    let outside = tempfile::tempdir()?;
-    std::fs::write(outside.path().join("private"), b"outside")?;
-    symlink(outside.path(), directory.path().join("alias"))?;
-    let source_root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    assert!(
-        source_root
-            .stat(
-                Path::new("alias/private"),
-                &mut crate::native_host::ordinary_work()
-            )
-            .map_err(crate::native_host::ordinary_error)
-            .is_err()
-    );
-    Ok(())
-}

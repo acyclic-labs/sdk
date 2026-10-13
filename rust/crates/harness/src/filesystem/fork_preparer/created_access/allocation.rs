@@ -11,7 +11,7 @@ pub struct FilesystemRootBootstrapAllocation<A, O> {
     pub(crate) operation: acyclic_fs::OperationId,
     pub(crate) config: acyclic_fs::VolumeConfig,
     pub(crate) initial_generation: acyclic_fs::GenerationId,
-    pub(crate) native_source: Option<crate::filesystem::root_source::FsRootNativeSource<A, O>>,
+    pub(crate) native_source: Option<Arc<crate::filesystem::root_source::FsRootNativeSource<A, O>>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) publication_lease: Option<Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -58,7 +58,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         initial_generation: acyclic_fs::GenerationId,
         selected_generation: acyclic_fs::GenerationId,
         native_import: Option<(
-            &'a crate::filesystem::root_source::FsRootNativeSource<A, O>,
+            &'a Arc<crate::filesystem::root_source::FsRootNativeSource<A, O>>,
             acyclic_fs::LazySnapshotRef,
         )>,
         work: &'a acyclic_fs::NativeMaterializationWork,
@@ -86,7 +86,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 reason: "Root bootstrap differs from its configured original creator or namespace",
             });
         }
-        if native_import.is_some_and(|(source, _)| !source.backing.matches_native_work(work)) {
+        if native_import.is_some_and(|(source, _)| !source.matches_native_work(work)) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Root lazy source belongs to another original native ledger",
@@ -550,7 +550,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if let Some(io) = io {
             io.check_cancellation()?;
             if io.original_native_work().is_some_and(|work| {
-                !self.matches_native_work(work) || !source.backing.matches_native_work(work)
+                !self.matches_native_work(work) || !source.matches_native_work(work)
             }) {
                 return Err(reject(
                     "Root lazy publication belongs to another original ledger",

@@ -4,7 +4,15 @@ pub(super) fn validate_task_dependencies(
     bindings: &Bindings,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let _marks_hold;
     let mut marks = crate::model::vec_with_capacity(bindings.tasks.0.len(), io)?;
+    #[cfg(feature = "filesystem")]
+    {
+        _marks_hold = io
+            .map(|io| io.guard_owned(marks.capacity() as u64))
+            .transpose()?;
+    }
     marks.resize(bindings.tasks.0.len(), 0);
     for index in 0..marks.len() {
         visit(index, bindings, &mut marks, io)?;

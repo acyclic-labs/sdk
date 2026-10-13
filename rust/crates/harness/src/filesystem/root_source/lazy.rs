@@ -7,13 +7,8 @@ use acyclic_fs::kernel::KernelOwnedAllocation;
 /// A retained original lazy source.
 pub struct FsRootNativeSource<A, O> {
     pub(crate) backing: Arc<dyn RootLazyBacking<A, O>>,
-}
-impl<A, O> Clone for FsRootNativeSource<A, O> {
-    fn clone(&self) -> Self {
-        Self {
-            backing: Arc::clone(&self.backing),
-        }
-    }
+    #[cfg(not(target_arch = "wasm32"))]
+    custody: acyclic_fs::NativeAllocation,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,8 +62,6 @@ impl acyclic_fs::AuthorityGuard for RootPublicationGuard {
 
 pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
-    #[cfg(not(target_arch = "wasm32"))]
-    fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool;
     fn validate<'a>(
         &'a self,
         snapshot: LazySnapshotRef,
@@ -101,26 +94,17 @@ pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
     ) -> Result<BoundedContentFuture<'a, (acyclic_fs::Generation<A, O>, Result<LazySnapshotRef>)>>;
 }
 
-struct RetainedRootLazy<A, O, D, S> {
-    lazy: Arc<LazyWorkspace<A, O, D, S>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    _custody: acyclic_fs::NativeAllocation,
-}
 impl<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
-> RootLazyBacking<A, O> for RetainedRootLazy<A, O, D, S>
+> RootLazyBacking<A, O> for LazyWorkspace<A, O, D, S>
 where
     for<'source> &'source LazyWorkspace<A, O, D, S>: Send,
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId {
-        self.lazy.workspace().id()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
-        self._custody.work().shares_allocation_context(work)
+        self.workspace().id()
     }
     fn validate<'a>(
         &'a self,
@@ -130,7 +114,6 @@ where
         BoundedContentFuture::new(Some(io), || async move {
             let mut accounting = (&io).accounting(io.cancellation());
             let result = self
-                .lazy
                 .validate_snapshot(snapshot, &mut accounting)
                 .await
                 .map_err(Error::from);
@@ -147,7 +130,6 @@ where
         BoundedContentFuture::new(Some(io), || async move {
             let mut accounting = (&io).accounting(io.cancellation());
             let result = self
-                .lazy
                 .read_at_snapshot(snapshot, path, None, maximum, &mut accounting)
                 .await
                 .map_err(Error::from);
@@ -170,7 +152,6 @@ where
         BoundedContentFuture::new(Some(io), || async move {
             let mut accounting = (&io).accounting(io.cancellation());
             let result = self
-                .lazy
                 .list_directory_at_snapshot(snapshot, path, cursor, maximum, &mut accounting)
                 .await
                 .map(|(page, _, guard)| (page, guard))
@@ -195,21 +176,12 @@ where
         {
             return Err(io.invalid("Root upload candidate cannot contain a removal"));
         }
-        if io
-            .original_native_work()
-            .is_some_and(|work| !self.matches_native_work(work))
-        {
-            return Err(
-                io.invalid("Root upload candidate belongs to another original native ledger")
-            );
-        }
         BoundedContentFuture::new(Some(io), || async move {
             let mut guard = RootPublicationGuard {
                 lease: Arc::clone(lease),
             };
             let mut accounting = (&io).accounting(io.cancellation());
             let result = self
-                .lazy
                 .write_at_snapshot(
                     snapshot,
                     root_lazy_mutations(mutations),
@@ -240,26 +212,25 @@ where
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNativeSource<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
+        self.custody.work().shares_allocation_context(work)
+    }
+
     /// Retains the concrete lazy source on its original ledger before sharing it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_lazy<D: DemandSource + 'static, S: LazyWorkspaceStore>(
         lazy: Arc<LazyWorkspace<A, O, D, S>>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         let custody = work.claim(
-            std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64,
-            0,
+            (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64,
+            1,
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
-        work.charge(WorkCounters {
-            allocation_operations: 1,
-            ..WorkCounters::default()
-        })?;
-        Ok(Self {
-            backing: Arc::new(RetainedRootLazy {
-                lazy,
-                _custody: custody,
-            }),
-        })
+        Ok(Arc::new(Self {
+            backing: lazy,
+            custody,
+        }))
     }
 }

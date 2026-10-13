@@ -151,7 +151,7 @@ impl DriverSessionResources {
             return Ok(());
         }
         if let Some(wait) = wait {
-            self.sdk_credit.loan(Some(wait)).started_io(WRITE_WORK)?;
+            self.sdk_credit.started_io(WRITE_WORK, Some(wait))?;
         } else {
             self.sdk_credit.started_drop_io(WRITE_WORK);
         }
@@ -171,7 +171,7 @@ impl DriverSessionResources {
             return Ok(());
         }
         if let Some(wait) = wait {
-            self.sdk_credit.loan(Some(wait)).started_io(WRITE_WORK)?;
+            self.sdk_credit.started_io(WRITE_WORK, Some(wait))?;
         } else {
             self.sdk_credit.started_drop_io(WRITE_WORK);
         }

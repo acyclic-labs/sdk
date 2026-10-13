@@ -335,7 +335,7 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
         (Path::new("file"), ARCHIVE | HIDDEN),
         (Path::new("directory"), DIRECTORY | HIDDEN),
     ] {
-        apply_windows_metadata(
+        apply_metadata(
             with_wide_path(path, &mut work, |path, work| {
                 root.open_windows_metadata_target(path, work)
             })?,
@@ -358,12 +358,12 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
     let mut permissions = std::fs::metadata(&file)?.permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&file, permissions.clone())?;
-    apply_windows_metadata(
+    apply_metadata(
         root.open_windows_metadata_target(&test_path("file"), &mut work)?,
         FileMetadata::default(),
         &mut work,
     )?;
-    apply_windows_metadata(
+    apply_metadata(
         root.open_windows_metadata_target(&test_path("file"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(ARCHIVE),
@@ -385,7 +385,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
     std::fs::write(temporary.path().join("outside"), b"outside")?;
     let root = test_root(&root_path)?;
     assert!(matches!(
-        apply_windows_metadata(
+        apply_metadata(
             root.open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
@@ -397,7 +397,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
         Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
-        apply_windows_metadata(
+        apply_metadata(
             root.open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
@@ -468,7 +468,7 @@ fn held_windows_metadata_updates_final_reparse_point_without_touching_target()
     let target_attributes = std::fs::symlink_metadata(&target)?.file_attributes();
     let link_attributes = std::fs::symlink_metadata(&link)?.file_attributes();
     let root = test_root(&root_path)?;
-    apply_windows_metadata(
+    apply_metadata(
         root.open_windows_metadata_target(&test_path("link"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(link_attributes | HIDDEN),
@@ -511,7 +511,7 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
     let replacement_attributes = replacement_metadata.file_attributes();
     let replacement_modified = replacement_metadata.last_write_time();
     let moved_attributes = std::fs::metadata(&moved)?.file_attributes();
-    apply_windows_metadata(
+    apply_metadata(
         target,
         FileMetadata {
             windows_attributes: MetadataField::Value(moved_attributes | HIDDEN),

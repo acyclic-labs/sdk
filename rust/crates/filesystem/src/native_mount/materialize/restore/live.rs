@@ -21,9 +21,9 @@ pub(in crate::native_mount::materialize) fn replace_live_mount(
                 |witness, work| {
                     create_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)?;
                     rename_entry(parent, destination_name, parent, backup, work)
-                        .map_err(restore_demand_error)?;
+                        .map_err(MaterializeError::from)?;
                     crate::native_host::sync_directory_held(&parent.directory, work)
-                        .map_err(restore_demand_error)?;
+                        .map_err(MaterializeError::from)?;
                     if let Err(error) =
                         rename_entry(staged_parent, staged_name, parent, destination_name, work)
                     {
@@ -36,16 +36,16 @@ pub(in crate::native_mount::materialize) fn replace_live_mount(
                             });
                         }
                         crate::native_host::sync_directory_held(&parent.directory, work)
-                            .map_err(restore_demand_error)?;
-                        return Err(restore_demand_error(error));
+                            .map_err(MaterializeError::from)?;
+                        return Err(MaterializeError::from(error));
                     }
                     crate::native_host::sync_directory_held(&parent.directory, work)
-                        .map_err(restore_demand_error)?;
+                        .map_err(MaterializeError::from)?;
                     crate::native_host::sync_directory_held(&staged_parent.directory, work)
-                        .map_err(restore_demand_error)?;
-                    remove_entry(parent, backup, work).map_err(restore_demand_error)?;
+                        .map_err(MaterializeError::from)?;
+                    remove_entry(parent, backup, work).map_err(MaterializeError::from)?;
                     crate::native_host::sync_directory_held(&parent.directory, work)
-                        .map_err(restore_demand_error)?;
+                        .map_err(MaterializeError::from)?;
                     remove_restore_witness(parent, witness, work)
                 },
             )
@@ -71,7 +71,7 @@ pub(in crate::native_mount::materialize) fn recover_live_mount_replacement(
                 |witness, work| {
                     let backup_exists =
                         crate::native_host::entry_identity(&parent.directory, backup, work)
-                            .map_err(restore_demand_error)?
+                            .map_err(MaterializeError::from)?
                             .is_some();
                     if !backup_exists {
                         if validate_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)? {
@@ -85,16 +85,16 @@ pub(in crate::native_mount::materialize) fn recover_live_mount_replacement(
                         ));
                     }
                     if crate::native_host::entry_identity(&parent.directory, destination_name, work)
-                        .map_err(restore_demand_error)?
+                        .map_err(MaterializeError::from)?
                         .is_some()
                     {
-                        remove_entry(parent, backup, work).map_err(restore_demand_error)?;
+                        remove_entry(parent, backup, work).map_err(MaterializeError::from)?;
                     } else {
                         rename_entry(parent, backup, parent, destination_name, work)
-                            .map_err(restore_demand_error)?;
+                            .map_err(MaterializeError::from)?;
                     }
                     crate::native_host::sync_directory_held(&parent.directory, work)
-                        .map_err(restore_demand_error)?;
+                        .map_err(MaterializeError::from)?;
                     remove_restore_witness(parent, witness, work)
                 },
             )

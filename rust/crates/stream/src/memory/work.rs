@@ -153,7 +153,7 @@ impl MemoryStream {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> bool {
-        self.state.read().await.replays.contains_key(key.as_bytes())
+        self.state.read().await.replay(key.as_bytes()).is_some()
     }
 
     fn publish<T>(

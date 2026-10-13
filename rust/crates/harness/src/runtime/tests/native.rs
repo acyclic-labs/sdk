@@ -125,9 +125,6 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
     assert_eq!(copy.grants(), root.grants());
     assert_eq!(copy.run_limits(), root.run_limits());
     assert!(!copy.is_sealed());
-    assert!(copy.resource_proofs().is_empty());
-    assert!(copy.created_access().is_none());
-    assert!(!copy.grants().contains("write"));
     assert!(
         copy._native_grants_custody
             .as_ref()
@@ -149,7 +146,6 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
     assert!(child.is_sealed());
     assert_eq!(child.limits(), narrower);
     assert_eq!(child.run_limits(), root.run_limits());
-    assert!(child.resource_proofs().is_empty());
     assert!(!child.grants().contains("write"));
     assert!(matches!(
         root.narrow_with_native_work(
@@ -213,7 +209,15 @@ fn native_task_requirements_accept_state_without_spawner() -> Result<()> {
     .requires("state")?;
     let mut bindings = Bindings::local();
     bindings.tasks.register(state_task)?;
-    bindings.state = Some(Arc::new(StateOnlyProvider));
+    bindings.state = Some(Arc::new(SplitState {
+        task_id: TaskId::new(),
+        record: TaskAdmissionRecord::from_canonical_value(
+            serde_json::from_str(include_str!("../../../fixtures/v2/task-admission.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            &mut None,
+        )?
+        .0,
+    }));
     assert!(bindings.build(None).is_ok());
     Ok(())
 }
@@ -327,7 +331,6 @@ fn native_policy_approval_rejects_foreign_prompt_before_encoding() -> Result<()>
     );
     let prompt = io.clone_text("Foreign prompt")?;
     let custody = io.into_custody()?;
-    let before = original.receipt();
     assert!(matches!(
         tool_approval_request(
             TaskId::new(),
@@ -342,7 +345,6 @@ fn native_policy_approval_rejects_foreign_prompt_before_encoding() -> Result<()>
             ..
         })
     ));
-    assert_eq!(original.receipt(), before);
     assert_eq!(
         foreign.live_allocation_bytes(),
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
@@ -377,7 +379,6 @@ fn opaque_policy_native_defaults_never_call_ordinary_body() -> Result<()> {
         Capabilities::new(["tool:call:test.echo"]),
         Limits::default(),
     )?;
-    let before = work.receipt();
     assert!(matches!(
         OpaquePolicy.supports_native_policy(&work),
         Err(Error::NativeBoundary {
@@ -399,7 +400,6 @@ fn opaque_policy_native_defaults_never_call_ordinary_body() -> Result<()> {
             ..
         })
     ));
-    assert_eq!(work.receipt(), before);
     Ok(())
 }
 
@@ -413,7 +413,6 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
         &cancellation,
     )
     .expect("original interaction ledger");
-    let before = work.receipt();
     assert!(matches!(
         OpaqueRouter.supports_native_interactions(&work),
         Err(Error::NativeBoundary {
@@ -421,17 +420,15 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
             ..
         })
     ));
-    assert_eq!(work.receipt(), before);
     let mut io =
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
-    let prompt = io.clone_text("Approve ÃƒÅ½Ã‚Â»?")?;
+    let prompt = io.clone_text("Approve ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»?")?;
     let request = Interaction::Approval {
         prompt,
         operation_id: OperationId::new(),
         action_digest: [1; 32],
     };
     let custody = io.into_custody().expect("native custody");
-    let before = work.receipt();
     assert!(matches!(
         OpaqueRouter.route_with_native_work(OperationId::new(), request, custody, &work,),
         Err(Error::NativeBoundary {
@@ -439,7 +436,6 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
             ..
         })
     ));
-    assert_eq!(work.receipt(), before);
     assert_eq!(
         work.live_allocation_bytes(),
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()

@@ -40,28 +40,7 @@ pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
         .await
 }
 
-/// An impossible quorum retains both partial successes and non-successes.
-pub struct QuorumFailure<O> {
-    /// Caller-specified threshold that was not met.
-    pub required: usize,
-    /// Successful values with their task IDs, in completion order.
-    pub successes: Vec<(String, O)>,
-    /// Failed, cancelled, uncertain, or unobservable members.
-    pub others: Vec<(String, Result<Outcome<O>>)>,
-}
-
 impl<O: DeserializeOwned> RuntimeTask<O> {
-    /// Requests cancellation without claiming a confirmed cancelled outcome.
-    pub async fn cancel(&self) -> Result<()> {
-        match self {
-            Self::Live(handle) => {
-                handle.cancel();
-                Ok(())
-            }
-            Self::Durable { task_id, host, .. } => host.cancel(*task_id).await,
-        }
-    }
-
     /// Waits for a terminal outcome, preserving uncertainty and cancellation.
     pub async fn result(self) -> Result<Outcome<O>> {
         match self {
