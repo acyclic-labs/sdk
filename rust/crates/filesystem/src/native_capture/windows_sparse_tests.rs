@@ -13,9 +13,7 @@ mod windows_sparse_tests {
     ) -> std::io::Result<Vec<(u64, u64)>> {
         let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-        let file = root
-            .open_file_positional(Path::new(name), &mut crate::native_host::ordinary_work())
-            .map_err(crate::native_host::ordinary_error)?;
+        let file = test_open_file(&root, Path::new(name))?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -100,12 +98,7 @@ mod windows_sparse_tests {
         // Every byte read is charged, and the scan stops at the budget or once cancelled.
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-        let file = root
-            .open_file_positional(
-                Path::new("sparse.bin"),
-                &mut crate::native_host::ordinary_work(),
-            )
-            .map_err(crate::native_host::ordinary_error)?;
+        let file = test_open_file(&root, Path::new("sparse.bin"))?;
         let metadata =
             test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
         let file_work =

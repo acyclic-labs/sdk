@@ -11,7 +11,7 @@ pub(super) fn capture_stat(
     }
     #[cfg(windows)]
     {
-        root.stat_wide(path, &mut meter.native.clone())
+        root.stat(path, &mut meter.native.clone())
     }
 }
 
@@ -36,7 +36,7 @@ pub(super) fn collect_host_walk_measured(
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
         let (mut reader, reader_allocation) = root
-            .read_dir_stats_wide(&host_parent, &mut meter.native.clone())
+            .read_dir_stats(&host_parent, &mut meter.native.clone())
             .map_err(capture_demand_error)?;
         loop {
             #[cfg(unix)]
