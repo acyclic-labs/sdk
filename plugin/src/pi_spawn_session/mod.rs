@@ -420,69 +420,83 @@ impl PiSession {
         Ok((reply, host.pending_to_save()?))
     }
 
-    async fn spawn_command<T: Serialize>(
+    fn spawn_command<'a, T: Serialize + Sync>(
         &self,
-        owner: &pi_owner::PiOwnerConfig,
+        owner: &'a pi_owner::PiOwnerConfig,
         operation: OperationId,
         kind: &str,
-        input: &T,
-        work: &NativeMaterializationWork,
-    ) -> Result<(WorkflowCommand, NativeAllocation)> {
-        let payload = pi_root_provider::stage_pi_input(
-            owner,
-            &self.filesystem,
-            operation,
-            "command",
-            input,
-            work,
-        )
-        .await?;
-        Ok((
-            WorkflowCommand {
-                operation_id: operation,
-                kind: kind.into(),
-                payload: payload.0,
-            },
-            payload.1,
-        ))
+        input: &'a T,
+        work: &'a NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<(WorkflowCommand, NativeAllocation)>>
+    + Send
+    + 'a
+    + use<'a, T> {
+        let filesystem = self.filesystem.clone();
+        let kind = work.display(kind);
+        async move {
+            let kind = kind?;
+            let mut payload = pi_root_provider::stage_pi_input(
+                owner,
+                &filesystem,
+                operation,
+                "command",
+                input,
+                work,
+            )
+            .await?;
+            let mut kind_custody = kind.1;
+            payload.1.absorb(&mut kind_custody)?;
+            Ok((
+                WorkflowCommand {
+                    operation_id: operation,
+                    kind: kind.0,
+                    payload: payload.0,
+                },
+                payload.1,
+            ))
+        }
     }
 
-    async fn spawn_input<T: DeserializeOwned>(
+    fn spawn_input<'a, T: DeserializeOwned + Send>(
         &self,
-        owner: &pi_owner::PiOwnerConfig,
+        owner: &'a pi_owner::PiOwnerConfig,
         operation: OperationId,
-        label: &str,
+        label: &'a str,
         schema_bytes: u64,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<(T, NativeAllocation)>> {
-        let Some(reference) =
-            pi_root_provider::observe_pi_input(owner, &self.filesystem, operation, label, work)
-                .await?
-        else {
-            return Ok(None);
-        };
-        let authority = owner.authority(work)?;
-        let maximum = owner
-            .policy()
-            .maximum_payload_bytes
-            .min(MAXIMUM_ADAPTER_STATE_BYTES);
-        let io = PreparationIo::from_native_work(work)?;
-        let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
-            self.filesystem.clone(),
-            &authority.verifier,
-            &authority.signed,
-            maximum,
-            Some(&io),
-        )?;
-        let bytes = reader.read(&reference.0, maximum, Some(&io))?.await?;
-        Ok(Some(pi_root_provider::guarded_pi_decode(
-            bytes.as_ref(),
-            maximum,
-            std::mem::size_of::<T>() as u64,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            acyclic_harness::JsonValueSchema::None,
-            schema_bytes,
-            work,
-        )?))
+        work: &'a NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<Option<(T, NativeAllocation)>>> + Send + 'a + use<'a, T>
+    {
+        let filesystem = self.filesystem.clone();
+        async move {
+            let Some(reference) =
+                pi_root_provider::observe_pi_input(owner, &filesystem, operation, label, work)
+                    .await?
+            else {
+                return Ok(None);
+            };
+            let authority = owner.authority(work)?;
+            let maximum = owner
+                .policy()
+                .maximum_payload_bytes
+                .min(MAXIMUM_ADAPTER_STATE_BYTES);
+            let io = PreparationIo::from_native_work(work)?;
+            let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
+                filesystem,
+                &authority.verifier,
+                &authority.signed,
+                maximum,
+                Some(&io),
+            )?;
+            let bytes = reader.read(&reference.0, maximum, Some(&io))?.await?;
+            Ok(Some(pi_root_provider::guarded_pi_decode(
+                bytes.as_ref(),
+                maximum,
+                std::mem::size_of::<T>() as u64,
+                acyclic_harness::wire::ErrorCode::Invalid,
+                acyclic_harness::JsonValueSchema::None,
+                schema_bytes,
+                work,
+            )?))
+        }
     }
 }
