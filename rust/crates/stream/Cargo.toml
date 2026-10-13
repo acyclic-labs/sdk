@@ -32,7 +32,7 @@ required-features = ["local"]
 
 [features]
 default = ["grpc"]
-grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost"]
+grpc = ["dep:h2", "dep:hyper", "dep:rustls", "dep:rustls-platform-verifier", "dep:tonic", "dep:tonic-prost"]
 http = ["dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
 wasm = ["dep:serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
@@ -46,6 +46,8 @@ hyper = { version = "1.11.0", default-features = false, optional = true }
 fs2 = { workspace = true, optional = true }
 prost.workspace = true
 ruzstd.workspace = true
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

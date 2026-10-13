@@ -38,6 +38,9 @@ pub enum ConnectError {
     /// Endpoint, credential, or private CA violates the client contract.
     #[error("invalid Objects gRPC configuration")]
     InvalidConfiguration,
+    /// The platform certificate verifier could not be initialized.
+    #[error("Objects platform certificate verifier: {0}")]
+    PlatformVerifier(#[source] rustls::Error),
     /// Connection could not be established.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
@@ -181,7 +184,9 @@ impl GrpcObjects {
         )
         .await
     }
-    /// Connects over authenticated TLS with an optional additional private CA.
+    /// Connects over authenticated TLS. A given `ca` is the whole trust for this
+    /// connection; without one, the platform verifier checks the server (on Linux,
+    /// the native roots, which `SSL_CERT_FILE` and `SSL_CERT_DIR` select).
     ///
     /// # Errors
     /// Rejects invalid credentials, non-HTTPS endpoints, oversized CA bundles, or failed connections.
@@ -246,18 +251,24 @@ impl GrpcObjects {
             .parse()
             .map_err(|_| ConnectError::InvalidConfiguration)?;
         authorization.set_sensitive(true);
-        let mut tls = ClientTlsConfig::new().with_webpki_roots();
-        if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
-                return Err(ConnectError::InvalidConfiguration);
-            }
-            tls = tls.ca_certificate(Certificate::from_pem(ca));
-        }
+        let mut tls = ClientTlsConfig::new();
         if let Some(identity) = identity {
             tls = tls.identity(identity);
         }
+        // A declared CA is the whole trust; otherwise the platform verifier.
+        let endpoint = if let Some(ca) = ca {
+            if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
+                return Err(ConnectError::InvalidConfiguration);
+            }
+            endpoint.tls_config(tls.ca_certificate(Certificate::from_pem(ca)))?
+        } else {
+            let verifier = rustls_platform_verifier::Verifier::new(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .map_err(ConnectError::PlatformVerifier)?;
+            endpoint.tls_config_with_verifier(tls, std::sync::Arc::new(verifier))?
+        };
         let channel = endpoint
-            .tls_config(tls)?
             .connect_timeout(std::time::Duration::from_secs(10))
             // Requests carry their own deadlines. This ceiling must permit
             // caller-selected streaming budgets to reach the transport.

@@ -348,6 +348,9 @@ pub async fn connect_with_ca_certificate(
                     Error::Configuration("invalid Actors private CA certificate".into())
                 }
                 crate::grpc::ConnectError::Transport(error) => Error::Transport(error.to_string()),
+                crate::grpc::ConnectError::PlatformVerifier(error) => {
+                    Error::Transport(error.to_string())
+                }
             })?;
         return Ok(Client {
             inner: Backend::Grpc(inner),

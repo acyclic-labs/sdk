@@ -26,8 +26,10 @@ cargo add acyclic-objects
 
 The default `grpc` feature exposes the authenticated remote client. Enable `http`
 for `HttpObjects`. Both transports require HTTPS and a caller-supplied bearer
-credential. For a private-CA gRPC endpoint, pass the caller-supplied PEM
-certificate to `GrpcObjects::connect`.
+credential. The gRPC client trusts the platform's roots (on Linux, those
+`SSL_CERT_FILE` and `SSL_CERT_DIR` select). For a private-CA gRPC endpoint,
+pass the caller-supplied PEM certificate to `GrpcObjects::connect`; that CA is
+then the whole trust.
 
 ```rust,no_run
 # #[cfg(feature = "grpc")]
