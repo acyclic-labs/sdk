@@ -251,21 +251,6 @@ impl ProjectionState {
     }
 }
 
-pub(super) struct FuseInvalidationBatch<'a> {
-    pub(super) core: &'a ProjectionCore,
-    pub(super) items: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
-}
-
-impl Drop for FuseInvalidationBatch<'_> {
-    fn drop(&mut self) {
-        let items = std::mem::take(&mut self.items);
-        self.core
-            .state_to_finish()
-            .invalidation
-            .retain_pending_tail(items);
-    }
-}
-
 pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
     let mut blocked = None;
     loop {
@@ -297,36 +282,37 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
         let mut completed_through = None;
         let mut sdk_failure = None;
         let result = core.request(|work| {
-            let items = {
+            let mut items = {
                 let mut state = core.state_to_finish();
                 let items = state.invalidation.take_deferred();
                 wait_key.0 = state.invalidation.notified;
                 wait_key.1 = state.invalidation.deferred.len();
                 items
             };
-            let mut items = FuseInvalidationBatch { core, items };
-            let dropped = drop_kernel_caches(notifier, &mut items.items, work, &mut sdk_failure);
-            drop(items);
-            dropped?;
-            let items = {
-                let mut state = core.state_to_finish();
-                let through = state.invalidation.notified;
-                if let Some(through) = through
-                    && state.invalidation.scanned < Some(through)
-                {
-                    let items = state.stale_kernel_items(core.source.as_ref(), through, work)?;
-                    state.invalidation.scanned = Some(through);
-                    completed_through = Some(through);
-                    items.map(Vec::into_iter)
-                } else {
-                    completed_through = through;
-                    FuseOwned::default()
+            loop {
+                let dropped = drop_kernel_caches(notifier, &mut items, work, &mut sdk_failure);
+                core.state_to_finish()
+                    .invalidation
+                    .retain_pending_tail(items);
+                dropped?;
+                if completed_through.is_some() {
+                    break;
                 }
-            };
-            let mut items = FuseInvalidationBatch { core, items };
-            let dropped = drop_kernel_caches(notifier, &mut items.items, work, &mut sdk_failure);
-            drop(items);
-            dropped?;
+                let mut state = core.state_to_finish();
+                let Some(through) = state
+                    .invalidation
+                    .notified
+                    .filter(|through| state.invalidation.scanned < Some(*through))
+                else {
+                    completed_through = state.invalidation.notified;
+                    break;
+                };
+                items = state
+                    .stale_kernel_items(core.source.as_ref(), through, work)?
+                    .map(Vec::into_iter);
+                state.invalidation.scanned = Some(through);
+                completed_through = Some(through);
+            }
             sdk_failure.take().map_or(Ok(()), Err)
         });
         let denied = result.is_err();
@@ -346,25 +332,27 @@ pub(super) fn drop_kernel_caches(
     work: &crate::NativeMaterializationWork,
     first_sdk_failure: &mut Option<NativeMountError>,
 ) -> Result<(), NativeMountError> {
-    while let Some(item) = items.as_slice().first() {
-        work.charge(crate::WorkCounters {
-            backend_write_operations: 1,
-            items_examined: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let dropped = match item {
-            KernelCacheItem::Inode(inode) => notifier.inval_inode(INodeNo(*inode), 0, 0),
-            KernelCacheItem::Entry { parent, name } => {
-                notifier.inval_entry(INodeNo(*parent), OsStr::from_bytes(name))
+    crate::native_mount::run_native_mount_handler_on_meter(work, |work| {
+        while let Some(item) = items.as_slice().first() {
+            work.charge(crate::WorkCounters {
+                backend_write_operations: 1,
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            let dropped = match item {
+                KernelCacheItem::Inode(inode) => notifier.inval_inode(INodeNo(*inode), 0, 0),
+                KernelCacheItem::Entry { parent, name } => {
+                    notifier.inval_entry(INodeNo(*parent), OsStr::from_bytes(name))
+                }
+            };
+            // Retire only items actually attempted, including genuine SDK failures.
+            drop(items.next());
+            if let Err(error) = dropped
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                first_sdk_failure.get_or_insert(NativeMountError::Io(error));
             }
-        };
-        // Retire only items actually attempted, including genuine SDK failures.
-        drop(items.next());
-        if let Err(error) = dropped
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            first_sdk_failure.get_or_insert(NativeMountError::Io(error));
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }

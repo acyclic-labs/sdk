@@ -607,6 +607,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
         unmounter: None,
         worker: None,
         device: None,
+        notifier: None,
         identity: None,
         cleanup: birth_cleanup,
         retirement: Some(crate::native_mount::NativeMountRetirement {
