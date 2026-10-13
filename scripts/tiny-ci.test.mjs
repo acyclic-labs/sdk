@@ -120,7 +120,16 @@ test('native builds and mount checks overlap qualification and still gate public
  assert.equal(workflow.jobs['sdk-qualification'].needs,undefined);
  assert.equal(workflow.jobs['agent-host-qualification'].needs,undefined);
  assert.equal(workflow.jobs['native-mount'],undefined);
- assert.deepEqual(assemble.needs,['build','sdk-qualification','agent-host-qualification']);
+ assert.deepEqual(assemble.needs,['build','sdk-qualification','agent-host-qualification','installer-recovery']);
+ const installer=workflow.jobs['installer-recovery'];
+ assert.equal(installer.needs,undefined);
+ assert.equal(installer.if,undefined);
+ assert.equal(installer['runs-on'],'blacksmith-4vcpu-ubuntu-2404');
+ assert.equal(installer.permissions.contents,'read');
+ assert.equal(installer.steps[0].with.ref,'${{ inputs.source_sha }}');
+ assert.equal(installer.steps[1].with['node-version'],'24.15.0');
+ assert.equal(installer.steps[2].run,'node --test plugin/scripts/install.test.mjs');
+ assert.equal(Object.values(workflow.jobs).flatMap(job=>job.steps??[]).filter(step=>step.run==='node --test plugin/scripts/install.test.mjs').length,1);
  assert.equal(assemble.if,undefined);
  const matrix=build.strategy.matrix.include;
  assert.deepEqual(matrix.map(row=>row.target).sort(),['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-arm64','win32-x64']);

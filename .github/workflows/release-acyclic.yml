@@ -224,9 +224,27 @@ jobs:
     with:
       source_ref: ${{ inputs.source_sha }}
 
+  installer-recovery:
+    name: Transactional installer recovery
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+      - name: Exercise transactional installer recovery
+        run: node --test plugin/scripts/install.test.mjs
+
   assemble:
     name: Validate and assemble
-    needs: [ build, sdk-qualification, agent-host-qualification ]
+    needs: [ build, sdk-qualification, agent-host-qualification, installer-recovery ]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       actions: read
@@ -311,8 +329,6 @@ jobs:
           grep -q '"name":"acyclic"' /tmp/acyclic-mcp.out
           version=$(node -p "require('./package.json').version")
           grep -q "\"version\":\"$version\"" /tmp/acyclic-mcp.out
-      - name: Exercise transactional installer recovery
-        run: node --test plugin/scripts/install.test.mjs
       - name: Install the npm package into an empty prefix
         run: |
           set -eu
