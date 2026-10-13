@@ -1,4 +1,5 @@
 use super::*;
+use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::storage::{AuthorityStoreError, ObjectKind, ObjectStoreError, object_digest};
 use acyclic_stream::OwnedBytes;
