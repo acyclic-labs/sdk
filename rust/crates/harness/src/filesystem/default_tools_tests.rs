@@ -674,7 +674,7 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             name: name.into(),
             arguments: json!({}),
         };
-        assert!(tool.executor.authorize(None, &invocation).is_err());
+        assert!(tool.executor.authorize(None, None, &invocation, None).is_err());
         assert!(tool.executor.execute(invocation.clone(), None).await.is_err());
         assert!(tool.executor.reconcile(invocation, None).await.is_err());
     }

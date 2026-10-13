@@ -80,13 +80,12 @@ pub(in crate::executor) fn stock_authorize_tool(
             reason: "native tool authorization has no issued context",
         })?;
         return tool
-            .executor
-            .authorize_with_native_context(context, invocation, work);
+            .executor.authorize(None, Some(context), invocation, Some(work));
     }
     if let Some(context) = context {
-        tool.executor.authorize_with_context(context, invocation)
+        tool.executor.authorize(None, Some(context), invocation, None)
     } else {
-        tool.executor.authorize(Some(scope), invocation)
+        tool.executor.authorize(Some(scope), None, invocation, None)
     }
 }
 

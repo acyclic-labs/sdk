@@ -235,18 +235,29 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         let _ = work;
         Ok(Some(self.durable.machine.identity()))
     }
-    fn authorize(&self, _: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
+    fn authorize(&self, scope: Option<&crate::runtime::RuntimeScope>, context: Option<&crate::runtime::ToolContext>, invocation: &crate::tool::ToolInvocation, work: crate::NativeWork<'_>) -> crate::Result<()> {
+let _ = (scope, context, invocation, work);
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+if let Some(work) = work {
+ let context = context.ok_or(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "tool requires its original native context" })?;
+ return {
+        self.check_authority(
+            context,
+            invocation,
+            Some(&PreparationIo::from_native_work(work)?),
+        )
+    };
+}
+if let Some(context) = context { return {
+        self.check_authority(context, invocation, None)
+    }; }
+
         Err(Error::Unauthorized(
             "recursive tools require the original durable context".into(),
         ))
-    }
-    fn authorize_with_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-    ) -> Result<()> {
-        self.check_authority(context, invocation, None)
-    }
+
+}
+
 
 
     fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
@@ -299,19 +310,7 @@ let Some(context) = context else { return Box::pin(async {
             "recursive source has no original native callbacks",
         )
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn authorize_with_native_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.check_authority(
-            context,
-            invocation,
-            Some(&PreparationIo::from_native_work(work)?),
-        )
-    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(
         &'a self,
@@ -320,7 +319,7 @@ let Some(context) = context else { return Box::pin(async {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.supports_native_execution(work)?;
-        self.authorize_with_native_context(context, invocation, work)?;
+        self.authorize(None, Some(context), invocation, Some(work))?;
         crate::NativeFutureBundle::new(work, || async move {
             let (result, custody) = self.native_run(context, invocation, work).await?;
             Ok((
@@ -338,7 +337,7 @@ let Some(context) = context else { return Box::pin(async {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
         self.supports_native_execution(work)?;
-        self.authorize_with_native_context(context, invocation, work)?;
+        self.authorize(None, Some(context), invocation, Some(work))?;
         crate::NativeFutureBundle::new(work, || self.native_run(context, invocation, work))
     }
 }

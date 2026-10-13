@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(super) enum FileTool {
+pub(in crate::tool) enum FileTool {
     Read,
     Write,
     Edit,
@@ -9,19 +9,23 @@ pub(super) enum FileTool {
         maximum_work: u64,
         maximum_hunks: u32,
     },
-}
-
-fn public_path(path: &str) -> Result<()> {
-    crate::conversation::validate_content_path(path, &mut None)?;
-    if crate::conversation::is_internal_path(path) {
-        return Err(Error::Unauthorized(
-            "file tools cannot access internal storage".into(),
-        ));
-    }
-    Ok(())
+    ReadRange {
+        options: super::text::ReadOptions,
+        maximum_result_bytes: u64,
+    },
+    Search {
+        options: super::text::SearchOptions,
+        maximum_result_bytes: u64,
+    },
 }
 
 impl FileTool {
+    pub(in crate::tool) fn is_read(&self) -> bool {
+        matches!(
+            self,
+            Self::Read | Self::ReadRange { .. } | Self::Search { .. }
+        )
+    }
     async fn run(
         &self,
         context: &ToolContext,
@@ -36,14 +40,12 @@ impl FileTool {
         let io = owned_io.as_ref();
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let io: Option<&crate::executor::PreparationIo> = None;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            self.authorize_with_native_context(context, invocation, work)?;
-        } else {
-            self.authorize_with_context(context, invocation)?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        self.authorize_with_context(context, invocation)?;
+        self.authorize(
+            Some(context.effective_scope()),
+            Some(context),
+            invocation,
+            work,
+        )?;
         let invalid = |reason: &'static str| {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
@@ -52,6 +54,66 @@ impl FileTool {
             Error::Invalid(reason.into())
         };
         let file = match self {
+            Self::ReadRange {
+                options,
+                maximum_result_bytes,
+            } => {
+                let input =
+                    decode::<super::super::text_files::ReadInput>(&invocation.arguments, work)?;
+                let bytes = context.read_file(&input.0.file, io).await?;
+                let source = std::str::from_utf8(bytes.as_ref())
+                    .map_err(|_| invalid("text tool requires UTF-8 content"))?;
+                let mut allocation = super::edit::allocation(
+                    work,
+                    std::mem::size_of::<super::text::TextSelection>(),
+                )?;
+                let result = super::super::text_files::ReadResult {
+                    selection: super::text::read_range(
+                        source,
+                        input.0.range,
+                        *options,
+                        &mut allocation,
+                    )?,
+                    file: input.0.file,
+                };
+                let encoded = super::value(
+                    &result,
+                    (*maximum_result_bytes).min(context.effective_scope().limits().file_bytes),
+                    work,
+                )?;
+                return Ok((ToolResult { value: encoded.0 }, encoded.1));
+            }
+            Self::Search {
+                options,
+                maximum_result_bytes,
+            } => {
+                let input =
+                    decode::<super::super::text_files::SearchInput>(&invocation.arguments, work)?;
+                let bytes = context.read_file(&input.0.file, io).await?;
+                let source = std::str::from_utf8(bytes.as_ref())
+                    .map_err(|_| invalid("text tool requires UTF-8 content"))?;
+                let mut allocation = super::edit::allocation(
+                    work,
+                    std::mem::size_of::<super::text::SearchMatches>(),
+                )?;
+                let result = super::super::text_files::SearchResult {
+                    matches: super::text::literal_search(
+                        source,
+                        &input.0.query,
+                        *options,
+                        &mut allocation,
+                    )?,
+                    file: input.0.file,
+                    query: input.0.query,
+                };
+                let encoded = super::value(
+                    &result,
+                    (*maximum_result_bytes).min(context.effective_scope().limits().file_bytes),
+                    work,
+                )?;
+                return Ok((ToolResult { value: encoded.0 }, encoded.1));
+            }
+
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
                 let bytes = context.read_file(&input.0.file, io).await?;
@@ -62,7 +124,7 @@ impl FileTool {
                     let (text, mut custody) = work.display(source)?;
                     custody
                         .resize(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
-                        .map_err(super::edit::native_error)?;
+                        .map_err(Error::from)?;
                     return Ok((
                         ToolResult {
                             value: Value::String(text),
@@ -99,8 +161,7 @@ impl FileTool {
                 let bytes = context.read_file(&input.0.file, io).await?;
                 let source = std::str::from_utf8(bytes.as_ref())
                     .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
-                let mut allocation =
-                    super::edit::AlgorithmWork::new(work, std::mem::size_of::<String>())?;
+                let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
                 let edited = super::edit::exact_replace(
                     source,
                     &input.0.old_text,
@@ -138,8 +199,7 @@ impl FileTool {
                 let bytes = context.read_file(&input.0.file, io).await?;
                 let source = std::str::from_utf8(bytes.as_ref())
                     .map_err(|_| invalid("patch editing requires UTF-8 content"))?;
-                let mut allocation =
-                    super::edit::AlgorithmWork::new(work, std::mem::size_of::<String>())?;
+                let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
                 let edited =
                     super::patch::apply_update(source, &input.0.diff, limits, &mut allocation)?;
                 context
@@ -157,59 +217,53 @@ impl FileTool {
         let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
-
-    fn authorize_scope(
-        &self,
-        scope: Option<&RuntimeScope>,
-        invocation: &ToolInvocation,
-    ) -> Result<()> {
-        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
-        let scope = scope.ok_or_else(|| {
-            Error::Unauthorized("file tool requires original runtime scope".into())
-        })?;
-        crate::executor::json::json_byte_length(
-            &invocation.arguments,
-            scope.limits().file_bytes,
-            &mut None,
-        )
-        .map(|_| ())?;
-        if let Self::Write = self {
-            let path = invocation
-                .arguments
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::Invalid("file write requires a destination path".into()))?;
-            public_path(path)?;
-            if path.len() > scope.limits().path_bytes {
-                return Err(Error::Invalid(
-                    "file path exceeds original task bound".into(),
-                ));
-            }
-        } else {
-            let value = invocation.arguments.get("file").ok_or_else(|| {
-                Error::Invalid("file tool requires an original source reference".into())
-            })?;
-            let file: FileRef = decode(value, None)?.0;
-            public_path(file.path())?;
-            scope.limits().validate_file(&file, &mut None)?;
-            if !crate::runtime::read_granted(scope.grants(), &file)? {
-                return Err(Error::Unauthorized(
-                    "file tool requires original source read grant".into(),
-                ));
-            }
-            if let Self::Read = self {
-                let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
-                super::edit::validate_edit_bound(maximum)?;
-                if file.descriptor().byte_length() > maximum {
-                    return Err(Error::Invalid("file exceeds text rendering bound".into()));
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 impl ToolExecutor for FileTool {
+    fn authorize(
+        &self,
+        scope: Option<&RuntimeScope>,
+        context: Option<&ToolContext>,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+    ) -> Result<()> {
+        let unauthorized = || {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "file tool requires its exact admitted call context",
+                };
+            }
+            Error::Unauthorized("file tool requires its exact admitted call context".into())
+        };
+        let scope = context
+            .map(ToolContext::effective_scope)
+            .or(scope)
+            .ok_or_else(unauthorized)?;
+        if context.is_some_and(|context| {
+            context.operation_id() != invocation.operation_id
+                || context.call_id() != invocation.call_id
+        }) {
+            return Err(unauthorized());
+        }
+        let (file, _custody) = self.preflight(scope, invocation, work)?;
+        let context = context.ok_or_else(unauthorized)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            return if self.is_read() {
+                context
+                    .authorize_file_read_with_native_work(file.as_ref().expect("read source"), work)
+            } else {
+                context.authorize_content_publication_with_native_work(file.as_ref(), work)
+            };
+        }
+        if self.is_read() {
+            Ok(())
+        } else {
+            context.task().authorize_content_publication(file.as_ref())
+        }
+    }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
         &self,
@@ -218,57 +272,6 @@ impl ToolExecutor for FileTool {
         work.remaining()?;
         Ok(())
     }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn authorize_with_native_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        native::context(context, invocation, work)?;
-        native::bound(
-            &invocation.arguments,
-            context.effective_scope().limits().file_bytes,
-            work,
-        )?;
-        match self {
-            Self::Write => {
-                let input = super::decode::<WriteFileInput>(&invocation.arguments, Some(work))?;
-                native::public_path(&input.0.path, work)?;
-                if input.0.path.len() > context.effective_scope().limits().path_bytes {
-                    return Err(native::invalid("file path exceeds original task bound"));
-                }
-                context.authorize_content_publication_with_native_work(None, work)
-            }
-            _ => {
-                let value = invocation.arguments.get("file").ok_or_else(|| {
-                    native::invalid("file tool requires an original source reference")
-                })?;
-                // Edit/patch DTOs include extra fields; decode only the pinned ref.
-                let file = super::decode::<FileRef>(value, Some(work))?;
-                native::public_path(file.0.path(), work)?;
-                context.authorize_file_read_with_native_work(&file.0, work)?;
-                if let Self::Read = self {
-                    let maximum = context
-                        .effective_scope()
-                        .limits()
-                        .render_bytes
-                        .min(context.effective_scope().limits().file_bytes);
-                    if maximum == 0
-                        || maximum == u64::MAX
-                        || file.0.descriptor().byte_length() > maximum
-                    {
-                        return Err(native::invalid("file exceeds text rendering bound"));
-                    }
-                    Ok(())
-                } else {
-                    context.authorize_content_publication_with_native_work(Some(&file.0), work)
-                }
-            }
-        }
-    }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
         &'a self,
@@ -291,8 +294,13 @@ impl ToolExecutor for FileTool {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
         crate::NativeFutureBundle::new(work, || async move {
-            self.authorize_with_native_context(context, invocation, work)?;
-            if let Self::Read = self {
+            self.authorize(
+                Some(context.effective_scope()),
+                Some(context),
+                invocation,
+                Some(work),
+            )?;
+            if self.is_read() {
                 let (result, custody) = self.run(context, invocation, Some(work)).await?;
                 return Ok((Some(result), custody.expect("native file result")));
             }
@@ -313,42 +321,6 @@ impl ToolExecutor for FileTool {
             }
         })
     }
-    fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
-        self.authorize_scope(scope, invocation)?;
-        Err(Error::Unauthorized(
-            "portable file tool requires original task context".into(),
-        ))
-    }
-
-    fn authorize_with_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-    ) -> Result<()> {
-        if context.operation_id() != invocation.operation_id
-            || context.call_id() != invocation.call_id
-        {
-            return Err(Error::Unauthorized(
-                "file tool requires its exact admitted call context".into(),
-            ));
-        }
-        self.authorize_scope(Some(context.task().scope()), invocation)?;
-        match self {
-            Self::Read => Ok(()),
-            Self::Write => context.task().authorize_content_publication(None),
-            Self::Edit | Self::Patch { .. } => {
-                let file: FileRef = decode(
-                    invocation.arguments.get("file").ok_or_else(|| {
-                        Error::Invalid("file tool requires an original source reference".into())
-                    })?,
-                    None,
-                )?
-                .0;
-                context.task().authorize_content_publication(Some(&file))
-            }
-        }
-    }
-
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,
@@ -382,7 +354,6 @@ impl ToolExecutor for FileTool {
             });
         };
 
-        // Reads always use the original immutable ref; publications resolve the existing operation receipt before attempting a generation-checked CAS.
         Box::pin(async move {
             self.run(&context, &invocation, None)
                 .await

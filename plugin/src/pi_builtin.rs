@@ -674,17 +674,20 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
         Ok(())
     }
 
-    fn authorize_with_native_context(
-        &self,
-        context: &acyclic_harness::runtime::ToolContext,
-        invocation: &acyclic_harness::tool::ToolInvocation,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
+    fn authorize(&self, scope: Option<&acyclic_harness::runtime::RuntimeScope>, context: Option<&acyclic_harness::runtime::ToolContext>, invocation: &acyclic_harness::tool::ToolInvocation, work: acyclic_harness::NativeWork<'_>) -> acyclic_harness::Result<()> {
+let _ = (scope, context, invocation, work);
+#[cfg(not(target_arch = "wasm32"))]
+if let Some(work) = work {
+ let context = context.ok_or(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "tool requires its original native context" })?;
+ return {
         let decoded = decoded_tool_request(context, invocation, work)?;
         drop(decoded.0);
         drop(decoded.1);
         Ok(())
-    }
+    };
+}
+Ok(())
+}
 
     fn execute_with_native_context<'a>(
         &'a self,

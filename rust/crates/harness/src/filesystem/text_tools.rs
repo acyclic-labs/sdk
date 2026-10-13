@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &replacement.old_text,
             &replacement.new_text,
             maximum_bytes,
-            &mut crate::tool::edit::AlgorithmWork::new(None, 0)?,
+            &mut crate::tool::edit::allocation(None, 0)?,
         )?;
         let generation = self.file_generation(source, None)?;
         self.put_content(source.volume(), write, source.path(), result.as_bytes(), source.descriptor().media_type(), source.display_name(), maximum_bytes, idempotency_key, Some(&generation), None)

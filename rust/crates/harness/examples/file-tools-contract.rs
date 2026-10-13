@@ -7,11 +7,11 @@ use acyclic_harness::{
     resources::ProviderRef,
     tool::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
-        files::{self, FileResult, FileResultProjection, ReadFileInput, ReadFileProjection},
+        files::{self, FileResult, FileProjection, ReadFileInput},
         schema::ProjectionMode,
         text::{self, ReadOptions, SearchOptions, TextRange},
         text_files::{
-            self, ReadInput, ReadProjection, ReadResult, SearchInput, SearchProjection,
+            self, ReadInput, ReadResult, SearchInput,
             SearchResult,
         },
     },
@@ -53,11 +53,11 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 
 fn definitions() -> Result<Vec<Value>> {
     let mut reference_read = files::read_file()?;
-    let read_projector = ReadFileProjection(ProjectionMode::Reference);
+    let read_projector = FileProjection::Read(ProjectionMode::Reference);
     reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
     let mut reference_write = files::write_file()?;
-    let reference_projector = FileResultProjection(ProjectionMode::Reference);
+    let reference_projector = FileProjection::Publication(ProjectionMode::Reference);
     reference_write.definition.projection_schema =
         ProjectionMode::Reference.schema::<FileResult>()?;
     reference_write.projection = std::sync::Arc::new(reference_projector);
@@ -160,23 +160,23 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "source":{"file":file,"text":source},
             "range_read":{
                 "input":read_input,"canonical":read,
-                "full":ReadProjection(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
-                "reference":ReadProjection(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
+                "full":FileProjection::Range(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
+                "reference":FileProjection::Range(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
             },
             "literal_search":{
                 "input":search_input,"canonical":search,
-                "full":SearchProjection(ProjectionMode::Full).project(&search_invocation,&search_result,None)?.0,
-                "reference":SearchProjection(ProjectionMode::Reference).project(&search_invocation,&search_result,None)?.0,
+                "full":FileProjection::Search(ProjectionMode::Full).project(&search_invocation,&search_result,None)?.0,
+                "reference":FileProjection::Search(ProjectionMode::Reference).project(&search_invocation,&search_result,None)?.0,
             },
             "exact_read":{
                 "input":exact_input,"canonical":exact_result.value,
-                "full":ReadFileProjection(ProjectionMode::Full).project(&exact_invocation,&exact_result,None)?.0,
-                "reference":ReadFileProjection(ProjectionMode::Reference).project(&exact_invocation,&exact_result,None)?.0,
+                "full":FileProjection::Read(ProjectionMode::Full).project(&exact_invocation,&exact_result,None)?.0,
+                "reference":FileProjection::Read(ProjectionMode::Reference).project(&exact_invocation,&exact_result,None)?.0,
             },
             "file_result":{
                 "canonical":file_result.value,
-                "full":FileResultProjection(ProjectionMode::Full).project(&file_invocation,&file_result,None)?.0,
-                "reference":FileResultProjection(ProjectionMode::Reference).project(&file_invocation,&file_result,None)?.0,
+                "full":FileProjection::Publication(ProjectionMode::Full).project(&file_invocation,&file_result,None)?.0,
+                "reference":FileProjection::Publication(ProjectionMode::Reference).project(&file_invocation,&file_result,None)?.0,
             },
         })
     );
