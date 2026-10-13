@@ -141,6 +141,7 @@ pub struct ResumableTaskSession {
     pub(super) task_id: TaskId,
     pub(super) fence: crate::scheduler::LeaseFence,
     pub(super) host: Arc<dyn DurableTaskHost>,
+    pub(super) owner: Option<Arc<dyn OwnedTaskMailbox>>,
     pub(super) workflow: DurableWorkflowHost,
     pub(super) definition: Arc<dyn RegisteredTaskDefinition>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -207,9 +208,14 @@ impl ResumableTaskSession {
         if let Some(work) = native {
             self.require_native_session(work)?;
         }
-        self.host
-            .verify_dispatch_owner(self.task_id, &self.fence, io)?
-            .await?;
+        match &self.owner {
+            Some(owner) => owner.verify_owner(io)?.await?,
+            None => {
+                self.host
+                    .verify_dispatch_owner(self.task_id, &self.fence, io)?
+                    .await?
+            }
+        }
         let schema = self.definition.output_schema();
         let check =
             |transition: &MachineTransition| validate_task_transition(schema, transition, io);
@@ -227,9 +233,14 @@ impl ResumableTaskSession {
                 None,
             ),
         };
-        self.host
-            .verify_dispatch_owner(self.task_id, &self.fence, io)?
-            .await?;
+        match &self.owner {
+            Some(owner) => owner.verify_owner(io)?.await?,
+            None => {
+                self.host
+                    .verify_dispatch_owner(self.task_id, &self.fence, io)?
+                    .await?
+            }
+        }
         Ok(transition)
     }
 }

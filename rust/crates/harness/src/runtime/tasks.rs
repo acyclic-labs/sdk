@@ -442,6 +442,7 @@ impl<I, O> TaskDefinition<I, O> {
                 task_id,
                 fence,
                 host: Arc::clone(host),
+                owner: context.owned_mailbox.clone(),
                 workflow,
                 definition: Arc::clone(self) as Arc<dyn RegisteredTaskDefinition>,
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

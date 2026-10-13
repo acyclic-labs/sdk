@@ -10,6 +10,10 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     ) -> Result<()>;
     #[cfg(feature = "filesystem")]
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
+    fn verify_owner<'a>(
+        &'a self,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
     fn send<'a>(
         &'a self,
         recipient: TaskId,

@@ -298,6 +298,22 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
     }
+    fn verify_owner<'a>(
+        &'a self,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let mut history = io.map(crate::executor::PreparationIo::history_io);
+            self.owner
+                .verify(
+                    false,
+                    &mut history
+                        .as_mut()
+                        .map(|io| io as &mut dyn crate::store::HistoryIo),
+                )
+                .await
+        })
+    }
     fn send<'a>(
         &'a self,
         recipient: TaskId,
