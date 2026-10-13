@@ -1135,7 +1135,7 @@ fn local_codex_adversarial_workspace_eval() {
 const LOCAL_CODEX_ADVERSARIAL_PROMPT: &str = r#"
 This is a local Acyclic behavioural evaluation. Work only inside the current workspace. Use native
 subagents and the Acyclic commands described by the installed plugin; do not simulate children with
-directories or Git worktrees. Run every `acyclic ...` command as a separate shell invocation without
+directories or Git worktrees. Run every `acyclic-plugin ...` command as a separate shell invocation without
 combining it with other commands or shell operators. Use shell builtins and ordinary core utilities,
 Use only the repository's native toolchain.
 

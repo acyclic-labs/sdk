@@ -383,7 +383,7 @@ test("the published package declares the Codex hook MCP server on the installed 
 });
 
 // Installs a package whose "native executable" is this Node binary with each
-// package manager, and checks that the `acyclic` command runs the executable
+// package manager, and checks that the `acyclic-plugin` command runs the executable
 // with no interpreter in between, across an upgrade to different bytes and an
 // uninstall.
 function packageRelease(version, extraBytes) {

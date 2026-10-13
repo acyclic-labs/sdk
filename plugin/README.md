@@ -32,6 +32,13 @@ can run it:
 ln -s "$(command -v acyclic)" "$(dirname "$(command -v acyclic)")/acyclic-plugin"
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+$acyclic = (Get-Command acyclic).Source
+New-Item -ItemType HardLink -Path (Join-Path (Split-Path $acyclic) "acyclic-plugin.exe") -Target $acyclic
+```
+
 The Cargo installation provides the standalone CLI, service, hook runner, and
 MCP bridge. The npm package remains the distribution that also carries the
 Codex plugin, marketplace assets, and native qualification receipts for tagged

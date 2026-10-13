@@ -110,8 +110,12 @@ fn is_acyclic_command_name(name: &str) -> bool {
     [
         "acyclic",
         "acyclic.exe",
+        "acyclic.cmd",
+        "acyclic.ps1",
         "acyclic-plugin",
         "acyclic-plugin.exe",
+        "acyclic-plugin.cmd",
+        "acyclic-plugin.ps1",
     ]
     .iter()
     .any(|command| name.eq_ignore_ascii_case(command))

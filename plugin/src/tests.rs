@@ -6014,6 +6014,13 @@ fn only_acyclic_commands_require_standalone_shell_syntax() {
         Ok(true)
     );
     assert_eq!(
+        is_acyclic_cli_invocation(
+            "PowerShell",
+            &json!({"command":"acyclic-plugin.cmd agents"})
+        ),
+        Ok(true)
+    );
+    assert_eq!(
         is_acyclic_cli_invocation("Bash", &json!({"command":"acyclic-plugins agents"})),
         Ok(false)
     );

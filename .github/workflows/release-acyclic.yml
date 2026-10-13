@@ -356,7 +356,7 @@ jobs:
           prefix=$(mktemp -d)
           state=$(mktemp -d)
           XDG_STATE_HOME="$state" npm install --global --prefix "$prefix" "$package"
-          "$prefix/bin/acyclic" --help
+          "$prefix/bin/acyclic-plugin" --help
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/plugin.json"
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
           test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"

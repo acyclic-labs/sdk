@@ -115,7 +115,7 @@ console.log(await swarms.list());
 
 ## Customer CLI
 
-- [CLI installation and commands](plugin/README.md): Install the native executable as the `acyclic-plugin` command with `npm install -g @acyclic-labs/plugin`, or as `acyclic` with `cargo install --locked acyclic-plugin`.
+- [CLI installation and commands](plugin/README.md): Install the native executable as the `acyclic-plugin` command with `npm install -g @acyclic-labs/plugin`, or as `acyclic` with `cargo install --locked acyclic-plugin`; Cargo users link it as `acyclic-plugin` before using the commands below.
 - [Identity API contract](plugin/identity-api.md): Public Edge identity requests and session refresh behavior.
 
 Configure `ACYCLIC_API_URL` with the public Edge origin. Identity commands accept
