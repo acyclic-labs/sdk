@@ -379,7 +379,9 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                 });
             }
             let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let admission = self.admission(operation, &mut Some(&mut io.history_io())).await?;
+            let admission = self
+                .admission(operation, &mut Some(&mut io.history_io()))
+                .await?;
             let (scope, retained) = self
                 .authenticated_scope(&admission, &mut Some(&mut io.history_io()))
                 .await?;
