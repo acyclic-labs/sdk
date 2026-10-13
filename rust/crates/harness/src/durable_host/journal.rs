@@ -198,11 +198,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "workflow implementation differs from task admission".into(),
             ));
         }
-        let (next, transition, _, _) = self.host.machines.step(
-            &record.prior,
-            std::borrow::Cow::Borrowed(&record.input),
-            io,
-        )?;
+        let input = std::borrow::Cow::Borrowed(&record.input);
+        #[cfg(not(target_arch = "wasm32"))]
+        let input = match io {
+            Some(io) => {
+                std::borrow::Cow::Owned(crate::model::clone_value(&record.input, Some(io))?)
+            }
+            None => input,
+        };
+        let (next, transition, _, _) = self.host.machines.step(&record.prior, input, io)?;
         if record.checkpoint()? != (&next.machine, next.revision, &next.state)
             || transition != record.transition
         {
