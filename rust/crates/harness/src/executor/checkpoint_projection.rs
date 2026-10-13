@@ -61,20 +61,10 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     let _view_hold;
     #[cfg(feature = "filesystem")]
     let mut borrowed = io.map(PreparationIo::history_io);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let mut native = io
-        .and_then(PreparationIo::original_native_work)
-        .map(PreparationIo::from_native_work)
-        .transpose()?
-        .map(crate::store::HistoryWork::new);
     #[cfg(feature = "filesystem")]
     let mut work = borrowed
         .as_mut()
         .map(|io| io as &mut dyn crate::store::history::HistoryIo);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(native) = native.as_mut() {
-        work = Some(native);
-    }
     #[cfg(not(feature = "filesystem"))]
     let mut work = None;
     let records = history
@@ -101,12 +91,6 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     #[cfg(feature = "filesystem")]
     {
         drop(work);
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(mut native) = native {
-            native.return_staged_output()?;
-            io.expect("native observer has an original IO")
-                .absorb_native_custody(native.into_custody()?)?;
-        }
         _view_hold = io
             .map(|io| io.guard_owned(io.owned_bytes()? - before))
             .transpose()?;
