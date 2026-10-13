@@ -1,7 +1,7 @@
+use super::content_write::bound_content_writer;
 use super::{
     InteractionRouter, IssuedContextPurpose, Limits, RuntimeScope, TaskContext, ToolContext,
 };
-use crate::store::history::HistoryIo as _;
 use crate::{Error, Result};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::sync::Arc;
@@ -138,7 +138,7 @@ impl TaskContext {
                     "output volume has no authenticated created writer",
                 )
             })?;
-        self.bound_content_writer(
+        bound_content_writer(
             Some(binding),
             &self.scope,
             Some(&crate::executor::PreparationIo::from_native_work(work)?),
@@ -172,15 +172,14 @@ impl TaskContext {
             }
             IssuedContextPurpose::Read => unreachable!("readonly projection rejected"),
         }
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        );
-        io.retain_owned(
+        let mut custody = work.claim(
             (std::mem::size_of::<TaskContext>() - std::mem::size_of::<RuntimeScope>()) as u64,
+            0,
+            WorkCounters::default(),
         )?;
-        let (scope, scope_custody) = self.scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(scope_custody)?;
-        let mut context = TaskContext {
+        let (scope, mut scope_custody) = self.scope.clone_with_native_work(work)?;
+        custody.absorb(&mut scope_custody)?;
+        let context = TaskContext {
             harness: Arc::clone(&self.harness),
             task_id: self.task_id,
             durable_task: self.durable_task,
@@ -192,11 +191,8 @@ impl TaskContext {
             output_content: Some(binding.clone()),
             model_steps: Arc::clone(&self.model_steps),
             native_purpose: Some(purpose),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
+            native_custody: Some(custody),
         };
-        let custody = io.into_custody()?;
-        context.native_custody = Some(custody);
         context.into_shared()
     }
 
