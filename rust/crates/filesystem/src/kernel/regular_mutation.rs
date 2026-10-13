@@ -187,18 +187,6 @@ pub(crate) async fn apply_regular_mutation_with_accounting<S: AsyncObjectStore>(
     apply_sparse(store, payload, mutation, config, accounting, cancellation).await
 }
 
-pub(crate) async fn apply_regular_clone_async<S: AsyncObjectStore>(
-    store: &S, source: FilePayload, source_offset: u64, destination: FilePayload,
-    destination_offset: u64, length: u64, config: VolumeConfig, budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<RegularCloneReceipt, RegularMutationFailure> {
-    let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    apply_regular_clone_with_accounting(
-        store, source, source_offset, destination, destination_offset, length, config,
-        &mut accounting, cancellation,
-    ).await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
-}
-
 pub(crate) async fn apply_regular_clone_with_accounting<S: AsyncObjectStore>(
     store: &S, source: FilePayload, source_offset: u64, destination: FilePayload,
     destination_offset: u64, length: u64, config: VolumeConfig,
