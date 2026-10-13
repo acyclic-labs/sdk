@@ -325,6 +325,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
                 work: Box::new(work),
             },
         )?;
+        let io = PreparationIo::from_native_work(&work)?;
         if cancelled {
             cancellation.cancel();
         }
@@ -334,9 +335,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
             provider.clone(),
             &context,
             &compaction,
-            Some(&super::super::super::PreparationIo::from_native_work(
-                &work,
-            )?),
+            Some(&io),
         );
         assert!(result.as_ref().is_err_and(Error::is_native_failure));
         assert_eq!(
@@ -424,7 +423,6 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
 #[tokio::test]
 async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_source() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime(None).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work =
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
@@ -432,6 +430,8 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
                 cause,
                 work: Box::new(work),
             })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let runtime = fixture.runtime(Some(&io)).await?;
     let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
     runtime
         .task_host()
