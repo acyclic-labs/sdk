@@ -429,7 +429,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     )?;
     assert!(matches!(
         checkout
-            .read_file_range_by_id(
+            .read_file_range(
                 id,
                 ByteRange {
                     offset: 0,
@@ -446,7 +446,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     ));
     assert!(matches!(
         checkout
-            .plan_file_extents_by_id(
+            .plan_file_extents(
                 id,
                 ByteRange {
                     offset: 0,
@@ -472,7 +472,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     ] {
         assert_eq!(
             checkout
-                .seek_file_extent_by_id(id, offset, target, B, &cancel)
+                .seek_file_extent(id, offset, target, B, &cancel)
                 .await?
                 .value,
             expected
@@ -487,7 +487,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     }
     assert!(matches!(
         checkout
-            .seek_file_extent_by_id(directory_id, 0, ExtentSeekTarget::Data, B, &cancel)
+            .seek_file_extent(directory_id, 0, ExtentSeekTarget::Data, B, &cancel)
             .await,
         Err(OperationFailure {
             error: FsError::FileRead(FileRangeReadError::NotRegular),
@@ -645,14 +645,14 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     for (id, offset) in [(directory_id, 0), (id, 5)] {
         assert!(
             checkout
-                .read_file_range_by_id(id, ByteRange { offset, length: 1 }, B, &cancel)
+                .read_file_range(id, ByteRange { offset, length: 1 }, B, &cancel)
                 .await
                 .is_err()
         );
     }
     assert!(
         checkout
-            .plan_file_extents_by_id(
+            .plan_file_extents(
                 directory_id,
                 ByteRange {
                     offset: 0,

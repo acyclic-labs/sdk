@@ -151,7 +151,7 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
             .await,
     );
     cancelled(checkout.read_file_record_by_id(id, B, &cancel).await);
-    cancelled(checkout.read_file_range_by_id(id, range, B, &cancel).await);
+    cancelled(checkout.read_file_range(id, range, B, &cancel).await);
     cancelled(
         checkout
             .read_named_attribute(&file, &attribute, B, &cancel)

@@ -68,7 +68,7 @@ pub(super) async fn read(
     cancel: &CancellationToken,
 ) -> TestResult<OwnedBytes> {
     Ok(checkout
-        .read_file_range_by_id(id, ByteRange { offset, length }, B, cancel)
+        .read_file_range(id, ByteRange { offset, length }, B, cancel)
         .await?
         .value
         .bytes)

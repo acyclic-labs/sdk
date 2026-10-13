@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
             ParentProjectController::new(self, parent, verifier, scope, source_project, None)?;
-        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read, None)?;
         let parent_agent = scope
             .agent()
             .ok_or_else(|| Error::Unauthorized("fork allocation requires a parent agent".into()))?;

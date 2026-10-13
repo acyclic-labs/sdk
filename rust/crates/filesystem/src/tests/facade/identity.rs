@@ -49,7 +49,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             assert_eq!(&bytes[64..70], b"REMOTE");
             assert!(
                 local
-                    .plan_file_extents_by_id(
+                    .plan_file_extents(
                         id,
                         ByteRange {
                             offset: 0,
@@ -124,7 +124,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     );
     assert!(
         checkout
-            .plan_file_extents_by_id(
+            .plan_file_extents(
                 id,
                 ByteRange {
                     offset: 0,
@@ -145,7 +145,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     ] {
         assert_eq!(
             checkout
-                .seek_file_extent_by_id(id, offset, target, B, &cancel)
+                .seek_file_extent(id, offset, target, B, &cancel)
                 .await?
                 .value,
             expected
