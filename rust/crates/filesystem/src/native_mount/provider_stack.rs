@@ -50,9 +50,9 @@ pub(super) enum ProviderFailure {
     Native(windows::core::HRESULT),
 }
 
-fn materialization_failure(error: crate::NativeTreeMaterializationError) -> ProviderFailure {
+fn materialization_failure(error: &crate::NativeTreeMaterializationError) -> ProviderFailure {
     match error {
-        crate::NativeTreeMaterializationError::Work(error) => ProviderFailure::Work(error),
+        crate::NativeTreeMaterializationError::Work(error) => ProviderFailure::Work(*error),
         crate::NativeTreeMaterializationError::Cancelled => ProviderFailure::Cancelled,
         crate::NativeTreeMaterializationError::OriginalWorkPoisoned => {
             ProviderFailure::OriginalWorkPoisoned
@@ -72,10 +72,12 @@ fn native_write<T>(
             backend_write_operations: 1,
             ..crate::WorkCounters::UNCHARGED
         };
-        meter.admit(delta).map_err(materialization_failure)?;
+        meter
+            .admit(delta)
+            .map_err(|error| materialization_failure(&error))?;
         let recorded = meter
             .record_admitted(delta)
-            .map_err(materialization_failure);
+            .map_err(|error| materialization_failure(&error));
         Ok((operation(), recorded))
     } else {
         Ok((operation(), Ok(())))
@@ -123,7 +125,7 @@ impl ProviderFiber {
         let recorded = if let Some(owned) = delete {
             let (_, recorded) = owned.delete.attempt(operation);
             drop(owned.allocation);
-            recorded.map_err(materialization_failure)
+            recorded.map_err(|error| materialization_failure(&error))
         } else {
             operation();
             Ok(())
@@ -178,20 +180,20 @@ fn provider_fiber(
         let owned = if let Some(meter) = meter {
             let delete = meter
                 .reserve_cleanup_write()
-                .map_err(materialization_failure)?;
+                .map_err(|error| materialization_failure(&error))?;
             meter
                 .admit(crate::WorkCounters {
                     backend_write_operations: 1,
                     ..crate::WorkCounters::UNCHARGED
                 })
-                .map_err(materialization_failure)?;
+                .map_err(|error| materialization_failure(&error))?;
             let allocation = meter
                 .claim(
                     bytes,
                     u64::from((bytes) != 0),
                     crate::WorkCounters::UNCHARGED,
                 )
-                .map_err(materialization_failure)?;
+                .map_err(|error| materialization_failure(&error))?;
             Some(OwnedExchange { allocation, delete })
         } else {
             None
@@ -280,7 +282,7 @@ impl ThreadConversion {
             .map(|meter| {
                 meter
                     .reserve_cleanup_write()
-                    .map_err(materialization_failure)
+                    .map_err(|error| materialization_failure(&error))
             })
             .transpose()?;
         let converted = native_write(meter, || {
@@ -329,7 +331,7 @@ impl ThreadConversion {
             Some(cleanup) => cleanup.attempt(operation),
             None => (operation(), Ok(())),
         };
-        let recorded = recorded.map_err(materialization_failure);
+        let recorded = recorded.map_err(|error| materialization_failure(&error));
         recorded?;
         converted.map_err(|error| ProviderFailure::Native(error.code()))
     }
