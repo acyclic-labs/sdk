@@ -73,3 +73,14 @@ pub(super) async fn read(
         .value
         .bytes)
 }
+
+pub(super) async fn open_checkout(
+    volume: &TestVolume,
+    mode: CheckoutMode,
+    cancel: &CancellationToken,
+) -> Result<TestCheckout, OperationFailure<FsError>> {
+    volume
+        .checkout(GenerationSelector::Head, mode, B, cancel)
+        .await
+        .map(|receipt| receipt.value)
+}

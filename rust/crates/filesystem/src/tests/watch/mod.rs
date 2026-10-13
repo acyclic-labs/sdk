@@ -125,14 +125,11 @@ fn root_replacement_during_a_baseline_invalidates_the_rescan()
     let original_identity = watch.root_identity();
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    watch.begin_rescan_with_work(&mut crate::NativeMaterializationWork::clone(
-        &work,
-    ))?;
+    watch.begin_rescan_with_work(&mut crate::NativeMaterializationWork::clone(&work))?;
     std::fs::rename(&root, &displaced)?;
     std::fs::create_dir(&root)?;
-    let finished = watch.finish_rescan_with_work(
-        &mut crate::NativeMaterializationWork::clone(&work),
-    )?;
+    let finished =
+        watch.finish_rescan_with_work(&mut crate::NativeMaterializationWork::clone(&work))?;
     assert_eq!(watch.root_identity(), original_identity);
     assert!(matches!(
         finished,
@@ -277,6 +274,7 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
     let to = root.join("to");
     let context = NativeEventContext {
         root: root.clone(),
+        _root_allocation: None,
         root_identity: NativeRootIdentity {
             device: 0,
             object: 0,
