@@ -352,7 +352,7 @@ impl Producer {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
                 self.files.clone(),
                 &self.config.owner.authority,
-                graph_root,
+                graph_root, None,
                 None,
             )?;
             let service_issuer = AuthorityIssuer::new(
@@ -372,7 +372,7 @@ impl Producer {
                     .authorize_project_source(
                         &context,
                         &service_issuer,
-                        &policy,
+                        policy.as_ref(),
                         source_task,
                         operation,
                         acyclic_harness::source_authorization::ProjectSourceSnapshot {
