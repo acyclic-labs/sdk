@@ -7,6 +7,47 @@ $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors.Message -join "`n") }
 $dispatch = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+$clangSetup = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+    $node.Clauses[0].Item1.Extent.Text -match '-in.*windows-arm64'
+}, $true)
+if ($null -eq $clangSetup) { throw 'missing lane-specific compiler setup' }
+$script:Probes = 0
+function Test-Path { $script:Probes++; return $false }
+foreach ($Lane in 'windows-napi', 'windows-clippy') {
+    & ([scriptblock]::Create($clangSetup.Extent.Text))
+}
+if ($script:Probes) { throw 'native-only audit probed the ARM64 compiler' }
+$Lane = 'windows'
+& ([scriptblock]::Create($clangSetup.Extent.Text))
+$Lane = 'windows-arm64'
+$missingCompiler = $false
+try { & ([scriptblock]::Create($clangSetup.Extent.Text)) } catch {
+    if ($_.Exception.Message -ne 'The Windows ARM64 cross-check requires the pinned clang toolchain.') { throw }
+    $missingCompiler = $true
+}
+if (-not $missingCompiler) { throw 'ARM64 audit accepted a missing compiler' }
+
+$settings = $ast.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+    $node.Left.VariablePath.UserPath -in 'ErrorActionPreference', 'PSNativeCommandUseErrorActionPreference'
+}, $true) | ForEach-Object { $_.Extent.Text }
+$powershell = (Get-Process -Id $PID).Path
+$probe = ($settings -join "`n") + "`n& '" + $powershell.Replace("'", "''") + "' -NoProfile -NonInteractive -Command 'exit 7'`nWrite-Output AUDIT_CONTINUED"
+$start = [System.Diagnostics.ProcessStartInfo]::new($powershell)
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+foreach ($argument in '-NoProfile', '-NonInteractive', '-EncodedCommand',
+    [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))) { $start.ArgumentList.Add($argument) }
+$process = [System.Diagnostics.Process]::Start($start)
+try {
+    if (-not $process.WaitForExit(10000)) { $process.Kill(); throw 'native failure probe timed out' }
+    $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+    if ($process.ExitCode -eq 0 -or $output.Contains('AUDIT_CONTINUED')) { throw 'production settings ignored native failure' }
+} finally { $process.Dispose() }
 $CargoTargetDir = 'fixture-target'
 $script:Calls = [System.Collections.Generic.List[string]]::new()
 $script:FailCommand = $null
@@ -34,6 +75,7 @@ try {
     foreach ($clause in $dispatch.Clauses) {
         $name = $clause.Item1.Value
         if (-not $expected.ContainsKey($name)) { throw "unexpected audit lane: $name" }
+        if ($clause.Item2.Statements[-1] -isnot [System.Management.Automation.Language.ReturnStatementAst]) { throw "audit falls through: $name" }
         $text = $clause.Item2.Extent.Text
         # Mock PowerShell functions consume the separator native Cargo receives.
         if ($name -eq 'windows-clippy' -and $text -notmatch '--locked -- -D warnings') { throw 'missing clippy warning gate' }

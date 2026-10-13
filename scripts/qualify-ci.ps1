@@ -12,29 +12,34 @@ New-Item -ItemType Directory -Force -Path `
     $env:SDK_TEMP_DIR, $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR, `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
 
-$clangDirectories = @()
-if ($env:LLVM_PATH) {
-    $clangDirectories += Join-Path $env:LLVM_PATH 'bin'
-}
-$clangDirectories += Join-Path $env:ProgramFiles 'LLVM\bin'
-$vswhere = Join-Path ${env:ProgramFiles(x86)} `
-    'Microsoft Visual Studio\Installer\vswhere.exe'
-if (Test-Path -LiteralPath $vswhere) {
-    $visualStudio = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang `
-        -property installationPath
-    if ($visualStudio) {
-        $clangDirectories += Join-Path $visualStudio 'VC\Tools\Llvm\x64\bin'
+$clangDirectory = $null
+if ($Lane -in @('windows', 'windows-arm64')) {
+    $clangDirectories = @()
+    if ($env:LLVM_PATH) {
+        $clangDirectories += Join-Path $env:LLVM_PATH 'bin'
+    }
+    $clangDirectories += Join-Path $env:ProgramFiles 'LLVM\bin'
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+        'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+        $visualStudio = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang `
+            -property installationPath
+        if ($visualStudio) {
+            $clangDirectories += Join-Path $visualStudio 'VC\Tools\Llvm\x64\bin'
+        }
+    }
+    $clangDirectory = $clangDirectories | Where-Object {
+        Test-Path -LiteralPath (Join-Path $_ 'clang.exe')
+    } | Select-Object -First 1
+    if ($Lane -eq 'windows-arm64' -and -not $clangDirectory) {
+        throw 'The Windows ARM64 cross-check requires the pinned clang toolchain.'
+    }
+    $env:PATH = "$clangDirectory;$env:PATH"
+    if ($Lane -eq 'windows-arm64') {
+        $env:CC_aarch64_pc_windows_msvc = Join-Path $clangDirectory 'clang.exe'
     }
 }
-$clangDirectory = $clangDirectories | Where-Object {
-    Test-Path -LiteralPath (Join-Path $_ 'clang.exe')
-} | Select-Object -First 1
-if (-not $clangDirectory) {
-    throw 'The Windows ARM64 cross-check requires the pinned clang toolchain.'
-}
-$env:PATH = "$clangDirectory;$env:PATH"
-$env:CC_aarch64_pc_windows_msvc = Join-Path $clangDirectory 'clang.exe'
 cargo fetch --locked
 
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
@@ -99,9 +104,11 @@ node scripts/build-stream-native.mjs check
 # The test build links dozens of test executables; LLVM's linker links them far
 # faster than link.exe. Release and binding builds above keep the default
 # linker so their outputs match publication builds.
-$lldLink = Join-Path $clangDirectory 'lld-link.exe'
-if (Test-Path -LiteralPath $lldLink) {
-    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
+if ($clangDirectory) {
+    $lldLink = Join-Path $clangDirectory 'lld-link.exe'
+    if (Test-Path -LiteralPath $lldLink) {
+        $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
+    }
 }
 
 # The workflow enables the Client-ProjFS optional feature before this lane, so

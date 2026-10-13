@@ -653,4 +653,9 @@ test("Windows native audits are independent required lanes without moving public
   const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
   assert.ok(action.includes('qualify-ci.ps1 -Lane "${{ inputs.lane }}"'));
   assert.match(action, /startsWith\(inputs.lane, 'windows-'\).*sdk-sccache-v5-windows-/);
+  for (const name of ["Find Visual Studio clang", "Restore Windows ARM64 compiler", "Install Windows ARM64 compiler"]) {
+    const begin = action.indexOf(`    - name: ${name}`);
+    const step = action.slice(begin, action.indexOf("\n    - name:", begin + 1));
+    assert.match(step, /inputs\.lane == 'windows' \|\| inputs\.lane == 'windows-arm64'/);
+  }
 });
