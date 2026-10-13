@@ -168,12 +168,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate must refresh to the indexed operation boundary",
                 ));
             }
-            let indexed = effects::retirement_proof_for_event_with_work(
-                &self.client,
-                self.reducer.authority(),
-                &event,
-                owned.work(),
-            )
+            let indexed = crate::store::effect_heads::Tree {
+                client: &self.client,
+                authority: self.reducer.authority(),
+            }
+            .retirement_proof_for_event_with_work(&event, owned.work())
             .await?;
             let (cloned, returned_owned) =
                 crate::wire_codec::CodecQuota::produce(owned.work(), |quota| {
@@ -315,9 +314,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh event binding is invalid".into(),
                 ));
             }
-            let (indexed, _) = effects::retirement_proof_with_work(
-                &self.client,
-                self.reducer.authority(),
+            let (indexed, _) = crate::store::effect_heads::Tree {
+                client: &self.client,
+                authority: self.reducer.authority(),
+            }
+            .retirement_proof_with_work(
                 &event,
                 &record,
                 2 * acyclic_stream::MAX_RECORD_BYTES as u64,

@@ -35,7 +35,7 @@ import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
 export type { WasmTaskAdmissionInput, WasmBatchAdmissionInput, WasmToolJsonValue, WasmTaskAdmissionWire, WasmDurableBatchWire, WasmTaskAdmissionIdentities, WasmExecutionPlacementWire, WasmTaskRunLimitsWire, WasmNativeLimitsWire, WasmMachineIdentityWire } from "../generated/wasm/acyclic_harness_wasm.js";
 /** MCP contracts are emitted from the production Rust protocol owner. */
-export type { McpCatalog, McpSchemaExposure, McpDiscoveryPolicy, McpToolDefinition, McpToolsPage,
+export type { McpCatalog, McpSchemaExposure, McpDiscoveryPolicy, McpToolDefinition,
   McpStdioRequest, McpStdioMethod, McpCallbackPolicy, McpCallbackRequest,
   McpHttpRequest, McpBrowserHttpProvider, McpBrowserExchange,
   McpBrowserResponseHead } from "../generated/wasm/acyclic_harness_wasm.js";
