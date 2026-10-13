@@ -138,7 +138,7 @@ impl PiSession {
         }
         let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
         let read_context = self.runtime.runtime.harness().durable_context(
-            binding.task_id, OperationId::from_bytes(binding.task_id.into_bytes()), Some(&io),
+            binding.task_id, acyclic_harness::OperationId::from_bytes(binding.task_id.into_bytes()), Some(&io),
         ).await?;
         let read_owner = self.runtime.runtime.task_host()
             .readonly_journal_owner(binding.task_id, work).await?
