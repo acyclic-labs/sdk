@@ -119,24 +119,17 @@ impl<'a> PiControlHost<'a> {
         requested: Option<&str>,
     ) -> Result<&'b str> {
         match requested {
-            Some(key) if binding.project_volumes.contains_key(key) => Ok(binding
+            Some(key) => binding
                 .project_volumes
                 .get_key_value(key)
-                .expect("known project")
-                .0
-                .as_str()),
-            Some(_) => Err(denied(
-                "selected project is not in the original source binding",
-            )),
-            None if binding.project_volumes.len() == 1 => Ok(binding
-                .project_volumes
-                .keys()
-                .next()
-                .expect("one project")
-                .as_str()),
-            None => Err(invalid(
-                "select an explicit root when the source does not have exactly one project",
-            )),
+                .map(|(key, _)| key.as_str())
+                .ok_or_else(|| denied("selected project is not in the original source binding")),
+            None => match binding.project_volumes.keys().next() {
+                Some(key) if binding.project_volumes.len() == 1 => Ok(key.as_str()),
+                _ => Err(invalid(
+                    "select an explicit root when the source does not have exactly one project",
+                )),
+            },
         }
     }
     pub(crate) async fn caller(

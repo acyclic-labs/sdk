@@ -278,13 +278,12 @@ fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
         .into());
     };
     let (cwd, mut input) = read_native_hook_call()?;
-    if !input.is_object() {
-        return Err(acyclic_harness::Error::NativeBoundary {
+    let object = input
+        .as_object_mut()
+        .ok_or(acyclic_harness::Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi control must be an object",
-        }
-        .into());
-    }
+        })?;
     if let Some(environment) = env::var_os(pi_caller::CALLER_ENVIRONMENT) {
         let text = environment
             .to_str()
@@ -292,10 +291,7 @@ fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
         if text.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
             return Err("Pi caller scope exceeds the 4 MiB bound".to_owned().into());
         }
-        input
-            .as_object_mut()
-            .expect("object checked above")
-            .insert("caller".to_owned(), serde_json::from_str(text)?);
+        object.insert("caller".to_owned(), serde_json::from_str(text)?);
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
