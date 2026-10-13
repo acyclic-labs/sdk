@@ -20,20 +20,8 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         &'a self,
         receive_operation: OperationId,
         item: &'a InboxItem,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_received_with_native_work<'a>(
-        &'a self,
-        _receive_operation: OperationId,
-        _item: &'a InboxItem,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "owned mailbox has no original native-ledger received parcel reader",
-        })
-    }
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
 }
 
 /// Capability-scoped context passed to live task code.

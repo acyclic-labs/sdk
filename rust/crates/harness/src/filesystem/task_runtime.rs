@@ -37,8 +37,6 @@ mod inspection;
 mod reconciliation;
 pub use inspection::TaskSourceInspection;
 mod command_input;
-#[cfg(not(target_arch = "wasm32"))]
-mod native_mailbox;
 pub(super) mod observed;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -294,15 +292,6 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_received_with_native_work<'a>(
-        &'a self,
-        receive_operation: OperationId,
-        item: &'a crate::scheduler::InboxItem,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        native_mailbox::read_received(self, receive_operation, item, work)
-    }
     fn send<'a>(
         &'a self,
         recipient: TaskId,
@@ -333,13 +322,25 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self,
         receive_operation: OperationId,
         item: &'a crate::scheduler::InboxItem,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.host
-                .read_received_mail_owned(self.owner.as_ref(), receive_operation, item, None)
-                .await
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(|io| io.original_native_work()) {
+            work.charge(acyclic_fs::WorkCounters::default())?;
+            if !self.native_custody.as_ref().is_some_and(|guard| guard.work().shares_allocation_context(work))
+                || !self.owner.native_shared_work_matches(work)
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "mailbox differs from its original SDK metadata and owner ledger",
+                });
+            }
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.host.read_received_mail_owned(self.owner.as_ref(), receive_operation, item, io).await
         })
     }
+
 }
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
