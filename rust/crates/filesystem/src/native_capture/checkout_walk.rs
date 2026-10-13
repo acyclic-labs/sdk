@@ -117,7 +117,6 @@ pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObject
     release_capture_paths(pending, meter)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,

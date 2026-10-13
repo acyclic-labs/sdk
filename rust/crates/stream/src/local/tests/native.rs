@@ -81,7 +81,6 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
         .err()
         .ok_or("Commit incorrectly reused an Append identity")?;
     assert_eq!(&failure, &StreamError::IdempotencyMismatch);
-    drop(failure);
     drop(reopened);
     meter.assert_refunded();
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -210,12 +209,11 @@ async fn prepared_denial_precedes_worker_and_canonical_edit()
     let request = prepared_fixture(&provider).await?;
     let meter = Arc::new(Meter::local());
     meter.deny_allocation.store(true, Ordering::SeqCst);
-    let error = match provider
+    let Err(error) = provider
         .native_prepare_commit(request, 64, meter.original())
         .await
-    {
-        Err(error) => error,
-        _ => return Err("denied preparation produced an accepted packet".into()),
+    else {
+        return Err("denied preparation produced an accepted packet".into());
     };
     assert_original_denial(&error, "allocation");
     assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 1);
@@ -264,7 +262,8 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
     let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice() else {
         return Err("fixture changed family".into());
     };
-    records[0] = OwnedBytes::from_static(b"actual-completion");
+    *records.first_mut().ok_or(StreamError::InvalidArgument)? =
+        OwnedBytes::from_static(b"actual-completion");
     let observed = reopened
         .inspect_idempotency(request.idempotency_key.clone())
         .await?
@@ -286,7 +285,11 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
     impl Write for Partial {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             let length = bytes.len().min(3);
-            self.bytes.extend_from_slice(&bytes[..length]);
+            self.bytes.extend_from_slice(
+                bytes
+                    .get(..length)
+                    .ok_or(std::io::ErrorKind::InvalidInput)?,
+            );
             Ok(length)
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -332,47 +335,53 @@ async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
     Ok(())
 }
 
-#[tokio::test]
-async fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
+#[test]
+fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let _serial = PERSIST_BLOCKER_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let request = prepared_fixture(&provider).await?;
-    let meter = Arc::new(Meter::local());
-    let packet = provider
-        .native_prepare_commit(request, 64, meter.original())
-        .await??;
-    let (packet, packet_guard) = packet.into_parts();
-    let (started_send, started_receive) = std::sync::mpsc::sync_channel(1);
-    let (release_send, release_receive) = std::sync::mpsc::sync_channel(1);
-    *JOURNAL_PERSIST_BLOCKER
-        .lock()
-        .map_err(|_| "poisoned fixture seam")? = Some((
-        Arc::as_ptr(&provider.inner.journal) as usize,
-        started_send,
-        release_receive,
-    ));
-    let future = packet.finish(OwnedBytes::from_static(b"accepted-without-reply"));
-    drop(future);
-    drop(packet_guard);
-    tokio::task::spawn_blocking(move || started_receive.recv()).await??;
-    assert!(meter.held.load(Ordering::SeqCst) > 0);
-    assert!(meter.write_bytes.load(Ordering::SeqCst) > 0);
-    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
-    release_send.send(())?;
-    assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 2);
-    drop(provider);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while meter.held.load(Ordering::SeqCst) != 0 {
-            tokio::task::yield_now().await;
-        }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let request = prepared_fixture(&provider).await?;
+        let meter = Arc::new(Meter::local());
+        let packet = provider
+            .native_prepare_commit(request, 64, meter.original())
+            .await??;
+        let (packet, packet_guard) = packet.into_parts();
+        let (started_send, started_receive) = std::sync::mpsc::sync_channel(1);
+        let (release_send, release_receive) = std::sync::mpsc::sync_channel(1);
+        *JOURNAL_PERSIST_BLOCKER
+            .lock()
+            .map_err(|_| "poisoned fixture seam")? = Some((
+            Arc::as_ptr(&provider.inner.journal) as usize,
+            started_send,
+            release_receive,
+        ));
+        let future = packet.finish(OwnedBytes::from_static(b"accepted-without-reply"));
+        drop(future);
+        drop(packet_guard);
+        tokio::task::spawn_blocking(move || started_receive.recv()).await??;
+        assert!(meter.held.load(Ordering::SeqCst) > 0);
+        assert!(meter.write_bytes.load(Ordering::SeqCst) > 0);
+        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+        release_send.send(())?;
+        assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 2);
+        drop(provider);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while meter.held.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        meter.assert_refunded();
+        Ok(())
     })
-    .await?;
-    meter.assert_refunded();
-    Ok(())
 }
 
 #[tokio::test]
@@ -574,7 +583,7 @@ async fn native_guard_rechecks_actual_canonical_drift_before_retaining_owner_ide
             async move {
                 if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                     let intervening = keyed_commit("guard-drift-other", 0)
-                        .map_err(|error| NativeGuardFailure::Provider(error))?;
+                        .map_err(NativeGuardFailure::Provider)?;
                     let result = provider
                         .native_commit(intervening, None, meter.original())
                         .await

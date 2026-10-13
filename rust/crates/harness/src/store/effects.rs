@@ -3,7 +3,7 @@ use super::effect_heads::Tree;
 use super::{HistoryCursor, HistoryReadLimits, history::HistoryIo, operations};
 use crate::{
     EffectId, Error, Result,
-    core::{Authority, AuthorityVerifier, Event, EventPayload},
+    core::{AuthorityVerifier, Event, EventPayload},
     wire_codec::CodecQuota,
 };
 use acyclic_stream::{Record, StreamProvider};

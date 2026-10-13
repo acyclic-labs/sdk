@@ -202,8 +202,8 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
         .await?,
         Some(original.clone())
     );
-    assert_eq!(
-        reopened
+    assert!(
+        !reopened
             .declare_operation(
                 &owner,
                 &renewed,
@@ -213,8 +213,7 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
                 None,
                 &mut None
             )
-            .await?,
-        false
+            .await?
     );
     assert!(matches!(
         reopened
@@ -264,9 +263,8 @@ async fn initial_state_must_reside_before_declaration_is_published() -> Result<(
     ));
     assert!(coordinator.scheduler().operation(operation_id).is_none());
 
-    assert_eq!(
-        declare(&mut coordinator, spec(operation_id, 0)?, "valid-state").await?,
-        true
+    assert!(
+        declare(&mut coordinator, spec(operation_id, 0)?, "valid-state").await?
     );
     assert!(matches!(
         DistributedCoordinator::open(&client, unbound_content, None, &mut None).await,

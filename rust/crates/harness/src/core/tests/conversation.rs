@@ -65,7 +65,7 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
         reducer.interaction(&ticket.id).unwrap().1.as_ref(),
         Some(&resolution)
     );
-    assert!(reducer.plan(&resolve(22, 4, resolution.clone())?).is_err());
+    assert!(reducer.plan(&resolve(22, 4, resolution)?).is_err());
     assert_eq!(restore(&reducer, &issuer())?, reducer);
     Ok(())
 }

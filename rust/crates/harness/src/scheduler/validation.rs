@@ -139,47 +139,44 @@ impl Scheduler {
                         "operation cannot be admitted in its current phase",
                     ));
                 }
-                match event {
-                    SchedulerEvent::Admitted { .. } => {
-                        if !covers(&reservation.admitted.0, &state.spec.resources, work)? {
-                            return Err(diagnostic(
-                                work,
-                                Conflict,
-                                "partial reservation cannot start an operation",
-                            ));
-                        }
-                        if state
-                            .reservation
-                            .as_ref()
-                            .is_some_and(|partial| !same_lease(partial, reservation))
-                        {
-                            return Err(diagnostic(
-                                work,
-                                Conflict,
-                                "partial admission must be completed by the same reservation",
-                            ));
-                        }
+                if let SchedulerEvent::Admitted { .. } = event {
+                    if !covers(&reservation.admitted.0, &state.spec.resources, work)? {
+                        return Err(diagnostic(
+                            work,
+                            Conflict,
+                            "partial reservation cannot start an operation",
+                        ));
                     }
-                    _ => {
-                        if !covers(&state.spec.resources.0, &reservation.admitted, work)?
-                            || covers(&reservation.admitted.0, &state.spec.resources, work)?
-                        {
-                            return Err(diagnostic(
-                                work,
-                                Invalid,
-                                "partial admission must be non-excessive and incomplete",
-                            ));
-                        }
-                        if let Some(previous) = &state.reservation
-                            && (!same_lease(previous, reservation)
-                                || !covers(&reservation.admitted.0, &previous.admitted, work)?)
-                        {
-                            return Err(diagnostic(
-                                work,
-                                Conflict,
-                                "partial reservation must advance the same lease",
-                            ));
-                        }
+                    if state
+                        .reservation
+                        .as_ref()
+                        .is_some_and(|partial| !same_lease(partial, reservation))
+                    {
+                        return Err(diagnostic(
+                            work,
+                            Conflict,
+                            "partial admission must be completed by the same reservation",
+                        ));
+                    }
+                } else {
+                    if !covers(&state.spec.resources.0, &reservation.admitted, work)?
+                        || covers(&reservation.admitted.0, &state.spec.resources, work)?
+                    {
+                        return Err(diagnostic(
+                            work,
+                            Invalid,
+                            "partial admission must be non-excessive and incomplete",
+                        ));
+                    }
+                    if let Some(previous) = &state.reservation
+                        && (!same_lease(previous, reservation)
+                            || !covers(&reservation.admitted.0, &previous.admitted, work)?)
+                    {
+                        return Err(diagnostic(
+                            work,
+                            Conflict,
+                            "partial reservation must advance the same lease",
+                        ));
                     }
                 }
             }

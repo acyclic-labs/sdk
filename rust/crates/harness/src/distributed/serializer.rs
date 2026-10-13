@@ -258,7 +258,7 @@ pub(super) fn inspect_envelope<'a>(
         let owned = if protocol {
             matches!(tag, 1 | 2)
         } else {
-            matches!(tag, 3 | 4 | 5 | 6)
+            matches!(tag, 3..=6)
         };
         if kind != WireType::LengthDelimited || !(nested || owned) {
             continue;

@@ -1,7 +1,7 @@
 use super::McpToolTransport;
 use crate::{
     Error, Result,
-    runtime::{RuntimeScope, ToolContext},
+    runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;

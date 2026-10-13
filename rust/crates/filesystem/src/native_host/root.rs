@@ -295,7 +295,7 @@ pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
     Ok(name[..length] == [78, 84, 70, 83])
 }
 
-/// Allows attributes removed by ProjFS hydration.
+/// Allows attributes removed by `ProjFS` hydration.
 #[cfg(windows)]
 pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     const MARKS: u32 = 0x0000_0200 | 0x0000_0400 | 0x0004_0000 | 0x0040_0000;

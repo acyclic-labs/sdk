@@ -74,7 +74,7 @@ impl PiNativeSourceCut {
             ..Default::default()
         })?;
         hex::encode_to_slice(Sha256::digest(self.entries_json.as_bytes()), &mut digest)
-            .expect("SHA256 hexadecimal output has its fixed exact extent");
+            .map_err(|_| invalid("Pi source digest exceeds its hexadecimal buffer"))?;
         if self.sha256.as_bytes() != digest {
             return Err(invalid(
                 "Pi native session differs from its original source digest",
@@ -140,7 +140,11 @@ impl PiNativeSourceCut {
             ids.0.push(id);
         }
         ids.0.sort_unstable();
-        if ids.0.windows(2).any(|pair| pair[0] == pair[1]) {
+        if ids
+            .0
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left == right))
+        {
             return Err(invalid("Pi native source repeats an entry identity"));
         }
         if previous != self.parent_leaf_id.as_deref() {
@@ -151,7 +155,10 @@ impl PiNativeSourceCut {
         if !text.ends_with('\n') || text.contains('\r') {
             return Err(invalid("Pi child session must be complete native JSONL"));
         }
-        let mut lines = text[..text.len() - 1].split('\n');
+        let mut lines = text
+            .strip_suffix('\n')
+            .ok_or_else(|| invalid("Pi child session must be complete native JSONL"))?
+            .split('\n');
         let header = crate::pi_root_provider::guarded_pi_decode::<NativeHeader>(
             lines
                 .next()

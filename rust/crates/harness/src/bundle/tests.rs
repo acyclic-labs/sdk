@@ -190,10 +190,10 @@ impl ExecutionJournal for RecordingTurnJournal {
 
     fn stage<'a>(
         &'a self,
-        operation: crate::OperationId,
-        key: &'a str,
-        bytes: &'a [u8],
-        media_type: &'static str,
+        _operation: crate::OperationId,
+        _key: &'a str,
+        _bytes: &'a [u8],
+        _media_type: &'static str,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::FileRef>> {
         crate::conversation::BoundedContentFuture::new(io, || async {
@@ -203,7 +203,7 @@ impl ExecutionJournal for RecordingTurnJournal {
 
     fn load<'a>(
         &'a self,
-        file: &'a crate::conversation::FileRef,
+        _file: &'a crate::conversation::FileRef,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() {

@@ -235,9 +235,15 @@ async fn stage_context_artifact(
     let mut writer = std::io::Cursor::new(buffer.as_mut_slice());
     std::io::Write::write_fmt(&mut writer, format_args!("pi-native/{command}/{role}.json"))
         .map_err(|_| invalid("Pi native artifact locator exceeds its fixed original bound"))?;
-    let length = writer.position() as usize;
-    let path = std::str::from_utf8(&buffer[..length])
-        .map_err(|_| invalid("Pi native artifact locator is not UTF-8"))?;
+    let length = usize::try_from(writer.position()).map_err(|_| {
+        acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
+    })?;
+    let path = std::str::from_utf8(
+        buffer
+            .get(..length)
+            .ok_or(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)?,
+    )
+    .map_err(|_| invalid("Pi native artifact locator is not UTF-8"))?;
     let io = PreparationIo::from_native_work(work)?;
     let (file, retained) = context
         .stage_file_once(operation, path, &encoded.0, media_type, role, Some(&io))
@@ -337,13 +343,16 @@ pub(crate) async fn approve_command(
         binding.native_session_id
     ))?;
     let title = pi_native_string(
-        std::str::from_utf8(&title.0[..title.1]).expect("formatter copies UTF-8"),
+        std::str::from_utf8(
+            title
+                .0
+                .get(..title.1)
+                .ok_or(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)?,
+        )
+        .map_err(|_| invalid("Pi interaction title is not UTF-8"))?,
         work,
     )?;
-    let interaction = (
-        Interaction::approval(title.0, command, digest)?,
-        title.1,
-    );
+    let interaction = (Interaction::approval(title.0, command, digest)?, title.1);
     journal
         .open_interaction(
             approval,
@@ -361,7 +370,13 @@ pub(crate) async fn approve_command(
     let encoded_grants = crate::pi_root_provider::guarded_pi_bytes(
         &[
             "interaction:resolve",
-            std::str::from_utf8(&respond.0[..respond.1]).expect("formatter copies UTF-8"),
+            std::str::from_utf8(
+                respond
+                    .0
+                    .get(..respond.1)
+                    .ok_or(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)?,
+            )
+            .map_err(|_| invalid("Pi interaction capability is not UTF-8"))?,
         ],
         1024,
         work,
@@ -406,6 +421,8 @@ fn native_fixed_text(arguments: std::fmt::Arguments<'_>) -> Result<([u8; 256], u
     std::io::Write::write_fmt(&mut writer, arguments).map_err(|_| {
         acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)
     })?;
-    let length = writer.position() as usize;
+    let length = usize::try_from(writer.position()).map_err(|_| {
+        acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
+    })?;
     Ok((bytes, length))
 }

@@ -130,28 +130,26 @@ impl Drop for Cancelled<'_> {
                     )
                     .expect("cancellation cleanup allowance was reserved");
             }
-            if let (Some(slot), Some(waiter)) = (waiters.get_mut(index), &self.waiter) {
-                if slot
+            if let (Some(slot), Some(waiter)) = (waiters.get_mut(index), &self.waiter)
+                && slot
                     .as_ref()
                     .is_some_and(|slot| Weak::ptr_eq(slot, &Arc::downgrade(waiter)))
+            {
+                *slot = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(lease) = waiter
+                    .registry_lease
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    && lease.registered.fetch_sub(1, Ordering::AcqRel) == 1
                 {
-                    *slot = None;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(lease) = waiter
-                        .registry_lease
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .as_ref()
-                    {
-                        if lease.registered.fetch_sub(1, Ordering::AcqRel) == 1 {
-                            retired_backing = Some(std::mem::take(&mut *waiters));
-                            self.token
-                                .state
-                                .registry_generation
-                                .fetch_add(1, Ordering::AcqRel);
-                            retired_lease = Some(lease.clone());
-                        }
-                    }
+                    retired_backing = Some(std::mem::take(&mut *waiters));
+                    self.token
+                        .state
+                        .registry_generation
+                        .fetch_add(1, Ordering::AcqRel);
+                    retired_lease = Some(lease.clone());
                 }
             }
         }
@@ -162,13 +160,13 @@ impl Drop for Cancelled<'_> {
             if let Some(lease) = retired_lease {
                 lease.retire_backing_deferred();
             }
-            if self.registered.is_some() {
-                if let Some(credit) = &mut self.native_cleanup {
-                    credit.record_deferred(crate::WorkCounters {
-                        items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    });
-                }
+            if self.registered.is_some()
+                && let Some(credit) = &mut self.native_cleanup
+            {
+                credit.record_deferred(crate::WorkCounters {
+                    items_examined: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                });
             }
         }
         let waker = self.waiter.take().and_then(|waiter| {

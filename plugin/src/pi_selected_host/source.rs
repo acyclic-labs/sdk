@@ -7,11 +7,11 @@ impl PiControlHost<'_> {
         context: &Arc<TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         task: TaskId,
-        requested: Option<&str>,
-        pinned: Option<LazySnapshotRef>,
+        requested_pinned: (Option<&str>, Option<LazySnapshotRef>),
         operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<PiNativeSelectedSource> {
+        let (requested, pinned) = requested_pinned;
         let root = self.protected.policy().root_task;
         authorize_selected_source(
             &self.runtime.runtime,
@@ -25,7 +25,12 @@ impl PiControlHost<'_> {
         .await?;
         let input = self.admission_input(task, work).await?;
         let mut key = work.display(self.project_key(&input.0.binding, requested)?)?;
-        let project = &input.0.binding.project_volumes[&key.0];
+        let project = input
+            .0
+            .binding
+            .project_volumes
+            .get(&key.0)
+            .ok_or_else(|| denied("selected project is absent from its original binding"))?;
         let workspace = if task == root {
             Arc::clone(
                 &self

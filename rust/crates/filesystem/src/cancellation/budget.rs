@@ -83,11 +83,11 @@ impl WaitMeter<'_> {
     }
 
     pub(super) fn observe_registry(&mut self, generation: u64) {
-        if let Some((owned_generation, bytes)) = self.admission.registry {
-            if owned_generation != generation {
-                self.release(bytes);
-                self.admission.registry = None;
-            }
+        if let Some((owned_generation, bytes)) = self.admission.registry
+            && owned_generation != generation
+        {
+            self.release(bytes);
+            self.admission.registry = None;
         }
     }
 }

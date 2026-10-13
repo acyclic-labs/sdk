@@ -95,8 +95,8 @@ const ROOT_SCHEMA: &str = r#"{
     }
 }"#;
 
-fn raw_schema(source: &'static str) -> &'static RawValue {
-    serde_json::from_str(source).expect("static Pi allocation schema")
+fn raw_schema<E: serde::ser::Error>(source: &'static str) -> Result<&'static RawValue, E> {
+    serde_json::from_str(source).map_err(E::custom)
 }
 
 #[derive(Serialize)]
@@ -132,7 +132,7 @@ impl Serialize for SelectedRootSchemas<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap as _;
         let mut properties = serializer.serialize_map(Some(self.0.project_volumes.len()))?;
-        let root = raw_schema(ROOT_SCHEMA);
+        let root = raw_schema::<S::Error>(ROOT_SCHEMA)?;
         for key in self.0.project_volumes.keys() {
             properties.serialize_entry(key, root)?;
         }
@@ -155,16 +155,16 @@ impl Serialize for RootAllocationSchema<'_> {
                 scratch: object_schema(
                     ["workspace_id", "generation"],
                     ScratchProperties {
-                        workspace_id: raw_schema(ID_SCHEMA),
+                        workspace_id: raw_schema::<S::Error>(ID_SCHEMA)?,
                         generation: object_schema(
                             ["kind", "provider", "key", "version"],
                             GenerationProperties {
-                                kind: raw_schema(r#"{"const":"generation"}"#),
+                                kind: raw_schema::<S::Error>(r#"{"const":"generation"}"#)?,
                                 provider: ConstantSchema {
                                     value: self.0.scratch.volume.provider(),
                                 },
-                                key: raw_schema(KEY_SCHEMA),
-                                version: raw_schema(r#"{"type":"null"}"#),
+                                key: raw_schema::<S::Error>(KEY_SCHEMA)?,
+                                version: raw_schema::<S::Error>(r#"{"type":"null"}"#)?,
                             },
                         ),
                     },

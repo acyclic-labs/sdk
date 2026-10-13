@@ -23,12 +23,12 @@ impl PiNativeRoot {
 
     pub(crate) async fn create_directories(
         &mut self,
-        owner: &Arc<TaskJournalOwner<acyclic_stream::LocalStream>>,
-        shared: &Arc<TaskContext>,
+        owner_shared: (
+            &Arc<TaskJournalOwner<acyclic_stream::LocalStream>>,
+            &Arc<TaskContext>,
+        ),
         binding: &PiTaskBinding,
-        options: &NativeViewOptions,
-        intent: &PiNativeLaunchIntent,
-        session: &FileRef,
+        options_intent_session: (&NativeViewOptions, &PiNativeLaunchIntent, &FileRef),
         bindings: &[BorrowedNativeVolumeBinding<
             '_,
             crate::LocalAuthorityBackend,
@@ -36,9 +36,18 @@ impl PiNativeRoot {
         >],
         meter: &NativeMaterializationWork,
     ) -> Result<()> {
+        let (owner, shared) = owner_shared;
+        let (options, intent, session) = options_intent_session;
         let io = PreparationIo::from_native_work(meter)?;
         let mut history = &io;
         owner.verify(false, &mut Some(&mut history)).await?;
+        let reject = || Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi native directory creation differs from its admitted seed",
+        };
+        let [scratch] = bindings else {
+            return Err(reject());
+        };
         if owner.task_id() != self.task
             || binding.task_id != self.task
             || shared.durable_task_id() != Some(self.task)
@@ -48,23 +57,19 @@ impl PiNativeRoot {
                 ._metadata_custody
                 .work()
                 .shares_allocation_context(meter)
-            || bindings.len() != 1
-            || bindings[0].volume != &self.scratch
-            || bindings[0].path != "scratch"
-            || !bindings[0].writable
-            || bindings[0].namespace != &NativeVolumeNamespace::MaterializedDirectory
+            || scratch.volume != &self.scratch
+            || scratch.path != "scratch"
+            || !scratch.writable
+            || scratch.namespace != &NativeVolumeNamespace::MaterializedDirectory
             || session.volume() != &self.scratch
             || session.path() != intent.session_path
         {
-            return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                reason: "Pi native directory creation differs from its admitted seed",
-            });
+            return Err(reject());
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             ContentGrant::verify(
-                bindings[0].verifier,
-                bindings[0].scope,
+                scratch.verifier,
+                scratch.scope,
                 &self.scratch,
                 operation,
                 shared.scope().limits().file_bytes,
@@ -218,15 +223,10 @@ impl PiNativeRoot {
                 Err(cause) => return Err(Error::from(cause)),
             };
             let custody_failure = mount.retain_payload_allocation(&mut allocation).err();
-            *retained = Some(Arc::new(mount));
+            let mount = retained.insert(Arc::new(mount));
             if let Some(cause) = custody_failure {
                 *retained_allocation = Some(allocation);
-                if retained
-                    .as_ref()
-                    .expect("actual mount retained above")
-                    .retire(&CancellationToken::new())
-                    .is_ok()
-                {
+                if mount.retire(&CancellationToken::new()).is_ok() {
                     *retained = None;
                     *retained_allocation = None;
                 }
@@ -277,7 +277,12 @@ impl PiNativeRoot {
             reference.version(),
             Some(meter),
         )
-        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))?;
+        .and_then(|(reference, custody)| {
+            Ok((
+                reference,
+                custody.ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?,
+            ))
+        })?;
         let namespace = NativeVolumeNamespace::LazyMount { snapshot };
         let mut metadata = meter.claim(0, 0, acyclic_fs::WorkCounters::default())?;
         metadata.absorb(&mut volume_copy.1)?;
@@ -316,25 +321,25 @@ impl PiNativeRoot {
             )
             .await?;
         let allocation = self.witnessed_allocation()?;
+        let reject = || Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi mixed declaration differs from its retained original creator",
+        };
+        let [scratch, project] = bindings else {
+            return Err(reject());
+        };
         if self.task != owner.task_id()
             || allocation.root != options.root
-            || bindings.len() != 2
-            || bindings[0].volume != &self.scratch
-            || bindings[0].path != "scratch"
-            || !bindings[0].writable
+            || scratch.volume != &self.scratch
+            || scratch.path != "scratch"
+            || !scratch.writable
             || !matches!(
-                bindings[0].namespace,
+                scratch.namespace,
                 NativeVolumeNamespace::MaterializedDirectory
             )
-            || !matches!(
-                bindings[1].namespace,
-                NativeVolumeNamespace::LazyMount { .. }
-            )
+            || !matches!(project.namespace, NativeVolumeNamespace::LazyMount { .. })
         {
-            return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                reason: "Pi mixed declaration differs from its retained original creator",
-            });
+            return Err(reject());
         }
         let view =
             NativeVolumeView::prepare(owner, guards, allocation, options, bindings, meter)?.await?;
@@ -375,23 +380,26 @@ pub(crate) async fn native_root<'a>(
     meter: &NativeMaterializationWork,
 ) -> Result<PiNativeRoot> {
     meter.admit(WorkCounters::default())?;
+    let reject = || Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Unauthorized,
+        reason: "Pi native seed metadata differs from its original admitted child",
+    };
+    let [scratch] = bindings else {
+        return Err(reject());
+    };
     if shared.durable_task_id() != Some(owner.task_id())
         || owner.task_id() != binding.task_id
-        || bindings.len() != 1
-        || bindings[0].volume != &binding.scratch.volume
-        || bindings[0].path != "scratch"
-        || !bindings[0].writable
+        || scratch.volume != &binding.scratch.volume
+        || scratch.path != "scratch"
+        || !scratch.writable
         || !matches!(
-            bindings[0].namespace,
+            scratch.namespace,
             NativeVolumeNamespace::MaterializedDirectory
         )
         || !options.work_per_volume.has_finite_allowances()
         || !matches!(binding.scratch.allocation, PiScratchAllocation::Created(_))
     {
-        return Err(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unauthorized,
-            reason: "Pi native seed metadata differs from its original admitted child",
-        });
+        return Err(reject());
     }
     protected.authority(meter)?;
     intent.validate(meter)?;
@@ -404,7 +412,7 @@ pub(crate) async fn native_root<'a>(
     })?;
     if session.volume() != &binding.scratch.volume
         || session.path() != intent.session_path
-        || bindings[0].generation.as_resource().key() != session_generation
+        || scratch.generation.as_resource().key() != session_generation
         || session.descriptor().byte_length() > intent.maximum_bytes
     {
         return Err(Error::NativeBoundary {

@@ -228,7 +228,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .read(
                 &workspace,
                 Some(generation),
-                &format!("/{}", path),
+                &format!("/{path}"),
                 maximum_bytes, None)
             .await?;
         let metadata = self
@@ -296,12 +296,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let unmeasured;
-        let io = match io {
-            Some(io) => io,
-            None => {
-                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                &unmeasured
-            }
+        let io = if let Some(io) = io { io } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
         };
         let reference = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
         let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
@@ -398,12 +395,9 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let unmeasured;
-    let io = match io {
-        Some(io) => io,
-        None => {
-            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &unmeasured
-        }
+    let io = if let Some(io) = io { io } else {
+        unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        &unmeasured
     };
     io.remaining()?;
     let bytes = io.sdk(generation.read(path, maximum, io, io.cancellation()).await)?;

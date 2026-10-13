@@ -23,22 +23,22 @@ impl Cancelled<'_> {
         if self.registered.is_none() {
             let mut free = None;
             for (index, entry) in waiters.iter().enumerate() {
-                if let Some(meter) = &mut self.meter {
-                    if let Err(error) = meter.charge(crate::WorkCounters {
+                if let Some(meter) = &mut self.meter
+                    && let Err(error) = meter.charge(crate::WorkCounters {
                         items_examined: 1,
                         ..crate::WorkCounters::default()
-                    }) {
-                        return Poll::Ready(Err(error));
-                    }
+                    })
+                {
+                    return Poll::Ready(Err(error));
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = self.native_original {
-                    if let Err(error) = original.charge(crate::WorkCounters {
+                if let Some(original) = self.native_original
+                    && let Err(error) = original.charge(crate::WorkCounters {
                         items_examined: 1,
                         ..crate::WorkCounters::UNCHARGED
-                    }) {
-                        return Poll::Ready(Err(error.into()));
-                    }
+                    })
+                {
+                    return Poll::Ready(Err(error.into()));
                 }
                 if entry.is_none() {
                     free = Some(index);
@@ -208,13 +208,13 @@ impl Cancelled<'_> {
             };
             let waiter = Arc::new(waiter_value);
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = native_original {
-                if let Err(error) = original.record_admitted(crate::WorkCounters {
+            if let Some(original) = native_original
+                && let Err(error) = original.record_admitted(crate::WorkCounters {
                     items_examined: 1,
                     ..crate::WorkCounters::UNCHARGED
-                }) {
-                    return Poll::Ready(Err(error.into()));
-                }
+                })
+            {
+                return Poll::Ready(Err(error.into()));
             }
             if grows {
                 if let Some(meter) = &mut self.meter {
@@ -252,15 +252,15 @@ impl Cancelled<'_> {
                     }
                     return Poll::Ready(Err(CancellationWaitError::AllocationFailed));
                 }
-                if let Some(meter) = &mut self.meter {
-                    if let Err(error) = meter.charge(crate::WorkCounters {
+                if let Some(meter) = &mut self.meter
+                    && let Err(error) = meter.charge(crate::WorkCounters {
                         bytes_copied: (waiters.len()
                             * std::mem::size_of::<Option<Weak<CancellationWaiter>>>())
                             as u64,
                         ..crate::WorkCounters::default()
-                    }) {
-                        return Poll::Ready(Err(error));
-                    }
+                    })
+                {
+                    return Poll::Ready(Err(error));
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 let new_lease = if let Some(original) = native_original {
@@ -276,19 +276,18 @@ impl Cancelled<'_> {
                         drop(replacement);
                         return Poll::Ready(Err(error.into()));
                     }
-                    let generation = match self
+                    let generation = if let Some(generation) = self
                         .token
                         .state
                         .registry_generation
                         .load(Ordering::Acquire)
                         .checked_add(1)
                     {
-                        Some(generation) => generation,
-                        None => {
-                            drop(waiters);
-                            drop(replacement);
-                            return Poll::Ready(Err(crate::WorkError::Overflow.into()));
-                        }
+                        generation
+                    } else {
+                        drop(waiters);
+                        drop(replacement);
+                        return Poll::Ready(Err(crate::WorkError::Overflow.into()));
                     };
                     let mut metadata = match original.claim(
                         std::mem::size_of::<NativeRegistryLease>() as u64,
@@ -407,10 +406,10 @@ impl Cancelled<'_> {
                     }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = native_original {
-                    if let Err(error) = original.admit(crate::WorkCounters::UNCHARGED) {
-                        return Poll::Ready(Err(error.into()));
-                    }
+                if let Some(original) = native_original
+                    && let Err(error) = original.admit(crate::WorkCounters::UNCHARGED)
+                {
+                    return Poll::Ready(Err(error.into()));
                 }
                 waiters = self
                     .token

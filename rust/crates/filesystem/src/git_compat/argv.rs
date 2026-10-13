@@ -218,7 +218,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
                 )),
             };
             Ok(GitCommand::Reset {
-                target: target,
+                target,
                 mode,
             })
         }

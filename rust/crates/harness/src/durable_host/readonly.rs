@@ -136,7 +136,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
         )?;
-        if &origin.owner != &self.host.owner
+        if origin.owner != self.host.owner
             || origin.preparation_task != self.task()
             || self.admission.parent != Some(origin.parent_task)
             || request.child.parent != Some(origin.parent_task)
@@ -328,10 +328,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             let _ = task;
             work.remaining()?;
-            return Err(Error::NativeBoundary {
+            Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "protected native preparation requires native-execution",
-            });
+            })
         }
         #[cfg(feature = "native-execution")]
         {

@@ -331,6 +331,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
             .await
             .map_err(|error| Error::Storage(error.to_string()))??;
         assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
+        drop(registry);
         drop(transport);
         drop(callback);
         drop(disk);

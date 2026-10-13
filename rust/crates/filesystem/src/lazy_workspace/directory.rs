@@ -439,21 +439,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 return Err(error);
             }
         };
-        let next = match next {
-            Some((phase, mut guard)) => {
-                let mut allocation = directory.allocation;
-                allocation.absorb(&mut guard)?;
-                Some(LazyDirectoryCursor {
-                    cut,
-                    directory: directory.value,
-                    phase,
-                    allocation,
-                })
-            }
-            None => {
-                directory.retire(ctx)?;
-                None
-            }
+        let next = if let Some((phase, mut guard)) = next {
+            let mut allocation = directory.allocation;
+            allocation.absorb(&mut guard)?;
+            Some(LazyDirectoryCursor {
+                cut,
+                directory: directory.value,
+                phase,
+                allocation,
+            })
+        } else {
+            directory.retire(ctx)?;
+            None
         };
         Ok((
             LazyDirectoryPage {

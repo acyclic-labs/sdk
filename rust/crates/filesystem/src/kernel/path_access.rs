@@ -481,11 +481,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     let __object_args = (object_id, bytes, work, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    let __object_result = self
+
+                    self
                         .store
                         .put(__object_args.0, __object_args.1, &mut __object_work)
-                        .await;
-                    __object_result
+                        .await
                 }
             }
             .await;
@@ -599,11 +599,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     let __object_args = (object, work, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result = self
+
+                    self
                         .store
                         .put_hashed(__object_args.0, &mut __object_work)
-                        .await;
-                    __object_result
+                        .await
                 }
             }
             .await;
@@ -624,11 +624,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     let __object_args = (writes, work, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result = self
+
+                    self
                         .store
                         .put_many(__object_args.0, &mut __object_work)
-                        .await;
-                    __object_result
+                        .await
                 }
             }
             .await;
@@ -650,11 +650,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     let __object_args = (scope, work, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result = self
+
+                    self
                         .store
                         .flush_before_publish(__object_args.0, &mut __object_work)
-                        .await;
-                    __object_result
+                        .await
                 }
             }
             .await;
@@ -742,11 +742,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     let __object_args = (object_id, maximum_bytes, work, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    let __object_result = self
+
+                    self
                         .store
                         .read(__object_args.0, __object_args.1, &mut __object_work)
-                        .await;
-                    __object_result
+                        .await
                 }?;
                 self.admit(object_id, &read.bytes, 0, &mut accounting)
                     .map_err(object_error)?;

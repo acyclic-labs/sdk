@@ -1042,6 +1042,7 @@ mod tests {
         let completion = Arc::clone(&watch.shared);
         let funded_live = original.with_original_leaf(|work| work.live_allocation_bytes());
         *sink.watch.lock().map_err(|_| "poisoned callback custody")? = Some(watch);
+        drop(work);
         std::fs::write(root.path().join("retire"), b"native event")?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !completion.completed.load(Ordering::Acquire) && std::time::Instant::now() < deadline {

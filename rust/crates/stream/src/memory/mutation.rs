@@ -86,6 +86,7 @@ fn retain(
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
     result: IdempotencyOutcome,
+    allocation: Allocation,
 ) {
     let envelope = if matches!(
         &result,
@@ -100,7 +101,7 @@ fn retain(
         digest,
         result,
         envelope,
-        _allocation: Default::default(),
+        _allocation: allocation,
     };
     if entry.envelope().is_some() || entry.replay.is_some() {
         state.retained.push(entry);

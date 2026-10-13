@@ -1,4 +1,12 @@
 use super::*;
+type ReservationCoordinates = (
+    [u8; 16],
+    (
+        crate::pi_native::PiNativePaths,
+        acyclic_fs::NativeAllocation,
+    ),
+    (String, acyclic_fs::NativeAllocation),
+);
 
 impl crate::pi_host::PiControlHost<'_> {
     pub(super) fn parent_alias(&self, task: TaskId) -> Result<&str> {
@@ -21,14 +29,7 @@ impl crate::pi_host::PiControlHost<'_> {
         &self,
         plan: &PiForkPlan,
         work: &NativeMaterializationWork,
-    ) -> Result<(
-        [u8; 16],
-        (
-            crate::pi_native::PiNativePaths,
-            acyclic_fs::NativeAllocation,
-        ),
-        (String, acyclic_fs::NativeAllocation),
-    )> {
+    ) -> Result<ReservationCoordinates> {
         let (root_key, project) = plan
             .commit
             .child

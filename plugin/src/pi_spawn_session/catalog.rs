@@ -235,7 +235,11 @@ impl PiSession {
             .position(|entry| entry.fork_key == operations.fork.into_bytes())
             .ok_or_else(|| invalid("Pi creator has no durably saved Preparing record"))?;
         self.prepare_native_catalog_slot(work)?;
-        let pending = &self.state.pending[index];
+        let pending = self
+            .state
+            .pending
+            .get(index)
+            .ok_or_else(|| invalid("Pi pending creator record disappeared"))?;
         self.spawn_validate_pending(pending, commit, operations, work)?;
         let key = commit
             .child

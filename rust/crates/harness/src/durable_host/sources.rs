@@ -187,7 +187,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             Some(native) => {
                 provider
                     .verify_with_native_work(policy_context, snapshot, native)?
-                    .await?
+                    .await?;
             }
             None => provider.verify(policy_context, snapshot).await?,
         }

@@ -56,15 +56,16 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         .await?;
     let identity = work.root_identity(Path::new(path))?;
     if let Some(expected) = expected
-        && identity != expected {
-            return Err(Error::NativeWork {
-                cause: NativeTreeMaterializationError::AllocationChanged {
-                    expected,
-                    actual: identity,
-                },
-                custody: None,
-            });
-        }
+        && identity != expected
+    {
+        return Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::AllocationChanged {
+                expected,
+                actual: identity,
+            },
+            custody: None,
+        });
+    }
     current_owner
         .verify(
             false,
@@ -91,16 +92,17 @@ impl PiRootProvider {
                 reason: "created root source differs from the original readonly task",
             });
         }
-        if !request.binding.project_volumes.contains_key(key) {
-            return Err(Error::NativeBoundary {
+        let volume = request
+            .binding
+            .project_volumes
+            .get(key)
+            .ok_or(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "created source is not an originally selected root",
-            });
-        }
+            })?;
         let mut io =
             acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let read = request.binding.project_volumes[key]
-            .capability(VolumeOperation::Read, &mut Some(&mut io))?;
+        let read = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
         if !context.scope().grants().contains(&read) {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
@@ -131,7 +133,15 @@ impl PiRootProvider {
         })?;
         let identity = work.root_identity(Path::new(path))?;
         let expected = acyclic_fs::NativeRootIdentity::from_bytes(
-            observed.0.1.roots[key].native_root_identity,
+            observed
+                .0
+                .1
+                .roots
+                .get(key)
+                .ok_or_else(|| {
+                    PiRootProvider::native_failure("created source has no original root allocation")
+                })?
+                .native_root_identity,
         );
         if identity != expected {
             return Err(Error::NativeWork {
@@ -213,7 +223,11 @@ pub(crate) async fn prove_root_project_source_with_native_work(
         .ok_or_else(|| {
             PiRootProvider::native_failure("project is not an originally selected root source")
         })?;
-    let root = &recorded.0.roots[key];
+    let root = recorded
+        .0
+        .roots
+        .get(key)
+        .ok_or_else(|| PiRootProvider::native_failure("root allocation is missing"))?;
     if snapshot.workspace_id.into_bytes() != root.repository_workspace_id
         || snapshot.source.identity != root.source_identity
         || snapshot.source.epoch < root.source_epoch
@@ -244,7 +258,10 @@ pub(crate) async fn prove_root_project_source_with_native_work(
             "root source selection differs from original attachment",
         ));
     }
-    let input = &inputs.0[key];
+    let input = inputs
+        .0
+        .get(key)
+        .ok_or_else(|| PiRootProvider::native_failure("root attachment input is missing"))?;
     provider.validate_attachment(input)?;
     if input.0.identity != root.source_identity
         || input.0.epoch != root.source_epoch

@@ -199,7 +199,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
                 }),
             )
             .ok()?;
-        publish(&mut state, paths, histories, envelope);
+        publish(&mut state, paths, histories, envelope).ok()?;
     }
     state.retained = inventory;
     state.decision = decision;
@@ -269,7 +269,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                 None,
             ),
         };
-        retain(state, envelope, key, digest, result);
+        retain(state, envelope, key, digest, result, Default::default());
     }
     Some(())
 }

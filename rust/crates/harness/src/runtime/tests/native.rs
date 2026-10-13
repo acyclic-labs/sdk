@@ -29,7 +29,10 @@ impl ToolPolicy for OpaqueRouter {
 fn native_work(
     cancellation: &acyclic_fs::CancellationToken,
 ) -> acyclic_fs::NativeMaterializationWork {
-    acyclic_fs::NativeMaterializationWork::new(Default::default(), cancellation)
+    acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(256, 16_384),
+        cancellation,
+    )
         .expect("fixture ledger")
 }
 
@@ -238,7 +241,7 @@ async fn native_policy_approval_keeps_exact_binding_and_paid_utf8_prompt() -> Re
 fn native_policy_identity_denies_cancelled_and_exhausted_copy_before_strings() -> Result<()> {
     let (policy, _, _) = native_policy_fixture_inputs();
     let cancellation = acyclic_fs::CancellationToken::new();
-    let mut budget = acyclic_fs::WorkBudget::default();
+    let mut budget = acyclic_fs::performance::work_budget(256, 16_384);
     budget.bytes_copied = 0;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");

@@ -217,7 +217,7 @@ where
                         &outcome,
                         child,
                         operation_id,
-                        &notice,
+                        notice,
                     )?.0;
                     Ok(if matches!(&outcome, JoinOutcome::AlreadyApplied(_)) {
                         ProjectJoinOutcome::AlreadyApplied(receipt)

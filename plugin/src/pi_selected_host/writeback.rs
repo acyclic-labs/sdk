@@ -64,12 +64,13 @@ impl PiControlHost<'_> {
             return Err(denied("writeback replaced its Root admission with a child"));
         };
         let root = PiWritebackRoot::new(
-            Arc::clone(&self.protected),
-            self.resources,
-            Arc::clone(&self.filesystem),
-            self.stream.clone(),
-            Arc::clone(context),
-            Arc::clone(owner),
+            (
+                Arc::clone(&self.protected),
+                self.resources,
+                Arc::clone(&self.filesystem),
+                self.stream.clone(),
+            ),
+            (Arc::clone(context), Arc::clone(owner)),
             (
                 crate::pi_root_inputs::PiRootRequest {
                     binding: input_cut.0.binding,
@@ -77,11 +78,7 @@ impl PiControlHost<'_> {
                 },
                 input_cut.1,
             ),
-            key,
-            original,
-            &retained.path,
-            operation,
-            identity,
+            (key, original, &retained.path, operation, identity),
             work,
         )
         .await?;
@@ -106,7 +103,9 @@ impl PiControlHost<'_> {
                         crate::pi_fork_host::native_lazy_error(source)
                     }
                     source => Error::NativeWorkspacePublication {
-                        source: Box::new(acyclic_fs::NativeWorkspacePublicationError::State(source)),
+                        source: Box::new(acyclic_fs::NativeWorkspacePublicationError::State(
+                            source,
+                        )),
                         custody: None,
                     },
                 })?;
@@ -216,8 +215,7 @@ impl PiControlHost<'_> {
             &self.runtime,
             &self.filesystem,
             &self.protected,
-            context,
-            owner,
+            (context, owner),
             binding,
             &descriptor,
             work,

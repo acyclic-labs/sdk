@@ -122,7 +122,7 @@ impl<'a> AuthorityWork<'a> {
             return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
                 &mut buffer.0,
                 &mut buffer.1,
-                self.native_meter(),
+                &self.native_meter(),
             )
             .map_err(|error| self.native_io_failure(error));
         }
@@ -212,19 +212,12 @@ impl<'a> AuthorityWork<'a> {
         expiry: u64,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
         let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
-        let length = crate::operation_window::stream_lease_path_encode(
+        let length = crate::operation_window::lease_path::encode(
             workspace,
             lease,
             expiry,
             &mut text,
-            Some(&mut |completed, encoded, copied| {
-                let work = codec_work(encoded, copied, 0);
-                if completed {
-                    self.charge(work)
-                } else {
-                    self.admit(work)
-                }
-            }),
+            Some(self),
         )?;
         let text = std::str::from_utf8(&text[..length])
             .map_err(|_| authority_corrupt("lease path is not UTF-8", self))?;

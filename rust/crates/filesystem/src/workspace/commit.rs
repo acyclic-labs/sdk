@@ -57,25 +57,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                         .await?;
                     (Some(receipt.value), receipt.work)
                 };
-                let value = match outcome.and_then(|outcome| self.commit_value(outcome)) {
-                    Some(value) => value,
-                    None => {
-                        let remaining = work.remaining(budget).map_err(|error| {
-                            crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work)
-                        })?;
-                        let actual = self.workspace.head(remaining, cancellation).await.map_err(
-                            |failure| {
-                                failure
-                                    .map_with_prior_work(work, std::convert::identity)
-                                    .map_error(E::from)
-                            },
-                        )?;
-                        work = work.checked_add(actual.work).map_err(|error| {
-                            crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work)
-                        })?;
-                        TransactionCommit::Conflict {
-                            actual: actual.value,
-                        }
+                let value = if let Some(value) = outcome.and_then(|outcome| self.commit_value(outcome)) { value } else {
+                    let remaining = work.remaining(budget).map_err(|error| {
+                        crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work)
+                    })?;
+                    let actual = self.workspace.head(remaining, cancellation).await.map_err(
+                        |failure| {
+                            failure
+                                .map_with_prior_work(work, std::convert::identity)
+                                .map_error(E::from)
+                        },
+                    )?;
+                    work = work.checked_add(actual.work).map_err(|error| {
+                        crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work)
+                    })?;
+                    TransactionCommit::Conflict {
+                        actual: actual.value,
                     }
                 };
                 if matches!(value, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)) {

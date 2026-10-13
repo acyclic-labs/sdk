@@ -88,13 +88,13 @@ impl Drop for PreparedCancellation {
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(lease) = &self.registry_lease {
-                if let Some(credit) = &mut *lease.cancellation_visits.lock() {
-                    credit.record_deferred(crate::WorkCounters {
-                        items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    });
-                }
+            if let Some(lease) = &self.registry_lease
+                && let Some(credit) = &mut *lease.cancellation_visits.lock()
+            {
+                credit.record_deferred(crate::WorkCounters {
+                    items_examined: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                });
             }
         }
         // The iterator and original buffer have physically dropped.
@@ -314,15 +314,15 @@ impl CancellationToken {
                 visits += 1;
                 Ok::<(), crate::WorkError>(())
             })?;
-            if let Some(lease) = &lease {
-                if let Some(credit) = &mut *lease.cancellation_visits.lock() {
-                    // Record the actual lookup, including empty/dead slots,
-                    // on this backing's original prepaid terminal credit.
-                    credit.record_deferred(crate::WorkCounters {
-                        items_examined: visits,
-                        ..crate::WorkCounters::UNCHARGED
-                    });
-                }
+            if let Some(lease) = &lease
+                && let Some(credit) = &mut *lease.cancellation_visits.lock()
+            {
+                // Record the actual lookup, including empty/dead slots,
+                // on this backing's original prepaid terminal credit.
+                credit.record_deferred(crate::WorkCounters {
+                    items_examined: visits,
+                    ..crate::WorkCounters::UNCHARGED
+                });
             }
             lease
         };

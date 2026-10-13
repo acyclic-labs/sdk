@@ -50,11 +50,11 @@ impl<'tools> DurableToolRunner<'tools> {
     ) -> Result<crate::store::HistoryContentFuture<'a, (Outcome<Value>, NativeCustody)>> {
         let io = preparation_io(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            if !context.native_metadata_matches(work)
+        if let Some(work) = work
+            && (!context.native_metadata_matches(work)
                 || !self
                     .work
-                    .is_some_and(|original| original.shares_ledger(work))
+                    .is_some_and(|original| original.shares_ledger(work)))
             {
                 return Err(boundary(
                     io.as_ref(),
@@ -62,7 +62,6 @@ impl<'tools> DurableToolRunner<'tools> {
                     "tool context or runner belongs to another work",
                 ));
             }
-        }
         let tool = self
             .tools
             .get(&definition.name, Some(&definition.revision), io.as_ref())?

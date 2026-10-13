@@ -79,7 +79,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
             LazyLookup::Source { source, node } => {
                 self.populate_source_node(transaction, path, *source, *node, maximum, ctx)
-                    .await?
+                    .await?;
             }
         }
         Ok(true)

@@ -40,7 +40,7 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
             }
             Poll::Pending if write.pending.is_none() => break false,
             Poll::Pending if Instant::now() < deadline => {
-                std::thread::park_timeout(Duration::from_millis(1))
+                std::thread::park_timeout(Duration::from_millis(1));
             }
             Poll::Pending => return Err(io::ErrorKind::TimedOut.into()),
         }
@@ -76,7 +76,12 @@ fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
     let _ = job.run();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(result) = state.lock().unwrap().result.take() {
+        if let Some(result) = state
+            .lock()
+            .map_err(|_| io::ErrorKind::Other)?
+            .result
+            .take()
+        {
             result?;
             break;
         }
@@ -235,7 +240,11 @@ fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
         .sender
         .try_send(run_blocking_io(|| (), None)?.pending.take().unwrap())
         .map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
-    workers.admission.lock().unwrap().queued_jobs = 1;
+    workers
+        .admission
+        .lock()
+        .map_err(|_| io::ErrorKind::Other)?
+        .queued_jobs = 1;
     let context = Context::from_waker(Waker::noop());
     assert!(matches!(
         poll_submission_with(&workers, &mut task.pending, &mut task.waiter, &context,),

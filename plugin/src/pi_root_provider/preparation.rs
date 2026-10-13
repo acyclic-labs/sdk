@@ -74,8 +74,7 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     )?;
     crate::pi_conversation::bind_task_conversation(
         &observer.stream,
-        authority,
-        custody,
+        (authority, custody),
         current_owner,
         &binding.scratch.volume,
         operation,
@@ -279,7 +278,7 @@ impl PiRootProvider {
                 workspace_id: generation.workspace().id().into_bytes(),
                 generation: reference,
             },
-            custody.expect("native generation custody"),
+            custody.ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?,
         );
         scratch.0.validate(volume)?;
         Ok(scratch)
@@ -314,8 +313,19 @@ impl PiRootProvider {
                 ));
             }
             for (key, path) in paths {
-                let volume = &self.preparation.request.binding.project_volumes[key];
-                let input = &inputs.0[key];
+                let volume = self
+                    .preparation
+                    .request
+                    .binding
+                    .project_volumes
+                    .get(key)
+                    .ok_or_else(|| {
+                        Self::native_failure("root is absent from its original selected volumes")
+                    })?;
+                let input = inputs
+                    .0
+                    .get(key)
+                    .ok_or_else(|| Self::native_failure("root attachment input is missing"))?;
                 self.validate_attachment(input)?;
                 let Some(generation) = self
                     .creation_with_native_work(
@@ -468,8 +478,7 @@ impl PiRootProvider {
             self.creation_operation_with_native_work(effect, attempt, "scratch", original)?;
         crate::pi_conversation::bind_task_conversation(
             &self.stream,
-            authority.0,
-            authority.1,
+            (authority.0, authority.1),
             self.execution_owner()?,
             &self.preparation.request.binding.scratch.volume,
             original_creation,

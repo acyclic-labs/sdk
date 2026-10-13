@@ -69,7 +69,7 @@ pub(super) async fn staged_native_read(
     let prepared = acyclic_stream::PreparedOwnedBytes::new(
         bytes,
         allocation.expect("native read buffer is funded"),
-        native.runtime_meter(),
+        &native.runtime_meter(),
     )
     .map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => {

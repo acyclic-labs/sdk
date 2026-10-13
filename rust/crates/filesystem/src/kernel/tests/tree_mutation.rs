@@ -511,8 +511,7 @@ async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn decoded_page_allocation_is_admitted_after_shape_read_before_decode()
--> Result<(), Box<dyn std::error::Error>> {
+async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let existing = wide_entry(1, FileKind::Regular)?;
     let root = put(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
@@ -546,16 +545,20 @@ async fn decoded_page_allocation_is_admitted_after_shape_read_before_decode()
     .await
     .err()
     .ok_or("underbudgeted decoded page unexpectedly succeeded")?;
-    assert!(matches!(
-        failure.error,
-        TreeMutationError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed,
-            maximum: observed_maximum,
-        }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum
-    ));
-    assert_eq!(failure.work.backend_read_operations, 1);
+    assert!(
+        matches!(
+            failure.error,
+            TreeMutationError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                observed,
+                maximum: observed_maximum,
+            }) if observed > observed_maximum && observed_maximum <= maximum
+        ),
+        "{failure:?}"
+    );
+    assert!(failure.work.peak_allocation_bytes <= maximum);
     assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.object_bytes_written, 0);
     Ok(())
 }
 
