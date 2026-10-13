@@ -40,15 +40,13 @@ where
                     "native source has no original owner",
                 )
             })?;
-            owner.require_mail_scope(context.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+            owner.require_mail_scope(context.scope(), io)?;
             let (owner_task, owner_fence) = owner.task_binding();
             if owner_task != binding.0
                 || owner_fence != binding.1
-                || owner.authenticated_binding_agent(&mut Some(
-                    &mut crate::store::HistoryWork::new(
-                        crate::filesystem::PreparationIo::from_native_work(work)?,
-                    ),
-                ))? != caller.owner.scope.agent()
+                || crate::executor::with_history_io(io, |work| {
+                    owner.authenticated_binding_agent(work)
+                })? != caller.owner.scope.agent()
             {
                 return Err(failure(
                     io,
@@ -139,10 +137,8 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work)
             {
-                native = runtime
-                    .task_host()
-                    .observe_volume_snapshots_with_native_work(caller.task, work)
-                    .await?;
+                native = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = runtime
+                    .task_host().observe_volume_snapshots(caller.task, &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
                 break 'volumes native.0.as_slice();
             }
             ordinary = runtime.inspect_source(caller.task, caller.task).await?;
@@ -246,10 +242,10 @@ where
             let owner = self
                 .runtime(io)?
                 .task_host()
-                .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                .journal_owner(task, fence, io)
                 .await?
                 .with_invocation_cancellation(cancellation);
-            owner.require_mail_scope(context.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+            owner.require_mail_scope(context.scope(), io)?;
             return owner.into_native_shared(work);
         }
         let task = context.durable_task_id().ok_or_else(|| {

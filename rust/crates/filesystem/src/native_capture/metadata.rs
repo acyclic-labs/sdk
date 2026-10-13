@@ -8,12 +8,12 @@ pub(super) struct HostSnapshot {
 }
 
 impl HostSnapshot {
-    pub(super) fn from_metadata(metadata: &HostStat) -> Result<Self, CaptureError> {
-        Ok(Self {
+    pub(super) fn from_metadata(metadata: &HostStat) -> Self {
+        Self {
             identity: metadata.identity(),
             length: metadata.len(),
             metadata: capture_metadata(metadata),
-        })
+        }
     }
 }
 
@@ -21,7 +21,7 @@ pub(super) fn ensure_same_host_node(
     expected: &HostSnapshot,
     observed: &HostStat,
 ) -> Result<(), CaptureError> {
-    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed)?)
+    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed))
 }
 
 pub(super) fn ensure_same_host_snapshot(
@@ -63,14 +63,16 @@ pub(super) fn ensure_current_host_node(
     host_path: &CaptureHostPath,
     expected: &HostSnapshot,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     cancellation.check()?;
-    meter.native.clone().check().map_err(capture_demand_error)?;
-    let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
+    meter.clone().check().map_err(capture_demand_error)?;
+    let observed = source_root
+        .stat(host_path, &mut meter.clone())
+        .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
     cancellation.check()?;
-    meter.native.clone().check().map_err(capture_demand_error)
+    meter.clone().check().map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -230,7 +232,8 @@ pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileM
     result.posix_mode = MetadataField::Value((metadata.raw.st_mode as u32));
     result.posix_uid = MetadataField::Value((metadata.raw.st_uid as u32));
     result.posix_gid = MetadataField::Value((metadata.raw.st_gid as u32));
-    let nanos = i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000 + i128::from((metadata.raw.st_ctime_nsec as i64));
+    let nanos = i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000
+        + i128::from((metadata.raw.st_ctime_nsec as i64));
     result.changed_ns =
         i64::try_from(nanos).map_or(MetadataField::Unavailable, MetadataField::Value);
 }

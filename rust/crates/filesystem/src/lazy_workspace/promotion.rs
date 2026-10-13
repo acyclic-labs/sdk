@@ -153,7 +153,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             if matches!(&lookup.0,LazyLookup::Authored { path: authored,.. } if authored == path) {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            let candidate = checkout.private_candidate_with_accounting(ctx, cancellation(ctx))?;
+            let candidate = checkout.private_candidate(ctx, cancellation(ctx))?;
             let mut transaction = accounted!(ctx, |work, cancel| async {
                 crate::Transaction::for_checkout_candidate(&self.workspace, candidate, work, cancel)
             })?;

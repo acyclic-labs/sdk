@@ -518,12 +518,14 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
         &[],
     )
     .await?;
-    let crate::distributed::WorkPull::Unresolved { lease, .. } =
-        f.host.recover_work(TaskId::from_bytes([1; 16])).await?
+    let crate::distributed::WorkPull::Unresolved { lease, .. } = f
+        .host
+        .recover_work(TaskId::from_bytes([1; 16]), &mut None)
+        .await?
     else {
         return Err(Error::Conflict("cancelled owner became runnable".into()));
     };
-    assert!(f.host.start_task(&lease).await.is_err());
+    assert!(f.host.start_task(&lease, &mut None).await.is_err());
     let journal = f.execution(f.owner(1).await?, attempt)?;
     journal
         .append(
@@ -574,7 +576,9 @@ async fn expired_deadline_rejects_fresh_execution_publication() -> Result<()> {
     ));
     assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
     assert!(!matches!(
-        f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+        f.host
+            .recover_work(TaskId::from_bytes([1; 16]), &mut None)
+            .await?,
         crate::distributed::WorkPull::Idle
     ));
     Ok(())

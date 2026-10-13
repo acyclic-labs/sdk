@@ -43,14 +43,6 @@ where
         self.authenticate_caller(context.task(), None, project_read, None)
             .await
     }
-    pub(super) async fn read(
-        &self,
-        context: &ToolContext,
-        file: &crate::conversation::FileRef,
-        io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        context.read_file(file, Some(io)).await
-    }
     pub(super) async fn source(
         &self,
         context: &ToolContext,
@@ -61,29 +53,12 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<RetainedSourceBinding<A, O>> {
         let owner = self.source_owner(context.task(), cancellation, io).await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut _selected_hold = None;
         let selected = match &request.authorized_source {
-            Some(authorization) => {
-                let selected = 'selection: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                        let (handle, custody) = owner
-                            .restore_project_source_authorization_with_native_work(
-                                context.task(),
-                                authorization,
-                                work,
-                            )?
-                            .await?;
-                        _selected_hold = Some(custody);
-                        break 'selection handle;
-                    }
-                    owner
-                        .restore_project_source_authorization(context.task(), authorization)
-                        .await?
-                };
-                Some(selected)
-            }
+            Some(authorization) => Some(
+                owner
+                    .restore_project_source_authorization(context.task(), authorization, io)
+                    .await?,
+            ),
             None => None,
         };
         let verifier =

@@ -9,8 +9,9 @@ use crate::native_host::NativeHostWork as _;
 use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout,
-    NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent, WatchBatch, WatchChange,
-    WatchInvalidationReason, WorkBudget, WorkCounters, WorkError,
+    NativeMaterializationWork, NativeRootIdentity, OperationFailure, OperationReceipt,
+    StagedContent, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, WorkCounters,
+    WorkError,
 };
 use std::path::{Path, PathBuf};
 use thiserror::Error;

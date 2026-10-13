@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_harness::runtime::TaskSpawner as _;
 use prost::Message as _;
 pub(super) async fn prepare_case(
     root: &Path,
@@ -157,11 +156,19 @@ pub(super) async fn prepare_case(
                 "genuine bounded native source import failed: {error}"
             ))
         })?;
-    let imported_generation = imported.head().await.map_err(storage)?;
-    imported_generation
-        .pin("graphcoder-native-original-baseline")
+    let imported_generation = imported
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
         .await
-        .map_err(storage)?;
+        .map_err(|failure| storage(failure.error))?
+        .value;
+    imported_generation
+        .pin(
+            "graphcoder-native-original-baseline",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| storage(failure.error))?;
     let native_operation_directory = root.join("native-writeback-operation");
     tokio::fs::create_dir(&native_operation_directory)
         .await
@@ -423,9 +430,13 @@ pub(super) async fn prepare_case(
         .map_err(|failure| storage(failure.error))?
         .value;
     target_generation
-        .pin("graphcoder-native-exact-approved-target")
+        .pin(
+            "graphcoder-native-exact-approved-target",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            cancellation,
+        )
         .await
-        .map_err(storage)?;
+        .map_err(|failure| storage(failure.error))?;
     let publication_operation = OperationId::new();
     let source_root_identity = acyclic_fs::capture_root_identity(&native_root)
         .map_err(|error| {

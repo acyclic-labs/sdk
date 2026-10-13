@@ -24,10 +24,7 @@ impl SchemaRegistry {
     pub const fn new() -> Self {
         Self { schemas: None }
     }
-    pub(crate) fn copy(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
+    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| copying::is_native(&**io)) {
             io.check_cancellation()?;
         }
@@ -115,7 +112,7 @@ impl SchemaRegistry {
     pub fn activation_order(
         &self,
         selected: &[ExtensionDependency],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Vec<ExtensionDependency>, u64)> {
         let mut owned = crate::fork::CodecQuota::observed(work)?;
         let mut chosen = BTreeMap::<&str, &ExtensionDependency>::new();
@@ -182,7 +179,9 @@ impl SchemaRegistry {
                     "extension dependency cycle",
                 )
             })?;
-            order.push(copying::copy_dependency(next, &mut owned)?);
+            order.push(copy(next, &mut owned, |value: &ExtensionDependency, _| {
+                Ok(value.name.capacity() as u64)
+            })?);
         }
         let graph_bytes = (chosen.len() as u64)
             .checked_mul(std::mem::size_of::<(&str, &ExtensionDependency)>() as u64)
@@ -199,7 +198,7 @@ impl SchemaRegistry {
         name: &str,
         version: u32,
         expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&ExtensionBinding> {
         let mut selected = None;
         if let Some(schemas) = &self.schemas {
@@ -263,7 +262,7 @@ impl SchemaRegistry {
         &self,
         extension: &ExtensionDependency,
         content: &FileRef,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<ExtensionConfiguration> {
         extension.validate()?;
         let binding =
@@ -272,7 +271,9 @@ impl SchemaRegistry {
             .configuration_schema_digest
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
         let record = ExtensionConfiguration {
-            extension: copying::copy_dependency(extension, quota)?,
+            extension: copy(extension, quota, |value: &ExtensionDependency, _| {
+                Ok(value.name.capacity() as u64)
+            })?,
             schema_digest,
             content: content.clone_in_quota(quota)?,
         };
@@ -285,7 +286,7 @@ impl SchemaRegistry {
         &self,
         name: &str,
         version: u32,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         Ok(self
             .pinned_binding(name, version, None, work)?

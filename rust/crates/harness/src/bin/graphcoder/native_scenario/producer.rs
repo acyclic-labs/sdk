@@ -1,11 +1,8 @@
 use super::*;
-use acyclic_harness::{
-    filesystem::{
-        BorrowedNativeVolumeBinding, FilesystemContentVerifier, FilesystemInteractionHost,
-        NativePreparationRoot, NativeProcessRequest, NativeViewOptions, NativeVolumeNamespace,
-        NativeVolumeView, PreparationIo,
-    },
-    runtime::TaskSpawner as _,
+use acyclic_harness::filesystem::{
+    BorrowedNativeVolumeBinding, FilesystemContentVerifier, FilesystemInteractionHost,
+    NativePreparationRoot, NativeProcessRequest, NativeViewOptions, NativeVolumeNamespace,
+    NativeVolumeView, PreparationIo,
 };
 
 impl Producer {
@@ -50,7 +47,7 @@ impl Producer {
             interaction::{ApprovalBinding, Interaction, InteractionKind, InteractionTicket},
         };
         let operation = OperationId::new();
-        let approval = InteractionId::new_v4();
+        let approval = InteractionId::new();
         let verifier = caller.binding.verifier()?;
         let budget = self.config.tools.content_budget;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
@@ -104,7 +101,6 @@ impl Producer {
                 scope: &caller.binding.scope,
                 publication: acyclic_fs::PublicationPermit::Unrestricted,
             }],
-            &[None],
             &work,
         )?
         .await?;
@@ -185,7 +181,7 @@ impl Producer {
             OperationId::new(),
             Some(&caller.binding.scope),
             &InteractionTicket {
-                id: approval,
+                id: uuid::Uuid::from_bytes(approval.into_bytes()),
                 kind: InteractionKind::Approval,
                 request: prompt,
                 deadline_unix_ms: None,
@@ -205,6 +201,9 @@ impl Producer {
                 caller: caller.task,
                 operation,
                 approval,
+                operation_directory: allocation.operation_directory.clone(),
+                root_identity: allocation.expected_identity.to_bytes(),
+                preparation_identity: allocation.expected_preparation_identity,
                 plan: TaskEffectPlan {
                     provider: "graphcoder.native".into(),
                     guarantee: EffectGuarantee::AtMostOnce,
@@ -363,13 +362,14 @@ impl Producer {
                         policy.as_ref(),
                         source_task,
                         operation,
-                        acyclic_harness::source_authorization::ProjectSourceSnapshot {
+                        &acyclic_harness::source_authorization::ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: selected.generation.clone(),
                             native_snapshot: None,
                         },
                         FORK_LIMITS.work,
                         FORK_LIMITS.bytes,
+                        None,
                     )
                     .await?,
             )
@@ -420,7 +420,7 @@ impl Producer {
             &self.cancellation,
         )
         .await?;
-        self.config.fork_sources.push(ForkSourceConfig {
+        self.config.fork_sources.push(Arc::new(ForkSourceConfig {
             caller: parent.task,
             owner: parent.binding.clone(),
             snapshot: parent
@@ -429,7 +429,7 @@ impl Producer {
                 .snapshot(usize::MAX, &mut None)?
                 .0,
             request: binding.request.clone(),
-        });
+        }));
         let mut child = self.template.clone();
         child.operation_id = child_operation;
         child.parent = Some(parent.task);

@@ -44,7 +44,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     .source
                     .as_ref()
                     .expect("authorized source")
-                    .select(context, &original, cancellation, io)?
+                    .select(context, &original, cancellation, io)
                     .await?;
                 validate_source_intent(&intent, io)?;
                 reject_if(
@@ -216,7 +216,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             let intent = intent
                 .ok_or_else(|| recursive_reject(io, Unauthorized, "fork source is not pinned"))?;
             let binding = source
-                .fork(context, &original, intent, None, cancellation, io)?
+                .fork(context, &original, intent, None, cancellation, io)
                 .await?;
             reject_if(
                 binding.source.request != intent.request
@@ -300,7 +300,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         } else {
             let original: MergeToolArguments = decode(arguments, io)?;
             let binding = source
-                .merge(context, &original, None, cancellation, io)?
+                .merge(context, &original, None, cancellation, io)
                 .await?;
             validate_merge_binding(context, original.source, &binding, io)?;
             let controller = ParentProjectController::new(

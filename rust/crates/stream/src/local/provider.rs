@@ -17,7 +17,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.append",
             items = request.records.len(),
             bytes = request
@@ -40,7 +40,7 @@ impl StreamProvider for LocalStream {
                     stream.persist(frame).await?;
                 }
                 if let AppendOutcome::Committed(receipt) = &outcome {
-                    obs::record(&operation, "rev", receipt.tail);
+                    operation.record("rev", receipt.tail);
                 }
                 Ok(outcome)
             })
@@ -50,7 +50,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.fork",
             outcome = Empty,
             error.kind = Empty
@@ -68,7 +68,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.read",
             rev = request.from,
             items = request.limit,
@@ -85,7 +85,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.follow",
             rev = from,
             terminal = Empty,
@@ -160,7 +160,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.commit",
             items = request.mutations.len(),
             outcome = Empty,
@@ -183,7 +183,7 @@ impl StreamProvider for LocalStream {
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.commit",
             items = request.mutations.len(),
             outcome = Empty,

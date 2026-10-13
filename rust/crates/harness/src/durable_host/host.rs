@@ -7,7 +7,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner(task_id, &fence, false).await })
+        Box::pin(async move { self.verify_owner(task_id, &fence, false, &mut None).await })
     }
 
     fn verify_execution_owner<'a>(
@@ -15,7 +15,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner(task_id, &fence, true).await })
+        Box::pin(async move { self.verify_owner(task_id, &fence, true, &mut None).await })
     }
 
     fn claim_model_dispatch<'a>(
@@ -28,7 +28,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let operation_id = OperationId::from_bytes(task_id.into_bytes());
-            let admission = self.admission(operation_id, None).await?;
+            let admission = self.admission(operation_id, &mut None).await?;
             if !admission.grants.contains("model:generate") {
                 return Err(Error::Unauthorized(
                     "task scope lacks model:generate".into(),
@@ -94,7 +94,7 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         operation_id: OperationId,
     ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
         Box::pin(async move {
-            match self.admission(operation_id, None).await {
+            match self.admission(operation_id, &mut None).await {
                 Ok(admission) => Ok(Some((
                     TaskId::from_bytes(operation_id.into_bytes()),
                     admission,
@@ -132,7 +132,7 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
             for index in 0..request.inputs.len() {
                 let operation_id = request.operation_id(index);
                 let expected = request.member_admission(index)?;
-                match self.admission(operation_id, None).await {
+                match self.admission(operation_id, &mut None).await {
                     Ok(admission) if admission == expected => entries.push(Admission::Accepted(
                         TaskId::from_bytes(operation_id.into_bytes()),
                     )),
@@ -316,7 +316,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
     ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
         Box::pin(async move {
             let operation_id = OperationId::from_bytes(task_id.into_bytes());
-            self.admission(operation_id, None).await
+            self.admission(operation_id, &mut None).await
         })
     }
 
@@ -331,7 +331,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                     "task identity does not match its admission".into(),
                 ));
             }
-            let admission = self.admission(operation_id, None).await?;
+            let admission = self.admission(operation_id, &mut None).await?;
             self.root_scope
                 .narrow(admission.grants, admission.limits)?
                 .with_run_limits(admission.run_limits, &mut None)?
@@ -353,7 +353,10 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             let record = self
-                .admission(OperationId::from_bytes(task.into_bytes()), Some(&io))
+                .admission(
+                    OperationId::from_bytes(task.into_bytes()),
+                    &mut Some(&mut io.history_io()),
+                )
                 .await?;
             let retained =
                 std::mem::size_of::<TaskAdmissionRecord>() as u64 + record.logical_owned_bytes()?;
@@ -408,9 +411,10 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let bytes = self
-                .mail_bytes(sender, recipient, message_id, payload)
-                .await?;
-            self.publish_mail(sender, recipient, message_id, &bytes, None)
+                .prepare_mail(sender, recipient, message_id, payload, None)
+                .await?
+                .0;
+            self.publish_mail(sender, recipient, message_id, bytes, None, None)
                 .await
         })
     }
@@ -421,82 +425,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
         after: u64,
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
-        Box::pin(async move {
-            if limit == 0 {
-                return Err(Error::Invalid("inbox page bound is invalid".into()));
-            }
-            let recipient_admission = self
-                .admission(OperationId::from_bytes(task_id.into_bytes()), None)
-                .await?;
-            if !recipient_admission.grants.contains(capability::MAIL_READ) {
-                return Err(Error::Unauthorized(
-                    "recipient scope lacks mail:read".into(),
-                ));
-            }
-            let mailbox = self.mailbox(task_id)?;
-            let bounds = match mailbox.bounds().await {
-                Ok(bounds) => bounds,
-                Err(StreamError::NotFound) => return Ok(Vec::new()),
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            if after > bounds.tail {
-                return Err(Error::Invalid("inbox cursor is beyond the tail".into()));
-            }
-            let page_limit = u32::try_from(limit.min(acyclic_stream::MAX_ITEMS))
-                .map_err(|_| Error::Invalid("inbox page bound is invalid".into()))?;
-            let page = match mailbox.read(after, page_limit).await {
-                Ok(records) => records.try_collect::<Vec<_>>().await?,
-                Err(StreamError::NotFound) => return Ok(Vec::new()),
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            if page.len() > limit {
-                return Err(Error::Storage("inbox page exceeds requested limit".into()));
-            }
-            let mut expected = after;
-            let mut items = Vec::with_capacity(page.len());
-            for record in page {
-                if record.sequence != expected {
-                    return Err(Error::Storage("inbox replay sequence differs".into()));
-                }
-                expected = expected
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?;
-
-                let value: Value = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                if crate::contract::canonical_json_bytes(&value)? != record.value.as_ref() {
-                    return Err(Error::Storage("mail event is not canonical JSON".into()));
-                }
-                let event: MailEvent = serde_json::from_value(value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                if event.recipient != task_id {
-                    return Err(Error::Unauthorized(
-                        "mail recipient differs from its mailbox".into(),
-                    ));
-                }
-                event.payload.validate(&mut None)?;
-                recipient_admission
-                    .limits
-                    .validate_file(&event.payload, &mut None)?;
-                if !read_granted(&recipient_admission.grants, &event.payload)? {
-                    return Err(Error::Unauthorized(
-                        "mail history contains an unreadable payload".into(),
-                    ));
-                }
-                self.admission(OperationId::from_bytes(event.sender.into_bytes()), None)
-                    .await?;
-                items.push(InboxItem {
-                    task_id,
-                    sequence: record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?,
-                    message_id: event.message_id.to_string(),
-                    payload: event.payload,
-                });
-            }
-            Ok(items)
-        })
+        Box::pin(async move { self.inbox_page(task_id, after, limit, None).await })
     }
 
     fn wait_until<'a>(
@@ -510,7 +439,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                 return Err(Error::Invalid("timer deadline is invalid".into()));
             }
             let admission = self
-                .admission(OperationId::from_bytes(task_id.into_bytes()), None)
+                .admission(OperationId::from_bytes(task_id.into_bytes()), &mut None)
                 .await?;
             if !admission.grants.contains(capability::TIMER_WAIT) {
                 return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
@@ -524,7 +453,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             let stream = self.timer_stream(task_id)?;
             loop {
                 let (tail, found) = self
-                    .timer_state(task_id, operation_id, deadline_unix_ms)
+                    .timer_state(task_id, operation_id, deadline_unix_ms, &mut None)
                     .await?;
                 if found {
                     break;

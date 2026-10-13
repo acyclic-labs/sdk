@@ -10,7 +10,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn merge_binding(
+    pub(in crate::filesystem) async fn merge(
         &self,
         context: &ToolContext,
         arguments: &MergeToolArguments,
@@ -18,6 +18,7 @@ where
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<RecursiveMergeToolBinding<P, A, O>> {
+        native_io(io)?;
         check_cancellation(cancellation, io)?;
         let owner = self.source_owner(context.task(), cancellation, io).await?;
         let caller = self
@@ -67,10 +68,14 @@ where
         let snapshots = 'snapshots: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                native = runtime
-                    .task_host()
-                    .observe_volume_snapshots_with_native_work(arguments.source, work)
-                    .await?;
+                native = {
+                    let io = crate::executor::PreparationIo::from_native_work(work)?;
+                    let (snapshots, retained) = runtime
+                        .task_host()
+                        .observe_volume_snapshots(arguments.source, &mut Some(&mut io.history_io()))
+                        .await?;
+                    (snapshots, io.take_native_custody(retained)?)
+                };
                 break 'snapshots native.0.as_slice();
             }
             ordinary = runtime
@@ -145,22 +150,9 @@ where
         })?;
         let source_read = 'source: {
             if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                    let (handle, custody) = owner
-                        .restore_project_source_authorization_with_native_work(
-                            context.task(),
-                            authorization,
-                            work,
-                        )?
-                        .await?;
-                    io.expect("native merge observer")
-                        .absorb_native_custody(custody)?;
-                    break 'source Some(handle);
-                }
                 break 'source Some(
                     owner
-                        .restore_project_source_authorization(context.task(), authorization)
+                        .restore_project_source_authorization(context.task(), authorization, io)
                         .await?,
                 );
             }
@@ -214,13 +206,14 @@ where
                         provider.as_ref(),
                         arguments.source,
                         context.operation_id(),
-                        ProjectSourceSnapshot {
+                        &(ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: generation.clone(),
                             native_snapshot: source.native_snapshot.clone(),
-                        },
+                        }),
                         self.config.content_budget.items_examined,
                         self.config.history_limits.maximum_bytes,
+                        None,
                     )
                     .await?,
             )
@@ -252,7 +245,7 @@ where
                 &ordinary_io
             }
         };
-        drop(self.read(context, &notice.content, reader).await?);
+        drop(context.read_file(&notice.content, Some(reader)).await?);
         let (verifier, scope, project, source_authority, source_project) =
             with_history_io(io, |work| {
                 let verifier = caller.owner.issuer.verifier(work)?;

@@ -1,10 +1,7 @@
 //! Funded copies of main reducer records.
 use super::*;
 /// Copies text into the supplied quota.
-pub(crate) fn copy_text(
-    source: &str,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<String> {
+pub(crate) fn copy_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
     if quota.work().is_none() {
         return Ok(source.to_owned());
     }
@@ -18,7 +15,7 @@ pub(crate) fn copy_text(
 }
 pub(crate) fn copy_authority(
     source: &Authority,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Authority> {
     if quota.work().is_none() {
         return Ok(source.clone());
@@ -34,7 +31,7 @@ pub(crate) fn copy_authority(
 /// Copies the canonical three provider identity fields through the same quota.
 pub(crate) fn copy_provider(
     source: &crate::resources::ProviderRef,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<crate::resources::ProviderRef> {
     if quota.work().is_none() {
         return Ok(source.clone());
@@ -47,7 +44,7 @@ pub(crate) fn copy_provider(
 
 pub(crate) fn copy_resource(
     source: &crate::resources::ResourceRef,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<crate::resources::ResourceRef> {
     crate::resources::ResourceRef::new(
         source.kind(),
@@ -63,8 +60,8 @@ pub(crate) fn copy_resource(
 
 pub(crate) fn copy_vector<T>(
     source: &[T],
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    mut copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    quota: &mut CodecQuota<'_, '_>,
+    mut copy: impl FnMut(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<Vec<T>> {
     let mut values = reserve_copy_vector(source.len(), quota)?;
     for value in source {
@@ -74,7 +71,7 @@ pub(crate) fn copy_vector<T>(
 }
 pub(crate) fn reserve_copy_vector<T>(
     count: usize,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Vec<T>> {
     if quota.work().is_none() {
         return Ok(Vec::with_capacity(count));
@@ -103,7 +100,7 @@ pub(crate) fn reserve_copy_vector<T>(
 }
 pub(crate) fn copy_copy_vector<T: Copy>(
     source: &[T],
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Vec<T>> {
     if quota.work().is_none() {
         return Ok(source.to_vec());
@@ -123,9 +120,9 @@ pub(crate) fn copy_copy_vector<T: Copy>(
     values.extend_from_slice(source);
     Ok(values)
 }
-pub(crate) fn copy_owned<T: Clone + Serialize>(
+pub(crate) fn copy<T: Clone + Serialize>(
     source: &T,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
     owned: impl FnOnce(&T, &mut Option<&mut dyn HistoryIo>) -> Result<u64>,
 ) -> Result<T> {
     if quota.work().is_none() {
@@ -149,8 +146,8 @@ pub(crate) fn copy_owned<T: Clone + Serialize>(
 
 impl crate::resource_preparation::ResourceCreationProofRef {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| {
-            copy_owned(self, quota, |proof, work| {
+        CodecQuota::produce(work, |quota| {
+            copy(self, quota, |proof, work| {
                 proof.provider.validate(work)?;
                 proof.resource.validate(work)?;
                 proof.evidence.validate(work)?;
@@ -164,103 +161,7 @@ impl crate::resource_preparation::ResourceCreationProofRef {
     }
 }
 
-macro_rules! copy_fields {
-    ($name:ident, $ty:ty, $owned:expr) => {
-        pub(crate) fn $name(
-            source: &$ty,
-            quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-        ) -> Result<$ty> {
-            copy_owned(source, quota, $owned)
-        }
-    };
-}
-copy_fields!(
-    copy_reference,
-    EventReference,
-    |value: &EventReference, _| Ok(value.authority.id.capacity() as u64)
-);
-copy_fields!(
-    copy_dependency,
-    ExtensionDependency,
-    |value: &ExtensionDependency, _| Ok(value.name.capacity() as u64)
-);
-copy_fields!(
-    copy_configuration,
-    ExtensionConfiguration,
-    |value: &ExtensionConfiguration, work| {
-        value.content.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(copy_effect, EffectState, |value: &EffectState, work| {
-    value.request.validate(work)?;
-    value.result_schema.validate(work)?;
-    if let EffectStatus::Succeeded { result } = &value.status {
-        result.validate(work)?;
-    }
-    owned_effect(value)
-});
-copy_fields!(copy_value, Value, |value: &Value, _| {
-    json_value_logical_owned_bytes(value)
-});
-copy_fields!(
-    copy_ticket,
-    InteractionTicket,
-    |value: &InteractionTicket, work| {
-        value.request.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_interaction_outcome,
-    InteractionOutcome,
-    |value: &InteractionOutcome, work| {
-        if let InteractionOutcome::Answered { answer } = value {
-            answer.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_resolution,
-    InteractionResolution,
-    |value: &InteractionResolution, work| {
-        if let InteractionOutcome::Answered { answer } = &value.outcome {
-            answer.validate(work)?;
-        }
-        if let Some(file) = &value.detail {
-            file.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_capabilities,
-    Capabilities,
-    |value: &Capabilities, _| value.logical_owned_bytes()
-);
-copy_fields!(
-    copy_observation,
-    EffectAttestation,
-    |value: &EffectAttestation, work| {
-        if let EffectStatus::Succeeded { result } = &value.status {
-            result.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_selection,
-    ModelContextSelection,
-    |value: &ModelContextSelection, work| {
-        if let Some(file) = &value.checkpoint {
-            file.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
-
-impl<'a, 'w> crate::wire_codec::CodecQuota<'a, 'w> {
+impl<'a, 'w> CodecQuota<'a, 'w> {
     pub(crate) fn produce<T>(
         work: &'a mut Option<&'w mut dyn HistoryIo>,
         copy: impl FnOnce(&mut Self) -> Result<T>,
@@ -275,17 +176,14 @@ impl<'a, 'w> crate::wire_codec::CodecQuota<'a, 'w> {
 
 pub(crate) fn copy_boxed<T>(
     source: &T,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    copy: impl FnOnce(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    quota: &mut CodecQuota<'_, '_>,
+    copy: impl FnOnce(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<Box<T>> {
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
 }
-pub(crate) fn copy_event(
-    source: &Event,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<Event> {
-    copy_owned(source, quota, |value, work| {
+pub(crate) fn copy_event(source: &Event, quota: &mut CodecQuota<'_, '_>) -> Result<Event> {
+    copy(source, quota, |value, work| {
         match &value.payload {
             EventPayload::Custom { record }
             | EventPayload::ExtensionStateMigrated {
@@ -340,9 +238,7 @@ pub(crate) fn copy_event(
     })
 }
 /// Logical inline map/set payload, never an estimate of opaque allocator nodes.
-pub(in crate::core) fn retain_entry<T>(
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<()> {
+pub(in crate::core) fn retain_entry<T>(quota: &mut CodecQuota<'_, '_>) -> Result<()> {
     if quota.work().is_some() {
         quota.replace(owned_sum([
             quota.retained(),

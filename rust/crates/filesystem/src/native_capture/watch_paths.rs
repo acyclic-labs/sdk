@@ -11,7 +11,7 @@ pub(super) fn current_record(
     rename_records: &Vec<(NamespacePath, FileRecord)>,
     moved_away: &Vec<(NamespacePath, ())>,
     path: &NamespacePath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<CurrentRecord, CaptureError> {
     Ok(match capture_position(rename_records, path, meter)? {
         Ok(index) => CurrentRecord::Known(Some(rename_records[index].1)),
@@ -27,7 +27,7 @@ pub(super) fn watch_ancestor_candidates<'a>(
     policy: &CapturePolicy,
     maximum_paths: usize,
     limits: crate::model::VolumeLimits,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, ())>, CaptureError> {
     let mut ancestors = Vec::new();
     for path in paths {
@@ -66,39 +66,31 @@ pub(super) fn watch_ancestor_candidates<'a>(
 
 pub(super) fn release_capture_set(
     paths: Vec<(NamespacePath, ())>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let bytes = vector_bytes(&paths);
     for (path, ()) in paths {
         capture_drop_path(path, meter)?;
     }
-    meter
-        .native
-        .clone()
-        .release(bytes)
-        .map_err(capture_demand_error)
+    meter.clone().release(bytes).map_err(capture_demand_error)
 }
 
 pub(super) fn release_host_links(
     links: Vec<([u8; 16], NamespacePath)>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let bytes = links.capacity() as u64 * std::mem::size_of::<([u8; 16], NamespacePath)>() as u64;
     for (_, source) in links {
         capture_drop_path(source, meter)?;
     }
-    meter
-        .native
-        .clone()
-        .release(bytes)
-        .map_err(capture_demand_error)
+    meter.clone().release(bytes).map_err(capture_demand_error)
 }
 
 pub(super) fn capture_within_any(
     path: &NamespacePath,
     ancestors: &[NamespacePath],
     exclude_self: bool,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<bool, CaptureError> {
     for ancestor in ancestors {
         capture_charge(
@@ -124,7 +116,7 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
     epoch: u64,
     maximum_paths: usize,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Vec<NamespacePath>, CaptureError> {
     let mut missing = Vec::new();
     let mut replaced = Vec::new();
@@ -136,7 +128,7 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
             None
         } else {
             let lookup = checkout
-                .lookup_no_follow(&path, &meter.native, cancellation)
+                .lookup_no_follow(&path, meter, cancellation)
                 .await?;
             lookup.record
         };
@@ -180,7 +172,6 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
         }
     }
     meter
-        .native
         .clone()
         .release(ancestors_bytes)
         .map_err(capture_demand_error)?;
@@ -204,7 +195,7 @@ pub(super) fn remap_renamed_directory_path(
     path: &NamespacePath,
     renames: &[(NamespacePath, NamespacePath)],
     limits: crate::model::VolumeLimits,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Option<NamespacePath>, CaptureError> {
     let mut prior = clone_capture_path(path, meter)?;
     for (from, to) in renames.iter().rev() {
@@ -247,7 +238,7 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     maximum_paths: u32,
     policy: &CapturePolicy,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let maximum = usize::try_from(maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
     if ordinary.len() > maximum {
@@ -297,7 +288,7 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
             |path, _, meter| append_scanned_path(&mut paths, path, maximum, meter),
         )?;
         let lookup = checkout
-            .lookup_no_follow(&volume_path, &meter.native, cancellation)
+            .lookup_no_follow(&volume_path, meter, cancellation)
             .await?;
         if lookup
             .record
@@ -319,7 +310,6 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
         }
     }
     meter
-        .native
         .clone()
         .release(roots_bytes)
         .map_err(capture_demand_error)?;
@@ -336,7 +326,6 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
         }?;
     }
     meter
-        .native
         .clone()
         .release(paths_bytes)
         .map_err(capture_demand_error)?;

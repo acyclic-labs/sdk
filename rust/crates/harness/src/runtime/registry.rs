@@ -398,14 +398,18 @@ impl TaskRegistry {
             task: task_copy_component(definition.identity(), &mut quota)?,
             machine: task_copy_machine(machine, &mut quota)?,
             input,
-            input_schema: crate::core::copy_value(definition.input_schema(), &mut quota)?,
-            output_schema: crate::core::copy_value(definition.output_schema(), &mut quota)?,
+            input_schema: crate::core::copy(definition.input_schema(), &mut quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+})?,
+            output_schema: crate::core::copy(definition.output_schema(), &mut quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+})?,
             parent,
             resource_proofs: RuntimeScope::copy_resource_proofs(
                 scope.resource_proofs(),
                 &mut quota,
             )?,
-            grants: crate::core::copy_capabilities(scope.grants(), &mut quota)?,
+            grants: crate::core::copy(scope.grants(), &mut quota, |value: &crate::Capabilities, _| value.logical_owned_bytes())?,
             limits: scope.limits(),
             run_limits: scope.run_limits(),
             policy: None,

@@ -1,21 +1,18 @@
 //! Explicit authenticated provider bindings for the shared portable default tools.
-use crate::runtime::TaskStateProvider;
 use crate::store::history::HistoryIo;
 use crate::{
     Capabilities, Error, OperationId, Result, TaskId,
     conversation::{
-        BoundedContentFuture, ContentGrant, ConversationMessage, Limits, VolumeOperation,
-        VolumeOwner, VolumeRef,
+        ContentGrant, ConversationMessage, Limits, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{Authority, AuthorityIssuer, AuthorityVerifier, Reducer, SchemaRegistry, Scope},
     durable_tool::ResumableTool,
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
-        ForkToolArguments, MergeToolArguments, RecursiveForkConfig,
-        RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
-        RecursiveMergeToolBinding, RecursiveMergeToolPlan,
-        RetainedSourceBinding, restore_recursive_fork_source,
+        ForkToolArguments, MergeToolArguments, RecursiveForkConfig, RecursiveForkSourceIntent,
+        RecursiveForkToolBinding, RecursiveForkToolPlan, RecursiveMergeToolBinding,
+        RecursiveMergeToolPlan, RetainedSourceBinding, restore_recursive_fork_source,
     },
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
@@ -28,7 +25,7 @@ use crate::{
     tool::ToolInvocation,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
-use acyclic_stream::{BoxProviderFuture, StreamProvider};
+use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock, Weak};
@@ -287,142 +284,31 @@ where
         self.project_policy.get().is_none()
     }
 
-    pub(in crate::filesystem) fn owner<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        tool: &'a ResumableTool,
-        invocation: &'a ToolInvocation,
-        cancellation: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, (Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>)>> {
-        BoundedContentFuture::new(io, || async move {
-            native_io(io)?;
-            if io.is_none() {
-                self.authenticate_caller(context.task(), None, false, None)
-                    .await?;
-            }
-            let owner = self
-                .runtime(io)?
-                .recursive_tool_owner(context, tool, invocation, cancellation, io)
+    pub(in crate::filesystem) async fn owner(
+        &self,
+        context: &ToolContext,
+        tool: &ResumableTool,
+        invocation: &ToolInvocation,
+        cancellation: &CancellationToken,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        Arc<FilesystemTaskRuntime<P, A, O>>,
+        Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>,
+    )> {
+        native_io(io)?;
+        if io.is_none() {
+            self.authenticate_caller(context.task(), None, false, None)
                 .await?;
-            if io.is_some() {
-                self.authenticate_caller(
-                    context.task(),
-                    owner.1.owner.as_deref(),
-                    false,
-                    io,
-                )
+        }
+        let owner = self
+            .runtime(io)?
+            .recursive_tool_owner(context, tool, invocation, cancellation, io)
+            .await?;
+        if io.is_some() {
+            self.authenticate_caller(context.task(), owner.1.owner.as_deref(), false, io)
                 .await?;
-            }
-            Ok(owner)
-        })
-    }
-    pub(in crate::filesystem) fn select<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        arguments: &'a ForkToolArguments,
-        cancellation: &'a CancellationToken,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
-        BoundedContentFuture::new(io, || async move {
-            native_io(io)?;
-            self.select_source(context, arguments, cancellation, io)
-                .await
-        })
-    }
-    pub(in crate::filesystem) fn fork<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        arguments: &'a ForkToolArguments,
-        intent: &'a RecursiveForkSourceIntent,
-        original: Option<&'a RecursiveForkToolPlan>,
-        cancellation: &'a CancellationToken,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, RecursiveForkToolBinding<P, A, O>>> {
-        BoundedContentFuture::new(io, || async move {
-            native_io(io)?;
-            self.fork_binding(context, arguments, intent, original, cancellation, io)
-                .await
-        })
-    }
-    pub(in crate::filesystem) fn preparation<'a>(
-        &'a self,
-        context: &'a TaskContext,
-        token: &'a TaskResourcePreparation,
-        cancellation: &'a CancellationToken,
-    ) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>> {
-        Box::pin(async move {
-            self.preparation_source(
-&WorkerContext::Ordinary(Arc::new(context.clone())),
-                token,
-                cancellation,
-                false,
-                None,
-            )
-            .await
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) fn preparation_with_native_work<'a>(
-        &'a self,
-        context: &'a Arc<TaskContext>,
-        token: &'a TaskResourcePreparation,
-        cancellation: &'a CancellationToken,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>,
-    > {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let source = self
-                .preparation_source(
-                    &WorkerContext::Native(Arc::clone(context)),
-                    token,
-                    cancellation,
-                    false,
-                    Some(&io),
-                )
-                .await?;
-            crate::filesystem::native_decoded((source, io.guard_owned(io.owned_bytes()?)?))
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) fn preparation_for_reconciliation_with_native_work<'a>(
-        &'a self,
-        context: &'a Arc<TaskContext>,
-        token: &'a TaskResourcePreparation,
-        cancellation: &'a CancellationToken,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>,
-    > {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let source = self
-                .preparation_source(
-                    &WorkerContext::Native(Arc::clone(context)),
-                    token,
-                    cancellation,
-                    true,
-                    Some(&io),
-                )
-                .await?;
-            crate::filesystem::native_decoded((source, io.guard_owned(io.owned_bytes()?)?))
-        })
-    }
-    pub(in crate::filesystem) fn merge<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        arguments: &'a MergeToolArguments,
-        original: Option<&'a RecursiveMergeToolPlan>,
-        cancellation: &'a CancellationToken,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, RecursiveMergeToolBinding<P, A, O>>> {
-        BoundedContentFuture::new(io, || async move {
-            native_io(io)?;
-            self.merge_binding(context, arguments, original, cancellation, io)
-                .await
-        })
+        }
+        Ok(owner)
     }
 }
 

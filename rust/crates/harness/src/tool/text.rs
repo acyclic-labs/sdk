@@ -261,12 +261,13 @@ mod tests {
 
     #[test]
     fn read_records_omissions_and_preserves_exact_utf8_and_crlf() -> Result<()> {
+        let mut work = AlgorithmWork::new(None, 0)?;
         assert_eq!(
             read_range(
                 "a\r\n🦀\r\nb",
                 TextRange { start: 3, end: 9 },
                 READ,
-                &mut AlgorithmWork::ordinary()
+                &mut work
             )?,
             TextSelection {
                 range: TextRange { start: 3, end: 9 },
@@ -281,18 +282,10 @@ mod tests {
             TextRange { start: 9, end: 8 },
             TextRange { start: 0, end: 11 },
         ] {
-            assert!(
-                read_range("a\r\n🦀\r\nb", range, READ, &mut AlgorithmWork::ordinary()).is_err()
-            );
+            assert!(read_range("a\r\n🦀\r\nb", range, READ, &mut work).is_err());
         }
         assert_eq!(
-            read_range(
-                "abc",
-                TextRange { start: 3, end: 3 },
-                READ,
-                &mut AlgorithmWork::ordinary()
-            )?
-            .text,
+            read_range("abc", TextRange { start: 3, end: 3 }, READ, &mut work)?.text,
             ""
         );
         assert!(
@@ -303,7 +296,7 @@ mod tests {
                     maximum_text_bytes: 2,
                     ..READ
                 },
-                &mut AlgorithmWork::ordinary(),
+                &mut work,
             )
             .is_err()
         );
@@ -312,8 +305,9 @@ mod tests {
 
     #[test]
     fn overlaps_omissions_and_work_are_explicit() -> Result<()> {
+        let mut work = AlgorithmWork::new(None, 0)?;
         assert_eq!(
-            literal_search("aaa", "aa", SEARCH, &mut AlgorithmWork::ordinary())?,
+            literal_search("aaa", "aa", SEARCH, &mut work)?,
             SearchMatches {
                 matches: vec![TextRange { start: 0, end: 2 }],
                 total_matches: 2,
@@ -322,7 +316,7 @@ mod tests {
             }
         );
         assert_eq!(
-            literal_search("🦀🦀", "🦀", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches,
+            literal_search("🦀🦀", "🦀", SEARCH, &mut work)?.total_matches,
             2
         );
         assert!(
@@ -333,16 +327,13 @@ mod tests {
                     maximum_work: 3,
                     ..SEARCH
                 },
-                &mut AlgorithmWork::ordinary(),
+                &mut work,
             )
             .is_err()
         );
+        assert_eq!(literal_search("a", "long", SEARCH, &mut work)?.work, 0);
         assert_eq!(
-            literal_search("a", "long", SEARCH, &mut AlgorithmWork::ordinary())?.work,
-            0
-        );
-        assert_eq!(
-            literal_search("ABC", "abc", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches,
+            literal_search("ABC", "abc", SEARCH, &mut work)?.total_matches,
             0
         );
         for options in [
@@ -367,14 +358,15 @@ mod tests {
                 ..SEARCH
             },
         ] {
-            assert!(literal_search("a", "a", options, &mut AlgorithmWork::ordinary()).is_err());
+            assert!(literal_search("a", "a", options, &mut work).is_err());
         }
-        assert!(literal_search("a", "", SEARCH, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(literal_search("a", "", SEARCH, &mut work).is_err());
         Ok(())
     }
 
     #[test]
     fn bounded_search_agrees_with_all_legal_start_positions() -> Result<()> {
+        let mut work = AlgorithmWork::new(None, 0)?;
         for length in 0..=6 {
             for bits in 0..(1 << length) {
                 let source: String = (0..length)
@@ -393,8 +385,7 @@ mod tests {
                                 })
                         })
                         .collect();
-                    let actual =
-                        literal_search(&source, query, SEARCH, &mut AlgorithmWork::ordinary())?;
+                    let actual = literal_search(&source, query, SEARCH, &mut work)?;
                     assert_eq!(actual.total_matches, expected.len() as u64);
                     assert_eq!(
                         actual.matches,

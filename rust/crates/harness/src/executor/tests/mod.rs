@@ -341,15 +341,10 @@ struct ContextOnlyTool {
 }
 
 impl ToolExecutor for ContextOnlyTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        async { Err(Error::Unsupported("original context required".into())) }.boxed()
-    }
 
-    fn execute_with_context<'a>(
-        &'a self,
-        context: crate::runtime::ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+let Some(context) = context else { return async { Err(Error::Unsupported("original context required".into())) }.boxed(); };
         async move {
             assert_eq!(context.task().id(), self.admission);
             assert_eq!(context.operation_id(), invocation.operation_id);
@@ -360,15 +355,10 @@ impl ToolExecutor for ContextOnlyTool {
         .boxed()
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        async { Err(Error::Unsupported("original context required".into())) }.boxed()
-    }
 
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: crate::runtime::ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+let Some(context) = context else { return async { Err(Error::Unsupported("original context required".into())) }.boxed(); };
         async move {
             assert_eq!(context.task().id(), self.admission);
             assert_eq!(context.operation_id(), invocation.operation_id);
@@ -448,7 +438,7 @@ impl ModelProvider for ScriptedModel {
 struct FakeTool(AtomicUsize);
 
 impl crate::tool::ToolExecutor for FakeTool {
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         async move {
             Ok(ToolResult {
@@ -458,7 +448,7 @@ impl crate::tool::ToolExecutor for FakeTool {
         .boxed()
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         async { Ok(None) }.boxed()
     }
 }

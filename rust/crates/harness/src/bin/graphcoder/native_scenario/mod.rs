@@ -98,7 +98,9 @@ impl Caller {
             sequence,
             kind,
             content,
-            attachments: Default::default(),
+            attachments: acyclic_harness::conversation::ReferencedAttachments::Inline {
+                items: Vec::new(),
+            },
             reply_to: None,
             tool_call_id: None,
             extensions: Default::default(),
@@ -166,7 +168,7 @@ async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkL
     let admission = runtime.task_host().observe_admission(task).await?;
     let lease = match runtime
         .task_host()
-        .pull_operation(worker, admission.operation_id, &mut None)
+        .pull_work(worker, Some(admission.operation_id), &mut None)
         .await?
     {
         WorkPull::Claimed(lease) => lease,
@@ -177,7 +179,7 @@ async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkL
         }
         WorkPull::Unresolved { error, .. } => return Err(error),
     };
-    runtime.task_host().start_task(&lease, None).await?;
+    runtime.task_host().start_task(&lease, &mut None).await?;
     Ok(lease)
 }
 fn admitted_task<T: Send + 'static>(admission: Admission<RuntimeTask<T>>) -> Result<TaskId> {

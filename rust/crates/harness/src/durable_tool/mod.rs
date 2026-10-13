@@ -21,7 +21,7 @@ impl crate::filesystem::UploadRecord for Value {
     fn diagnostic_label_bytes() -> u64 {
         0
     }
-    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::Root
     }
     fn logical_owned_bytes(&self) -> Result<u64> {

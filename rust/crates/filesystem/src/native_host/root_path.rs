@@ -108,23 +108,6 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
     result
 }
 
-pub(super) fn check_root_wide_name<W: NativeHostWork>(
-    name: &[u16],
-    work: &mut W,
-) -> Result<(), W::Error> {
-    work.check()?;
-    let Some((&0, body)) = name.split_last() else {
-        return Err(W::invalid_request());
-    };
-    for unit in body {
-        work.started_io(ITEM)?;
-        if *unit == 0 {
-            return Err(W::invalid_request());
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn windows_file_information(
     file: &impl std::os::windows::io::AsRawHandle,
 ) -> io::Result<fs::BY_HANDLE_FILE_INFORMATION> {

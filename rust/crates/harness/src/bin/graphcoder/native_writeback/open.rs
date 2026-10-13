@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::runtime::{DurableTaskHost as _, TaskStateProvider};
+use acyclic_harness::runtime::DurableTaskHost as _;
 
 impl NativeSession {
     pub async fn publication(
@@ -153,12 +153,7 @@ impl NativeSession {
                             )?;
                         }
                         guard_journal
-                            .verify_with_native_work(
-                                interaction_id(binding),
-                                binding.operation_id,
-                                digest,
-                                &work,
-                            )?
+                            .verify(interaction_id(binding), binding.operation_id, digest)
                             .await?;
                         guard_owner.verify(false, &mut Some(&mut observer)).await
                     }

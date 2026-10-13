@@ -65,10 +65,7 @@ pub struct ReferenceGrant {
 
 impl ReferenceGrant {
     /// Validates the standalone owner-mediated reference envelope.
-    pub(crate) fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub(crate) fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.file.validate(work)?;
         if let Some(manifest) = &self.attachment_manifest {
             manifest.validate(work)?;
@@ -94,10 +91,7 @@ impl ReferenceGrant {
 
 impl SharedGrant {
     /// Validates the grant envelope; the seed checks selection and child binding.
-    pub(crate) fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub(crate) fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.volume.validate(work)?;
         if self.volume.class() != VolumeClass::SessionShared || self.operations.is_empty() {
             return Err(boundary_error(
@@ -112,10 +106,7 @@ impl SharedGrant {
 
 impl ForkOmission {
     /// Required captures and successful captures cannot become omissions.
-    pub(crate) fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub(crate) fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.selection.revision.validate(work)?;
         if self.selection.required || matches!(self.outcome, Capture::Captured(_)) {
             return Err(boundary_error(
@@ -130,10 +121,7 @@ impl ForkOmission {
 
 impl CapturedResource {
     /// Only project capture may create a new revision and volume identity.
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.source.validate(work)?;
         self.revision.validate(work)?;
         match (&self.source, &self.revision) {

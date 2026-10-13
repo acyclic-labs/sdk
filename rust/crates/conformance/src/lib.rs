@@ -49,7 +49,7 @@ pub async fn filesystem_smoke<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 /// Runs the canonical Stream suite against a fresh, disposable provider.
 pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
-    acyclic_stream::conformance::verify(provider).await
+    acyclic_stream::conformance::verify(provider).await.map_err(|error| error.to_string())
 }
 
 /// Runs the canonical Objects suite against a fresh, disposable provider.

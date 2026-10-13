@@ -59,6 +59,7 @@ use acyclic_harness::{
     executor::ExecutionJournal,
     filesystem::{FilesystemExecutionJournal, FilesystemInteractionHost},
     interaction::{Interaction, InteractionOutcome},
+    runtime::DurableTaskHost as _,
     scheduler::LeaseFence,
     store::StreamAggregate,
     tool::ToolApprovalVerifier,

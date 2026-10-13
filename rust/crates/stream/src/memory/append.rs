@@ -3,8 +3,6 @@ impl MemoryStream {
         &self,
         request: AppendRequest,
     ) -> Result<(AppendOutcome, Allocation), StreamError> {
-        validate_records(&request.records)?;
-        validate_append_size(&request)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _input = self.adopt(request.records.capacity() * std::mem::size_of::<Bytes>())?;
         let bytes = request.records.iter().map(Bytes::len).sum::<usize>();

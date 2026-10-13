@@ -41,9 +41,9 @@ mod open;
 pub(crate) use open::*;
 mod mutation;
 pub(crate) use mutation::*;
-mod metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 mod macos_metadata;
+mod metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 pub(crate) use macos_metadata::*;
 mod stat;
@@ -111,3 +111,8 @@ mod windows_clone_tests;
 #[cfg(all(test, windows))]
 #[path = "tests_yielding.rs"]
 mod yielding_tests;
+
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+use test_support::{test_path, test_root};

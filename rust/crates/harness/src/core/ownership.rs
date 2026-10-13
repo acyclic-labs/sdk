@@ -54,7 +54,7 @@ pub(crate) fn owned_bytes<T: Serialize + ?Sized>(value: &T) -> Result<u64> {
         .ok_or_else(|| Error::Invalid("record ownership overflows".into()))
 }
 
-pub(in crate::core) fn owned_effect(effect: &EffectState) -> Result<u64> {
+pub(crate) fn owned_effect(effect: &EffectState) -> Result<u64> {
     owned_sum([
         effect.provider.capacity() as u64,
         effect.effect_kind.capacity() as u64,
@@ -76,81 +76,35 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     ])
 }
 
+fn owned_records<T: Serialize>(values: impl IntoIterator<Item = T>) -> Result<u64> {
+    values
+        .into_iter()
+        .try_fold(0, |sum, value| owned_sum([sum, owned_bytes(&value)?]))
+}
+
 impl<B> snapshot::Projection<ConversationState, B> {
-    /// Logical bytes of the projection and event cache, excluding conversation messages.
+    /// Admission for cloned projection records; conversation owns its separate quota.
     pub(in crate::core) fn owned_bytes<'a>(
         &self,
         authority: &Authority,
         events: impl Iterator<Item = &'a Event>,
-        event_capacity: usize,
     ) -> Result<u64> {
-        let mut bytes = owned_sum([
-            authority.id.capacity() as u64,
-            owned_buffer::<Event>(event_capacity)?,
-            owned_buffer::<EffectId>(self.indexed_terminal_effects.capacity())?,
-            owned_vector(&self.active_extensions, |extension| {
-                Ok(extension.name.capacity() as u64)
-            })?,
-            owned_vector(&self.active_configurations, owned_bytes)?,
-        ])?;
-        for event in events {
-            bytes = owned_sum([bytes, event_owned_bytes(event)?])?;
-        }
-        for effect in self.effects.values() {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(EffectId, EffectState)>() as u64,
-                owned_effect(effect)?,
-            ])?;
-        }
-        for (key, (reference, record)) in &self.extension_states {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(String, (EventReference, ExtensionRecord))>() as u64,
-                key.capacity() as u64,
-                reference.authority.id.capacity() as u64,
-                owned_bytes(record)?,
-            ])?;
-        }
-        for (key, record) in &self.configured_extensions {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(ExtensionDependency, ExtensionConfiguration)>() as u64,
-                key.name.capacity() as u64,
-                owned_bytes(record)?,
-            ])?;
-        }
-        for (key, seed) in &self.forks {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(Authority, ForkSeed)>() as u64,
-                key.id.capacity() as u64,
-                owned_bytes(seed)?,
-            ])?;
-        }
-        for (name, operation) in &self.published_merges {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(String, Vec<u8>)>() as u64,
-                name.capacity() as u64,
-                operation.capacity() as u64,
-            ])?;
-        }
-        if let Some(checkpoint) = &self.latest_context_checkpoint {
-            bytes = owned_sum([bytes, checkpoint.logical_owned_bytes()?])?;
-        }
-        for (ticket, resolution) in self.interactions.values() {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(
-                    uuid::Uuid,
-                    (InteractionTicket, Option<InteractionResolution>),
-                )>() as u64,
-                owned_bytes(&ticket.request)?,
-                resolution.as_ref().map_or(Ok(0), owned_bytes)?,
-            ])?;
-        }
-        Ok(bytes)
+        [
+            owned_bytes(authority),
+            owned_bytes(&self.active_extensions),
+            owned_bytes(&self.active_configurations),
+            owned_bytes(&self.indexed_terminal_effects),
+            owned_records(self.effects.iter()),
+            owned_records(self.extension_states.iter()),
+            owned_records(self.configured_extensions.iter()),
+            owned_records(self.forks.iter()),
+            owned_records(self.published_merges.iter()),
+            owned_bytes(&self.latest_context_checkpoint),
+            owned_records(self.interactions.iter()),
+            owned_records(events),
+        ]
+        .into_iter()
+        .try_fold(0, |sum, part| owned_sum([sum, part?]))
     }
 }
 

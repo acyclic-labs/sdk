@@ -28,6 +28,14 @@ fn buffer_growth_funds_both_live_backings() -> Result<(), Box<dyn std::error::Er
         Err(NativeTreeMaterializationError::Work(_))
     ));
     assert_eq!(values, [1]);
+    let bytes = [0; std::mem::size_of::<usize>()];
+    let mut writer = ImageWriter::new(&work)?;
+    writer.append(&bytes)?;
+    assert!(matches!(
+        writer.append(&bytes),
+        Err(NativeTreeMaterializationError::Work(_))
+    ));
+    assert_eq!(writer.bytes, bytes);
     Ok(())
 }
 

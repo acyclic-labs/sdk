@@ -10,7 +10,7 @@ fn rejects_a_replaced_file_between_path_metadata_and_open() -> Result<(), Box<dy
     std::fs::write(&replacement, b"other")?;
     let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
         .map_err(crate::native_host::ordinary_error)?;
-    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
+    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?);
     std::fs::rename(&current, temporary.path().join("displaced"))?;
     std::fs::rename(&replacement, &current)?;
     let opened = test_open_file(&root, Path::new("current"))?;
@@ -28,7 +28,7 @@ fn rejects_a_changed_file_after_open() -> Result<(), Box<dyn std::error::Error>>
     std::fs::write(&current, b"first")?;
     let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
         .map_err(crate::native_host::ordinary_error)?;
-    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
+    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?);
     let opened = test_open_file(&root, Path::new("current"))?;
     ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
     std::fs::write(&current, b"changed body")?;
@@ -49,7 +49,7 @@ fn rejects_a_permission_change_after_open() -> Result<(), Box<dyn std::error::Er
     std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o644))?;
     let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
         .map_err(crate::native_host::ordinary_error)?;
-    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
+    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?);
     let opened = test_open_file(&root, Path::new("current"))?;
     ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
     std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
@@ -67,7 +67,7 @@ fn creation_time_changes_require_two_observable_values() -> Result<(), Box<dyn s
     let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
         .map_err(crate::native_host::ordinary_error)?;
     let metadata = test_host_stat(&root, Path::new("current"))?;
-    let mut expected = HostSnapshot::from_metadata(&metadata)?;
+    let mut expected = HostSnapshot::from_metadata(&metadata);
     expected.metadata.created_ns = MetadataField::Value(123);
     let mut observed = expected;
     observed.metadata.created_ns = MetadataField::Unavailable;
@@ -91,7 +91,7 @@ fn rejects_a_replaced_directory_before_capture_admission() -> Result<(), Box<dyn
     std::fs::create_dir(&replacement)?;
     let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
         .map_err(crate::native_host::ordinary_error)?;
-    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
+    let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?);
     std::fs::rename(&current, temporary.path().join("displaced"))?;
     std::fs::rename(&replacement, &current)?;
     let native =
@@ -104,7 +104,7 @@ fn rejects_a_replaced_directory_before_capture_admission() -> Result<(), Box<dyn
             &test_host_path(Path::new("current")),
             &expected,
             &CancellationToken::new(),
-            &scope,
+            &scope.native,
         ),
         Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
     ));

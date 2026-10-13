@@ -20,7 +20,7 @@ impl RecordPaths<'_> {
         path: &Path,
     ) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
         match &self.allocation {
-            Some(allocation) => measured_read_file(path, allocation.work())
+            Some(allocation) => read_file(path, allocation.work(), None)
                 .map(|value| value.map(|(value, allocation)| (value, Some(allocation)))),
             None => read_json(path, None).map(|value| value.map(|value| (value, None))),
         }
