@@ -188,7 +188,7 @@ impl NativeTreeMaterializationBackend {
                 let parent = backend
                     .work
                     .with_original_leaf(|state| {
-                        { #[cfg(unix)] { backend.held_target.create_dir_all_held(path.parent().ok_or(crate::DemandError::InvalidRequest)?, state) } #[cfg(windows)] { crate::native_host::with_wide_path(path.parent().ok_or(crate::DemandError::InvalidRequest)?, state, |path, work| backend.held_target.create_dir_all_held(path, work)) } }
+                         #[cfg(unix)] { backend.held_target.create_dir_all_held(path.parent().ok_or(crate::DemandError::InvalidRequest)?, state) } #[cfg(windows)] { crate::native_host::with_wide_path(path.parent().ok_or(crate::DemandError::InvalidRequest)?, state, |path, work| backend.held_target.create_dir_all_held(path, work)) }
                     })
                     .map_err(native_materialization_work_error)?;
                 if host_stat(&backend.held_target, path, &backend.work)?.is_some() {

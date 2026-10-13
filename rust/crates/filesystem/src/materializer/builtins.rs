@@ -69,7 +69,7 @@ impl NativeMaterializationWork {
             guard().await?;
             let opened = self
                 .with_original_leaf(|state| {
-                    { #[cfg(unix)] { parent.open_child(Path::new(name), state) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(name), state, |path, work| parent.open_child(path, work)) } }
+                     #[cfg(unix)] { parent.open_child(Path::new(name), state) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(name), state, |path, work| parent.open_child(path, work)) }
                 })
                 .map_err(native_materialization_work_error);
             let checked = guard().await;
@@ -261,7 +261,7 @@ impl NativeMaterializationWork {
         }
         let parent = self
             .with_original_leaf(|state| {
-                { #[cfg(unix)] { held.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), state) } #[cfg(windows)] { crate::native_host::with_wide_path(relative.parent().unwrap_or_else(|| Path::new("")), state, |path, work| held.create_dir_all_held(path, work)) } }
+                 #[cfg(unix)] { held.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), state) } #[cfg(windows)] { crate::native_host::with_wide_path(relative.parent().unwrap_or_else(|| Path::new("")), state, |path, work| held.create_dir_all_held(path, work)) }
             })
             .map_err(native_materialization_work_error)?;
         let leaf = Path::new(
