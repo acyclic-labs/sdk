@@ -175,7 +175,7 @@ async fn sealed_summary_preparation(
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let proofs = preparer.creation_allocations(fork, prep_task, None)?;
     let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
-    let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
+    let command_payload = crate::distributed::SchedulerPayloadStore::stage(payloads.as_ref(), fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?, None)?.await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
 provider: storage.volume.provider().clone(),
