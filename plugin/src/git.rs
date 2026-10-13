@@ -321,7 +321,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let workspace = self
                     .lazy_current
                     .fork(
-                        destination,
+                        &destination,
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
                         &mut acyclic_fs::kernel::KernelAccounting::Standalone {
                             allocations: Default::default(),

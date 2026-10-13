@@ -49,7 +49,7 @@ impl ControlPlane {
                 .map_err(display)?;
             let store = LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?;
             let mut control =
-                Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default()).await?;
+                Box::pin(Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default())).await?;
             control.owns_local_root = true;
             Ok(control)
         }

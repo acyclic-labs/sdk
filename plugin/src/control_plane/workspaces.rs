@@ -175,6 +175,7 @@ impl ControlPlane {
             let policy = CapturePolicy::excluding(reserved_root_paths()?).map_err(display)?;
             let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(display)?;
+            let consumes_changes = observation_consumes_changes(&observation.batch);
             match observation.batch {
                 WatchBatch::Changes { .. } if source_advanced_elsewhere => {
                     // The whole tree is captured, so all of it must report.
@@ -267,7 +268,7 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
-                if !observation_consumes_changes(&observation.batch)
+                if !consumes_changes
                     && !source_advanced_elsewhere
                     && !checkout.has_pending_mutations()
                 {
