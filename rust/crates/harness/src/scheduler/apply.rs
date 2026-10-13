@@ -285,9 +285,10 @@ impl Scheduler {
         if !matches!(
             state.phase,
             OperationPhase::Running | OperationPhase::Reconciling
-        ) && state.reservation.is_none()
+        ) && (state.phase == OperationPhase::Admitted || state.reservation.is_none())
         {
             state.phase = OperationPhase::Terminal;
+            state.reservation = None;
             state.outcome = Some(Outcome::Cancelled);
             self.completion_order.push(id);
         } else {
@@ -326,8 +327,10 @@ impl Scheduler {
             if self.operation(*id).is_some_and(|state| {
                 !matches!(
                     state.phase,
-                    OperationPhase::Terminal | OperationPhase::Running | OperationPhase::Reconciling
-                ) && state.reservation.is_none()
+                    OperationPhase::Terminal
+                        | OperationPhase::Running
+                        | OperationPhase::Reconciling
+                ) && (state.phase == OperationPhase::Admitted || state.reservation.is_none())
             }) {
                 extra += 1;
             }
