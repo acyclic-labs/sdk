@@ -118,7 +118,7 @@ test('native builds and mount checks overlap qualification and still gate public
   ['darwin-arm64','macos-nfs','native-mount-qualify'],
   ['win32-x64','windows-projfs','native-mount-qualify.exe'],
  ]);
- for(const target of ['linux-arm64-gnu','linux-arm64-musl','win32-x64']){
+ for(const target of ['linux-x64-gnu','linux-arm64-gnu','linux-arm64-musl','win32-x64']){
   const row=matrix.find(row=>row.target===target)??assert.fail(target);
   assert.match(row.runner,/blacksmith-16vcpu-/);
   assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(row.runner));

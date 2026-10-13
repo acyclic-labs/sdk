@@ -35,7 +35,7 @@ jobs:
             backend: linux-fuse
             qualifier: native-mount-qualify
             rust_target: x86_64-unknown-linux-gnu
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-16vcpu-ubuntu-2404
             executable: acyclic
           - target: linux-x64-musl
             rust_target: x86_64-unknown-linux-musl
