@@ -26,7 +26,7 @@ async fn open_native_history(
 #[tokio::test]
 async fn native_checkpoint_open_preserves_actual_output_and_failed_source_prefixes() -> Result<()> {
     use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-    let provider = fixture().await?;
+    let provider = projection_fixture(69).await?;
     let expected = with_content(&provider).await?.into_reducer();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("finite test budget");
@@ -99,7 +99,7 @@ async fn native_checkpoint_open_preserves_actual_output_and_failed_source_prefix
 
 #[tokio::test]
 async fn measured_checkpoint_cancellation_stops_before_next_sdk_call() -> Result<()> {
-    let provider = fixture().await?;
+    let provider = projection_fixture(69).await?;
     let cancellation = CancellationToken::new();
     *provider
         .history_cancel_after_tail
