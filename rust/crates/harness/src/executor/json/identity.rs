@@ -37,46 +37,7 @@ pub(crate) fn json_byte_length<T: Serialize + ?Sized>(
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let native_code = None;
     observer.check_cancellation()?;
-    const CONTEXT_LABEL_BYTES: u64 = {
-        let labels = [
-            "EffectState",
-            "Context",
-            "BorrowedContext",
-            "ContextMessages",
-            "JoinedContext",
-            "metadata",
-            "messages",
-            "current_input_index",
-            "ContextAttribute",
-            "ContextSelection",
-            "ContextSourceValue",
-            "ContextExtent",
-            "ContextRepresentation",
-            "provider",
-            "guarantee",
-            "effect_kind",
-            "request",
-            "request_digest",
-            "result_schema",
-            "result_schema_digest",
-            "status",
-            "attempts",
-            "EffectStatus",
-            "FileRef",
-            "VolumeRef",
-            "FileDescriptor",
-            "ProviderRef",
-            "key must be a string",
-            "number out of range",
-        ];
-        let mut bytes = 0;
-        let mut index = 0;
-        while index < labels.len() {
-            bytes += labels[index].len() as u64 + 4;
-            index += 1;
-        }
-        bytes
-    };
+    const CONTEXT_LABEL_BYTES: u64 = 484;
     let diagnostic = audited_serde_diagnostic_bytes(
         0,
         preparation_serde_diagnostic_label_bytes() + CONTEXT_LABEL_BYTES,
