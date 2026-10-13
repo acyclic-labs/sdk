@@ -31,15 +31,17 @@ impl StockExecution<'_> {
                 "tool prefix has another execution identity",
             ));
         }
-        let retained = retained_model_step(
-            journal,
-            &records,
-            step,
-            ModelPurpose::Response,
-            self.stock.limits,
-            self.io,
-        )
-        .await?;
+        let retained = crate::executor::retain_preparation(
+            retained_model_step(
+                journal,
+                &records,
+                step,
+                ModelPurpose::Response,
+                self.stock.limits,
+                self.io,
+            )
+            .await?,
+        );
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
