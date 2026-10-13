@@ -87,7 +87,7 @@ impl HttpStream {
     }
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
         let mut observation = HttpObservation {
-            span: obs::OwnedSpan::new(tracing::info_span!(
+            span: obs::OperationSpan::new(tracing::info_span!(
                 "acyclic.stream.http.call",
                 route,
                 http.status = Empty,
@@ -126,7 +126,7 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?;
         let success = response.status().is_success();
-        obs::record(span, "http.status", response.status().as_u16());
+        span.record("http.status", response.status().as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
@@ -144,7 +144,7 @@ impl HttpStream {
             }
             body.extend_from_slice(&chunk);
         }
-        obs::record(span, "bytes", body.len());
+        span.record("bytes", body.len());
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
             let code = value
@@ -277,7 +277,14 @@ impl HttpStream {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         let mut observation = FollowObservation::new(from);
-        let tail = observation.span.scope(self.tail(path.clone())).await;
+        let context = (!observation.span.is_disabled())
+            .then(|| obs::OperationSpan::new(observation.span.clone()));
+        let tail = self.tail(path.clone());
+        let tail = match &context {
+            Some(context) => context.scope(tail),
+            None => obs::Scoped::new(tail, tracing::dispatcher::get_default(Clone::clone)),
+        }
+        .await;
         match tail {
             Ok(tail) if from <= tail => {}
             Ok(_) => {
@@ -290,7 +297,6 @@ impl HttpStream {
             }
         }
         observation.span.record("phase", "consumer");
-        let context = observation.span.clone();
         let follow = stream::try_unfold(
             (
                 self.clone(),
@@ -318,7 +324,7 @@ impl HttpStream {
                             return Ok(record);
                         }
                         observation.span.record("phase", "read");
-                        let poll = obs::OwnedSpan::new(tracing::trace_span!(
+                        let poll = obs::OperationSpan::new(tracing::trace_span!(
                             "acyclic.stream.http.follow.poll"
                         ));
                         queued = poll
@@ -335,7 +341,7 @@ impl HttpStream {
                         observation.span.record("queued", queued.len());
                         if queued.is_empty() {
                             observation.span.record("phase", "sleep");
-                            let sleep = obs::OwnedSpan::new(tracing::debug_span!(
+                            let sleep = obs::OperationSpan::new(tracing::debug_span!(
                                 "acyclic.stream.http.follow.sleep",
                                 delay_ms = 250_u64
                             ));
@@ -353,7 +359,7 @@ impl HttpStream {
                 )))
             },
         );
-        Ok(context.scope_mode(follow, !context.is_disabled()).boxed())
+        Ok(obs::Scoped::with_context(follow, context).boxed())
     }
     async fn commit_request(
         &self,
@@ -544,7 +550,7 @@ impl StreamProvider for HttpStream {
 }
 // Dropping a pending physical HTTP request cancels that request, independently
 struct HttpObservation {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     finished: bool,
 }
 impl Drop for HttpObservation {

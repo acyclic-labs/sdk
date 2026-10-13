@@ -4,7 +4,6 @@ pub(super) struct CheckoutCandidate<A, O> {
     pub(super) operation: Option<OperationId>,
 }
 
-/// Paths whose bindings a candidate was prepared to change.
 #[derive(Clone, Copy)]
 pub(super) enum InstallScope<'a> {
     Paths(&'a [NamespacePath]),

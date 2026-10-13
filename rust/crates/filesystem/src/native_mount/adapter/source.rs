@@ -11,7 +11,6 @@ impl<A, O> CheckoutMountSource<A, O> {
             != 0
     }
 
-    /// Whether the volume resolves every case of a name to one entry.
     pub(super) fn folds_names(&self) -> bool {
         self.folds_names
     }
@@ -48,7 +47,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         &self.cancellation
     }
 
-    /// The checkout path a mounted path names, as view changes key it.
     pub(super) fn namespace_path(
         &self,
         path: &MountPath,
@@ -59,7 +57,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok((path, inputs.retain()))
     }
 
-    /// Records a change a composing source makes to its own projection of
     pub(super) fn record_projection_change(
         &self,
         change: &ViewChange<'_>,
@@ -72,7 +69,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         recorded.and(checked)
     }
 
-    /// Opens a regular file by its stable identity.
     pub(super) async fn attached_file_by_id(
         &self,
         file_id: FileId,
@@ -202,7 +198,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         };
         inputs
             .carrier
-            .finish_read(chunk, &cancellation, Some(&self.cancellation))
+            .check(&cancellation, Some(&self.cancellation))?;
+        Ok(chunk)
     }
 
     pub(super) async fn lookup_async(
@@ -312,6 +309,20 @@ impl<A, O> CheckoutMountSource<A, O> {
             .observe(owner, carrier, &cancellation, Some(&self.cancellation))
             .await?;
         let work = carrier.original_native_work().expect("native SDK callback");
+        self.detached_from_checkout(&checkout, record, metadata, &work)
+    }
+
+    fn detached_from_checkout(
+        &self,
+        checkout: &Checkout<A, O>,
+        record: FileRecord,
+        metadata: FileMetadata,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Arc<CheckoutDetachedFile<A, O>>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
         let allocation = work
             .claim(
                 std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64,
@@ -319,8 +330,8 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::WorkCounters::UNCHARGED,
             )
             .map_err(MountSourceError::NativeWork)?;
-        let file = checkout.detached_from_record(record, &work, &cancellation)?;
-        carrier.check(&cancellation, Some(&self.cancellation))?;
+        let file = checkout.detached_from_record(record, work, work.cancellation())?;
+        NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
         Ok(Arc::new(CheckoutDetachedFile {
             _native_allocation: allocation,
             state: tokio::sync::Mutex::new(DetachedMountState {
@@ -364,8 +375,6 @@ impl<A, O> CheckoutMountSource<A, O> {
             root,
             limits: config.limits,
             profile: config.profile,
-            // Only UTF-8 names have case variants; the others fold to
-            // themselves.
             folds_names: config.case_sensitivity == CaseSensitivity::ProfileFolded
                 && matches!(
                     config.profile,
@@ -397,7 +406,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .observe(
                     owner,
                     &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                        boundary_budget(),
+                        BOUNDARY_BUDGET,
                         &self.cancellation,
                     )),
                     &self.cancellation,
@@ -435,7 +444,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let work = match &self.native_original {
             Some(work) => work.clone(),
-            None => capture_meter(boundary_budget(), &self.cancellation)?,
+            None => capture_meter(BOUNDARY_BUDGET, &self.cancellation)?,
         };
         self.checkout
             .publish(
@@ -463,8 +472,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
-            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(boundary_budget(), &self.cancellation), &self.cancellation)
-            .map_err(fs_error)?;
+            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(BOUNDARY_BUDGET, &self.cancellation), &self.cancellation)
+            .map_err(MountSourceError::from)?;
         let decision = checkout
             .rebase_head(
                 self.limits.maximum_checkout_dependencies,
@@ -491,8 +500,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
-            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(boundary_budget(), &self.cancellation), &self.cancellation)
-            .map_err(fs_error)?;
+            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(BOUNDARY_BUDGET, &self.cancellation), &self.cancellation)
+            .map_err(MountSourceError::from)?;
         checkout
             .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
             .await
@@ -500,7 +509,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         self.record_advance(&mut checkout, &base).await
     }
 
-    /// Records exactly what advancing the checkout from `base` changed in
     async fn record_advance(
         &self,
         checkout: &mut SharedCheckoutGuard<'_, A, O>,
@@ -513,11 +521,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         if checkout.root().file_table == base.root().file_table {
             return Ok(());
         }
-        // Names that changed in directories at unknown paths are covered
-        // by the whole checkout, whichever root a composing source mounts.
         let root =
             NamespacePath::new(Vec::new(), self.limits).map_err(MountSourceError::NamespacePath)?;
-        let work = capture_meter(boundary_budget(), &self.cancellation)?;
+        let work = capture_meter(BOUNDARY_BUDGET, &self.cancellation)?;
         let (installed, _allocation) = installed_changes(
             base,
             checkout,

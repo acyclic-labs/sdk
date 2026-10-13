@@ -1,8 +1,6 @@
 //! Shared real-provider fixture for durable host behavior tests.
 use super::*;
-use crate::filesystem::{
-    FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
-};
+use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 use crate::runtime::{TaskDefinition, TaskRegistry};
 type Execution<P, A, O> = crate::filesystem::FilesystemExecutionJournal<P, A, O>;
 type Workflow<P, A, O> = crate::filesystem::FilesystemWorkflowJournal<P, A, O>;
@@ -43,7 +41,7 @@ where
     pub(crate) async fn owner(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         let lease = match self
             .host
-            .recover_work(TaskId::from_bytes([byte; 16]))
+            .recover_work(TaskId::from_bytes([byte; 16]), &mut None)
             .await?
         {
             crate::distributed::WorkPull::Claimed(lease)
@@ -105,19 +103,25 @@ where
                 &mut None,
             )
             .await?;
-        let (input, _) = self
-            .publisher
-            .stage(
-                OperationId::from_bytes([byte; 16]),
-                "replacement.json",
-                b"0",
-                "application/json",
-                "replacement.json",
-                None,
-            )?
-            .await?;
+        let (input, _) = crate::conversation::ContentPublisher::stage(
+            self.publisher.as_ref(),
+            OperationId::from_bytes([byte; 16]),
+            "replacement.json",
+            b"0",
+            "application/json",
+            "replacement.json",
+            None,
+        )?
+        .await?;
         self.host
-            .resume_workflow(task, 1, input, IdempotencyKey::new("replace")?)
+            .resume_workflow(
+                task,
+                1,
+                input,
+                IdempotencyKey::new("replace")?,
+                None,
+                &mut None,
+            )
             .await?;
         self.claim(byte, "replacement").await?;
         self.owner(byte).await
@@ -325,19 +329,20 @@ where
     ) -> Result<crate::distributed::WorkLease> {
         let crate::distributed::WorkPull::Claimed(lease) = self
             .host
-            .pull_operation(
+            .pull_work(
                 &crate::distributed::Worker {
                     id: worker.into(),
                     available: Default::default(),
                     labels: BTreeMap::new(),
                 },
-                OperationId::from_bytes([byte; 16]),
+                Some(OperationId::from_bytes([byte; 16])),
+                &mut None,
             )
             .await?
         else {
             return Err(Error::NotFound("fixture lease".into()));
         };
-        self.host.start_task(&lease).await?;
+        self.host.start_task(&lease, &mut None).await?;
         Ok(lease)
     }
 

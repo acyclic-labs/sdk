@@ -210,16 +210,19 @@ impl AgentHarness {
             }};
         }
         let mut mismatch = false;
-        if let Some(host) = &self.host {
-            let host: &dyn TaskStateProvider = host.as_ref();
-            mismatch = identity!(host, policy_identity, policy_identity_with_native_work)
-                .as_deref()
-                != self.policy_identity.as_ref();
-        }
-        if !mismatch && let Some(state) = &self.state {
-            mismatch = identity!(state, policy_identity, policy_identity_with_native_work)
-                .as_deref()
-                != self.policy_identity.as_ref();
+        for state in self
+            .host
+            .as_ref()
+            .map(|host| host.as_ref() as &dyn TaskStateProvider)
+            .into_iter()
+            .chain(self.state.as_deref())
+        {
+            if identity!(state, policy_identity, policy_identity_with_native_work).as_deref()
+                != self.policy_identity.as_ref()
+            {
+                mismatch = true;
+                break;
+            }
         }
         if !mismatch && let Some(spawner) = &self.spawner {
             mismatch = identity!(spawner, policy_identity, policy_identity_with_native_work)
@@ -326,19 +329,19 @@ impl AgentHarness {
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
     ) -> Result<Option<Vec<crate::extension::ExtensionLease>>> {
-        let requirements = definition
+        let mut requirements = definition
             .requirements()
             .iter()
             .filter(|requirement| requirement.starts_with("extension:"))
             .cloned()
-            .collect::<Vec<_>>();
-        if requirements.is_empty() {
+            .peekable();
+        if requirements.peek().is_none() {
             return Ok(None);
         }
-        let runtime = self
-            .extension_runtime
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("task requires a native extension runtime".into()))?;
+        let runtime =
+            self.scope.extension_runtime.as_ref().ok_or_else(|| {
+                Error::Unsupported("task requires a native extension runtime".into())
+            })?;
         runtime.validate_admission(scope.extensions(), &mut None)?;
         Ok(Some(runtime.retain(requirements, false)?))
     }
@@ -348,16 +351,16 @@ impl AgentHarness {
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
     ) -> Result<Vec<crate::extension::ExtensionLease>> {
-        let requirements = definition
+        let mut requirements = definition
             .requirements()
             .iter()
             .filter(|requirement| requirement.starts_with("extension:"))
             .cloned()
-            .collect::<Vec<_>>();
-        if requirements.is_empty() {
+            .peekable();
+        if requirements.peek().is_none() {
             return Ok(Vec::new());
         }
-        let runtime = self.extension_runtime.as_ref().ok_or_else(|| {
+        let runtime = self.scope.extension_runtime.as_ref().ok_or_else(|| {
             Error::Unsupported("retained task requires a native extension runtime".into())
         })?;
         runtime.validate_admission(scope.extensions(), &mut None)?;

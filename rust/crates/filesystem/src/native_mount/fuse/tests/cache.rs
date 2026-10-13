@@ -235,16 +235,10 @@ pub(super) fn original_invalidation_tail_survives_refusal_without_copying_or_ove
     let mut denied_budget = FINITE_CACHE_BUDGET;
     denied_budget.bytes_copied = 0;
     let denied = cache_work(denied_budget, &crate::CancellationToken::new());
-    let failure = crate::native_mount::fuse::fuse_clone_path(&name("refused"), &denied)
+    crate::native_mount::fuse::fuse_clone_path(&name("refused"), &denied)
         .expect_err("real copy refusal");
     queue.retain_pending_tail(in_flight);
-    queue.finish(
-        Some(through),
-        Err((
-            crate::NativeMountError::from(failure),
-            denied.state.lock().work,
-        )),
-    );
+    queue.finish(Some(through));
     assert_eq!(queue.processed, Some(held));
     assert!(queue.is_pending(Some(through)));
     queue.deferred = crate::native_mount::fuse::fuse_vec(1, &work).expect("later callback queue");

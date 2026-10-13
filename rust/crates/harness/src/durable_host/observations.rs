@@ -6,10 +6,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Outcome<Value>>> {
+        #[cfg(feature = "filesystem")]
         let mut history = io.map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
         let mut work = history
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
         let mut quota = crate::wire_codec::CodecQuota::new(
             &mut work,
             std::mem::size_of::<Option<Outcome<Value>>>() as u64,

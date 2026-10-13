@@ -128,7 +128,6 @@ pub struct StreamAggregate<P> {
     merge_verifier: Option<Arc<dyn ProjectMergeVerifier>>,
     extension_migrations: Option<Arc<NativeExtensionMigrations>>,
     limits: Limits,
-    effect_history_limits: HistoryReadLimits,
 }
 
 #[cfg(test)]

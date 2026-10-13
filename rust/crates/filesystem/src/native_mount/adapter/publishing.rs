@@ -52,7 +52,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let projection = state
             .checkout
             .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
-            .map_err(fs_error)
+            .map_err(MountSourceError::from)
             .map_err(early)?;
         let notification = self
             .ledger
@@ -88,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     permit,
                     &mut crate::kernel::KernelAccounting::native(work, cancellation),
                 )
-                .map_err(fs_error)?;
+                .map_err(MountSourceError::from)?;
                 original.publication_evidence = Some((context, permit, digest, evidence));
             }
             let (context, fingerprint_permit, digest, evidence) =
@@ -153,10 +153,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let (operation, generation) = ack.ok_or(MountSourceError::Stale)?;
             if let Some(context) = context {
                 *acknowledged = Some(match operation {
-                    Some(operation) => {
-                        crate::NativePublicationSnapshot { context: context, operation: Some(operation), generation: generation }
-                    }
-                    None => crate::NativePublicationSnapshot { context: context, operation: None, generation: generation },
+                    Some(operation) => crate::NativePublicationSnapshot {
+                        context: context,
+                        operation: Some(operation),
+                        generation: generation,
+                    },
+                    None => crate::NativePublicationSnapshot {
+                        context: context,
+                        operation: None,
+                        generation: generation,
+                    },
                 });
             }
             Ok(())

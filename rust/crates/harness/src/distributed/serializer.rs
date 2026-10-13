@@ -118,7 +118,7 @@ fn scheduler_json_owned_bytes(input_bytes: u64, items: u64) -> Result<u64> {
 
 pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
     input: &[u8],
-    schema: crate::executor::json::JsonValueSchema,
+    schema: &'static crate::executor::json::JsonValueSchema,
     owned: fn(&T) -> Result<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(T, u64)> {

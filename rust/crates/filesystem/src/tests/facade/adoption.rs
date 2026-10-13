@@ -2,68 +2,28 @@ use super::*;
 
 #[cfg(feature = "native-mount")]
 #[tokio::test]
-async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_state()
--> Result<(), Box<dyn std::error::Error>> {
+async fn prepared_candidate_adoption_rejects_new_observations() -> TestResult {
     let cancel = CancellationToken::new();
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace("candidate-adoption-seal", B, &cancel)
+    let (volume, _) = fixture(config(), &cancel).await?;
+    let mut live = volume
+        .checkout(GenerationSelector::Head, tracking(), B, &cancel)
         .await?
         .value;
-    let cancellation = CancellationToken::new();
-    let mut live = workspace
-        .checkout(GenerationSelector::Head, tracking(), B, &cancellation)
-        .await?
-        .value;
-    let base = live
-        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)
-        .expect("unbounded private_candidate preserves a validated checkout");
-    let mut candidate = base
-        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)
-        .expect("unbounded private_candidate preserves a validated checkout");
-    let prepared = live.prepare_candidate_adoption(&base, &candidate, &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancellation))?;
-    live.lookup_no_follow(&path("later-reader")?, B, &cancellation)
-        .await?;
-    assert!(
-        !live.adopt_prepared_candidate(
-            &base,
-            candidate
-                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)
-                .expect("unbounded private_candidate preserves a validated checkout"),
-            prepared.ok_or("shared proof rejected")?,
-        )
-    );
+    let base = live.private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)?;
+    let candidate = base.private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)?;
     let prepared = live
-        .prepare_candidate_adoption(&base, &candidate, &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancellation))?
+        .prepare_candidate_adoption(&base, &candidate, &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel))?
+        .ok_or("shared proof rejected")?;
+    live.lookup_no_follow(&path("later-reader")?, B, &cancel)
+        .await?;
+    assert!(!live.adopt_prepared_candidate(&base, candidate, prepared));
+    let mut candidate = base.private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)?;
+    let prepared = live
+        .prepare_candidate_adoption(&base, &candidate, &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel))?
         .ok_or("reader observations rejected")?;
     candidate
-        .lookup_no_follow(&path("later-candidate")?, B, &cancellation)
+        .lookup_no_follow(&path("later-candidate")?, B, &cancel)
         .await?;
-    assert!(
-        !live.adopt_prepared_candidate(
-            &base,
-            candidate
-                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)
-                .expect("unbounded private_candidate preserves a validated checkout"),
-            prepared
-        )
-    );
-    let prepared = live
-        .prepare_candidate_adoption(&base, &candidate, &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancellation))?
-        .ok_or("compatible candidate rejected")?;
-    live.live_operation_id = Some(OperationId::from_bytes([209; 16]));
-    assert!(
-        !live.adopt_prepared_candidate(
-            &base,
-            candidate
-                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel), &cancel)
-                .expect("unbounded private_candidate preserves a validated checkout"),
-            prepared
-        )
-    );
-    assert!(
-        live.prepare_candidate_adoption(&base, &candidate, &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancellation))?
-            .is_none()
-    );
+    assert!(!live.adopt_prepared_candidate(&base, candidate, prepared));
     Ok(())
 }

@@ -224,7 +224,14 @@ impl Reducer {
                             extension.name, extension.version
                         ))
                     })?;
-                configurations.push(copying::copy_configuration(record, quota)?);
+                configurations.push(copy(
+                    record,
+                    quota,
+                    |value: &ExtensionConfiguration, work| {
+                        value.content.validate(work)?;
+                        owned_bytes(value)
+                    },
+                )?);
             }
         }
         Ok(configurations)

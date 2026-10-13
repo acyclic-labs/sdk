@@ -16,40 +16,37 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
+    validate_path_count(paths, options)
+        .map_err(|error| OperationFailure::new(error, native.receipt()))?;
+    let mut candidate = checkout
+        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    let scope = CaptureWorkScope::new(&native)?;
     let result = async {
-        validate_path_count(paths, options).map_err(OperationFailure::before_work)?;
-        let mut candidate = checkout
-            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
-            .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
-        let scope = CaptureWorkScope::new(&native)?;
-        let result = async {
-            let source_root = open_source_root(options, &scope)?;
-            let mut unique = clone_capture_paths(paths, None, &scope)?;
-            capture_sort_by(&mut unique, Ord::cmp, &scope)?;
-            if capture_has_duplicate_paths(&unique, &scope)? {
-                return Err(CaptureError::InvalidOptions);
-            }
-            let observed = observe_unique_paths(unique, &source_root, cancellation, &scope)?;
-            capture_observed_paths_from_root(
-                &mut candidate,
-                observed,
-                options.maximum_extent_spans,
-                &source_root,
-                cancellation,
-                None,
-                &scope,
-            )
-            .await
+        let source_root = open_source_root(options, &scope.native)?;
+        let mut unique = clone_capture_paths(paths, None, &scope.native)?;
+        capture_sort_by(&mut unique, Ord::cmp, &scope.native)?;
+        if capture_has_duplicate_paths(&unique, &scope.native)? {
+            return Err(CaptureError::InvalidOptions);
         }
-        .await;
-        let receipt = capture_scope_result(scope, result)?;
-        cancellation
-            .commit_if_live(|| *checkout = candidate)
-            .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
-        Ok(receipt)
+        let observed = observe_unique_paths(unique, &source_root, cancellation, &scope.native)?;
+        capture_observed_paths_from_root(
+            &mut candidate,
+            observed,
+            options.maximum_extent_spans,
+            &source_root,
+            cancellation,
+            None,
+            &scope.native,
+        )
+        .await
     }
     .await;
-    capture_original_result(&native, result)
+    let receipt = capture_scope_result(scope, result)?;
+    cancellation
+        .commit_if_live(|| *checkout = candidate)
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    Ok(receipt)
 }
 
 #[cfg(feature = "native-mount")]
@@ -70,7 +67,7 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
         batch_size,
         cancellation,
         baseline,
-        &scope,
+        &scope.native,
     )
     .await;
     capture_scope_result(scope, result)
@@ -84,7 +81,7 @@ pub(super) async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: As
     batch_size: usize,
     cancellation: &CancellationToken,
     baseline: Option<&NativeViewBaseline>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let cancellation = {
         validate_path_count(paths, options)?;
@@ -92,13 +89,11 @@ pub(super) async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: As
             return Err(CaptureError::InvalidOptions);
         }
         cancellation.check()?;
-        meter.native.clone().check().map_err(capture_demand_error)?;
+        meter.clone().check().map_err(capture_demand_error)?;
         if paths.is_empty() {
             return Ok(CaptureReceipt::default());
         }
-        meter
-            .native
-            .with_original_leaf(|work| work.cancellation().clone())
+        meter.with_original_leaf(|work| work.cancellation().clone())
     };
     let source_root = open_source_root(options, meter)?;
     let (mut receipt, mut candidate, unique) = {
@@ -108,7 +103,7 @@ pub(super) async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: As
             return Err(CaptureError::InvalidOptions);
         }
         let receipt = CaptureReceipt::default();
-        let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&meter.native, &cancellation), &cancellation)?;
+        let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(meter, &cancellation), &cancellation)?;
         (receipt, candidate, unique)
     };
     let observed = observe_unique_paths(unique, &source_root, &cancellation, meter)?;
@@ -154,13 +149,12 @@ pub(super) async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: As
     {
         {
             meter
-                .native
                 .clone()
                 .release(states_bytes)
                 .map_err(capture_demand_error)?;
             release_host_links(host_links, meter)
         }?;
-        meter.native.clone().check().map_err(capture_demand_error)?;
+        meter.clone().check().map_err(capture_demand_error)?;
     }
     cancellation.commit_if_live(|| {
         *checkout = candidate;
@@ -190,7 +184,7 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &native,
     )
     .await;
-    let receipt = capture_original_result(&native, result)?;
+    let receipt = result?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
@@ -217,7 +211,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
         policy,
         cancellation,
         baseline,
-        &scope,
+        &scope.native,
     )
     .await;
     capture_scope_result(scope, result)
@@ -230,20 +224,18 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
     policy: &CapturePolicy,
     cancellation: &CancellationToken,
     baseline: Option<&NativeViewBaseline>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let cancellation = {
         if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
             return Err(CaptureError::InvalidOptions);
         }
         cancellation.check()?;
-        meter.native.clone().check().map_err(capture_demand_error)?;
+        meter.clone().check().map_err(capture_demand_error)?;
         if roots.is_empty() {
             return Ok(CaptureReceipt::default());
         }
-        meter
-            .native
-            .with_original_leaf(|work| work.cancellation().clone())
+        meter.with_original_leaf(|work| work.cancellation().clone())
     };
     let limits = checkout.volume_config().limits;
     let profile = checkout.volume_config().profile;
@@ -264,7 +256,7 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
             excluded_prefixes: clone_capture_paths(&policy.excluded_prefixes, None, meter)?,
         };
         let (source_path, source_path_bytes) =
-            crate::native_host::clone_path(&options.source_root, &mut meter.native.clone())
+            crate::native_host::clone_path(&options.source_root, &mut meter.clone())
                 .map_err(capture_demand_error)?;
         (
             canonical,
@@ -277,17 +269,17 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
         )
     };
     let expected_identity = options.expected_root_identity;
-    let worker = meter.native.clone();
-    let capture = std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live"));
-    let task_meter = meter.native.runtime_meter();
+    let worker = meter.clone();
+    let capture = meter
+        .capture_origin
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
+        .expect("capture scope is live");
+    let task_meter = meter.runtime_meter();
     let task = acyclic_native_runtime::run_blocking_io(
         move || {
-            let worker = CaptureWorkScope {
-                native: worker,
-                custody: None,
-            };
             let result = (|| {
-                let source_root = HostRoot::open(&source_path, &mut worker.native.clone())
+                let source_root = HostRoot::open(&source_path, &mut worker.clone())
                     .map_err(capture_demand_error)?;
                 if source_root.identity() != expected_identity {
                     return Err(CaptureError::RootChanged);
@@ -310,7 +302,6 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
                 release_capture_paths(host_policy.excluded_prefixes, &worker)?;
                 drop(source_path);
                 worker
-                    .native
                     .clone()
                     .release(source_path_bytes)
                     .map_err(capture_demand_error)
@@ -327,11 +318,9 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
     };
     let (result, _capture) = result.map_err(capture_demand_error)?;
     let (source_root, observed) = result?;
-    let lookup_cancellation = meter
-        .native
-        .with_original_leaf(|work| work.cancellation().clone());
+    let lookup_cancellation = meter.with_original_leaf(|work| work.cancellation().clone());
     let current = checkout
-        .lookup_batch_no_follow(&canonical, &meter.native, &lookup_cancellation)
+        .lookup_batch_no_follow(&canonical, meter, &lookup_cancellation)
         .await?;
 
     let canonical_bytes = canonical.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
@@ -358,7 +347,6 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
     drop(current.1);
     let ordered = {
         meter
-            .native
             .clone()
             .release(canonical_bytes)
             .map_err(capture_demand_error)?;
@@ -385,34 +373,29 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
-    let work = &native;
-    let meter = &work.state;
-    let completed = { meter.lock().work };
     if checkout.has_pending_mutations() {
         return Err(OperationFailure::new(
             CaptureError::DirtyCheckout,
-            completed,
+            native.receipt(),
         ));
     }
     if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
         return Err(OperationFailure::new(
             CaptureError::InvalidOptions,
-            completed,
+            native.receipt(),
         ));
     }
     cancellation
         .check()
-        .map_err(|error| OperationFailure::new(error.into(), completed))?;
-    let (checked, completed) = {
-        let held = meter.lock();
-        (held.check(), held.work)
-    };
-    checked.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))?;
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    native
+        .with_original_leaf(|work| work.check())
+        .map_err(|error| OperationFailure::new(capture_demand_error(error), native.receipt()))?;
     let mut candidate = checkout
-        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
-        .map_err(|error| OperationFailure::new(CaptureError::from(error), work.receipt()))?;
-    let scope = CaptureWorkScope::new(work)?;
-    let meter = &scope;
+        .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
+        .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
+    let scope = CaptureWorkScope::new(&native)?;
+    let meter = &scope.native;
     let result = (async {
         let maximum =
             usize::try_from(options.maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
@@ -461,7 +444,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), work.receipt()))?;
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     Ok(receipt)
 }
 
@@ -492,9 +475,15 @@ pub async fn capture_watch_batch<
         .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
-    let result =
-        capture_watch_batch_in_scope(&mut candidate, batch, options, policy, cancellation, &scope)
-            .await;
+    let result = capture_watch_batch_in_scope(
+        &mut candidate,
+        batch,
+        options,
+        policy,
+        cancellation,
+        &scope.native,
+    )
+    .await;
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)

@@ -92,7 +92,7 @@ impl Snapshot {
             std::mem::size_of::<crate::merge::ProjectMergeReceipt>(),
             std::mem::size_of::<crate::conversation::ConversationMessage>(),
             std::mem::size_of::<ConversationState>(),
-            std::mem::size_of::<crate::conversation::ModelContextSelection>(),
+            std::mem::size_of::<ModelContextSelection>(),
             std::mem::size_of::<FileRef>(),
             std::mem::size_of::<crate::conversation::VolumeRef>(),
             std::mem::size_of::<crate::conversation::FileDescriptor>(),
@@ -181,7 +181,10 @@ impl Snapshot {
             verifier.verify_event(event, work)?;
             for prior in &self.events[..index] {
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                        bytes: 0,
+                        items: 1,
+                    })?;
                 }
                 if prior.operation_id == event.operation_id {
                     return Err(Error::Invalid("snapshot event suffix is invalid".into()));
@@ -247,8 +250,12 @@ impl<C, B> Projection<C, B> {
             bindings,
         }
     }
-    pub(in crate::core) fn with_bindings<N>(self, bindings: N) -> Projection<C, N> {
-        Projection {
+    pub(in crate::core) fn map<D, N>(
+        self,
+        conversation: impl FnOnce(C) -> Result<D>,
+        bindings: impl FnOnce(B) -> N,
+    ) -> Result<Projection<D, N>> {
+        Ok(Projection {
             lifecycle: self.lifecycle,
             active_extensions: self.active_extensions,
             active_extension_revision: self.active_extension_revision,
@@ -260,11 +267,11 @@ impl<C, B> Projection<C, B> {
             effects_archived: self.effects_archived,
             forks: self.forks,
             published_merges: self.published_merges,
-            conversation: self.conversation,
+            conversation: conversation(self.conversation)?,
             latest_context_checkpoint: self.latest_context_checkpoint,
             interactions: self.interactions,
-            bindings,
-        }
+            bindings: bindings(self.bindings),
+        })
     }
 }
 impl Default for Projection<ConversationState, ()> {

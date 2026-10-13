@@ -1,21 +1,18 @@
 struct FollowObservation {
-    span: obs::OwnedSpan,
+    span: tracing::Span,
     terminal: bool,
 }
 impl FollowObservation {
     fn new(from: u64) -> Self {
         Self {
-            span: obs::OwnedSpan::new_with_filtered_context(
-                tracing::info_span!(
-                    "acyclic.stream.http.follow",
-                    rev = from,
-                    queued = 0_u64,
-                    phase = "tail",
-                    terminal = Empty,
-                    outcome = Empty,
-                    error.kind = Empty
-                ),
-                false,
+            span: tracing::info_span!(
+                "acyclic.stream.http.follow",
+                rev = from,
+                queued = 0_u64,
+                phase = "tail",
+                terminal = Empty,
+                outcome = Empty,
+                error.kind = Empty
             ),
             terminal: false,
         }

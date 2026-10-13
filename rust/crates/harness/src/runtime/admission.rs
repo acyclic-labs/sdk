@@ -128,42 +128,41 @@ impl TaskAdmissionRecord {
                 Error::Invalid("task admission ownership overflows".into())
             }
         };
-        let component = |identity: &ComponentIdentity| -> Result<u64> {
-            (identity.name.capacity() as u64)
-                .checked_add(identity.version.capacity() as u64)
-                .ok_or_else(overflow)
-        };
-        let slots = self
-            .resource_proofs
-            .capacity()
-            .checked_mul(std::mem::size_of::<
-                crate::resource_preparation::ResourceCreationProofRef,
-            >())
-            .ok_or_else(overflow)? as u64;
-        let mut owned = slots
-            .checked_add(component(&self.task)?)
-            .and_then(|bytes| bytes.checked_add(self.machine.name.capacity() as u64))
-            .and_then(|bytes| bytes.checked_add(self.machine.version.capacity() as u64))
-            .ok_or_else(overflow)?;
-        for value in [&self.input, &self.input_schema, &self.output_schema] {
-            owned = owned
-                .checked_add(crate::executor::json::json_value_logical_owned_bytes(value)?)
-                .ok_or_else(overflow)?;
-        }
-        owned = owned
-            .checked_add(self.grants.logical_owned_bytes()?)
-            .ok_or_else(overflow)?;
+        let mut owned = crate::core::owned_sum([
+            crate::core::owned_buffer::<crate::resource_preparation::ResourceCreationProofRef>(
+                self.resource_proofs.capacity(),
+            )
+            .map_err(|_| overflow())?,
+            self.task.name.capacity() as u64,
+            self.task.version.capacity() as u64,
+            self.machine.name.capacity() as u64,
+            self.machine.version.capacity() as u64,
+            self.grants.logical_owned_bytes()?,
+            crate::executor::json::json_value_logical_owned_bytes(&self.input)?,
+            crate::executor::json::json_value_logical_owned_bytes(&self.input_schema)?,
+            crate::executor::json::json_value_logical_owned_bytes(&self.output_schema)?,
+        ])
+        .map_err(|_| overflow())?;
         for proof in &self.resource_proofs {
-            for bytes in [
+            owned = crate::core::owned_sum([
+                owned,
                 proof.provider.logical_owned_bytes()?,
                 proof.resource.logical_owned_bytes()?,
                 proof.evidence.logical_owned_bytes()?,
-            ] {
-                owned = owned.checked_add(bytes).ok_or_else(overflow)?;
-            }
+            ])
+            .map_err(|_| overflow())?;
         }
-        if let Some(policy) = &self.policy {
-            owned = owned.checked_add(component(policy)?).ok_or_else(overflow)?;
+        for identity in self
+            .policy
+            .iter()
+            .chain(self.execution.iter().map(|route| &route.provider))
+        {
+            owned = crate::core::owned_sum([
+                owned,
+                identity.name.capacity() as u64,
+                identity.version.capacity() as u64,
+            ])
+            .map_err(|_| overflow())?;
         }
         if let Some(extensions) = &self.extensions {
             owned = owned
@@ -171,10 +170,8 @@ impl TaskAdmissionRecord {
                 .ok_or_else(overflow)?;
         }
         if let Some(execution) = &self.execution {
-            let build = execution.build.as_resource().logical_owned_bytes()?;
             owned = owned
-                .checked_add(component(&execution.provider)?)
-                .and_then(|bytes| bytes.checked_add(build))
+                .checked_add(execution.build.as_resource().logical_owned_bytes()?)
                 .ok_or_else(overflow)?;
             if let Some(environment) = &execution.environment {
                 owned = owned
@@ -198,8 +195,7 @@ impl TaskAdmissionRecord {
         let mut observer = Some(&mut io as &mut dyn crate::store::HistoryIo);
         let mut quota =
             crate::wire_codec::CodecQuota::new(&mut observer, std::mem::size_of::<Self>() as u64)?;
-        let copied = crate::core::copy_owned(self, &mut quota, |record, work| {
-            for proof in &record.resource_proofs {}
+        let copied = crate::core::copy(self, &mut quota, |record, work| {
             let bytes = record.logical_owned_bytes()?;
             if bytes != 0 {
                 work.as_deref_mut()

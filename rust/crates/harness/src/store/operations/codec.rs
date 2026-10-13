@@ -18,7 +18,7 @@ pub(crate) fn decode_preclaimed_json_with_mode<T, F>(
     maximum_owned_bytes: u64,
     code: crate::wire::ErrorCode,
     native: bool,
-    value_schema: crate::executor::json::JsonValueSchema,
+    value_schema: &'static crate::executor::json::JsonValueSchema,
     charge: &mut F,
 ) -> Result<T>
 where
@@ -72,46 +72,6 @@ pub(crate) fn retain_original_decode_error<T>(
     result
 }
 
-pub(in crate::store) fn validate_canonical_json_with_work(
-    bytes: &[u8],
-    maximum_bytes: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    let Some(observer) = work.as_deref_mut() else {
-        let _: serde_json::Value = crate::executor::decode_json(bytes, None)?.0;
-        return Ok(());
-    };
-    if bytes.len() as u64 > maximum_bytes {
-        return Err(crate::store::guarded_boundary(
-            work,
-            crate::wire::ErrorCode::Storage,
-            "index JSON exceeds its byte bound",
-        ));
-    }
-    let (parsed, retained) = observer.decode_json_value(bytes)?;
-    let encoded = crate::store::history::canonical_bytes_with_work(&parsed, maximum_bytes, work);
-    drop(parsed);
-    let result = match encoded {
-        Ok(encoded) => {
-            let identical = encoded == bytes;
-            let capacity = encoded.capacity() as u64;
-            drop(encoded);
-            let verified = if identical {
-                Ok(())
-            } else {
-                Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Storage,
-                    "execution journal JSON is not canonical",
-                ))
-            };
-            release_owned_after_drop(verified, capacity, work)
-        }
-        Err(error) => Err(error),
-    };
-    release_owned_after_drop(result, retained, work)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::store) struct OperationLocation {
@@ -127,11 +87,20 @@ pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
     maximum_bytes: u64,
     labels: &[&str],
-    admission: fn(crate::executor::json::JsonValueShape, &mut dyn crate::store::HistoryIo) -> Result<u64>,
+    admission: fn(
+        crate::executor::json::JsonValueShape,
+        &mut dyn crate::store::HistoryIo,
+    ) -> Result<u64>,
     retained: fn(&T) -> (u64, u64),
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<T> {
-    validate_canonical_json_with_work(bytes, maximum_bytes, work)?;
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(crate::store::guarded_boundary(
+            work,
+            crate::wire::ErrorCode::Storage,
+            "index JSON exceeds its byte bound",
+        ));
+    }
     let Some(observer) = work.as_deref_mut() else {
         return crate::contract::json_from_slice(bytes).map_err(|error| {
             Error::Storage(format!("execution journal content is invalid: {error}"))

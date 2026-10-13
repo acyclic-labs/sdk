@@ -1,7 +1,7 @@
 //! seed fork protocol.
 use super::*;
 pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSeed> {
-    crate::core::copy_owned(source, quota, |source, work| {
+    crate::core::copy(source, quota, |source, work| {
         source.validate(work)?;
         crate::core::owned_bytes(source)
     })

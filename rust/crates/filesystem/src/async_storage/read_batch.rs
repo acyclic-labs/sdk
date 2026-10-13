@@ -85,17 +85,15 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
     .and_then(|(values, allocation)| match allocation {
         #[cfg(not(target_arch = "wasm32"))]
         crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-            native_read_batch(values, allocation)
+            Ok::<_, crate::ObjectStoreError>((values, allocation))
                 .map(|(values, allocation)| (values, Some(allocation)))
         }
         crate::kernel::allocation::KernelOwnedAllocation::Standalone => Ok((values, None)),
     });
-    let work = accounting.spent();
-    context.accept(
-        result
-            .map(|value| crate::OperationReceipt { value, work })
-            .map_err(|error| crate::storage::ObjectFailure::new(error, work)),
-    )
+    if !context.is_native() {
+        context.work.try_add_assign(&accounting.spent())?;
+    }
+    result
 }
 
 pub(crate) fn merge_completed_object_read(

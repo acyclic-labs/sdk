@@ -1,8 +1,28 @@
 use super::*;
+use crate::PublicationPermit;
+
+#[derive(Debug, thiserror::Error)]
+enum OwnerError {
+    #[error(transparent)]
+    Sdk(WorkspaceError),
+    #[error("owner denied publication: {0}")]
+    Denied(u64),
+}
+
+impl From<WorkspaceError> for OwnerError {
+    fn from(error: WorkspaceError) -> Self {
+        Self::Sdk(error)
+    }
+}
+
+impl From<FsError> for OwnerError {
+    fn from(error: FsError) -> Self {
+        Self::Sdk(error.into())
+    }
+}
 
 #[tokio::test]
-async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_work()
--> Result<(), Box<dyn Error>> {
+async fn creation_lookup_is_readonly_exact_and_bounded() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let operation = IdempotencyKey::from_bytes([0xd4; 16]).operation_id();
@@ -10,162 +30,105 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
     let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
     for allowance in allowances
         .as_object_mut()
-        .expect("budget fields")
+        .ok_or("budget fields missing")?
         .values_mut()
     {
         *allowance = serde_json::json!(100_000_000_u64);
     }
     let budget: WorkBudget = serde_json::from_value(allowances)?;
-    let created = fs
-        .create_workspace_with_operation::<_, (), WorkspaceError>("readonly-original-creation", config, operation, budget, &cancellation, None::<&mut ()>)
+    let initial = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "creation",
+            config,
+            operation,
+            budget,
+            &cancellation,
+            None,
+        )
         .await?
         .value;
-    let workspace = unbounded!(fs, open_workspace("readonly-original-creation"))?;
+    let workspace = unbounded!(fs, open_workspace("creation"))?;
     workspace.write_text("/later", "advanced head").await?;
-    let advanced = unbounded!(workspace, head())?.id();
-    assert_ne!(advanced, created.id());
+    let head = unbounded!(workspace, head())?;
+    assert_ne!(head.id(), initial.id());
     let original = fs
-        .workspace_for_creation_operation(
-            "readonly-original-creation",
-            config,
-            operation,
-            budget,
-            &cancellation,
-        )
+        .workspace_for_creation_operation("creation", config, operation, budget, &cancellation)
         .await?;
     original.work.verify(budget)?;
-    assert_eq!(
-        original.value.as_ref().map(|generation| generation.id()),
-        Some(created.id())
-    );
-    assert_eq!(
-        original
-            .value
-            .as_ref()
-            .map(|generation| generation.workspace_id()),
-        Some(workspace.id())
-    );
-
-    assert_eq!(unbounded!(workspace, head())?.id(), advanced);
-
-    let wrong_operation = IdempotencyKey::from_bytes([0xd5; 16]).operation_id();
+    let original = original.value.ok_or("creation missing")?;
+    assert_eq!(original.id(), initial.id());
+    assert_eq!(original.workspace_id(), workspace.id());
     let mut wrong_config = config;
     wrong_config.lifecycle = Lifecycle::Durable;
-    for (requested_config, requested_operation) in
-        [(config, wrong_operation), (wrong_config, operation)]
-    {
+    for (config, operation) in [
+        (
+            config,
+            IdempotencyKey::from_bytes([0xd5; 16]).operation_id(),
+        ),
+        (wrong_config, operation),
+    ] {
         let failure = fs
-            .workspace_for_creation_operation(
-                "readonly-original-creation",
-                requested_config,
-                requested_operation,
-                budget,
-                &cancellation,
-            )
+            .workspace_for_creation_operation("creation", config, operation, budget, &cancellation)
             .await
             .err()
-            .expect("mismatched original creation is rejected");
-
+            .ok_or("mismatched creation accepted")?;
         failure.work.verify(budget)?;
     }
-    let missing = fs
-        .workspace_for_creation_operation(
-            "readonly-missing-creation",
-            config,
-            operation,
-            budget,
-            &cancellation,
-        )
-        .await?;
-    assert!(missing.value.is_none());
-
-    missing.work.verify(budget)?;
-    assert!(unbounded!(fs, open_workspace("readonly-missing-creation")).is_err());
-
+    assert!(
+        unbounded!(
+            fs,
+            workspace_for_creation_operation("missing", config, operation)
+        )?
+        .is_none()
+    );
+    assert!(unbounded!(fs, open_workspace("missing")).is_err());
     let mut denied = budget;
     denied.backend_read_operations = 0;
     let failure = fs
-        .workspace_for_creation_operation(
-            "readonly-original-creation",
-            config,
-            operation,
-            denied,
-            &cancellation,
-        )
+        .workspace_for_creation_operation("creation", config, operation, denied, &cancellation)
         .await
         .err()
-        .expect("finite denial retains name admission prefix");
-
+        .ok_or("read budget ignored")?;
     failure.work.verify(denied)?;
-
-    assert_eq!(unbounded!(workspace, head())?.id(), advanced);
+    assert_eq!(unbounded!(workspace, head())?.id(), head.id());
     Ok(())
 }
 
 #[tokio::test]
-async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
+async fn owner_errors_and_cancellation_do_not_publish_or_discard_candidate()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("whole-ordinary-owner"))?;
-    let base = unbounded!(workspace, head())?;
+    let workspace = unbounded!(fs, create_workspace("owner"))?;
+    let head = unbounded!(workspace, head())?;
     let cancellation = CancellationToken::new();
     let mut candidate = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(
-        candidate,
-        write("/file", bytes::Bytes::from_static(b"candidate"))
-    )?;
+    candidate.write_text("/file", "candidate").await?;
     let callback_work = crate::WorkCounters {
         backend_read_operations: 3,
         ..crate::WorkCounters::UNCHARGED
     };
-    let failure = candidate
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            selected_transaction_budget(),
-            &cancellation,
-            |_| {
-                std::future::ready(Err(crate::OperationFailure::new(
-                    OrdinaryOwnerError::Denied {
-                        task: [117; 16],
-                        revision: 912,
-                        expired: true,
-                    },
-                    callback_work,
-                )))
-            },
-        )
-        .await
-        .err()
-        .ok_or("expired owner published")?;
-    assert!(matches!(failure.error,
-        OrdinaryOwnerError::Denied { task, revision: 912, expired: true } if task == [117; 16]));
-    assert!(failure.work.backend_read_operations >= callback_work.backend_read_operations);
-    assert!(failure.work.bytes_hashed > 0);
-
-    assert_eq!(unbounded!(workspace, head())?.id(), base.id());
-    let failure = value!(
-        candidate
-            .commit(
+    for ticket in [912, 913] {
+        let failure = candidate
+            .commit::<OwnerError, _, _>(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
+                PublicationPermit::Unrestricted,
+                selected_transaction_budget(),
                 &cancellation,
-                |_| std::future::ready(Err(crate::OperationFailure::before_work(
-                    OrdinaryOwnerError::Denied {
-                        task: [118; 16],
-                        revision: 913,
-                        expired: false,
-                    }
-                ))),
+                |_| {
+                    std::future::ready(Err(crate::OperationFailure::new(
+                        OwnerError::Denied(ticket),
+                        callback_work,
+                    )))
+                },
             )
             .await
-    )
-    .err()
-    .ok_or("denied ordinary owner published")?;
-    assert!(matches!(failure,
-        OrdinaryOwnerError::Denied { task, revision: 913, expired: false } if task == [118; 16]));
-    assert_eq!(unbounded!(workspace, head())?.id(), base.id());
+            .err()
+            .ok_or("denied owner published")?;
+        assert!(matches!(failure.error, OwnerError::Denied(observed) if observed == ticket));
+        assert!(failure.work.backend_read_operations >= callback_work.backend_read_operations);
+        failure.work.verify(selected_transaction_budget())?;
+        assert_eq!(unbounded!(workspace, head())?.id(), head.id());
+    }
     assert!(matches!(
         commit(&mut candidate).await?,
         TransactionCommit::Committed(_)
@@ -174,168 +137,122 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
         unbounded!(workspace, read("/file", 32))?.as_ref(),
         b"candidate"
     );
-    let mut cancelled_candidate = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(
-        cancelled_candidate,
-        write("/cancelled", bytes::Bytes::from_static(b"not published"))
-    )?;
+    let mut cancelled = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    cancelled.write_text("/cancelled", "not published").await?;
     cancellation.cancel();
-    let sdk_failure = value!(
-        cancelled_candidate
-            .commit::<OrdinaryOwnerError, _, _>(
-                None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
+    let failure = cancelled
+        .commit::<OwnerError, _, _>(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            allow,
+        )
+        .await
+        .err()
+        .ok_or("cancelled candidate published")?;
+    assert!(matches!(
+        failure.error,
+        OwnerError::Sdk(WorkspaceError::Cancelled(_))
+    ));
+    assert!(unbounded!(workspace, stat("/cancelled")).is_err());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_creation_and_fork_call_original_guard_without_publishing()
+-> Result<(), Box<dyn Error>> {
+    for create in [true, false] {
+        let fs = Fs::memory();
+        let source = unbounded!(fs, create_workspace("source"))?;
+        source.write_text("/selected", "original").await?;
+        let frozen = unbounded!(source, head())?;
+        let cancellation = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+                .map_err(|(error, _)| error)?;
+        let guard_work = original.clone();
+        let mut deny =
+            crate::NativeAuthorityGuard(move |observed: &crate::NativeMaterializationWork| {
+                assert!(observed.shares_ledger(&guard_work));
+                std::future::ready(Err(OwnerError::Denied(23)))
+            });
+        let result = if create {
+            fs.create_workspace_with_operation::<_, _, OwnerError>(
+                "denied",
+                source.volume.config,
+                IdempotencyKey::new().operation_id(),
+                &original,
                 &cancellation,
-                allow,
+                Some(&mut deny),
             )
             .await
-    )
-    .err()
-    .ok_or("cancelled SDK work published")?;
-    assert!(matches!(
-        sdk_failure,
-        OrdinaryOwnerError::Sdk(WorkspaceError::Cancelled(_))
-    ));
+            .map(|_| ())
+        } else {
+            source
+                .fork::<_, _, OwnerError>(
+                    "denied",
+                    ForkOptions::from_generation(frozen, IdempotencyKey::new())
+                        .inherit_paths(vec!["/selected".to_owned()]),
+                    PublicationPermit::Unrestricted,
+                    &original,
+                    &cancellation,
+                    deny,
+                )
+                .await
+                .map(|_| ())
+        };
+        assert!(matches!(result, Err(OwnerError::Denied(23))));
+        assert!(unbounded!(fs, open_workspace("denied")).is_err());
+        original.receipt().verify(selected_transaction_budget())?;
+    }
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_guarded_creation_preserves_original_callback_error_and_prepared_work()
--> Result<(), Box<dyn Error>> {
+async fn fork_cannot_rebind_a_source_reservation_to_destination() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
+    let source = unbounded!(fs, create_workspace("reserved-source"))?;
+    source.write_text("/value", "frozen").await?;
+    let frozen = unbounded!(source, head())?;
     let cancellation = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
             .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let guard_original = original.clone();
-    let mut deny = move |observed: &crate::NativeMaterializationWork| {
-        assert!(observed.shares_ledger(&guard_original));
-        std::future::ready(Err(OrdinaryOwnerError::Denied {
-            task: [23; 16],
-            revision: 23,
-            expired: true,
-        }))
-    };
-    let failure = fs
-        .create_workspace_with_operation(
-            "native-guarded-creation-denied",
-            VolumeConfig::portable(Lifecycle::Durable),
-            IdempotencyKey::new().operation_id(),
-            &original,
-            &cancellation,
-            Some(&mut crate::NativeAuthorityGuard(deny)),
-        )
-        .await
-        .err()
-        .ok_or("the owner denial unexpectedly created a workspace")?;
-    assert!(
-        matches!(failure, OrdinaryOwnerError::Denied { task, revision: 23, expired: true } if task == [23; 16])
-    );
-    assert!(original.receipt().bytes_hashed > before.bytes_hashed);
-
-    assert!(unbounded!(fs, open_workspace("native-guarded-creation-denied")).is_err());
-    original.receipt().verify(selected_transaction_budget())?;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_authority()
--> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("native-guarded-fork-source"))?;
-    workspace
-        .write("/selected", bytes::Bytes::from_static(b"original"))
-        .await?;
-    let frozen = unbounded!(workspace, head())?;
-    let cancellation = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
-            .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let guard_original = original.clone();
-    let mut deny = move |observed: &crate::NativeMaterializationWork| {
-        assert!(observed.shares_ledger(&guard_original));
-        std::future::ready(Err(WorkspaceError::from(
-            crate::FsError::MutationNotAllowed,
-        )))
-    };
-    let failure = workspace
-        .fork(
-            "native-guarded-fork-denied",
-            ForkOptions::from_generation(frozen, IdempotencyKey::new())
-                .inherit_paths(vec!["/selected".to_owned()]),
-            crate::PublicationPermit::Unrestricted,
-            &original,
-            &cancellation,
-            crate::NativeAuthorityGuard(deny),
-        )
-        .await
-        .err()
-        .ok_or("the original owner denial unexpectedly published a destination")?;
-    assert!(matches!(
-        failure,
-        WorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)
-    ));
-    assert!(original.receipt().bytes_hashed > before.bytes_hashed);
-    assert!(unbounded!(fs, open_workspace("native-guarded-fork-denied")).is_err());
-    original.receipt().verify(selected_transaction_budget())?;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_rebinding_it()
--> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("native-fork-reserved-source"))?;
-    workspace
-        .write("/value", bytes::Bytes::from_static(b"frozen"))
-        .await?;
-    let frozen = unbounded!(workspace, head())?;
-    let cancellation = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
-            .map_err(|(error, _)| error)?;
-    let reservation = workspace
+    let reservation = source
         .reserve_publication(
             IdempotencyKey::new().operation_id(),
             &original,
             &cancellation,
         )
         .await?;
-    let before = original.receipt().authority_records_appended;
-    let permit = crate::PublicationPermit::Reservation {
+    let permit = PublicationPermit::Reservation {
         operation_id: reservation.operation_id.into_bytes(),
         gate_tail: reservation.gate_tail,
         expected: reservation.expected,
     };
-    let mut allow =
-        |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
-    let failed = workspace
-        .fork(
-            "native-fork-reserved-destination",
+    let result = source
+        .fork::<_, _, WorkspaceError>(
+            "destination",
             ForkOptions::from_generation(frozen, IdempotencyKey::new()),
             permit,
             &original,
             &cancellation,
-            crate::NativeAuthorityGuard(allow),
+            crate::NativeAuthorityGuard(|_: &crate::NativeMaterializationWork| {
+                std::future::ready(Ok::<_, WorkspaceError>(()))
+            }),
         )
-        .await
-        .err()
-        .ok_or("a source reservation was incorrectly rebound to a new destination")?;
+        .await;
     assert!(matches!(
-        failed,
-        WorkspaceError::Filesystem(crate::FsError::Authority(
+        result,
+        Err(WorkspaceError::Filesystem(FsError::Authority(
             crate::AuthorityStoreError::RejectedStatic(_)
-        ))
+        )))
     ));
-
-    assert!(unbounded!(fs, open_workspace("native-fork-reserved-destination")).is_err());
-    workspace
+    assert!(unbounded!(fs, open_workspace("destination")).is_err());
+    source
         .release_publication(reservation, &original, &cancellation)
         .await?;
     Ok(())

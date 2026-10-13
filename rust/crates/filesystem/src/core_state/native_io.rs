@@ -199,9 +199,10 @@ impl Read for MaterializationReader<'_> {
     }
 }
 
-pub(super) fn measured_read_file<T: DeserializeOwned>(
+pub(super) fn read_file<T: DeserializeOwned>(
     path: &Path,
     work: &crate::materializer::NativeMaterializationWork,
+    maximum_bytes: Option<u64>,
 ) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
     let file = match materialization_open_options(
         path,
@@ -217,6 +218,11 @@ pub(super) fn measured_read_file<T: DeserializeOwned>(
         Err(error) => return Err(error.into()),
     };
     let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
+    if maximum_bytes.is_some_and(|maximum| length > maximum) {
+        return Err(LocalCoreStateStoreError::ContextTransaction(
+            "workspace-context child bucket exceeds its declared bound".to_owned(),
+        ));
+    }
     let _buffer = {
         let claim_bytes = 64 * 1024;
         work.claim(

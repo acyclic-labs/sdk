@@ -153,9 +153,12 @@ impl ExecutionJournal for RecordingTurnJournal {
         _: u64,
         _: u32,
         io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<crate::executor::ExecutionRecord>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<crate::executor::ExecutionRecord>>>
+    {
         if io.is_some() {
-            return Err(crate::Error::Unsupported("finite test journal IO is unavailable".into()));
+            return Err(crate::Error::Unsupported(
+                "finite test journal IO is unavailable".into(),
+            ));
         }
         self.replays
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -169,7 +172,11 @@ impl ExecutionJournal for RecordingTurnJournal {
         event: &'a crate::executor::ExecutionEvent,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        if io.is_some() { return Err(crate::Error::Unsupported("finite test journal append is unavailable".into())); }
+        if io.is_some() {
+            return Err(crate::Error::Unsupported(
+                "finite test journal append is unavailable".into(),
+            ));
+        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.events
                 .lock()
@@ -189,7 +196,9 @@ impl ExecutionJournal for RecordingTurnJournal {
         media_type: &'static str,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::FileRef>> {
-        crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unsupported("unused test journal".into())) })
+        crate::conversation::BoundedContentFuture::new(io, || async {
+            Err(Error::Unsupported("unused test journal".into()))
+        })
     }
 
     fn load<'a>(
@@ -198,9 +207,13 @@ impl ExecutionJournal for RecordingTurnJournal {
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() {
-            return Err(crate::Error::Unsupported("finite test journal IO is unavailable".into()));
+            return Err(crate::Error::Unsupported(
+                "finite test journal IO is unavailable".into(),
+            ));
         }
-        crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unsupported("unused test journal".into())) })
+        crate::conversation::BoundedContentFuture::new(io, || async {
+            Err(Error::Unsupported("unused test journal".into()))
+        })
     }
 
     fn verify_input_file<'a>(
@@ -233,10 +246,14 @@ impl ExecutionJournal for RecordingTurnJournal {
         &'a self,
         _id: crate::InteractionId,
         _io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<crate::interaction::InteractionOutcome>>> {
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            Option<crate::interaction::InteractionOutcome>,
+        >,
+    > {
         Err(Error::Unsupported("unused test journal".into()))
     }
-
 }
 
 struct RecordingExecutor {
@@ -299,11 +316,19 @@ impl ModelProvider for ForbiddenStockModel {
 struct ForbiddenStockTools(std::sync::atomic::AtomicUsize);
 
 impl ToolExecutor for ForbiddenStockTools {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         async { Err(Error::Unsupported("stock tool dispatch forbidden".into())) }.boxed()
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         async {
             Err(Error::Unsupported(
@@ -629,7 +654,11 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
 struct Echo;
 
 impl ToolExecutor for Echo {
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
         async move {
             Ok(ToolResult {
                 value: invocation.arguments,
@@ -638,7 +667,11 @@ impl ToolExecutor for Echo {
         .boxed()
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         async { Ok(None) }.boxed()
     }
 }

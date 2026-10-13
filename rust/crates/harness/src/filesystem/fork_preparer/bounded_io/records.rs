@@ -10,7 +10,7 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
     fn diagnostic_label_bytes() -> u64 {
         crate::executor::json::preparation_serde_diagnostic_label_bytes()
     }
-    fn json_value_schema() -> Schema {
+    fn json_value_schema() -> &'static Schema {
         Schema::None
     }
     fn decode_owned_allowance(
@@ -57,7 +57,7 @@ pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
     fn diagnostic_label_bytes() -> u64 {
         crate::executor::json::preparation_serde_diagnostic_label_bytes()
     }
-    fn json_value_schema() -> Schema {
+    fn json_value_schema() -> &'static Schema {
         Schema::None
     }
 }
@@ -121,7 +121,7 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
 }
 
 macro_rules! records {
-    ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> Schema { Schema::$schema } })*};
+    ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
     crate::context::Context => Context, crate::context::CanonicalContextCheckpoint => None, crate::context::CompactionReference => None,
@@ -144,7 +144,7 @@ impl PreparationRecord for crate::Outcome<serde_json::Value> {
         .max()
         .unwrap_or(0) as u64
     }
-    fn json_value_schema() -> Schema {
+    fn json_value_schema() -> &'static Schema {
         Schema::TaskOutcome
     }
 }
@@ -152,7 +152,7 @@ impl PreparationRecord for serde_json::Value {
     fn diagnostic_label_bytes() -> u64 {
         0
     }
-    fn json_value_schema() -> Schema {
+    fn json_value_schema() -> &'static Schema {
         Schema::Root
     }
 }

@@ -153,11 +153,11 @@ where
                 )
                 .await?;
             let capacity = read.logical_owned_bytes();
-            NativeDemandCarrier::Native(work).finish_read(
-                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
-                work.cancellation(),
-                Some(&self.cancellation),
-            )
+            NativeDemandCarrier::Native(work)
+                .check(work.cancellation(), Some(&self.cancellation))?;
+            Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                read.bytes, capacity,
+            ))
         })
     }
 
@@ -179,11 +179,11 @@ where
                 )
                 .await?;
             let capacity = read.logical_owned_bytes();
-            NativeDemandCarrier::Native(work).finish_read(
-                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
-                work.cancellation(),
-                Some(&self.cancellation),
-            )
+            NativeDemandCarrier::Native(work)
+                .check(work.cancellation(), Some(&self.cancellation))?;
+            Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                read.bytes, capacity,
+            ))
         })
     }
 

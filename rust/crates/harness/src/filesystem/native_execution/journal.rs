@@ -20,16 +20,6 @@ pub(super) fn operation(
     Ok(acyclic_fs::OperationId::from_bytes(bytes))
 }
 
-pub(super) async fn read<P: StreamProvider>(
-    witness: &crate::durable_host::TaskAdmissionReadonlyWitness<P>,
-    work: &NativeMaterializationWork,
-) -> Result<Option<MaterializationJournal>> {
-    witness.verify_with_native_work(work).await?;
-    let result = read_record(witness.prepared_stream(), witness.task(), work).await;
-    witness.verify_with_native_work(work).await?;
-    result
-}
-
 pub(super) fn path(
     task: crate::TaskId,
     work: &NativeMaterializationWork,
@@ -44,7 +34,7 @@ pub(super) fn path(
         .map_err(Error::from)
 }
 
-async fn read_record<P: StreamProvider>(
+pub(super) async fn read_record<P: StreamProvider>(
     client: &Arc<P>,
     task: crate::TaskId,
     work: &NativeMaterializationWork,
@@ -57,28 +47,21 @@ async fn read_record<P: StreamProvider>(
     let bounds =
         match crate::store::operations::bounds_with_work(client, &path, &mut observer).await? {
             Ok(bounds) => bounds,
-            Err(error)
-                if matches!(
-                    crate::distributed::sdk_source(&error),
-                    acyclic_stream::StreamError::NotFound
-                ) =>
-            {
+            Err(error) if matches!(&error, acyclic_stream::StreamError::NotFound) => {
                 return Ok(None);
             }
-            Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
+            Err(error) => {
+                return Err(crate::store::operations::stream_error_with_work(
+                    error, &observer,
+                ));
+            }
         };
     let Some(sequence) = bounds.tail.checked_sub(1) else {
         return Ok(None);
     };
-    let stream = crate::store::operations::stream(client, path.as_str(), &mut observer)?;
-    let mut records =
-        crate::store::operations::read_records(client, stream.0.path(), sequence, 1, &mut observer)
-            .await?
-            .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
-    let record = records.next(&mut observer).await?.ok_or_else(invalid)?;
-    if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(invalid());
-    }
+    let record = crate::store::operations::one_record(client, &path, sequence, &mut observer)
+        .await?
+        .ok_or_else(invalid)?;
     let (mut journal, mut custody) = native_decoded(io.decode(
         std::marker::PhantomData::<MaterializationJournal>,
         &record.value,
@@ -125,7 +108,7 @@ pub(super) struct Store<P: StreamProvider> {
 impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
     type Error = Error;
     type ActionCompletion<'a>
-        = crate::NativeFutureBundle<'a, MaterializationJournal>
+        = crate::NativeFutureBundle<'static, MaterializationJournal>
     where
         Self: 'a;
 
