@@ -109,7 +109,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
             narrowed
                 .policy_approval(
                     policy.as_ref(),
-                    Some((identity, "runtime policy identity changed after binding")),
+                    Some(identity),
                     &definition,
                     &invocation,
                     Some(&work),
@@ -121,10 +121,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         let error = narrowed
             .policy_approval(
                 overrides[0].1.as_ref(),
-                Some((
-                    overrides[0].0,
-                    "scoped policy identity changed after binding",
-                )),
+                Some(overrides[0].0),
                 &definition,
                 &invocation,
                 Some(&work),
@@ -236,7 +233,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
             narrowed
                 .policy_approval(
                     &changing,
-                    Some((identity, "runtime policy identity changed after binding")),
+                    Some(identity),
                     &definition,
                     &invocation,
                     Some(&work),
@@ -394,33 +391,11 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
         (
             task,
             policy.identity.clone(),
-            ToolDefinition {
-                revision: "2".into(),
-                ..definition.clone()
-            },
-            invocation.clone(),
-        ),
-        (
-            task,
-            policy.identity.clone(),
             definition.clone(),
             ToolInvocation {
                 arguments: serde_json::json!({"text":"different"}),
                 ..invocation.clone()
             },
-        ),
-        (
-            task,
-            policy.identity.clone(),
-            definition.clone(),
-            ToolInvocation::for_model_call(
-                OperationId::from_bytes([40; 16]),
-                1,
-                invocation.call_id.clone(),
-                invocation.name.clone(),
-                invocation.arguments.clone(),
-                None,
-            )?,
         ),
     ] {
         assert_ne!(

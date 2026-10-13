@@ -8,7 +8,6 @@ pub struct AgentHarness {
     pub(super) live: TaskGroup,
     pub(super) concurrency: usize,
     pub(super) scope: RuntimeScope,
-    pub(super) extension_runtime: Option<Arc<ExtensionRuntime>>,
     pub(super) host: Option<Arc<dyn DurableTaskHost>>,
     pub(super) state: Option<Arc<dyn TaskStateProvider>>,
     pub(super) spawner: Option<Arc<dyn TaskSpawner>>,
@@ -48,7 +47,6 @@ impl Clone for AgentHarness {
             live: self.live.clone(),
             concurrency: self.concurrency,
             scope: self.scope.clone(),
-            extension_runtime: self.extension_runtime.clone(),
             host: self.host.clone(),
             state: self.state.clone(),
             spawner: self.spawner.clone(),
@@ -335,7 +333,6 @@ impl Bindings {
             .map(|preparer| ForkBinding::new(preparer, startup))
             .transpose()?;
         let mut runtime = AgentHarness {
-            extension_runtime: scope.extension_runtime(),
             live: TaskGroup::new(concurrency, native)?,
             tasks,
             tools,
