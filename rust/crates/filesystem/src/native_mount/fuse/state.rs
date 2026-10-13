@@ -60,7 +60,6 @@ pub(super) struct ProjectionState {
     pub(super) implicit: HashMap<u64, (u64, crate::NativeAllocation)>,
     pub(super) streams: DirectoryStreams,
     pub(super) invalidation: InvalidationQueue,
-    pub(super) page_stores: PageStores,
 }
 
 impl ProjectionState {
@@ -78,7 +77,6 @@ impl ProjectionState {
             implicit: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
-            page_stores: PageStores::default(),
         }
     }
 
