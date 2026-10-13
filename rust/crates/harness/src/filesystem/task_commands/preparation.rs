@@ -128,31 +128,15 @@ where
             }
             retained.preparer
         };
-        let report = 'report: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
-                let work = io
-                    .original_native_work()
-                    .expect("preparation checked original work");
-                if reconciliation_only {
-                    let (report, custody) = preparer
-                        .reconcile_for_task_with_native_work(&preparation, &fork, work)?
-                        .await?;
-                    io.absorb_native_custody(custody)?;
-                    return if report.is_some() {
-                        mail::reconciled(Some(io))
-                    } else {
-                        Ok(TaskCommandProgress::Indeterminate)
-                    };
-                }
-                let (report, custody) = preparer
-                    .prepare_for_task_with_native_work(&preparation, &fork, work)?
-                    .await?;
-                io.absorb_native_custody(custody)?;
-                break 'report report;
-            }
-            preparer.prepare_for_task(fork, &preparation).await?
-        };
+        if reconciliation_only && io.is_some() {
+            let report = preparer.reconcile_for_task(&fork, &preparation, io).await?;
+            return if report.is_some() {
+                mail::reconciled(io)
+            } else {
+                Ok(TaskCommandProgress::Indeterminate)
+            };
+        }
+        let report = preparer.prepare_for_task(&fork, &preparation, io).await?;
         ready(Outcome::Succeeded(report), io)
     }
 
