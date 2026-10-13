@@ -441,10 +441,13 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
 {
     let source = source(FilesystemProfile::Portable)?;
     let path = native_test_path("external.bin");
-    let namespace = source.path(&path)?;
     let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
     let untouched = native_test_path("untouched");
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let (namespace, _allocation) = source.namespace_path(
+        &path,
+        &mut NativeDemandCarrier::Native(&work),
+    )?;
     source.runtime.wait(|| async {
         let mut checkout = source.checkout.lock().await;
         apply_authored(
