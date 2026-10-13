@@ -279,11 +279,27 @@ pub fn detach_native_mount_destination_after_crash(
     destination: &Path,
 ) -> Result<(), NativeMountError> {
     let mut owner = NativeMountRecoveryOwner::acquire(destination)?;
-    match owner.detach() {
+    #[cfg(target_os = "macos")]
+    let initialized =
+        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from);
+    #[cfg(not(target_os = "macos"))]
+    let initialized = Ok(());
+    let result = initialized.and_then(|()| {
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeMountError::from(error))?;
+        owner.detach(&work)
+    });
+    match result {
         Ok(_) => Ok(()),
-        Err(error) => Err(NativeMountError::RecoveryFailed {
-            error: Box::new(error),
-            owner,
-        }),
+        Err(error) => {
+            owner.mark_failed();
+            Err(NativeMountError::RecoveryFailed {
+                error: Box::new(error),
+                owner,
+            })
+        }
     }
 }

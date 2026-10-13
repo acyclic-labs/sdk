@@ -2,8 +2,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     async fn mutate(
         &self,
         mut candidate: CheckoutCandidate<A, O>,
-        epoch: u64,
-        stamp: ViewStamp,
         change: AuthoredMutation,
         effect: ViewChange<'_>,
         work: &crate::NativeMaterializationWork,
@@ -12,8 +10,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         self.checkout
             .install_change(
                 candidate,
-                epoch,
-                stamp,
                 effect,
                 work,
                 &self.cancellation,

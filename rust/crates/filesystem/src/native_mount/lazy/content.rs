@@ -176,7 +176,7 @@ where
                 .push(Arc::downgrade(&file));
             return Ok((
                 (file, 0),
-                Some(mount_lookup(LazyLookup::Source { node, source }, id)),
+                Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
             ));
         }
         drop(lease);
@@ -382,8 +382,9 @@ where
         let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
         stream_pieces(offset, end, piece, sink, |offset, length| {
             if let Some(file) = &source_file {
-                return file.read_range(offset, u64::from(length), &mut accounting)
-                .map_err(mount_demand_error);
+                return file
+                    .read_range(offset, u64::from(length), &mut accounting)
+                    .map_err(mount_demand_error);
             }
             self.runtime.wait(|| async {
                 self.lazy
