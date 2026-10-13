@@ -146,9 +146,6 @@ impl NativeWorkReservation {
             }
         }
     }
-    pub(super) fn started_io(&mut self, actual: WorkCounters) -> Result<(), DemandError> {
-        self.begin(&mut self.state.lock(), actual)
-    }
     pub(crate) fn started_drop_io(&mut self, actual: WorkCounters) {
         self.begin_drop(&mut self.state.lock(), actual);
     }

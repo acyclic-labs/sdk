@@ -301,6 +301,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                             &paths,
                             &options,
                             journal,
+                            volume_work,
                             &mut { verify },
                         )
                         .await?;
