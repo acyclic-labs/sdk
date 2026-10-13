@@ -794,7 +794,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
             )
             .await?
             .value
-            .bytes()
+            .bytes
             .len();
     }
     let demand_read_us = started.elapsed().as_micros();
