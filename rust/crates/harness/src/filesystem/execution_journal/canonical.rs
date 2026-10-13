@@ -369,18 +369,7 @@ where
                         admission.observe(&event.0, limits, io)?;
                         match &event.0 {
                             ModelEvent::Content { delta } => {
-                                if output
-                                    .len()
-                                    .checked_add(delta.len())
-                                    .is_none_or(|length| length as u64 > limits.render_bytes)
-                                {
-                                    return Err(canonical_boundary(
-                                        io,
-                                        crate::wire::ErrorCode::Invalid,
-                                        "canonical summary output exceeds bounds",
-                                    ));
-                                }
-                                crate::executor::stock_string_push(&mut output, delta, io)?;
+                                canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }
                             ModelEvent::Completed { .. } | ModelEvent::Reasoning { .. } => {}
                             ModelEvent::ToolCall { .. } => {
@@ -449,6 +438,55 @@ where
         }
         result
     }
+}
+
+pub(super) fn canonical_push_text(
+    output: &mut String,
+    delta: &str,
+    maximum: u64,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    let length = output
+        .len()
+        .checked_add(delta.len())
+        .filter(|length| *length as u64 <= maximum)
+        .ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "canonical summary output exceeds bounds",
+            )
+        })?;
+    if let Some(io) = io {
+        let old = output.capacity();
+        let grows = length > old;
+        let copy = acyclic_fs::WorkCounters {
+            bytes_copied: delta.len() as u64 + if grows { output.len() as u64 } else { 0 },
+            ..Default::default()
+        };
+        io.preflight(copy)?;
+        if grows {
+            io.retain_owned((length - old) as u64)?;
+            io.allocation_attempt((length - old) as u64)?;
+            output
+                .try_reserve_exact(length - output.len())
+                .map_err(|_| {
+                    canonical_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Storage,
+                        "canonical summary allocation failed",
+                    )
+                })?;
+            if output.capacity() > length {
+                io.retain_owned((output.capacity() - length) as u64)?;
+            }
+        }
+        output.push_str(delta);
+        io.charge(copy)?;
+    } else {
+        output.push_str(delta);
+    }
+    Ok(())
 }
 
 pub(super) fn verify_summary_prefix_with_io(

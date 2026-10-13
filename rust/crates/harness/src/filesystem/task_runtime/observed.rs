@@ -3,20 +3,14 @@
 use super::*;
 use crate::filesystem::PreparationIo;
 
-pub(super) fn lease_fence(
-    lease: &crate::distributed::WorkLease,
-    io: Option<&PreparationIo>,
-) -> Result<LeaseFence> {
+pub(super) fn lease_fence(lease: &crate::distributed::WorkLease, io: Option<&PreparationIo>) -> Result<LeaseFence> {
     Ok(LeaseFence {
         reservation_id: stock_string_copy(&lease.reservation.id, io)?,
         placement: stock_string_copy(&lease.reservation.placement, io)?,
     })
 }
 
-pub(in crate::filesystem) fn clone_command(
-    command: &WorkflowCommand,
-    io: Option<&PreparationIo>,
-) -> Result<WorkflowCommand> {
+pub(super) fn clone_command(command: &WorkflowCommand, io: Option<&PreparationIo>) -> Result<WorkflowCommand> {
     Ok(WorkflowCommand {
         operation_id: command.operation_id,
         kind: stock_string_copy(&command.kind, io)?,
@@ -33,15 +27,9 @@ pub(super) fn pull_has_native_failure(pull: &crate::distributed::WorkPull) -> bo
     false
 }
 
-pub(in crate::filesystem) fn boundary(
-    io: Option<&PreparationIo>,
-    code: crate::wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
+pub(in crate::filesystem) fn boundary(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
-    if io.is_some() {
-        return Error::NativeBoundary { code, reason };
-    }
+    if io.is_some() { return Error::NativeBoundary { code, reason }; }
     let _ = io;
     match code {
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
@@ -52,28 +40,16 @@ pub(in crate::filesystem) fn boundary(
     }
 }
 
-pub(super) fn history<'a>(
-    io: Option<&'a PreparationIo>,
-) -> Result<Option<impl crate::store::HistoryIo + 'a>> {
+pub(super) fn history<'a>(io: Option<&'a PreparationIo>) -> Result<Option<impl crate::store::HistoryIo + 'a>> {
     #[cfg(not(target_arch = "wasm32"))]
-    let history = io
-        .map(|io| {
-            let work = io.original_native_work().ok_or_else(|| {
-                boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Unsupported,
-                    "worker observation requires original native work",
-                )
-            })?;
-            crate::filesystem::PreparationIo::from_native_work(work)
+    let history = io.map(|io| {
+        let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
+            crate::wire::ErrorCode::Unsupported, "worker observation requires original native work"))?;
+        crate::filesystem::PreparationIo::from_native_work(work)
                 .map(crate::store::HistoryWork::new)
-        })
-        .transpose()?;
+    }).transpose()?;
     #[cfg(target_arch = "wasm32")]
-    let history = {
-        let _ = io;
-        None::<&PreparationIo>
-    };
+    let history = { let _ = io; None::<&PreparationIo> };
     Ok(history)
 }
 
@@ -83,32 +59,21 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(in crate::filesystem) async fn admission_observed(
-        &self,
-        task: TaskId,
-        io: Option<&PreparationIo>,
-    ) -> Result<TaskAdmissionRecord> {
+    pub(in crate::filesystem) async fn admission_observed(&self, task: TaskId, io: Option<&PreparationIo>) -> Result<TaskAdmissionRecord> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker observation requires original native work",
             })?;
-            let (admission, custody) = self
-                .host
-                .observe_admission_with_native_work(task, work)
-                .await?;
+            let (admission, custody) = self.host.observe_admission_with_native_work(task, work).await?;
             io.absorb_native_custody(custody)?;
             return Ok(admission);
         }
         self.host.observe_admission(task).await
     }
 
-    pub(in crate::filesystem) async fn outcome_observed(
-        &self,
-        task: TaskId,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<Outcome<Value>>> {
+    pub(in crate::filesystem) async fn outcome_observed(&self, task: TaskId, io: Option<&PreparationIo>) -> Result<Option<Outcome<Value>>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or(Error::NativeBoundary {
@@ -122,38 +87,22 @@ where
         self.host.outcome(task).await
     }
 
-    pub(in crate::filesystem) async fn owner_observed(
-        &self,
-        task: TaskId,
-        fence: &LeaseFence,
-        settlement: bool,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
+    pub(in crate::filesystem) async fn owner_observed(&self, task: TaskId, fence: &LeaseFence, settlement: bool, io: Option<&PreparationIo>) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker owner requires original native work",
             })?;
-            let owner = self
-                .host
-                .journal_owner_with_native_work(task, fence, work)
-                .await?;
-            return owner
-                .verify(
-                    settlement,
-                    &mut Some(&mut crate::store::HistoryWork::new(
+            let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
+            return owner.verify(settlement, &mut Some(&mut crate::store::HistoryWork::new(
                         crate::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
-                )
-                .await;
+                    ))).await;
         }
-        if settlement {
-            self.host.verify_execution_owner(task, fence.clone()).await
-        } else {
-            self.host.verify_dispatch_owner(task, fence.clone()).await
-        }
+        if settlement { self.host.verify_execution_owner(task, fence.clone()).await }
+        else { self.host.verify_dispatch_owner(task, fence.clone()).await }
     }
+
 }
 
-use crate::executor::stock_string_copy;
+use crate::executor::{stock_string_copy};

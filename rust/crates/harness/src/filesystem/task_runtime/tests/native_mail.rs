@@ -55,7 +55,7 @@ impl MailFixture {
             None,
         )
         .await?;
-        let payloads = FilesystemContentPublisher::new(
+        let payloads = FilesystemSchedulerPayloadStore::new(
             fixture.filesystem.clone(),
             &(fixture.volume),
             &fixture.issuer.verifier(&mut None).expect("verifier copy"),

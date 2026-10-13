@@ -87,7 +87,7 @@ where
     /// Reads one exact immutable file under the CALLER's retained authority.
     pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         match &self.reader {
-            SourceReader::Caller(reader) => reader.read_file(file).await,
+            SourceReader::Caller(reader) => reader.read_file(file, None).await,
             SourceReader::Project(reader) => reader.read_file(file).await,
         }
     }
@@ -385,9 +385,7 @@ where
         owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
         let volumes = self
@@ -397,9 +395,7 @@ where
         owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
         let reader = ProjectSourceReader::open(
