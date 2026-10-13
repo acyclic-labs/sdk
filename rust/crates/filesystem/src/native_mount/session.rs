@@ -232,7 +232,7 @@ impl NativeMountSession {
         &mut self,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, Box<crate::WorkCounters>)> {
         let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
             Ok(work) => work,
             Err((error, work)) => {
@@ -245,7 +245,7 @@ impl NativeMountSession {
                 value,
                 work: work.receipt(),
             }),
-            Err(error) => Err((error, work.receipt())),
+            Err(error) => Err((error, Box::new(work.receipt()))),
         }
     }
 
@@ -254,7 +254,7 @@ impl NativeMountSession {
         &mut self,
         work: &NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
-        self.stop_with_context(NativeSessionStopWork::Meter(work))
+        self.stop_with_context(&NativeSessionStopWork::Meter(work))
     }
 
     /// Retires the original namespace using its before-start accepted controls.
@@ -262,12 +262,12 @@ impl NativeMountSession {
         &mut self,
         wait: &crate::CancellationToken,
     ) -> Result<bool, NativeMountError> {
-        self.stop_with_context(NativeSessionStopWork::AcceptedWait(wait))
+        self.stop_with_context(&NativeSessionStopWork::AcceptedWait(wait))
     }
 
     pub(super) fn stop_with_context(
         &mut self,
-        work: NativeSessionStopWork<'_>,
+        work: &NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
         let result = (|| {
             let mut changed = false;
@@ -275,8 +275,8 @@ impl NativeMountSession {
                 with_driver!(
                     &mut *driver,
                     session,
-                    session.stop(&work),
-                    session.stop(match &work {
+                    session.stop(work),
+                    session.stop(match work {
                         NativeSessionStopWork::Meter(meter) => meter.cancellation(),
                         NativeSessionStopWork::AcceptedWait(wait) => wait,
                     }),
@@ -308,7 +308,7 @@ impl NativeMountSession {
                 changed = true;
             }
             if let Some(source) = self.retained_source.as_ref() {
-                match &work {
+                match work {
                     NativeSessionStopWork::Meter(meter) => source.shutdown_with_meter(meter),
                     NativeSessionStopWork::AcceptedWait(wait) => {
                         source.shutdown_with_cleanup_wait(wait)
@@ -324,7 +324,7 @@ impl NativeMountSession {
                 let stopped = if owner.is_stopped() {
                     Ok(false)
                 } else {
-                    match &work {
+                    match work {
                         NativeSessionStopWork::Meter(meter) => owner
                             .stop(&mut adapter::NativeDemandCarrier::Native(meter))
                             .map_err(NativeMountError::from),
@@ -342,10 +342,10 @@ impl NativeMountSession {
                 stopped?;
             }
             if let Some(guard) = self.destination_guard.as_mut() {
-                match &work {
+                match work {
                     NativeSessionStopWork::Meter(meter) => guard.release(&mut &**meter)?,
                     NativeSessionStopWork::AcceptedWait(wait) => {
-                        guard.release_cleanup(Some(wait))?
+                        guard.release_cleanup(Some(wait))?;
                     }
                 }
                 drop(self.destination_guard.take());

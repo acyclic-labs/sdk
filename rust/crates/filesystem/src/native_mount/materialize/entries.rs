@@ -321,8 +321,8 @@ where
                 drop(file);
             }
             #[cfg(any(target_os = "macos", windows))]
-            if cloned {
-                if mode == MaterializeMode::DurableOutput {
+            if cloned
+                && mode == MaterializeMode::DurableOutput {
                     #[cfg(target_os = "macos")]
                     let file = host_root
                         .0
@@ -352,7 +352,6 @@ where
                     sync_generation_file(&file, receipt, before_effect).await?;
                     drop(file);
                 }
-            }
             account_file(receipt, logical_bytes, 0)?;
             #[cfg(any(target_os = "macos", windows))]
             if !payload_known {
@@ -381,7 +380,7 @@ where
             if !reader.validate_native_work(receipt.custody.work()).is_ok() {
                 receipt
                     .custody
-                    .release((target_bytes as usize) as u64)
+                    .release(target_bytes)
                     .map_err(MaterializeError::from)?;
             }
             receipt.value.symbolic_links = receipt

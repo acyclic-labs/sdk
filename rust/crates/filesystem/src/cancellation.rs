@@ -233,6 +233,7 @@ impl CancellationToken {
         self.cancel_inner(None).expect("unmetered cancellation cannot fail");
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel_measured(
         &self, work: &mut crate::WorkCounters, budget: crate::WorkBudget,
     ) -> Result<(), crate::WorkError> {
@@ -439,16 +440,17 @@ impl CancellationToken {
         }
     }
 
-    /// Uses the invocation's existing ledger; construction and precancellation
-    /// allocate nothing. The waiter and registry grow only when polled.
-    pub(crate) fn cancelled_measured<'a>(
-        &'a self,
-        allocations: &'a mut crate::kernel::allocation::AllocationLedger,
-        work: &'a mut crate::WorkCounters,
+    /// Prepares the same registration while the worker's meter is still
+    /// available. Polling this owned future never allocates. The caller reserves
+    /// `cleanup_items()` until `finish` receives that same meter back.
+    pub(crate) fn prepare_cancelled(
+        &self,
+        allocations: &mut crate::kernel::allocation::AllocationLedger,
+        work: &mut crate::WorkCounters,
         budget: crate::WorkBudget,
-        admission: &'a mut CancellationWaitAdmission,
-    ) -> MeasuredCancelled<'a> {
-        MeasuredCancelled(Cancelled {
+        admission: &mut CancellationWaitAdmission,
+    ) -> Result<PreparedCancelled, CancellationWaitError> {
+        let mut future = Cancelled {
             token: self,
             waiter: None,
             registered: None,
@@ -460,31 +462,18 @@ impl CancellationToken {
             native_original: None,
             #[cfg(not(target_arch = "wasm32"))]
             native_cleanup: None,
-        })
-    }
-
-    /// Prepares the same registration while the worker's meter is still
-    /// available. Polling this owned future never allocates. The caller reserves
-    /// `cleanup_items()` until `finish` receives that same meter back.
-    pub(crate) fn prepare_cancelled_measured(
-        &self,
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut crate::WorkCounters,
-        budget: crate::WorkBudget,
-        admission: &mut CancellationWaitAdmission,
-    ) -> Result<PreparedCancelled, CancellationWaitError> {
-        let mut future = self.cancelled_measured(allocations, work, budget, admission);
+        };
         let mut context = Context::from_waker(Waker::noop());
-        match Pin::new(&mut future).poll(&mut context) {
+        match future.poll_result(&mut context) {
             Poll::Ready(Err(error)) => return Err(error),
             Poll::Ready(Ok(())) | Poll::Pending => {}
         }
-        let waiter = future.0.waiter.take();
+        let waiter = future.waiter.take();
         if let Some(waiter) = &waiter {
             *waiter.waker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
-        let registered = future.0.registered.take();
-        let meter = future.0.meter.take().expect("prepared cancellation meter");
+        let registered = future.registered.take();
+        let meter = future.meter.take().ok_or(crate::WorkError::Overflow)?;
         Ok(PreparedCancelled {
             token: self.clone(),
             waiter,
@@ -708,16 +697,6 @@ impl WaitMeter<'_> {
     }
 }
 
-/// Budget-aware projection of the same canonical cancellation wait engine.
-pub(crate) struct MeasuredCancelled<'a>(Cancelled<'a>);
-
-impl Future for MeasuredCancelled<'_> {
-    type Output = Result<(), CancellationWaitError>;
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        self.get_mut().0.poll_result(context)
-    }
-}
-
 impl Cancelled<'_> {
     fn poll_result(&mut self, context: &mut Context<'_>) -> Poll<Result<(), CancellationWaitError>> {
         if self.token.is_cancelled() { return Poll::Ready(Ok(())); }
@@ -884,14 +863,18 @@ impl Cancelled<'_> {
                 #[cfg(not(target_arch = "wasm32"))]
                 let new_lease = if let Some(original) = native_original {
                     let actual = (replacement.capacity() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64;
-                    if let Err(error) = native_registry_allocation.as_mut().expect("native registry allocation")
-                        .reconcile_capacity(actual)
+                    let Some(registry_allocation) = native_registry_allocation.as_mut() else {
+                        drop(waiters);
+                        drop(replacement);
+                        return Poll::Ready(Err(crate::NativeTreeMaterializationError::InvalidLayout.into()));
+                    };
+                    if let Err(error) = registry_allocation.reconcile_capacity(actual)
                     {
                         drop(waiters);
                         drop(replacement);
                         return Poll::Ready(Err(error.into()));
                     }
-                    let generation = if let Some(generation) = self.token.state.registry_generation.load(Ordering::Acquire).checked_add(1) { generation } else {
+                    let Some(generation) = self.token.state.registry_generation.load(Ordering::Acquire).checked_add(1) else {
                         drop(waiters);
                         drop(replacement);
                         return Poll::Ready(Err(crate::WorkError::Overflow.into()));
@@ -904,7 +887,7 @@ impl Cancelled<'_> {
                             return Poll::Ready(Err(error.into()));
                         }
                     };
-                    if let Err(error) = metadata.absorb(native_registry_allocation.as_mut().expect("native registry allocation")) {
+                    if let Err(error) = metadata.absorb(registry_allocation) {
                         drop(waiters);
                         drop(replacement);
                         return Poll::Ready(Err(error.into()));
@@ -940,10 +923,13 @@ impl Cancelled<'_> {
                             credit.record_deferred(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED });
                         }
                     }
-                    *waiter.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease.clone();
+                    *waiter.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease;
                 }
                 let index = if let Some(index) = free {
-                    waiters[index] = Some(Arc::downgrade(&waiter));
+                    let Some(slot) = waiters.get_mut(index) else {
+                        return Poll::Ready(Err(crate::WorkError::Overflow.into()));
+                    };
+                    *slot = Some(Arc::downgrade(&waiter));
                     index
                 } else {
                     waiters.push(Some(Arc::downgrade(&waiter)));
@@ -994,7 +980,9 @@ impl Cancelled<'_> {
             self.waiter = Some(waiter);
             }
         }
-        let waiter = self.waiter.as_ref().expect("registered cancellation waiter");
+        let Some(waiter) = self.waiter.as_ref() else {
+            return Poll::Ready(Err(crate::WorkError::Overflow.into()));
+        };
         drop(waiters);
         let replace = {
             let waker = waiter.waker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

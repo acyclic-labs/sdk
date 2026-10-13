@@ -187,51 +187,47 @@ where
         Ok(dirty)
     }
 
-    pub(super) fn stage_detached_records<'a>(
+    pub(super) async fn stage_detached_records<'a>(
         &'a self,
         records: &'a [(FileRecord, FileMetadata)],
         dirty: &'a [DirtyDetachedRecord],
         work: &'a crate::NativeMaterializationWork,
-    ) -> impl std::future::Future<Output = Result<(), MountSourceError>>
-    + acyclic_stream::ProviderTask
-    + 'a {
-        async move {
-            let owner = ViewGate::callback_owner();
-            let mut carrier = adapter::NativeDemandCarrier::Native(work);
-            for (record, metadata) in records {
-                let exists = self
-                    .detached
+    ) -> Result<(), MountSourceError> {
+        let owner = ViewGate::callback_owner();
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
+        for (record, metadata) in records {
+            let exists = self
+                .detached
+                .lock()
+                .map_err(|_| MountSourceError::Stale)?
+                .contains_key(&record.file_id);
+            if !exists {
+                let file = self
+                    .authored
+                    .detached_file_from_record(*record, *metadata, owner, &mut carrier)
+                    .await?;
+                self.detached
                     .lock()
                     .map_err(|_| MountSourceError::Stale)?
-                    .contains_key(&record.file_id);
-                if !exists {
-                    let file = self
-                        .authored
-                        .detached_file_from_record(*record, *metadata, owner, &mut carrier)
-                        .await?;
-                    self.detached
-                        .lock()
-                        .map_err(|_| MountSourceError::Stale)?
-                        .insert(
-                            record.file_id,
-                            DetachedIdentity {
-                                file,
-                                ready: false,
-                                published_epoch: 0,
-                                pending_epoch: None,
-                            },
-                        );
-                }
+                    .insert(
+                        record.file_id,
+                        DetachedIdentity {
+                            file,
+                            ready: false,
+                            published_epoch: 0,
+                            pending_epoch: None,
+                        },
+                    );
             }
-            let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-            for (record, _, epoch) in dirty {
-                let entry = identities
-                    .get_mut(&record.file_id)
-                    .ok_or(MountSourceError::Stale)?;
-                entry.pending_epoch = Some(*epoch);
-            }
-            Ok(())
         }
+        let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
+        for (record, _, epoch) in dirty {
+            let entry = identities
+                .get_mut(&record.file_id)
+                .ok_or(MountSourceError::Stale)?;
+            entry.pending_epoch = Some(*epoch);
+        }
+        Ok(())
     }
 
 }

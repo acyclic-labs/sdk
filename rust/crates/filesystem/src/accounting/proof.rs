@@ -33,44 +33,16 @@ pub(super) fn verify_record(
     Ok(stamp)
 }
 
-pub(super) async fn prove_published<O: AsyncObjectStore>(
-    objects: &O,
-    root: ObjectId,
-    volume_id: VolumeId,
-    config: VolumeConfig,
-    authority_id: AuthorityId,
-    record: &DurableCommit,
-    measured: &mut AccountingReadWork,
-    cancellation: &CancellationToken,
-) -> Result<AccountingTransition, AccountingError> {
-    let bytes = prove_bytes(
-        objects,
-        root,
-        volume_id,
-        config,
-        authority_id,
-        record,
-        measured,
-        cancellation,
-    )
-    .await?;
-    Ok(AccountingTransition::Published {
-        volume_id,
-        generation_root: root,
-        logical_regular_file_bytes: bytes,
-    })
-}
-
 pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     objects: &O,
     root: ObjectId,
-    volume_id: VolumeId,
-    config: VolumeConfig,
+    volume: (VolumeId, VolumeConfig),
     authority_id: AuthorityId,
     record: &DurableCommit,
     measured: &mut AccountingReadWork,
     cancellation: &CancellationToken,
 ) -> Result<u128, AccountingError> {
+    let (volume_id, config) = volume;
     // Borrowed canonical fields, decoded manifest/root, exact payload, and
     // canonical re-encoding are bounded together before any archive decode.
     // Eight source lengths cover both representations and the retained source.
@@ -79,25 +51,17 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
         .maximum_generation_bytes
         .min(measured.remaining()?.peak_allocation_bytes / 8);
     let archived = {
-        let __object_args = (
-            authority_id,
-            record,
-            evidence_bound,
-            config.limits.maximum_objects_per_generation,
-            measured.remaining()?,
-            cancellation,
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5);
-        let __object_result = objects
+        let mut work = crate::AuthorityWork::new(measured.remaining()?, cancellation);
+        let result = objects
             .historical_generation_evidence(
-                __object_args.0,
-                __object_args.1,
-                __object_args.2,
-                __object_args.3,
-                &mut __object_work,
+                authority_id,
+                record,
+                evidence_bound,
+                config.limits.maximum_objects_per_generation,
+                &mut work,
             )
             .await;
-        __object_work.receipt(__object_result)
+        work.receipt(result)
     }
     .map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
     measured.backend(archived.work)?;

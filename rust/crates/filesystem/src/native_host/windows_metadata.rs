@@ -3,7 +3,7 @@ use crate::kernel::{FileMetadata, MetadataField};
 use windows::Wdk::Storage::FileSystem::FileBasicInformation;
 
 pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
-    file: cap_std::fs::File,
+    file: &cap_std::fs::File,
     metadata: FileMetadata,
     work: &mut W,
 ) -> Result<(), DemandError> {
@@ -26,7 +26,7 @@ pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
     if metadata == FileMetadata::default() {
         return Ok(());
     }
-    let current = windows_stat_information(&file, work)?;
+    let current = windows_stat_information(file, work)?;
     let mut desired = FILE_BASIC_INFO {
         CreationTime: current.CreationTime,
         LastAccessTime: current.LastAccessTime,
@@ -62,9 +62,9 @@ pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
         }
     }
     work.attempt_io(WRITE, || {
-        windows_set_information(&file, &desired, FileBasicInformation)
+        windows_set_information(file, &desired, FileBasicInformation)
     })?;
-    let observed = windows_stat_information(&file, work)?;
+    let observed = windows_stat_information(file, work)?;
     for (requested, expected, actual) in [
         (
             metadata.created_ns,

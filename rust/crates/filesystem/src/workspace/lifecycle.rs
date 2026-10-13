@@ -30,7 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     let bytes = options
                         .paths
                         .as_ref()
-                        .map_or(Ok(0), |paths| workspace_owned_strings_bytes(paths))
+                        .map_or(Ok(0), workspace_owned_strings_bytes)
                         .map_err(E::from)?;
                     let (mut allocation, admitted) = accounting.record_actual_owned(bytes)?;
                     admitted?;
@@ -118,7 +118,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         label: impl AsRef<str>,
     ) -> Result<(WorkspaceName, Generation<A, O>), WorkspaceError> {
         let cancellation = CancellationToken::new();
-        let label = WorkspaceName::new(label, WorkBudget::UNBOUNDED, &cancellation)
+        let label = WorkspaceName::new(label, &WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| failure.error)?
             .value;
         let generation = self

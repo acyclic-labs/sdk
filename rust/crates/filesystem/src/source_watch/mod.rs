@@ -37,7 +37,7 @@ pub(super) fn prepare_native_cleanup_credit<W: SourceDemandReadWork>(
     work.check()?;
     if !work.is_native_original() { return Ok(None); }
     let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = { crate::native_host::NativeHostWork::check(&source)?; source.clone() }.allocation_work();
+    let original = { crate::native_host::NativeHostWork::check(&source)?; source }.allocation_work();
     original.reserve_work(maximum)
         .map(Some)
         .map_err(crate::native_name::original_name_error)
@@ -182,6 +182,7 @@ pub(crate) enum CallbackWork {
 }
 
 impl CallbackWork {
+    #[cfg(all(test, target_os = "macos"))]
     pub(super) fn receipt_work(&self) -> WorkCounters {
         match self {
             Self::Ordinary(work) => work.work,
@@ -328,7 +329,7 @@ impl Delivery {
     fn new_with_work<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>, work: &mut W,
     ) -> Result<Self, DemandError> {
-        let original = work.native_source_work().map(|work| work.clone().allocation_work());
+        let original = work.native_source_work().map(|work| work.allocation_work());
         let controls = |work: &mut DemandWork| (work.budget, work.cancellation().clone());
         let (budget, cancellation) = if original.is_some() {
             work.with_original_leaf(controls)
@@ -386,7 +387,7 @@ impl Delivery {
     fn birth_matches<W: SourceDemandReadWork>(&self, work: &W) -> bool {
         let Some(birth) = &self.original else { return false; };
         let Some(current) = work.native_source_work() else { return false; };
-        let current = current.clone();
+        let current = current;
         Arc::ptr_eq(&birth.state, &current.state)
             && match (birth.resource.as_ref(), current.resource.as_ref()) {
                 (None, None) => true,

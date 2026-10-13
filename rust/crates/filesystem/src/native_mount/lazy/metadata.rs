@@ -53,7 +53,7 @@ where
     .map_err(lazy_error)
 }
 
-pub(super) fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {
+pub(super) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup {
     let stat = lookup.stat();
     let metadata = workspace_metadata(lookup.metadata());
     let (link_count, device) = match lookup {
@@ -63,7 +63,7 @@ pub(super) fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {
             source_link_count,
             ..
         } => (
-            source_link_count,
+            *source_link_count,
             match record.payload {
                 FilePayload::Device { major, minor } => Some((major, minor)),
                 _ => None,

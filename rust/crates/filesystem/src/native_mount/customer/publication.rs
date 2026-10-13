@@ -8,9 +8,9 @@ pub struct NativeMountPublicationFailure<E> {
     #[source]
     pub cause: E,
     /// Distinct accounting failure after the original cause.
-    pub accounting_failure: Option<MountSourceError>,
+    pub accounting_failure: Option<Box<MountSourceError>>,
     /// Whether a real source result or DATA ACK was observed.
     pub source_acknowledged: bool,
     /// Qualified source metadata retained through finalization failure.
-    pub publication: Option<crate::NativePublicationSnapshot>,
+    pub publication: Option<Box<crate::NativePublicationSnapshot>>,
 }

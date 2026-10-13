@@ -59,9 +59,9 @@ pub enum MountLifecycleError {
     NativeCaptureFailure {
         /// Original authored-capture failure.
         #[source]
-        source: NativeMountError,
+        source: Box<NativeMountError>,
         /// Distinct namespace cleanup failure.
-        cleanup_failure: Option<NativeMountError>,
+        cleanup_failure: Option<Box<NativeMountError>>,
     },
 }
 
@@ -88,8 +88,8 @@ impl NativeMountDrainProof {
                 .take_capture_failures()
                 .map(
                     |(source, cleanup_failure)| MountLifecycleError::NativeCaptureFailure {
-                        source,
-                        cleanup_failure,
+                        source: Box::new(source),
+                        cleanup_failure: cleanup_failure.map(Box::new),
                     },
                 )
         }

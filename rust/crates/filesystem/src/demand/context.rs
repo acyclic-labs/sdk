@@ -64,19 +64,9 @@ impl CaptureTransientCustody {
     }
 }
 pub(crate) fn native_demand_error(error: std::io::Error) -> DemandError {
-    if error
-        .get_ref()
-        .is_some_and(|inner| inner.is::<DemandError>())
-    {
-        *error
-            .into_inner()
-            .expect("typed native error")
-            .downcast::<DemandError>()
-            .expect("typed demand error")
-    } else {
-        DemandError::Io(error)
-    }
+    error.downcast::<DemandError>().unwrap_or_else(DemandError::Io)
 }
+
 #[cfg(target_os = "macos")]
 pub(crate) fn native_demand_read_error(error: DemandError) -> std::io::Error {
     let kind = if matches!(error, DemandError::Cancelled) {

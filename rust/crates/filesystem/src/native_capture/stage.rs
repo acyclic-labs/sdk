@@ -167,9 +167,7 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
             original
                 .state
                 .take_native_io_failure()
-                .map(crate::materializer::native_materialization_work_error)
-                .map(crate::FsError::NativeKernel)
-                .unwrap_or_else(|| {
+                .map(crate::materializer::native_materialization_work_error).map_or_else(|| {
                     if error.kind() == std::io::ErrorKind::UnexpectedEof {
                         crate::FsError::SourceSnapshotStale
                     } else {
@@ -177,12 +175,12 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
                             error,
                         ))
                     }
-                })
+                }, crate::FsError::NativeKernel)
         })?;
         if result.0.len() != maximum {
             return Err(crate::FsError::SourceSnapshotStale);
         }
-        destination[..maximum].copy_from_slice(&result.0);
+        destination.get_mut(..maximum).ok_or(crate::FsError::SourceSnapshotStale)?.copy_from_slice(&result.0);
         copy.record_completed(WorkCounters {
             bytes_copied: maximum as u64,
             ..WorkCounters::UNCHARGED

@@ -106,7 +106,7 @@ pub(super) fn record(
             }
             next.extend(latest.drain());
             drop(std::mem::replace(latest, next));
-            drop(std::mem::replace(custody, Some(next_custody)));
+            drop(custody.replace(next_custody));
             Ok(())
         })();
         let released = release_backing(borrowed, carrier);
@@ -161,17 +161,6 @@ pub(super) fn release_backing(
             .with_work(|work| work.release(bytes))
             .map_err(mount_demand_error)
     }
-}
-
-pub(in crate::native_mount) fn same_work(
-    left: &crate::NativeMaterializationWork,
-    right: &crate::NativeMaterializationWork,
-) -> bool {
-    left.shares_allocation_context(right)
-        && left.capture_origin.as_ref().map(Weak::as_ptr)
-            == right.capture_origin.as_ref().map(Weak::as_ptr)
-        && left.invocation.as_ref().map(Arc::as_ptr) == right.invocation.as_ref().map(Arc::as_ptr)
-        && left.execution.as_ref().map(Arc::as_ptr) == right.execution.as_ref().map(Arc::as_ptr)
 }
 
 pub(in crate::native_mount) fn copy_work(bytes: u64) -> crate::WorkCounters {

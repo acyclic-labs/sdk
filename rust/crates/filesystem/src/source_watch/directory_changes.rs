@@ -197,7 +197,10 @@ fn create_reader<W: SourceDemandReadWork>(
             None,
         )
     } {
-        Ok(thread) => Ok(unsafe { OwnedHandle::from_raw_handle(thread.0) }),
+        Ok(thread) => {
+            // SAFETY: CreateThread returned this uniquely owned, valid thread handle.
+            Ok(unsafe { OwnedHandle::from_raw_handle(thread.0) })
+        },
         Err(error) => {
             // SAFETY: failed native creation transferred no callback owner.
             drop(unsafe { Arc::from_raw(parameter) });
@@ -387,9 +390,9 @@ impl NativeSourceWatch {
             // SAFETY: an unnamed manual-reset event, exclusively owned here.
             let event =
                 unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::from)?;
-            state
-                .completed
-                .install(unsafe { OwnedHandle::from_raw_handle(event.0) });
+            // SAFETY: CreateEventW returned this uniquely owned, valid event handle.
+            let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
+            state.completed.install(event);
             let reader = shared.as_ref().expect("constructed read state");
             let mut reads = reader.lock_reads();
             if let Err(error) = reader.issue_read(&mut reads, work) {
@@ -521,11 +524,10 @@ impl NativeSourceWatch {
                     HANDLE(self.shared.directory.as_raw_handle()),
                     Some(&raw const *reads.overlapped),
                 )
-            } {
-                if error.code() != ERROR_NOT_FOUND.to_hresult() {
+            }
+                && error.code() != ERROR_NOT_FOUND.to_hresult() {
                     result = Err(DemandError::from(io::Error::from(error)));
                 }
-            }
             result = result.and(self.shared.record_cleanup(work, 0, 1));
             let mut transferred = 0;
             // SAFETY: the original OVERLAPPED and buffer remain live through completion.
@@ -542,11 +544,10 @@ impl NativeSourceWatch {
                     error.code() == ERROR_OPERATION_ABORTED.to_hresult()
                         || error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult()
                 });
-            if let Err(error) = completed {
-                if error.code() != ERROR_OPERATION_ABORTED.to_hresult() {
+            if let Err(error) = completed
+                && error.code() != ERROR_OPERATION_ABORTED.to_hresult() {
                     result = result.and(Err(DemandError::from(io::Error::from(error))));
                 }
-            }
             result = result.and(self.shared.record_cleanup(work, 1, 0));
             if reads.pending {
                 return result;
@@ -666,8 +667,8 @@ impl NativeSourceWatch {
                 .native_cleanup
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let active = cleanup[0]
-                .as_ref()
+            let [active, _] = &*cleanup;
+            let active = active.as_ref()
                 .ok_or(DemandError::NativeWorkUnavailable)?
                 .remaining_work();
             if active.backend_read_operations < required_reads
@@ -882,6 +883,7 @@ impl Drop for NativeSourceWatch {
                 if let Err(error) = self.shared.native_start(terminal_wake, 0, 1) {
                     self.shared.note_native_failure(error);
                 } else if let Err(error) =
+                    // SAFETY: Shared retains the open event throughout this terminal wake.
                     unsafe { SetEvent(HANDLE(self.shared.completed.as_raw_handle())) }
                 {
                     self.shared
@@ -977,6 +979,7 @@ impl Shared {
                         result = result.and(Err(error));
                     } else {
                         let mut transferred = 0;
+                        // SAFETY: the read lock retains the handle, buffer and OVERLAPPED until completion.
                         let completed = unsafe {
                             GetOverlappedResult(
                                 HANDLE(self.directory.as_raw_handle()),
@@ -1025,8 +1028,7 @@ impl Shared {
                 && reads.buffer.is_none()
                 && !self.directory.is_open()
                 && !self.completed.is_open()
-            {
-                if self
+                && self
                     .native_thread
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -1037,14 +1039,13 @@ impl Shared {
                             .native_cleanup
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner);
-                        std::mem::replace(&mut *cleanup, [None, None])
+                        std::mem::take(&mut *cleanup)
                     };
                     drop(cleanup);
                     self.stop_completed.store(true, Ordering::Release);
                     self.reading_changed.notify_all();
                     return;
                 }
-            }
             while terminal || !self.native_drop_requested.load(Ordering::Acquire) {
                 reads = self
                     .reading_changed
@@ -1065,8 +1066,9 @@ impl Shared {
             .native_cleanup
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let credit = cleanup[usize::from(terminal)]
-            .as_mut()
+        let [active, finished] = &mut *cleanup;
+        let credit = if terminal { finished } else { active };
+        let credit = credit.as_mut()
             .ok_or(DemandError::NativeWorkUnavailable)?;
         let remaining = credit.remaining_work();
         if remaining.backend_read_operations < reads || remaining.backend_write_operations < writes
@@ -1080,9 +1082,7 @@ impl Shared {
     fn native_os_error(&self, error: windows::core::Error) -> DemandError {
         let error = io::Error::from(error);
         let original = error
-            .raw_os_error()
-            .map(io::Error::from_raw_os_error)
-            .unwrap_or_else(|| io::Error::from(error.kind()));
+            .raw_os_error().map_or_else(|| io::Error::from(error.kind()), io::Error::from_raw_os_error);
         if let Some(birth) = &self.delivery.original {
             crate::NativeMaterializationWork::clone(birth).with_original_leaf(|work| {
                 work.record_native_io_failure(DemandError::Io(original));
@@ -1190,6 +1190,7 @@ impl Shared {
             if self.stopping.load(Ordering::Acquire) {
                 return;
             }
+            // SAFETY: Shared retains the event while its reader thread waits.
             unsafe { WaitForSingleObject(HANDLE(self.completed.as_raw_handle()), INFINITE) };
             let mut reads = self.lock_reads();
             while reads.blocked && !self.stopping.load(Ordering::Acquire) {
@@ -1245,6 +1246,8 @@ impl Shared {
             hEvent: HANDLE(self.completed.as_raw_handle()),
             ..OVERLAPPED::default()
         };
+        let buffer_bytes = u32::try_from(size_of::<[u64; BUFFER_WORDS]>())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         work.started_io(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::default()
@@ -1254,7 +1257,7 @@ impl Shared {
             ReadDirectoryChangesExW(
                 HANDLE(self.directory.as_raw_handle()),
                 buffer.as_mut_ptr().cast(),
-                size_of::<[u64; BUFFER_WORDS]>() as u32,
+                buffer_bytes,
                 self.recursive,
                 FILE_NOTIFY_CHANGE_FILE_NAME
                     | FILE_NOTIFY_CHANGE_DIR_NAME
@@ -1402,7 +1405,7 @@ impl Shared {
         }
     }
 
-    /// Uses the existing flexible fields, borrowing aligned UTF-16 directly from the original native u64 page instead of constructing an OsString.
+    /// Uses the existing flexible fields, borrowing aligned UTF-16 directly from the original native u64 page instead of constructing an `OsString`.
     fn deliver_page<W: SourceDemandReadWork>(
         &self,
         reads: &mut Reads,
@@ -1421,14 +1424,14 @@ impl Shared {
                 items_examined: 1,
                 ..WorkCounters::default()
             })?;
-            // SAFETY: only the completed page is exposed, under the read lock.
             let buffer = reads
                 .buffer
                 .as_ref()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?;
+            // SAFETY: the completed byte count fits the buffer retained by the read lock.
             let bytes =
                 unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), reads.filled) };
-            let record = &bytes[reads.cursor..];
+            let record = bytes.get(reads.cursor..).ok_or(DemandError::InvalidRequest)?;
             let parsed = notification(record, extended);
             let Some((next, action, path, file)) = parsed else {
                 self.delivery
@@ -1440,8 +1443,12 @@ impl Shared {
                 HostChangeWide::Path { action, path },
                 HostChangeWide::File(file.unwrap_or(0)),
             ];
-            self.delivery
-                .deliver_wide_with_work(&changes[..if file.is_some() { 2 } else { 1 }], work)?;
+            let delivered = if file.is_some() {
+                changes.as_slice()
+            } else {
+                std::slice::from_ref(&changes[0])
+            };
+            self.delivery.deliver_wide_with_work(delivered, work)?;
             reads.cursor = if next == 0 {
                 reads.filled
             } else {
@@ -1540,7 +1547,7 @@ fn notification(record: &[u8], extended: bool) -> Option<(usize, u32, &[u16], Op
     let action = field(4)?;
     let length = field(length_offset)? as usize;
     let name = record.get(name_offset..name_offset.checked_add(length)?)?;
-    if length % 2 != 0 || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
+    if !length.is_multiple_of(2) || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
         return None;
     }
     let file = if extended {
@@ -1560,7 +1567,7 @@ fn notification(record: &[u8], extended: bool) -> Option<(usize, u32, &[u16], Op
 #[cfg(test)]
 mod tests {
     use super::{
-        Delivery, DemandError, DemandWork, HostChange, HostChangeWide, OVERLAPPED, Shared,
+        Delivery, DemandError, DemandWork, HostChange, HostChangeWide, Shared,
         notification,
     };
     use std::mem::size_of;
@@ -1769,8 +1776,7 @@ mod tests {
     fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::demand::{NativeDemandReadMeter, SourceDemandReadWork};
-        use crate::native_host::NativeHostWork;
-        use crate::{CancellationToken, WorkBudget, WorkCounters};
+        use crate::{CancellationToken, WorkBudget};
         use std::sync::{Arc, Mutex};
 
         for late_wait in [false, true] {

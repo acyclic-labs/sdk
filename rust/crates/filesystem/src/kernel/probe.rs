@@ -614,10 +614,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                 let FilePayload::Directory { entries } = record.payload else {
                     return capture_file_record_state_with_accounting(record, accounting, Some(cancellation), custody);
                 };
-                let (page, allocation) = super::list::list_tree_entries_async_with_accounting(
-                    self.store, entries, after.as_ref(), *maximum_entries, self.limits.decode,
-                    accounting, cancellation.clone(), custody,
-                ).await?;
+                let (page, allocation) = super::list::list_tree_entries_async_with_accounting(self.store, entries, ((after.as_ref()).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), *maximum_entries), self.limits.decode, accounting, cancellation, custody,).await?;
                 let retained = directory_entries_bytes(&page.entries)?;
                 let page = Owned::new(page, allocation, retained);
                 let result = capture_directory_page_with_accounting(
@@ -789,8 +786,8 @@ fn validate_capture_batch_error(count: usize, maximum: u32) -> Result<(), crate:
 
 fn region_owned_bytes(region: &DependencyRegion) -> u64 {
     match region {
-        DependencyRegion::DirectoryName { name, .. } => usize_to_u64(name.retained_bytes()),
-        DependencyRegion::DirectoryRange { after: Some(name), .. } => usize_to_u64(name.retained_bytes()),
+        DependencyRegion::DirectoryName { name, .. }
+        | DependencyRegion::DirectoryRange { after: Some(name), .. } => usize_to_u64(name.retained_bytes()),
         _ => 0,
     }
 }

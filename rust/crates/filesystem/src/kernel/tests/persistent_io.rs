@@ -107,7 +107,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
     let (shared, allocation) = (read_page_with_accounting::<_, TreeFormat>(
         &store, page, DecodeLimits::default(), &mut accounting, &cancellation, None,
     )).await?;
-    let ((mut mutable, bytes), mut allocation) = shared.into_owned_with_accounting(allocation, &mut accounting)?;
+    let crate::kernel::Owned { value: mut mutable, bytes, mut allocation } = shared.into_owned_with_accounting(allocation, &mut accounting)?;
     assert!(bytes > 0);
     if let Page::Leaf(entries) = &mut mutable {
         entries[0].name = LogicalName::new(NameEncoding::Utf8, b"changed".to_vec(), 255)?;

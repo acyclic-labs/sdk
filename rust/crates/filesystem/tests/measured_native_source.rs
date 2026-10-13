@@ -1116,7 +1116,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     let source = native
         .exclude(
             vec![requested("private")?, requested("excluded")?],
-            WorkBudget::UNBOUNDED,
+            &WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )?
         .value;

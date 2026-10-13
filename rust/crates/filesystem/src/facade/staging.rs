@@ -389,7 +389,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 cancellation,
             )
             .await;
-        drop(source);
         drop(content);
         result
     }

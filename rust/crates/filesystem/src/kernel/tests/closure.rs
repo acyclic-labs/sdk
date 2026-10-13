@@ -1,5 +1,4 @@
 use super::*;
-use crate::async_storage;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{

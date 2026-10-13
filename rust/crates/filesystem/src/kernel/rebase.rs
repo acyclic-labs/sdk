@@ -317,6 +317,7 @@ impl ProofDataCustody {
         Ok(0)
     }
 
+    #[cfg(test)]
     pub(crate) fn take_completed_data_work(&self) -> WorkCounters {
         let mut completed = self.completed_data_work.lock();
         let generation = completed.delivery_generation.checked_add(1)
@@ -597,6 +598,7 @@ impl CheckoutDependencies {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn logical_data(&self) -> (usize, u64, u64) {
         (Arc::as_ptr(&self.captured) as usize, self.data_generation, self.name_data_bytes)
     }
@@ -709,6 +711,7 @@ impl CheckoutDependencies {
         self.cloned_name_data_bytes = cloned_bytes;
     }
 
+    #[cfg(test)]
     pub(crate) fn extend_observations(
         &mut self,
         dependencies: Vec<Dependency>,
@@ -737,18 +740,11 @@ impl CheckoutDependencies {
         self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
     }
 
+    #[cfg(test)]
     pub(crate) fn commit(&mut self, extension: DependencyExtension) {
-        self.commit_with_data_admission::<WorkError>(
-            extension, |_, _, _, _| Ok(()),
+        self.commit_with_data_custody::<WorkError>(
+            extension, None, |_, _, _, _| Ok(()),
         ).expect("live dependency data fits the addressable memory space");
-    }
-
-    pub(crate) fn commit_with_data_admission<E: From<WorkError>>(
-        &mut self,
-        extension: DependencyExtension,
-        admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
-    ) -> Result<(), E> {
-        self.commit_with_data_custody(extension, None, admit)
     }
 
     pub(crate) fn commit_with_data_custody<E: From<WorkError>>(
@@ -1056,6 +1052,7 @@ impl CheckoutDependencies {
             && self.data_generation == other.data_generation
     }
 
+    #[cfg(test)]
     fn extend(
         &mut self,
         dependencies: Vec<Dependency>,

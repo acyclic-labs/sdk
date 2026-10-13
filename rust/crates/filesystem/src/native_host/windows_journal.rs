@@ -9,7 +9,7 @@ pub(super) fn status_error(status: win::NTSTATUS) -> io::Error {
         return io::ErrorKind::NotFound.into();
     }
     // SAFETY: translates a status without accessing memory.
-    io::Error::from_raw_os_error(unsafe { win::RtlNtStatusToDosError(status) } as i32)
+    io::Error::from_raw_os_error(unsafe { win::RtlNtStatusToDosError(status) }.cast_signed())
 }
 
 pub(super) fn wide_units<W: NativeHostWork>(name: &OsStr, work: &mut W) -> Result<usize, W::Error> {
@@ -90,7 +90,7 @@ pub(crate) fn open_windows_at<W: NativeHostWork>(
         windows_leaf_name(path, work)?
     };
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
-        Length: std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
+        Length: u32::try_from(std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
         RootDirectory: win::HANDLE(parent.as_raw_handle()),
         ObjectName: &name,
         Attributes: win::OBJ_CASE_INSENSITIVE,
@@ -143,7 +143,7 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
                 win::HANDLE(file.as_handle().as_raw_handle()),
                 &mut block,
                 (&raw mut information).cast(),
-                std::mem::size_of_val(&information) as u32,
+                u32::try_from(std::mem::size_of_val(&information)).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
                 nt::FileStatInformation,
             )
         };
@@ -172,7 +172,7 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<Option<HostStat>, W::Error> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
-        Length: std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
+        Length: u32::try_from(std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
         RootDirectory: win::HANDLE(directory.as_raw_handle()),
         ObjectName: std::ptr::from_ref(name),
         Attributes: win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
@@ -187,7 +187,7 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
             &attributes,
             &mut block,
             (&raw mut information).cast(),
-            std::mem::size_of_val(&information) as u32,
+            u32::try_from(std::mem::size_of_val(&information)).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
             nt::FileStatInformation,
         )
     };
@@ -208,7 +208,8 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     name: &[u16],
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
-    let volume = directory_identity(parent, work)?.device as u32;
+    let volume = u32::try_from(directory_identity(parent, work)?.device)
+        .map_err(|_| W::invalid_request())?;
     let file = open_windows_at(
         parent,
         name,
@@ -255,7 +256,7 @@ pub(super) fn windows_set_information<T: ?Sized>(
             win::HANDLE(file.as_raw_handle()),
             &mut block,
             std::ptr::from_ref(information).cast(),
-            std::mem::size_of_val(information) as u32,
+            u32::try_from(std::mem::size_of_val(information)).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
             class,
         )
     };
@@ -329,7 +330,7 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
             let bytes = unsafe {
                 std::slice::from_raw_parts(
                     packet.as_ptr().cast::<u8>(),
-                    length.max(std::mem::size_of::<nt::FILE_RENAME_INFORMATION>() as u32) as usize,
+                    (length as usize).max(std::mem::size_of::<nt::FILE_RENAME_INFORMATION>()),
                 )
             };
             windows_set_information(file, bytes, class)

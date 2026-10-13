@@ -178,26 +178,23 @@ impl NativeDemandSource {
         backing: &mut Owned<Vec<SourceDirectoryEntry>>,
         work: &mut CallbackWork,
     ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
-        let stat = match &entry.stat {
-            Some(stat) => stat.clone(),
-            None => {
-                #[cfg(unix)]
-                let result = self.inner.root.stat(&directory.join(&entry.name), work);
-                #[cfg(windows)]
-                let result = self
-                    .inner
-                    .root
-                    .open_dir_held(directory, work)
-                    .and_then(|parent| {
-                        crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
-                    });
-                match result {
-                    Ok(stat) => stat,
-                    Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(None);
-                    }
-                    Err(error) => return Err(error),
+        let stat = if let Some(stat) = &entry.stat { *stat } else {
+            #[cfg(unix)]
+            let result = self.inner.root.stat(&directory.join(&entry.name), work);
+            #[cfg(windows)]
+            let result = self
+                .inner
+                .root
+                .open_dir_held(directory, work)
+                .and_then(|parent| {
+                    crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
+                });
+            match result {
+                Ok(stat) => stat,
+                Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(None);
                 }
+                Err(error) => return Err(error),
             }
         };
         let ((encoding, bytes), allocation) = source_name(
@@ -282,7 +279,7 @@ impl NativeDemandSource {
             return Err(DemandError::InvalidRequest);
         }
         work.started_io(WorkCounters {
-            items_examined: maximum as u64 * self.excluded.paths.len() as u64,
+            items_examined: u64::from(maximum) * self.excluded.paths.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
         self.check(source, work)?;

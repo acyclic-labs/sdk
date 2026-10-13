@@ -210,11 +210,12 @@ impl NativeMountMeterActivation {
 }
 
 /// Executes one installed SDK handler request with the original constructor's copied full grants and cancellation, through the existing native queue.
+#[cfg(target_os = "linux")]
 pub(crate) fn run_native_mount_handler<T>(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
     operation: impl FnOnce(&NativeMaterializationWork) -> Result<T, NativeMountError>,
-) -> Result<crate::OperationReceipt<T>, (NativeMountError, crate::WorkCounters)> {
+) -> Result<crate::OperationReceipt<T>, (NativeMountError, Box<crate::WorkCounters>)> {
     let work = crate::NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(cause, work)| (cause.into(), work))?;
     let result = run_native_mount_handler_on_meter(&work, operation);
@@ -223,11 +224,12 @@ pub(crate) fn run_native_mount_handler<T>(
             value,
             work: work.receipt(),
         }),
-        Err(cause) => Err((cause, work.receipt())),
+        Err(cause) => Err((cause, Box::new(work.receipt()))),
     }
 }
 
 /// Startup/revalidation handlers use the already operative invocation.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn run_native_mount_handler_on_meter<T>(
     work: &NativeMaterializationWork,
     operation: impl FnOnce(&NativeMaterializationWork) -> Result<T, NativeMountError>,

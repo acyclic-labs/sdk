@@ -435,7 +435,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             Some(io) => io.sdk(plan.plan.commit_witness(
                 application,
                 filesystem_key,
-                io,
+                &io,
                 io.cancellation(),
             ))?,
             None => plan
@@ -443,7 +443,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 .commit_witness(
                     application,
                     filesystem_key,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .map(|receipt| receipt.value)

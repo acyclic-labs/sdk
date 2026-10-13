@@ -205,33 +205,6 @@ impl DemandWork {
         )
         .map(Some)
     }
-    pub(crate) fn retain_observer_custody(
-        &mut self,
-        token: Arc<ProofDataCustody>,
-    ) -> Result<(), DemandError> {
-        self.reconcile_cancellation_registry()?;
-        self.check()?;
-        self.retain_observer(token).map(|_| ())
-    }
-    pub(crate) fn retain_checkout_control(
-        &mut self,
-        token: &Arc<ProofDataCustody>,
-    ) -> Result<(), DemandError> {
-        self.reconcile_cancellation_registry()?;
-        let inserted = self.retain_observer(token.clone())?.is_some();
-        let metadata = if inserted {
-            self.allocations
-                .record_owned_bytes(token.logical_owned_bytes(), &mut self.work)
-                .map_err(|error| error.into_work_or(DemandError::InvalidRequest))
-                .and_then(|()| self.work.verify(self.budget).map_err(DemandError::from))
-        } else {
-            Ok(())
-        };
-        metadata.and(
-            self.reconcile_cancellation_registry()
-                .map_err(DemandError::from),
-        )
-    }
     pub(crate) fn owns_native_checkout_token(&self, token: &Arc<ProofDataCustody>) -> bool {
         self.roots
             .observers
@@ -245,7 +218,7 @@ impl DemandWork {
     ) -> Result<PreparedCancelled, CancellationWaitError> {
         self.reconcile_cancellation_registry()?;
         if token.is_cancelled() {
-            return token.prepare_cancelled_measured(
+            return token.prepare_cancelled(
                 &mut self.allocations,
                 &mut self.work,
                 self.budget,
@@ -274,11 +247,12 @@ impl DemandWork {
                 _ => CancellationWaitError::AllocationFailed,
             })?,
         };
-        token.prepare_cancelled_measured(
+        token.prepare_cancelled(
             &mut self.allocations,
             &mut self.work,
             self.budget,
-            &mut self.roots.cancellations.0[index].1,
+            &mut self.roots.cancellations.0.get_mut(index)
+                .ok_or(CancellationWaitError::Work(crate::WorkError::Overflow))?.1,
         )
     }
     pub(crate) fn finish_cancelled(
@@ -344,7 +318,7 @@ impl NativeDemandReadMeter {
             .map_err(crate::materializer::native_materialization_work_error)?
             .ok_or(Error::InvalidLayout)?;
         header.transfer_checkout_metadata(self, token.logical_owned_bytes())?;
-        work.roots.observers.0[index].2 = Some(0);
+        work.roots.observers.0.get_mut(index).ok_or(Error::InvalidLayout)?.2 = Some(0);
         Ok(token.clone())
     }
 }

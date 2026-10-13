@@ -142,10 +142,13 @@ impl CallbackRuntime {
         prepared: PreparedCallbackWait,
         create: impl FnOnce() -> F,
     ) -> F::Output {
-        self.enter(|| {
+        let output = self.enter(|| {
             let mut future = std::pin::pin!(tokio::task::unconstrained(create()));
-            Self::poll(future.as_mut(), prepared.parked)
-        })
+            Self::poll(future.as_mut(), &prepared.parked)
+        });
+        // Destroy the wait control before callers retire its charged bytes.
+        drop(prepared);
+        output
     }
 
     pub(in crate::native_mount) fn verify_callback<
@@ -189,12 +192,12 @@ impl CallbackRuntime {
                 changed: std::sync::Condvar::new(),
                 _allocation: None,
             });
-            Ok(Self::poll(future, parked))
+            Ok(Self::poll(future, &parked))
         })
     }
 
-    fn poll<F: Future + Unpin>(mut future: F, parked: Arc<ParkedCallback>) -> F::Output {
-        let waker = Waker::from(Arc::clone(&parked));
+    fn poll<F: Future + Unpin>(mut future: F, parked: &Arc<ParkedCallback>) -> F::Output {
+        let waker = Waker::from(Arc::clone(parked));
         let mut context = Context::from_waker(&waker);
         loop {
             if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {

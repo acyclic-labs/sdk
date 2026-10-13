@@ -128,7 +128,7 @@ where
             inputs
                 .carrier
                 .check(cancellation, Some(&self.cancellation))?;
-            Ok((page, inputs.retain().expect("native attribute page")))
+            Ok((page, inputs.retain().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?))
         })
     }
 }

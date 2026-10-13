@@ -39,14 +39,13 @@ impl<T> Owned<Vec<T>> {
         );
         let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
         let mut values = Vec::new();
-        if let Err(error) = values.try_reserve_exact(count) {
+        if let Err(_error) = values.try_reserve_exact(count) {
             drop(values);
             #[cfg(not(target_arch = "wasm32"))]
             let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
             retire_allocation(allocation, requested, accounting)?;
             #[cfg(not(target_arch = "wasm32"))]
-            if native { return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))); }
-            drop(error);
+            if native { return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(_error))); }
             return Err(super::CanonicalDecodeError::AllocationFailed.into());
         }
         let actual = crate::foundation::usize_to_u64(values.capacity() * std::mem::size_of::<T>());
@@ -65,13 +64,12 @@ impl<T> Owned<Vec<T>> {
             (next - previous).checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?,
         );
         let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-        if let Err(error) = self.value.try_reserve_exact(next - self.value.len()) {
+        if let Err(_error) = self.value.try_reserve_exact(next - self.value.len()) {
             #[cfg(not(target_arch = "wasm32"))]
             let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
             retire_allocation(allocation, requested, accounting)?;
             #[cfg(not(target_arch = "wasm32"))]
-            if native { return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))); }
-            drop(error);
+            if native { return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(_error))); }
             return Err(super::CanonicalDecodeError::AllocationFailed.into());
         }
         let actual = crate::foundation::usize_to_u64((self.value.capacity() - previous) * std::mem::size_of::<T>());

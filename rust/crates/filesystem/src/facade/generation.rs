@@ -177,7 +177,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 kind: ObjectKind::GenerationRoot,
                 digest: id.digest(),
             },
-            GenerationSelector::Head => head.as_ref().expect("head selector resolved authority").0,
+            GenerationSelector::Head => head.as_ref().ok_or(FsError::NotFound)?.0,
         };
         Ok((root, head.map(|(_, head)| head)))
     }

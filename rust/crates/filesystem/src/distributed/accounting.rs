@@ -93,9 +93,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             .remaining(budget)
             .map_err(crate::accounting::AccountingError::Work)?;
         let mut page = crate::accounting::accounting_page_at_head(
-            &historical,
+            (&historical, authority_id),
             objects,
-            authority_id,
             cursor,
             maximum_records,
             head,

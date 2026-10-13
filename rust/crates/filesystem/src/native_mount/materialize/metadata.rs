@@ -180,7 +180,9 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
         #[cfg(windows)]
         {
-            crate::native_host::apply_metadata(target, metadata, work)
+            let result = crate::native_host::apply_metadata(&target, metadata, work);
+            drop(target);
+            result
         }
     })
     .await
@@ -256,7 +258,7 @@ pub(super) fn validate_bounds(options: &MaterializeOptions) -> Result<(), Materi
 
 pub(super) fn create_file(
     host_root: &HostRoot,
-    path: &Vec<HostPathUnit>,
+    path: &[HostPathUnit],
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     let mut work = receipt.custody.work().clone();
@@ -345,7 +347,7 @@ pub(super) fn account_file(
 pub(super) fn create_symlink(
     host_root: &HostRoot,
     target: &acyclic_stream::OwnedBytes,
-    destination: &Vec<HostPathUnit>,
+    destination: &[HostPathUnit],
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
     let mut work = receipt.custody.work().clone();
@@ -390,7 +392,7 @@ pub(super) fn create_symlink(
 )]
 pub(super) fn create_special(
     host_root: &HostRoot,
-    destination: &Vec<HostPathUnit>,
+    destination: &[HostPathUnit],
     kind: FileKind,
     device: Option<(u32, u32)>,
     _receipt: &mut GenerationReceipt,

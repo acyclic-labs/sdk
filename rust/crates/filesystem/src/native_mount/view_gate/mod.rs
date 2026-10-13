@@ -172,35 +172,6 @@ impl ViewGate {
         }
     }
 
-    pub(super) fn reads_for_callback_measured(
-        self: &Arc<Self>,
-        owner: CallbackOwner,
-        admissions: &mut ViewGateReadAdmissions,
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut crate::WorkCounters,
-        budget: crate::WorkBudget,
-    ) -> Result<bool, MountSourceError> {
-        let entry = admissions.entry_mut(self, allocations, work, budget)?;
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        reconcile_reader_registry(entry, self, allocations)?;
-        for slot in &state.reader_slots {
-            work.charge(
-                &crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::default()
-                },
-                &budget,
-            )
-            .map_err(MountSourceError::Work)?;
-            if matches!(slot, Some(ReadSlot::Owner { owner: current, readers })
-                if *current == ViewReaderId::Callback(owner) && *readers != 0)
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     pub(super) fn try_read_for_callback_measured(
         self: &Arc<Self>,
         owner: CallbackOwner,
@@ -218,42 +189,6 @@ impl ViewGate {
             work,
             budget,
         )
-    }
-
-    pub(super) async fn read_for_callback_with_work(
-        self: &Arc<Self>,
-        owner: CallbackOwner,
-        expected: Option<u64>,
-        work: &mut crate::demand::DemandWork,
-        cancellation: &crate::CancellationToken,
-        lifetime: Option<&crate::CancellationToken>,
-    ) -> Result<ViewReadLease, MountSourceError> {
-        self.read_for_callback_with_carrier(
-            owner,
-            expected,
-            &mut super::adapter::NativeDemandCarrier::Borrowed(work),
-            cancellation,
-            lifetime,
-        )
-        .await
-    }
-
-    pub(super) async fn read_for_callback_with_meter(
-        self: &Arc<Self>,
-        owner: CallbackOwner,
-        expected: Option<u64>,
-        meter: &Arc<crate::demand::NativeDemandReadMeter>,
-        cancellation: &crate::CancellationToken,
-        lifetime: Option<&crate::CancellationToken>,
-    ) -> Result<ViewReadLease, MountSourceError> {
-        self.read_for_callback_with_carrier(
-            owner,
-            expected,
-            &mut super::adapter::NativeDemandCarrier::Shared(meter),
-            cancellation,
-            lifetime,
-        )
-        .await
     }
 
     pub(super) async fn read_for_callback_with_carrier(
@@ -331,7 +266,7 @@ impl ViewGate {
             .map_err(MountSourceError::Work)?;
             match slot {
                 Some(ReadSlot::Owner { owner: current, .. }) if *current == owner => {
-                    owner_slot = Some(index)
+                    owner_slot = Some(index);
                 }
                 None if first_free.is_none() => first_free = Some(index),
                 None if second_free.is_none() => second_free = Some(index),
@@ -363,7 +298,9 @@ impl ViewGate {
             .readers
             .checked_add(1)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        let owner_readers = match owner_slot.and_then(|index| state.reader_slots[index].as_ref()) {
+        let owner_entry = owner_slot.map(|index| state.reader_slots.get(index)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))).transpose()?;
+        let owner_readers = match owner_entry.and_then(Option::as_ref) {
             Some(ReadSlot::Owner { readers, .. }) => readers.checked_add(1),
             _ => Some(1),
         }
@@ -447,37 +384,37 @@ impl ViewGate {
                 .release(old_bytes)
                 .map_err(gate_allocation_error)?;
         }
-        let owner_slot = owner_slot.unwrap_or_else(|| {
-            insert_reader_slot(
+        let owner_slot = match owner_slot {
+            Some(index) => index,
+            None => insert_reader_slot(
                 &mut state,
                 &mut first_free,
                 &mut second_free,
                 ReadSlot::Owner { owner, readers: 0 },
-            )
-        });
-        let cleanup_slot = match entry.slot {
-            Some(index) => index,
-            None => {
-                let index = insert_reader_slot(
-                    &mut state,
-                    &mut first_free,
-                    &mut second_free,
-                    ReadSlot::Meter {
-                        readers: 0,
-                        finished: 0,
-                        proof_alive: true,
-                        payload_active: 0,
-                        payload_finished: 0,
-                    },
-                );
-                entry.slot = Some(index);
-                index
-            }
+            )?,
         };
-        if let Some(ReadSlot::Owner { readers, .. }) = &mut state.reader_slots[owner_slot] {
+        let cleanup_slot = if let Some(index) = entry.slot { index } else {
+            let index = insert_reader_slot(
+                &mut state,
+                &mut first_free,
+                &mut second_free,
+                ReadSlot::Meter {
+                    readers: 0,
+                    finished: 0,
+                    proof_alive: true,
+                    payload_active: 0,
+                    payload_finished: 0,
+                },
+            )?;
+            entry.slot = Some(index);
+            index
+        };
+        if let Some(ReadSlot::Owner { readers, .. }) = state.reader_slots.get_mut(owner_slot)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? {
             *readers = owner_readers;
         }
-        if let Some(ReadSlot::Meter { readers, .. }) = &mut state.reader_slots[cleanup_slot] {
+        if let Some(ReadSlot::Meter { readers, .. }) = state.reader_slots.get_mut(cleanup_slot)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? {
             *readers = meter_readers;
         }
         state.readers = next_readers;

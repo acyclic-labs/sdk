@@ -70,8 +70,6 @@ use crate::kernel::{
     publish_generation_async_with_permit, retention_authority_id, volume_authority_id,
 };
 
-#[cfg(test)]
-use crate::kernel::merge_directory_record_async as merge_directory_record;
 
 pub use crate::kernel::{LiveMutationOutcome, LivePublicationObservation, MergeConflict};
 

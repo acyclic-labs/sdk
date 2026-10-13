@@ -20,7 +20,7 @@ where
         carrier.with_work(|work| mount_items(work, 1))?;
         let (mut candidate, epoch, stamp) = authored
             .shared_checkout()
-            .candidate(None, carrier, &cancellation, Some(authored.cancellation()))
+            .candidate(None, carrier, cancellation, Some(authored.cancellation()))
             .await?;
         if candidate.checkout.bound_authored_operation_id().is_none() {
             candidate.checkout.bind_authored_operation(operation);
@@ -45,7 +45,7 @@ where
             &candidate.checkout,
             InstallScope::Subtree(&root),
             carrier,
-            &cancellation,
+            cancellation,
         )
         .await?;
         let installed = authored
@@ -55,7 +55,7 @@ where
                 epoch,
                 stamp,
                 carrier,
-                &cancellation,
+                cancellation,
                 Some(authored.cancellation()),
                 |carrier| {
                     adapter::record_view_change(
@@ -133,7 +133,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         for length in 1..path.components().len() {
-            let (parent, _allocation) = copy_path(&path.components()[..length], None, work)?;
+            let (parent, _allocation) = copy_path(path.components().get(..length).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?, None, work)?;
             self.runtime.wait(|| self.promote(&parent, work))?;
         }
         Ok(())

@@ -39,13 +39,7 @@ fn source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::WorkspaceCause(error) => {
             crate::native_mount::native_workspace_errno(error)
         }
-        MountSourceError::WorkspacePrefixFailure { source, .. } => {
-            crate::native_mount::native_workspace_errno(source)
-        }
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
-        MountSourceError::NativeWorkspaceCause(error, _) => {
-            crate::native_mount::native_workspace_errno(error)
-        }
         _ => libc::EIO,
     }
 }
@@ -73,13 +67,6 @@ pub(super) fn fatal(error: &NativeMountError) -> bool {
                 MountSourceError::WorkspaceCause(error) => {
                     crate::native_mount::native_workspace_failure_is_fatal(error)
                 }
-                MountSourceError::WorkspacePrefixFailure { source, accounting } => {
-                    crate::native_mount::native_workspace_failure_is_fatal(source)
-                        || crate::native_mount::native_workspace_failure_is_fatal(accounting)
-                }
-                MountSourceError::NativeWorkspaceCause(error, _) => {
-                    crate::native_mount::native_workspace_failure_is_fatal(error)
-                }
                 MountSourceError::Cancelled
                 | MountSourceError::Work(_)
                 | MountSourceError::OriginalSnapshotUnavailable
@@ -87,8 +74,6 @@ pub(super) fn fatal(error: &NativeMountError) -> bool {
                 | MountSourceError::Filesystem(
                     crate::FsError::Cancelled(_) | crate::FsError::Work(_),
                 ) => true,
-                #[cfg(feature = "native-watch")]
-                MountSourceError::NativeWatchStartupFailed { .. } => true,
                 _ => false,
             }
         }

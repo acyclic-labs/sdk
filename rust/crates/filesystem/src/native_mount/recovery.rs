@@ -112,14 +112,14 @@ impl NativeMountRecoveryOwner {
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| NativeMountError::from(error))?;
-        Self::acquire_with_original(destination, original)
+        Self::acquire_with_original(destination, &original)
     }
 
     pub(super) fn acquire_with_original(
         destination: &Path,
-        original: crate::NativeMaterializationWork,
+        original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut destination = crate::native_host::clone_path(destination, &mut &original)?;
+        let mut destination = crate::native_host::clone_path(destination, &mut &*original)?;
         destination
             .1
             .grow(std::mem::size_of::<NativeRecoveryShared>() as u64)?;
@@ -134,7 +134,7 @@ impl NativeMountRecoveryOwner {
         )?;
         let mut control = NativeRecoveryControl::default();
         #[cfg(windows)]
-        control.prepare_retirement(&original)?;
+        control.prepare_retirement(original)?;
         let final_close = original.reserve_work(crate::WorkCounters {
             backend_write_operations: 1,
             ..Default::default()
@@ -269,7 +269,7 @@ impl NativeMountRecoveryOwner {
         &mut self,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, Box<crate::WorkCounters>)> {
         self.measured_action(false, budget, cancellation)
     }
 
@@ -278,7 +278,7 @@ impl NativeMountRecoveryOwner {
         remove_destination: bool,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, Box<crate::WorkCounters>)> {
         let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
             Ok(work) => work,
             Err((error, work)) => {
@@ -307,7 +307,7 @@ impl NativeMountRecoveryOwner {
         let spent = work.receipt();
         result
             .map(|value| crate::OperationReceipt { value, work: spent })
-            .map_err(|error| (error, spent))
+            .map_err(|error| (error, Box::new(spent)))
     }
 
     pub(super) fn mark_failed(&mut self) {

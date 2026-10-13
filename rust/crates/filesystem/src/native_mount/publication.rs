@@ -42,20 +42,8 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), MountSourceError> {
-    seal_checkout_with_permit_measured(checkout, operation_id, permit, budget, cancellation)
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-}
-
-/// Seals the same candidate, retaining every attempted publication receipt.
-pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    operation_id: OperationId,
-    permit: PublicationPermit,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> crate::MeasuredResult<crate::OperationReceipt<()>, MountSourceError> {
     let mut work = WorkCounters::default();
-    let result = async {
+    async {
     cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
     if !checkout.has_pending_mutations() {
         return Ok(());
@@ -89,13 +77,10 @@ pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: Async
         crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("direct-live mounts do not support operation lease permits".to_owned(),))),
         crate::model::MutationMode::None => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("checkout does not admit native writes".to_owned(),))),
     }
-    }.await;
-    result.map(|value| crate::OperationReceipt { value, work })
-        .map_err(|error| crate::OperationFailure::new(error, work))
+    }.await
 }
 
-/// Publishes a checkout operation even when its only effect is the separately
-/// journaled lazy source overlay.
+/// Publishes an overlay operation with cumulative rebase/publication work.
 pub async fn seal_checkout_with_permit_force<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     operation_id: OperationId,
@@ -103,20 +88,8 @@ pub async fn seal_checkout_with_permit_force<A: AsyncAuthorityStore, O: AsyncObj
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), MountSourceError> {
-    seal_checkout_with_permit_force_measured(checkout, operation_id, permit, budget, cancellation)
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-}
-
-/// Forces the same retained operation with cumulative rebase/publication work.
-pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    operation_id: OperationId,
-    permit: PublicationPermit,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> crate::MeasuredResult<crate::OperationReceipt<()>, MountSourceError> {
     let mut work = WorkCounters::default();
-    let result = async {
+    async {
     cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
     if checkout.mode().mutations != crate::model::MutationMode::PrivateOverlay {
         return Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("forced publication requires a private-overlay checkout".to_owned(),)));
@@ -165,9 +138,7 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
         }
     }
     Err(MountSourceError::Engine(std::borrow::Cow::Owned("publication raced with repeated head advances; retry retained operation".to_owned(),)))
-    }.await;
-    result.map(|value| crate::OperationReceipt { value, work })
-        .map_err(|error| crate::OperationFailure::new(error, work))
+    }.await
 }
 
 /// Publishes the retained operation on its original allocation family.

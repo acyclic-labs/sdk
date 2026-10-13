@@ -83,7 +83,7 @@ pub fn mount_native_measured(
     source: Arc<dyn MountFilesystem>,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<crate::OperationReceipt<NativeMountSession>, (NativeMountError, crate::WorkCounters)> {
+) -> Result<crate::OperationReceipt<NativeMountSession>, (NativeMountError, Box<crate::WorkCounters>)> {
     let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
         Ok(work) => work,
         Err((error, work)) => {
@@ -101,7 +101,7 @@ pub fn mount_native_measured(
         Err(cause) => {
             return Err((
                 NativeMountError::StartupAdmissionFailed { cause, source },
-                work.receipt(),
+                Box::new(work.receipt()),
             ));
         }
     };
@@ -110,7 +110,7 @@ pub fn mount_native_measured(
             value,
             work: work.receipt(),
         }),
-        Err(error) => Err((error, work.receipt())),
+        Err(error) => Err((error, Box::new(work.receipt()))),
     }
 }
 

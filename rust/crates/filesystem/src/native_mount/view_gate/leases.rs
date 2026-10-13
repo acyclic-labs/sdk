@@ -75,12 +75,12 @@ impl ViewReadLease {
         let index = self
             .cleanup_slot
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        let Some(ReadSlot::Meter {
+        let Some(Some(ReadSlot::Meter {
             payload_active,
             payload_finished,
             proof_alive: true,
             ..
-        }) = &mut state.reader_slots[index]
+        })) = state.reader_slots.get_mut(index)
         else {
             return Err(MountSourceError::Work(crate::WorkError::Overflow));
         };

@@ -59,6 +59,8 @@ struct LockWait<'a, 'w> {
 
 impl LockWait<'_, '_> {
     fn prepare(&mut self, index: usize, token: &CancellationToken) -> Result<(), MountSourceError> {
+        let slot = self.waits.get_mut(index)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let native = self.carrier.original_native_work();
         let wait = match &native {
             Some(work) => token.prepare_cancelled_with_native_work(work),
@@ -66,7 +68,7 @@ impl LockWait<'_, '_> {
         }
         .map_err(super::lazy::mount_wait_error)?;
         let cleanup = wait.cleanup_items();
-        self.waits[index] = Some(wait);
+        *slot = Some(wait);
         if native.is_none() {
             self.carrier
                 .with_work(|work| {
@@ -154,12 +156,11 @@ pub(super) async fn await_lock<F: Future>(
             if token.is_cancelled() {
                 return Poll::Ready(Err(error));
             }
-            if waits.waits[index].is_none() {
-                if let Err(error) = waits.prepare(index, token) {
+            if waits.waits.get(index).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?.is_none()
+                && let Err(error) = waits.prepare(index, token) {
                     return Poll::Ready(Err(error));
                 }
-            }
-            if Pin::new(waits.waits[index].as_mut().expect("prepared cancellation"))
+            if Pin::new(waits.waits.get_mut(index).and_then(Option::as_mut).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?)
                 .poll(context)
                 .is_ready()
             {

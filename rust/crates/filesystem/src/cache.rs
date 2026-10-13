@@ -273,7 +273,7 @@ impl Flight {
                                 replacement
                                     .allocation
                                     .as_mut()
-                                    .expect("native waiter buffer owns its backing"),
+                                    .ok_or(ObjectStoreError::Native(crate::NativeTreeMaterializationError::InvalidLayout))?,
                                 requested,
                                 actual,
                             )
@@ -411,7 +411,7 @@ impl<T> BatchBuffer<T> {
                     owner
                         .allocation
                         .as_mut()
-                        .expect("native batch buffer owns its backing"),
+                        .ok_or(ObjectStoreError::Native(crate::NativeTreeMaterializationError::InvalidLayout))?,
                     requested,
                     actual,
                 )
@@ -846,11 +846,11 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                     let __object_args = (object_id, maximum_bytes, native, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    let __object_result = self
+
+                    self
                         .inner
                         .read(__object_args.0, __object_args.1, &mut __object_work)
-                        .await;
-                    __object_result
+                        .await
                 }
                 .map(|read| crate::OperationReceipt {
                     value: read,
@@ -1242,14 +1242,17 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                     let __object_args = (&requests.values, native, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result = self
+
+                    self
                         .inner
                         .read_many(__object_args.0, &mut __object_work)
                         .await
-                        .map(|(values, allocation)| {
-                            (values, allocation.expect("native batch allocation"))
-                        });
-                    __object_result
+                        .and_then(|(values, allocation)| {
+                            let allocation = allocation.ok_or(ObjectStoreError::Native(
+                                crate::NativeTreeMaterializationError::InvalidLayout,
+                            ))?;
+                            Ok((values, allocation))
+                        })
                 }
                 .map_err(|error| ObjectFailure::new(error, prepared.work))?;
                 let (values, allocation) = batch;

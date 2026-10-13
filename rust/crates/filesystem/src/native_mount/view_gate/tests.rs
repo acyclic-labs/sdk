@@ -197,10 +197,11 @@ async fn measured_callback_wait_preserves_original_lifetime_cancellation() {
     let lifetime = CancellationToken::new();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
     {
-        let mut read = std::pin::pin!(gate.read_for_callback_with_work(
+        let mut carrier = super::super::adapter::NativeDemandCarrier::Borrowed(&mut work);
+        let mut read = std::pin::pin!(gate.read_for_callback_with_carrier(
             CallbackOwner(1),
             None,
-            &mut work,
+            &mut carrier,
             &cancellation,
             Some(&lifetime),
         ));
@@ -227,10 +228,10 @@ async fn original_mutation_phase_allows_new_sdk_readers_but_not_later_writers() 
     let mut next = std::pin::pin!(gate.write_stable(None));
     assert!(futures::poll!(next.as_mut()).is_pending());
     let reader = gate
-        .read_for_callback_with_work(
+        .read_for_callback_with_carrier(
             CallbackOwner(10),
             Some(phase.generation),
-            &mut work,
+            &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut work),
             &cancellation,
             None,
         )
@@ -288,14 +289,15 @@ async fn shared_original_read_and_write_gate_preserve_custody_and_tokens() {
     let meter = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
         DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
     )));
+    let original = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
     let lease = gate
-        .read_for_callback_with_meter(CallbackOwner(1), None, &meter, &cancellation, None)
+        .read_for_callback_with_carrier(CallbackOwner(1), None, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &cancellation, None)
         .await
         .expect("original shared read");
     let before = meter.lock().work.items_examined;
     let lifetime = CancellationToken::new();
     {
-        let mut carrier = super::super::adapter::NativeDemandCarrier::Shared(&meter);
+        let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&original);
         let mut writer = std::pin::pin!(gate.write_stable_with_carrier(
             Some(ViewGate::INITIAL_GENERATION),
             &mut carrier,
@@ -319,7 +321,7 @@ async fn shared_original_read_and_write_gate_preserve_custody_and_tokens() {
         .expect("physical original cleanup");
     assert!(meter.lock().work.items_examined > before);
     assert_eq!(meter.lock().budget.items_examined, u64::MAX);
-    let mut carrier = super::super::adapter::NativeDemandCarrier::Shared(&meter);
+    let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&original);
     let writer = gate
         .write_stable_with_carrier(
             Some(ViewGate::INITIAL_GENERATION),

@@ -146,7 +146,7 @@ where
         }) {
             Err(error)
                 if error.raw_os_error()
-                    == Some(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0 as i32) =>
+                    == Some(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0.cast_signed()) =>
             {
                 Ok(Some(Some(
                     windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS,

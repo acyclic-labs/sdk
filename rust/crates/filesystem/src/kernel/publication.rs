@@ -61,19 +61,19 @@ struct PublicationStepFailure<E> {
 }
 
 enum PublicationAccounting<'a> {
-    Standalone { work: WorkCounters, budget: WorkBudget, retained: u64, cancellation: &'a CancellationToken },
+    Standalone { work: &'a mut WorkCounters, budget: &'a WorkBudget, retained: u64, cancellation: &'a CancellationToken },
     #[cfg(not(target_arch = "wasm32"))]
     Native(&'a crate::NativeMaterializationWork),
 }
 
 impl<'a> PublicationAccounting<'a> {
-    fn standalone(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
-        Self::Standalone { work: WorkCounters::UNCHARGED, budget, retained: 0, cancellation }
+    fn standalone(work: &'a mut WorkCounters, budget: &'a WorkBudget, cancellation: &'a CancellationToken) -> Self {
+        Self::Standalone { work, budget, retained: 0, cancellation }
     }
 
     fn work(&self) -> WorkCounters {
         match self {
-            Self::Standalone { work, .. } => *work,
+            Self::Standalone { work, .. } => **work,
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(original) => original.receipt(),
         }
@@ -83,7 +83,7 @@ impl<'a> PublicationAccounting<'a> {
         match self {
             Self::Standalone { work, budget, retained, cancellation } => {
                 cancellation.check()?;
-                let mut remaining = work.remaining(*budget)?;
+                let mut remaining = work.remaining(**budget)?;
                 remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(*retained)
                     .ok_or(WorkError::BudgetExceeded {
                         counter: "peak_allocation_bytes", observed: *retained,
@@ -101,8 +101,8 @@ impl<'a> PublicationAccounting<'a> {
     fn accept(&mut self, more: WorkCounters) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone { work, budget, retained, .. } => {
-                *work = work.with_backend(more, *retained)?;
-                work.verify(*budget)?;
+                **work = work.with_backend(more, *retained)?;
+                work.verify(**budget)?;
                 Ok(())
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -282,7 +282,7 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     }
     let envelope_bytes = usize_to_u64(publication_payload_length()).checked_add(4 + 32)
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    let maximum = u32::try_from(maximum_payload_bytes.checked_sub(envelope_bytes).unwrap_or(0)).unwrap_or(u32::MAX);
+    let maximum = u32::try_from(maximum_payload_bytes.saturating_sub(envelope_bytes)).unwrap_or(u32::MAX);
     if length > maximum {
         return Err(E::from(CanonicalDecodeError::FieldTooLarge { observed: length, maximum }));
     }
@@ -416,7 +416,8 @@ where
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + ProviderTask,
 {
-    let mut accounting = PublicationAccounting::standalone(budget, cancellation);
+    let mut work = WorkCounters::UNCHARGED;
+    let mut accounting = PublicationAccounting::standalone(&mut work, &budget, cancellation);
     let mut seal = |allowance: Option<WorkBudget>| {
         let future = before_publication(allowance.expect("the ordinary engine supplies its remaining budget"));
         async move {
@@ -605,15 +606,15 @@ where
     let (proof, guard) = match accounting {
         PublicationAccounting::Standalone { work, budget, .. } => {
             let result = super::closure::prove_generation_closure_owned_async(
-                objects, request.generation_root, closure_limits, *budget, cancellation,
+                objects, request.generation_root, closure_limits, **budget, cancellation,
             ).await;
             match result {
                 Ok((proof, guard)) => {
-                    *work = proof.work;
+                    **work = proof.work;
                     (proof, PublicationProofGuard::Standalone(guard))
                 }
                 Err(failure) => {
-                    *work = *failure.work;
+                    **work = *failure.work;
                     return Err(E::from(crate::FsError::Closure(failure.error)));
                 }
             }
@@ -645,7 +646,7 @@ where
         PublicationAccounting::Standalone { work, budget, .. } => {
             let mut allocations = super::allocation::AllocationLedger::default();
             let mut binding = super::allocation::KernelAccounting::borrowed_standalone(
-                &mut allocations, work, *budget, cancellation,
+                &mut allocations, work, **budget, cancellation,
             );
             permit_context_with_accounting(intent.operation_context, fingerprint_permit, &mut binding)
         }
@@ -834,10 +835,10 @@ fn prepare_publication_commit(
     match accounting {
         PublicationAccounting::Standalone { work, budget, retained, .. } => {
             let mut allocations = super::allocation::AllocationLedger::default();
-            allocations.claim_bytes(*retained, 0, work, *budget)
+            allocations.claim_bytes(*retained, 0, work, **budget)
                 .map_err(publication_allocation_error)?;
             let mut construction = super::allocation::KernelAccounting::borrowed_standalone(
-                &mut allocations, work, *budget, cancellation,
+                &mut allocations, work, **budget, cancellation,
             );
             let (payload, fingerprint) = construct_publication_commit(
                 request, operation_context, original_evidence.as_ref().map(|evidence| evidence.as_slice()), &mut construction,
@@ -890,11 +891,23 @@ fn construct_publication_commit(
 ) -> Result<(super::persistent_point::Owned<Vec<u8>>, Digest), crate::FsError> {
     use super::persistent_point::Owned;
     accounting.check()?;
-    let payload_length = publication_payload_length_with_evidence(original_evidence)?;
+    let (payload_length, original_evidence) = match original_evidence {
+        Some(bytes) => {
+            if bytes.is_empty() {
+                return Err(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("empty original publication evidence")).into());
+            }
+            let length = u32::try_from(bytes.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
+            let payload_length = publication_payload_length().checked_add(4)
+                .and_then(|total| total.checked_add(bytes.len()))
+                .and_then(|total| total.checked_add(32)).ok_or(WorkError::Overflow)?;
+            (payload_length, Some((bytes, length.to_le_bytes())))
+        }
+        None => (publication_payload_length(), None),
+    };
     let input_length = fingerprint_input_length(operation_context)
         .checked_sub(publication_payload_length()).and_then(|length| length.checked_add(payload_length))
         .ok_or(WorkError::Overflow)?;
-    let evidence = if let Some(bytes) = original_evidence {
+    let evidence = if let Some((bytes, length)) = original_evidence {
         let hashing = WorkCounters {
             bytes_hashed: usize_to_u64(EVIDENCE_DOMAIN.len()).checked_add(usize_to_u64(bytes.len())).ok_or(WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
@@ -902,14 +915,14 @@ fn construct_publication_commit(
         accounting.admit(hashing)?;
         let digest = original_evidence_digest(bytes);
         accounting.record_completed(hashing)?;
-        Some((bytes, digest))
+        Some((bytes, length, digest))
     } else { None };
     let mut payload = Owned::<Vec<u8>>::allocate(payload_length, accounting)?;
     let mut input = Owned::<Vec<u8>>::allocate(input_length, accounting)?;
     let encoded = usize_to_u64(payload_length).checked_add(usize_to_u64(input_length)).ok_or(WorkError::Overflow)?;
     let encoding = WorkCounters { bytes_encoded: encoded, bytes_copied: encoded, ..WorkCounters::UNCHARGED };
     accounting.admit(encoding)?;
-    write_publication_payload_with_evidence(&mut payload.value, request.volume_id, request.generation_root, evidence);
+    write_publication_payload(&mut payload.value, request.volume_id, request.generation_root, evidence);
     write_fingerprint_input(&mut input.value, &request, operation_context, &payload.value);
     accounting.record_completed(encoding)?;
     let hashed = usize_to_u64(fingerprint_domain(operation_context).len())
@@ -965,16 +978,6 @@ const fn publication_payload_length() -> usize {
     PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32
 }
 
-fn publication_payload_length_with_evidence(evidence: Option<&[u8]>) -> Result<usize, crate::FsError> {
-    let Some(evidence) = evidence else { return Ok(publication_payload_length());
-    };
-    if evidence.is_empty() {
-        return Err(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("empty original publication evidence")).into());
-    }
-    u32::try_from(evidence.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-    publication_payload_length().checked_add(4).and_then(|length| length.checked_add(evidence.len()))
-        .and_then(|length| length.checked_add(32)).ok_or_else(|| WorkError::Overflow.into())
-}
 
 fn original_evidence_digest(evidence: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
@@ -997,25 +1000,21 @@ pub(crate) fn encode_publication_payload(
     generation_root: ObjectId,
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(publication_payload_length());
-    write_publication_payload(&mut bytes, volume_id, generation_root);
+    write_publication_payload(&mut bytes, volume_id, generation_root, None);
     bytes
 }
 
-fn write_publication_payload(bytes: &mut Vec<u8>, volume_id: VolumeId, generation_root: ObjectId) {
-    write_publication_payload_with_evidence(bytes, volume_id, generation_root, None);
-}
-
-fn write_publication_payload_with_evidence(
+fn write_publication_payload(
     bytes: &mut Vec<u8>, volume_id: VolumeId, generation_root: ObjectId,
-    evidence: Option<(&[u8], Digest)>,
+    evidence: Option<(&[u8], [u8; 4], Digest)>,
 ) {
     bytes.extend_from_slice(PAYLOAD_DOMAIN);
     bytes.extend_from_slice(&(if evidence.is_some() { 2_u16 } else { 1_u16 }).to_le_bytes());
     bytes.extend_from_slice(&volume_id.into_bytes());
     bytes.push(generation_root.kind.canonical_tag());
     bytes.extend_from_slice(generation_root.digest.as_bytes());
-    if let Some((evidence, digest)) = evidence {
-        bytes.extend_from_slice(&(evidence.len() as u32).to_le_bytes());
+    if let Some((evidence, length, digest)) = evidence {
+        bytes.extend_from_slice(&length);
         bytes.extend_from_slice(evidence);
         bytes.extend_from_slice(digest.as_bytes());
     }

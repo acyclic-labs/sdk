@@ -15,7 +15,7 @@ fn lineage_filesystem_failure<E: std::error::Error + 'static>(
     error: crate::FsError,
 ) -> (WorkspaceLineageError<E>, Option<crate::NativeAllocation>) {
     (
-        WorkspaceLineageError::Workspace(WorkspaceError::from(error)),
+        WorkspaceLineageError::Workspace(Box::new(WorkspaceError::from(error))),
         None,
     )
 }
@@ -56,7 +56,7 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
             parent_id != record.workspace_id
                 && crate::WorkspaceName::new(
                     parent_name,
-                    crate::WorkBudget::UNBOUNDED,
+                    &crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
                 )
                 .is_ok()
@@ -67,7 +67,7 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
         && record.revision > 0
         && crate::WorkspaceName::new(
             &record.workspace_name,
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
         .is_ok()
@@ -114,7 +114,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
                 .map_err(lineage_filesystem_failure)?;
             original.cancellation().check().map_err(|error| {
                 (
-                    WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(error)),
+                    WorkspaceLineageError::Workspace(Box::new(WorkspaceError::Cancelled(error))),
                     None,
                 )
             })?;
@@ -147,7 +147,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
                 .map_err(lineage_filesystem_failure)?;
             original.cancellation().check().map_err(|error| {
                 (
-                    WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(error)),
+                    WorkspaceLineageError::Workspace(Box::new(WorkspaceError::Cancelled(error))),
                     None,
                 )
             })?;
@@ -165,7 +165,7 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     Store(E),
     /// The workspace operation failed.
     #[error(transparent)]
-    Workspace(#[from] WorkspaceError),
+    Workspace(#[from] Box<WorkspaceError>),
     /// Persisted state uses an unsupported version or mismatched identity.
     #[error("workspace-lineage state is incompatible")]
     IncompatibleState,
@@ -185,6 +185,12 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("workspace-lineage store does not support original native work")]
     NativeOriginalUnsupported,
+}
+
+impl<E: std::error::Error + 'static> From<WorkspaceError> for WorkspaceLineageError<E> {
+    fn from(error: WorkspaceError) -> Self {
+        Self::Workspace(Box::new(error))
+    }
 }
 
 /// Core recursive-workspace graph over one durable lineage adapter.
@@ -269,7 +275,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             crate::obs::in_span(&span, async move {
                 let destination = crate::WorkspaceName::new(
                     destination.as_ref(),
-                    crate::WorkBudget::UNBOUNDED,
+                    &crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
                 )
                 .map(|receipt| receipt.value)

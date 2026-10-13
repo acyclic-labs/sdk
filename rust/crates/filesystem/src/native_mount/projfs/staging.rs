@@ -40,7 +40,7 @@ pub(super) fn write_listed_content(
             delivered = delivered
                 .checked_add(count as u64)
                 .ok_or(crate::WorkError::Overflow)?;
-            remaining = &remaining[count..];
+            remaining = remaining.get(count..).ok_or(MountSourceError::Stale)?;
         }
         Ok(())
     };
@@ -158,6 +158,10 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
         ),
     };
     let on_close = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let posix_bytes = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let on_close_bytes = u32::try_from(size_of::<FILE_DISPOSITION_INFO>())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
     start()?;
     // SAFETY: the held DELETE handle and fixed-sized ABI input remain live.
     let result = unsafe {
@@ -165,7 +169,7 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
             handle,
             FileDispositionInfoEx,
             (&raw const posix).cast(),
-            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            posix_bytes,
         )
     };
     if result.is_err() {
@@ -176,7 +180,7 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
                 handle,
                 FileDispositionInfo,
                 (&raw const on_close).cast(),
-                size_of::<FILE_DISPOSITION_INFO>() as u32,
+                on_close_bytes,
             )
         }
         .map_err(std::io::Error::from)
@@ -209,8 +213,7 @@ pub(super) fn symbolic_link_digest(data: &[u8]) -> Option<u64> {
     };
     Some(link_digest(
         std::iter::repeat_n(u16::from(b'\\'), slashes).chain(
-            name.chunks_exact(2)
-                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])),
+            name.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes),
         ),
     ))
 }

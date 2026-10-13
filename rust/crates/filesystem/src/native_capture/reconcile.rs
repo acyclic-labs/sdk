@@ -63,7 +63,7 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
     let cancellation = meter.cancellation().clone();
     while paths.len() != 0 {
         let count = paths.len().min(page_size);
-        let page = &paths.as_slice()[..count];
+        let page = paths.as_slice().get(..count).ok_or(CaptureError::InvalidOptions)?;
         let lookup = checkout
             .lookup_batch_no_follow(page, meter, &cancellation)
             .await?;

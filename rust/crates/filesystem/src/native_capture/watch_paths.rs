@@ -13,15 +13,15 @@ pub(super) fn current_record(
     meter: &NativeMaterializationWork,
 ) -> Result<CurrentRecord, CaptureError> {
     Ok(match capture_position(rename_records, path, meter)? {
-        Ok(index) => CurrentRecord::Known(rename_records[index].1),
+        Ok(index) => CurrentRecord::Known(rename_records.get(index).ok_or(CaptureError::InvalidOptions)?.1),
         Err(_) => CurrentRecord::Lookup,
     })
 }
 
 pub(super) fn watch_ancestor_candidates<'a>(
     paths: impl Iterator<Item = &'a NamespacePath>,
-    ordinary: &Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
-    rename_records: &Vec<(NamespacePath, Option<FileRecord>)>,
+    ordinary: &[(NamespacePath, (CurrentRecord, CaptureIntent))],
+    rename_records: &[(NamespacePath, Option<FileRecord>)],
     renamed_paths: usize,
     policy: &CapturePolicy,
     maximum_paths: usize,
@@ -34,7 +34,7 @@ pub(super) fn watch_ancestor_candidates<'a>(
             let parent = clone_capture_prefix(path, depth, limits, meter)?;
             if capture_position(ordinary, &parent, meter)?.is_err()
                 && !capture_position(rename_records, &parent, meter)?
-                    .is_ok_and(|index| rename_records[index].1.is_some())
+                    .ok().and_then(|index| rename_records.get(index)).is_some_and(|(_, record)| record.is_some())
                 && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
@@ -118,7 +118,7 @@ fn below_replaced_parent(
 
 pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
-    ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
+    ordinary: &mut [(NamespacePath, (CurrentRecord, CaptureIntent))],
     ancestors: Vec<(NamespacePath, ())>,
     source_root: &HostRoot,
     epoch: u64,

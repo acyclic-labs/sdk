@@ -19,7 +19,6 @@ pub struct NamespacePath {
 impl Clone for NamespacePath {
     fn clone(&self) -> Self {
         Self::from_owned_components(self.components.clone(), self.encoded_bytes)
-            .expect("simultaneously allocated path buffers fit the address space")
     }
 }
 
@@ -52,19 +51,11 @@ pub(crate) enum NamespacePathStep<'a> {
 }
 
 impl NamespacePath {
-    fn from_owned_components(
-        components: Vec<LogicalName>, encoded_bytes: u32,
-    ) -> Result<Self, NamespacePathError> {
-        let vector_bytes = components.capacity()
-            .checked_mul(std::mem::size_of::<LogicalName>())
-            .ok_or(NamespacePathError::Work(crate::WorkError::Overflow))?;
-        let logical_owned_bytes = components.iter().try_fold(vector_bytes, |total, name| {
-            total.checked_add(name.retained_bytes())
-                .ok_or(NamespacePathError::Work(crate::WorkError::Overflow))
-        })?;
-        let logical_owned_bytes = u64::try_from(logical_owned_bytes)
-            .map_err(|_| NamespacePathError::Work(crate::WorkError::Overflow))?;
-        Ok(Self { components, encoded_bytes, logical_owned_bytes })
+    fn from_owned_components(components: Vec<LogicalName>, encoded_bytes: u32) -> Self {
+        // These disjoint, live buffers together fit the process address space.
+        let logical_owned_bytes = components.capacity() * std::mem::size_of::<LogicalName>()
+            + components.iter().map(LogicalName::retained_bytes).sum::<usize>();
+        Self { components, encoded_bytes, logical_owned_bytes: logical_owned_bytes as u64 }
     }
 
     /// Constructs one bounded absolute namespace path.
@@ -73,7 +64,7 @@ impl NamespacePath {
         limits: VolumeLimits,
     ) -> Result<Self, NamespacePathError> {
         let encoded_bytes = namespace_encoded_bytes(components.iter(), limits)?;
-        Self::from_owned_components(components, encoded_bytes)
+        Ok(Self::from_owned_components(components, encoded_bytes))
     }
 
     pub(crate) fn validate_component_lengths(
@@ -257,7 +248,7 @@ impl NamespacePath {
             steps(NamespacePathStep::Performed(&delta))?;
             names.push(LogicalName::from_validated_bytes(encoding, bytes));
         }
-        Self::from_owned_components(names, encoded_bytes).map_err(E::from)
+        Ok(Self::from_owned_components(names, encoded_bytes))
     }
 
     /// Appends one already-validated exact native name, checking all volume bounds before allocating the new path.
@@ -278,24 +269,6 @@ impl NamespacePath {
         )
     }
 
-    pub(crate) fn child_with_ledger(
-        &self,
-        name: &LogicalName,
-        limits: VolumeLimits,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
-        let encoded_bytes = namespace_encoded_bytes(
-            self.components.iter().chain(std::iter::once(name)), limits,
-        )?;
-        Self::copy_names_with_ledger(
-            &self.components, Some(name), encoded_bytes, ledger, work, budget, cancellation,
-        )
-    }
-
     pub(crate) fn child_with_accounting(
         &self,
         name: &LogicalName,
@@ -313,18 +286,6 @@ impl NamespacePath {
             &mut |step| owned.observe(step),
         );
         owned.finish(result)
-    }
-
-    pub(crate) fn clone_with_ledger(
-        &self,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        Self::copy_names_with_ledger(
-            &self.components, None, self.encoded_bytes, ledger, work, budget, cancellation,
-        )
     }
 
     pub(crate) fn clone_with_steps<E: From<NamespacePathError>>(
@@ -495,7 +456,7 @@ impl NamespacePath {
             steps(NamespacePathStep::Performed(&delta))?;
             components.push(LogicalName::from_validated_bytes(name.encoding(), bytes));
         }
-        Self::from_owned_components(components, encoded_bytes).map_err(E::from)
+        Ok(Self::from_owned_components(components, encoded_bytes))
     }
 
     /// Exact cached backing capacity of the component vector and owned names. Allocator bookkeeping and the inline path value are excluded.
@@ -554,8 +515,7 @@ impl NamespacePath {
                 .saturating_sub(1)
         };
         let components = self.components.get(..self.components.len() - 1)?.to_vec();
-        Some(Self::from_owned_components(components, encoded_bytes)
-            .expect("simultaneously allocated path buffers fit the address space"))
+        Some(Self::from_owned_components(components, encoded_bytes))
     }
 
     /// Returns whether this path is equal to or below `ancestor`.
@@ -644,12 +604,11 @@ impl<'a, 'b> NamespacePathAccounting<'a, 'b> {
                         .ok_or(crate::WorkError::Overflow)?;
                     self.accounting.reconcile_owned(&mut self.allocation, admitted_bytes, actual_bytes)
                 }
-                ReadAllocationStep::ReserveFailed(error) => {
+                ReadAllocationStep::ReserveFailed(_error) => {
                     #[cfg(not(target_arch = "wasm32"))]
                     if self.accounting.native_work().is_some() {
-                        return Err(crate::NativeTreeMaterializationError::AllocationFailed(error).into());
+                        return Err(crate::NativeTreeMaterializationError::AllocationFailed(_error).into());
                     }
-                    drop(error);
                     Err(NamespacePathError::AllocationFailed.into())
                 }
                 ReadAllocationStep::BeforeCopy(bytes) => self.accounting.admit(

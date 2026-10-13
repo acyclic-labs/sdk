@@ -175,7 +175,7 @@ async fn a_filtered_source_reports_nothing_beneath_its_exclusions() -> Result<()
         .await?
         .exclude(
             vec![path("/.git")?],
-            WorkBudget::UNBOUNDED,
+            &WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )?
         .value;

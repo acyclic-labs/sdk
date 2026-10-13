@@ -342,9 +342,9 @@ pub(super) fn fork_records_with_accounting<A, O>(
     accounting.admit(encoding)?;
     label.value.resize(32, 0);
     hex::encode_to_slice(destination.into_bytes(), &mut label.value)
-        .expect("sixteen-byte identity encodes to thirty-two hex bytes");
+        .map_err(|_| FsError::InvalidDiff)?;
     accounting.record_completed(encoding)?;
-    let text = String::from_utf8(label.value).expect("hex encoder produces ASCII");
+    let text = String::from_utf8(label.value).map_err(|_| FsError::InvalidDiff)?;
     let label = crate::kernel::Owned::new(text, label.allocation, label.bytes);
     let hashing = WorkCounters {
         bytes_hashed: (b"acyclic-fs-retention-authority-v1\0".len()

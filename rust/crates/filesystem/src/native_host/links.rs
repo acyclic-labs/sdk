@@ -63,7 +63,7 @@ fn read_link_buffer<W: NativeHostWork>(
                             None,
                             0,
                             Some(bytes.as_mut_ptr().cast()),
-                            size as u32,
+                            u32::try_from(size).map_err(|_| W::invalid_request())?,
                             Some(&raw mut count),
                             None,
                         )
@@ -132,12 +132,11 @@ fn link_target<W: NativeHostWork>(
 ) -> Result<std::ops::Range<usize>, W::Error> {
     let malformed = || W::Error::from(io::Error::from(io::ErrorKind::InvalidData));
     let word = |offset| {
-        bytes
-            .get(offset..offset + 2)
-            .map(|v| u16::from_le_bytes([v[0], v[1]]))
-            .ok_or_else(&malformed)
+        let value: [u8; 2] = bytes.get(offset..offset + 2).ok_or_else(&malformed)?
+            .try_into().map_err(|_| malformed())?;
+        Ok::<_, W::Error>(u16::from_le_bytes(value))
     };
-    let tag = u32::from_le_bytes(bytes.get(..4).ok_or_else(&malformed)?.try_into().unwrap());
+    let tag = u32::from_le_bytes(bytes.get(..4).ok_or_else(&malformed)?.try_into().map_err(|_| malformed())?);
     let header = match tag {
         0xA000_000C => 20,
         0xA000_0003 => 16,
@@ -181,9 +180,9 @@ pub(crate) fn read_link_held<W: NativeHostWork>(
             let result = (|| {
                 work.started_io(copy_work(target.len() as u64))?;
                 wide.extend(
-                    bytes[target]
-                        .chunks_exact(2)
-                        .map(|v| u16::from_le_bytes([v[0], v[1]])),
+                    bytes.get(target).ok_or_else(W::invalid_request)?
+                        .as_chunks::<2>().0.iter()
+                        .map(|&value| u16::from_le_bytes(value)),
                 );
                 work.check()
             })();
@@ -211,6 +210,7 @@ impl HostRoot {
             read_link_held(parent, leaf, maximum, work)
         })
     }
+    #[cfg(feature = "native-watch")]
     pub(crate) fn read_source_link<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,

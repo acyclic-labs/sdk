@@ -114,9 +114,9 @@ where
             result.map_err(
                 |(cause, accounting_failure)| NativeMountPublicationFailure {
                     cause,
-                    accounting_failure,
+                    accounting_failure: accounting_failure.map(Box::new),
                     source_acknowledged: acknowledged.is_some(),
-                    publication: acknowledged,
+                    publication: acknowledged.map(Box::new),
                 },
             )?;
         with_live_session(&self.session, |session| session.revalidate(work)).map_err(|cause| {
@@ -124,7 +124,7 @@ where
                 cause: E::from(cause),
                 accounting_failure: None,
                 source_acknowledged: true,
-                publication: Some(publication),
+                publication: Some(Box::new(publication)),
             }
         })?;
         Ok(publication)
@@ -256,7 +256,7 @@ where
         &self,
         work: &NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::NativePublicationSnapshot, (MountLifecycleError, Option<MountSourceError>)>
+    ) -> Result<crate::NativePublicationSnapshot, (MountLifecycleError, Option<Box<MountSourceError>>)>
     {
         self.settle(work).map_err(|cause| (cause, None))?;
         self.source
@@ -305,11 +305,10 @@ where
             drop(owner.take());
             Ok(proof)
         })();
-        if result.is_err() {
-            if let Some(session) = owner.as_mut() {
+        if result.is_err()
+            && let Some(session) = owner.as_mut() {
                 session.record_measured_cleanup_failure();
             }
-        }
         result
     }
 }

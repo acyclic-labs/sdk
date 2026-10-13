@@ -107,7 +107,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let work = inputs
             .carrier
             .original_native_work()
-            .expect("native SDK callback");
+            .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
         let mut inspector = checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation), &cancellation)?;
         self.read_lookup(&mut inspector, &path, &mut inputs, &cancellation)
             .await
@@ -180,7 +180,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let original = inputs
             .carrier
             .original_native_work()
-            .expect("native SDK callback");
+            .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
         let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         let chunk = match range {
             Some(range) => {
@@ -228,7 +228,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let original = inputs
             .carrier
             .original_native_work()
-            .expect("native SDK callback");
+            .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
         let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         self.read_lookup(&mut checkout, &path, &mut inputs, &cancellation)
             .await
@@ -248,7 +248,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let work = inputs
             .carrier
             .original_native_work()
-            .expect("native SDK callback");
+            .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
         let value = checkout
             .lookup_no_follow_with_metadata(path, &work, cancellation)
             .await?;
@@ -283,7 +283,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .observe(owner, carrier, &cancellation, Some(&self.cancellation))
             .await?;
         observation.ensure_publication_resolved()?;
-        let original = carrier.original_native_work().expect("native SDK callback");
+        let original = carrier.original_native_work().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
         let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         let record = checkout
             .read_file_record_by_id(file_id, &original, &cancellation)
@@ -308,7 +308,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .checkout
             .observe(owner, carrier, &cancellation, Some(&self.cancellation))
             .await?;
-        let work = carrier.original_native_work().expect("native SDK callback");
+        let work = carrier.original_native_work().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
         self.detached_from_checkout(&checkout, record, metadata, &work)
     }
 
@@ -330,7 +330,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::WorkCounters::UNCHARGED,
             )
             .map_err(MountSourceError::NativeWork)?;
-        let file = checkout.detached_from_record(record, work, work.cancellation())?;
+        let file = checkout.detached_from_record(record, &work, work.cancellation())?;
         NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
         Ok(Arc::new(CheckoutDetachedFile {
             _native_allocation: allocation,

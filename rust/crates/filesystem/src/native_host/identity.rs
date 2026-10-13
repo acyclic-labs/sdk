@@ -34,7 +34,7 @@ pub(crate) fn directory_identity<W: NativeHostWork>(
             ));
         }
         Ok(NativeRootIdentity {
-            device: info.dwVolumeSerialNumber as u64,
+            device: u64::from(info.dwVolumeSerialNumber),
             object: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
         })
     })
@@ -62,7 +62,7 @@ pub(crate) fn file_identity_and_length<W: NativeHostWork>(
         let info = windows_file_information(file)?;
         Ok((
             NativeRootIdentity {
-                device: info.dwVolumeSerialNumber as u64,
+                device: u64::from(info.dwVolumeSerialNumber),
                 object: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
             },
             (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),

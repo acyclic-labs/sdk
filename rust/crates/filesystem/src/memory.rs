@@ -7,8 +7,8 @@ use crate::foundation::{
 use crate::kernel::allocation::KernelOwnedAllocation;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, CreateAuthorityOutcome, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure,
-    ObjectId, ObjectRead, ObjectReadRetention, ObjectResult, ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
+    AppendOutcome, AuthorityFailure, AuthorityStoreError, CreateAuthorityOutcome, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure,
+    ObjectId, ObjectRead, ObjectReadRetention, ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
 };
 use acyclic_stream::OwnedBytes;
 use std::collections::HashMap;

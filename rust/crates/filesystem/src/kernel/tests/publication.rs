@@ -17,7 +17,7 @@ use crate::kernel::{
 };
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::model::{Lifecycle, VolumeConfig};
-use crate::storage::{FenceOutcome, ObjectKind, ObjectStoreError, object_digest};
+use crate::storage::{FenceOutcome, ObjectKind, object_digest};
 use sha2::{Digest as _, Sha256};
 
 fn metadata() -> FileMetadata {
@@ -896,11 +896,12 @@ async fn evidence_fixture() -> Result<
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
     let cancellation = CancellationToken::new();
+    let mut commit_work = WorkCounters::UNCHARGED;
     let commit = prepare_publication_commit(
         request,
         None,
         None,
-        &mut PublicationAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+        &mut PublicationAccounting::standalone(&mut commit_work, &WorkBudget::UNBOUNDED, &cancellation),
         &cancellation,
     )?;
     let append = GuardedAppend {
@@ -1772,11 +1773,11 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     };
     let evidence = b"immutable original operation data";
     let mut bytes = Vec::new();
-    write_publication_payload_with_evidence(
+    write_publication_payload(
         &mut bytes,
         volume_id,
         root,
-        Some((evidence, original_evidence_digest(evidence))),
+        Some((evidence, u32::try_from(evidence.len())?.to_le_bytes(), original_evidence_digest(evidence))),
     );
     let decoded = decode_publication_evidence::<CanonicalDecodeError>(
         &bytes,
@@ -1883,11 +1884,11 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     ));
     let large_evidence = vec![7; 4_096];
     let mut large = Vec::new();
-    write_publication_payload_with_evidence(
+    write_publication_payload(
         &mut large,
         volume_id,
         root,
-        Some((&large_evidence, original_evidence_digest(&large_evidence))),
+        Some((&large_evidence, u32::try_from(large_evidence.len())?.to_le_bytes(), original_evidence_digest(&large_evidence))),
     );
     assert!(matches!(
         decode_published_generation(&large, 4_096, |_| Ok::<

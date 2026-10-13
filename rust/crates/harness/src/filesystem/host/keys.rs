@@ -4,7 +4,7 @@ use super::*;
 pub fn workspace_ref(provider: ProviderRef, name: &str) -> Result<WorkspaceRef> {
     acyclic_fs::WorkspaceName::new(
         name,
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .map(|receipt| receipt.value)

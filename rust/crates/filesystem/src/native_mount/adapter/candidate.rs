@@ -44,7 +44,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     carrier: &mut NativeDemandCarrier<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(ViewEffect, Option<crate::NativeAllocation>), MountSourceError> {
-    let native = carrier.original_native_work().expect("native SDK callback");
+    let native = carrier.original_native_work().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
     let (diff, allocation) = base
         .candidate_diff(
             candidate,
@@ -60,7 +60,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     inputs
         .allocation
         .as_mut()
-        .expect("native diff inputs")
+        .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?
         .absorb(&mut allocation)
         .map_err(MountSourceError::NativeWork)?;
     if diff.truncated {
@@ -91,7 +91,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     for path in scope.paths() {
         for length in 0..=path.depth() {
             let prefix = inputs
-                .clone_namespace(&path.components()[..length], base.volume_config().limits)?;
+                .clone_namespace(path.components().get(..length).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?, base.volume_config().limits)?;
             for checkout in [base, candidate] {
                 if let Some(record) = checkout
                     .inspector(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)?

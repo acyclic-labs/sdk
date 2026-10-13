@@ -143,7 +143,7 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
                     ..WorkCounters::UNCHARGED
                 })
                 .map_err(MaterializeError::from)?;
-                remaining = &remaining[written..];
+                remaining = remaining.get(written..).ok_or(MaterializeError::Work(WorkError::Overflow))?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error.into()),
@@ -198,7 +198,7 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(MaterializeError::from)?;
-        match file.read(&mut contents[read..bound]) {
+        match file.read(contents.get_mut(read..bound).ok_or(MaterializeError::Work(WorkError::Overflow))?) {
             Ok(0) => break,
             Ok(bytes) => {
                 work.record(WorkCounters {
@@ -206,13 +206,13 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
                     ..WorkCounters::UNCHARGED
                 })
                 .map_err(MaterializeError::from)?;
-                read += bytes;
+                read = read.checked_add(bytes).ok_or(MaterializeError::Work(WorkError::Overflow))?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error.into()),
         }
     }
-    if &contents[..read] == expected {
+    if contents.get(..read).ok_or(MaterializeError::Work(WorkError::Overflow))? == expected {
         Ok(true)
     } else {
         Err(std::io::Error::new(

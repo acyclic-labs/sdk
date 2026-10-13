@@ -151,7 +151,7 @@ pub async fn capture_watch_batch<
                             None
                         } else {
                             let source = checkout
-                                .lookup_no_follow(&from, meter, &cancellation)
+                                .lookup_no_follow(&from, meter, cancellation)
                                 .await?;
                             source.record
                         };
@@ -182,10 +182,10 @@ pub async fn capture_watch_batch<
                                 )
                             }?;
                         }
-                        if from != to {
-                            capture_replace(&mut rename_records, from, None, meter)?;
-                        } else {
+                        if from == to {
                             capture_drop_path(from, meter)?;
+                        } else {
+                            capture_replace(&mut rename_records, from, None, meter)?;
                         }
                         if record.is_none()
                             && let Some((key, _)) = capture_remove(&mut rename_records, &to, meter)?
@@ -221,7 +221,7 @@ pub async fn capture_watch_batch<
                 CaptureIntent::Replace => *entry = (current, intent),
                 CaptureIntent::Arrived if entry.1 != CaptureIntent::Replace => entry.1 = intent,
                 CaptureIntent::Complete if entry.1 == CaptureIntent::MetadataOnly => {
-                    entry.1 = intent
+                    entry.1 = intent;
                 }
                 _ => {}
             }
@@ -295,9 +295,11 @@ pub async fn capture_watch_batch<
                 lookup_paths.push(clone_capture_path(path, meter)?);
             }
         }
-        if !lookup_paths.is_empty() {
+        if lookup_paths.is_empty() {
+            release_capture_paths(lookup_paths, meter)?;
+        } else {
             let lookup = checkout
-                .lookup_batch_no_follow(&lookup_paths, meter, &cancellation)
+                .lookup_batch_no_follow(&lookup_paths, meter, cancellation)
                 .await?;
 
             let lookup_paths_bytes =
@@ -315,7 +317,7 @@ pub async fn capture_watch_batch<
                     }?
                 {
                     let prior = checkout
-                        .lookup_no_follow(&prior_path, meter, &cancellation)
+                        .lookup_no_follow(&prior_path, meter, cancellation)
                         .await?;
                     record = prior.record;
                     capture_drop_path(prior_path, meter)?;
@@ -323,7 +325,7 @@ pub async fn capture_watch_batch<
                 let Ok(index) = capture_position(&ordinary, &path, meter)? else {
                     return Err(CaptureError::InvalidOptions);
                 };
-                let (current, _) = &mut ordinary[index].1;
+                let (current, _) = &mut ordinary.get_mut(index).ok_or(CaptureError::InvalidOptions)?.1;
                 *current = CurrentRecord::Known(record);
                 capture_drop_path(path, meter)?;
             }
@@ -332,8 +334,6 @@ pub async fn capture_watch_batch<
                 .clone()
                 .release(lookup_paths_bytes)
                 .map_err(capture_demand_error)?;
-        } else {
-            release_capture_paths(lookup_paths, meter)?;
         }
         {
             let storage_bytes = renamed_directories.capacity() as u64

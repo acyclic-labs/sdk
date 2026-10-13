@@ -30,7 +30,7 @@ where
         &self,
         mut carrier: adapter::NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::NativePublicationSnapshot, (MountSourceError, Option<MountSourceError>)>
+    ) -> Result<crate::NativePublicationSnapshot, (MountSourceError, Option<Box<MountSourceError>>)>
     {
         let result = async {
             let original = carrier
@@ -115,9 +115,8 @@ where
             .map_err(mount_demand_error);
         match (result, accounting) {
             (Ok(snapshot), Ok(())) => Ok(snapshot),
-            (Ok(_), Err(error)) => Err((error, None)),
-            (Err(error), Ok(())) => Err((error, None)),
-            (Err(error), Err(accounting)) => Err((error, Some(accounting))),
+            (Ok(_), Err(error)) | (Err(error), Ok(())) => Err((error, None)),
+            (Err(error), Err(accounting)) => Err((error, Some(Box::new(accounting)))),
         }
     }
 
@@ -204,7 +203,7 @@ where
                 if !acknowledged.is_some_and(|snapshot| {
                     snapshot.operation() == Some(operation) && snapshot.generation() == generation
                 }) {
-                    return Err(MountSourceError::Indeterminate.into());
+                    return Err(MountSourceError::Indeterminate);
                 }
             }
             self.lazy

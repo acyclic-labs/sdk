@@ -46,7 +46,7 @@ impl<S: MaterializationJournalStore>
     JournaledMaterializer<S, Arc<NativeTreeMaterializationBackend>>
 {
     /// Stages through this store's fenced journal and the caller's existing work.
-    pub fn stage_generation<A, O, E, F, Fut>(
+    pub async fn stage_generation<A, O, E, F, Fut>(
         &self,
         generation: &crate::Generation<A, O>,
         selections: &[String],
@@ -54,7 +54,7 @@ impl<S: MaterializationJournalStore>
         journal: MaterializationJournal,
         work: &NativeMaterializationWork,
         before_effect: &mut F,
-    ) -> impl Future<Output = Result<MaterializationJournal, E>> + Send
+    ) -> Result<MaterializationJournal, E>
     where
         A: crate::AsyncAuthorityStore,
         O: crate::AsyncObjectStore,
@@ -66,91 +66,88 @@ impl<S: MaterializationJournalStore>
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<(), E>> + Send,
     {
-        async move {
-            let invalid = || {
-                E::from(MaterializationError::Backend(
-                    NativeTreeMaterializationError::InvalidLayout,
-                ))
-            };
-            if !work.shares_ledger(self.backend.work())
-                || !journal.is_valid_for(journal.plan.operation_id)
-                || journal.phase != MaterializationPhase::Preparing
-                || journal.preparation_progress.is_some()
-                || !journal.preimages.is_empty()
-            {
-                return Err(invalid());
-            }
-            let failure = NativeStageUncertainty::new(work)
-                .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-            let state =
-                parking_lot::Mutex::new((Some(journal), None::<S::ActionCompletion<'_>>, false));
-            let reader = generation
-                .workspace()
-                .checkout(
-                    crate::model::GenerationSelector::Exact(generation.id()),
-                    crate::model::CheckoutMode::read_only_pinned(),
-                    work,
-                    work.cancellation(),
-                )
-                .await
-                .and_then(|checkout| {
-                    checkout
-                        .into_pinned_reader_with_native_work(work, work.cancellation())
-                        .map_err(crate::WorkspaceError::from)
-                })
-                .map_err(E::from)?;
-            let mut control = |phase| {
-                use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
-                let authorized = if phase == Before {
-                    Some(before_effect())
-                } else {
-                    None
-                };
-                let state = &state;
-                let invalid = &invalid;
-                async move {
-                    match phase {
-                        Before => {
-                            authorized.expect("effect authorization").await?;
-                            let journal = state.lock().0.take().ok_or_else(invalid)?;
-                            self.verify_effect_context(&journal)
-                                .await
-                                .map_err(E::from)?;
-                            let completion = self
-                                .store
-                                .prepare_action(journal)
-                                .await
-                                .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                            *state.lock() = (None, Some(completion), true);
-                        }
-                        Completed => {
-                            let completion = state.lock().1.take().ok_or_else(invalid)?;
-                            let journal = completion
-                                .await
-                                .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                            *state.lock() = (Some(journal), None, false);
-                        }
-                    }
-                    Ok(())
-                }
-            };
-            let result = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
-                &reader,
-                selections,
-                options,
+        let invalid = || {
+            E::from(MaterializationError::Backend(
+                NativeTreeMaterializationError::InvalidLayout,
+            ))
+        };
+        if !work.shares_ledger(self.backend.work())
+            || !journal.is_valid_for(journal.plan.operation_id)
+            || journal.phase != MaterializationPhase::Preparing
+            || journal.preparation_progress.is_some()
+            || !journal.preimages.is_empty()
+        {
+            return Err(invalid());
+        }
+        let failure = NativeStageUncertainty::new(work)
+            .map_err(|error| E::from(MaterializationError::Backend(error)))?;
+        let state =
+            parking_lot::Mutex::new((Some(journal), None::<S::ActionCompletion<'_>>, false));
+        let reader = generation
+            .workspace()
+            .checkout(
+                crate::model::GenerationSelector::Exact(generation.id()),
+                crate::model::CheckoutMode::read_only_pinned(),
                 work,
-                &mut control,
+                work.cancellation(),
             )
-            .await;
-            drop(control);
-            let (journal, completion, last) = state.into_inner();
-            drop(completion);
-            match (result, journal, last) {
-                (Ok(_), Some(journal), false) => Ok(journal),
-                (Err(error), _, true) => Err(E::from(failure.fail(error))),
-                (Err(error), _, false) => Err(error),
-                _ => Err(invalid()),
+            .await
+            .and_then(|checkout| {
+                checkout
+                    .into_pinned_reader_with_native_work(work, work.cancellation())
+                    .map_err(crate::WorkspaceError::from)
+            })
+            .map_err(E::from)?;
+        let mut control = |phase| {
+            use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
+            let authorized = if phase == Before {
+                Some(before_effect())
+            } else {
+                None
+            };
+            let state = &state;
+            let invalid = &invalid;
+            async move {
+                match phase {
+                    Before => {
+                        authorized.expect("effect authorization").await?;
+                        let journal = state.lock().0.take().ok_or_else(invalid)?;
+                        self.verify_effect_context(&journal)
+                            .await
+                            .map_err(E::from)?;
+                        let completion = self
+                            .store
+                            .prepare_action(journal)
+                            .await
+                            .map_err(|error| E::from(MaterializationError::Store(error)))?;
+                        *state.lock() = (None, Some(completion), true);
+                    }
+                    Completed => {
+                        let completion = state.lock().1.take().ok_or_else(invalid)?;
+                        let journal = completion
+                            .await
+                            .map_err(|error| E::from(MaterializationError::Store(error)))?;
+                        *state.lock() = (Some(journal), None, false);
+                    }
+                }
+                Ok(())
             }
+        };
+        let result = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
+            &reader,
+            selections,
+            options,
+            work,
+            &mut control,
+        )
+        .await;
+        let (journal, completion, last) = state.into_inner();
+        drop(completion);
+        match (result, journal, last) {
+            (Ok(_), Some(journal), false) => Ok(journal),
+            (Err(error), _, true) => Err(E::from(failure.fail(error))),
+            (Err(error), _, false) => Err(error),
+            _ => Err(invalid()),
         }
     }
 }

@@ -21,7 +21,7 @@ impl<D: DemandSource> DemandBlobSource<'_, D> {
         if bytes.is_empty() || bytes.len() as u64 > self.wanted(destination) {
             return Err(DemandError::StaleVersion);
         }
-        destination[..bytes.len()].copy_from_slice(bytes);
+        destination.get_mut(..bytes.len()).ok_or(DemandError::StaleVersion)?.copy_from_slice(bytes);
         self.offset += bytes.len() as u64;
         Ok(bytes.len())
     }
@@ -96,7 +96,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
         if wanted == 0 {
             return Ok(0);
         }
-        let failure = crate::kernel::PreparedBlobDemandFailure::new(work)?;
+        let failure = crate::kernel::BlobDemandFailure::new(work)?;
         let copying = work.reserve_work(WorkCounters {
             bytes_copied: wanted,
             ..WorkCounters::UNCHARGED

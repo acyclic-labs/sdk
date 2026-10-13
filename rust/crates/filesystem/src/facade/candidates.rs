@@ -363,7 +363,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         dependencies.base_root_control = control;
         let mut root = self
             .root
-            .replicate_with_accounting(accounting, native_owner)?;
+            .replicate(accounting, native_owner)?;
         if native_owner.is_none() {
             root.attach_control_custody(&dependencies.data_custody);
         }

@@ -12,9 +12,6 @@ impl NativeInvocationView {
             .check()
             .map_err(|_| crate::DemandError::Cancelled)
     }
-    pub(crate) fn cancellation(&self) -> &crate::CancellationToken {
-        &self.cancellation
-    }
     pub(crate) fn owns_resource(&self, resource: Option<&Arc<NativeResourceAllowance>>) -> bool {
         match (&self.metadata.work().resource, resource) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -131,10 +128,10 @@ impl NativeMaterializationWork {
                 _ => return Err(NativeTreeMaterializationError::InvalidLayout),
             };
         }
-        if let Some(view) = &work.invocation {
-            if !view.owns_resource(work.resource.as_ref()) {
-                work.bind_invocation(view.cancellation.clone())?;
-            }
+        if let Some(view) = &work.invocation
+            && !view.owns_resource(work.resource.as_ref())
+        {
+            work.bind_invocation(view.cancellation.clone())?;
         }
         let metadata = work.claim(
             std::mem::size_of::<NativeSourceExecutionView>() as u64,

@@ -278,12 +278,12 @@ pub(super) fn queue_zero_writes(
     let mut remaining = length;
     let mut position = offset;
     while remaining != 0 {
-        let count = remaining.min(chunk_bytes) as usize;
+        let count = usize::try_from(remaining.min(chunk_bytes)).map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
         receipt.push(
             writes,
             GenerationWrite {
                 offset: position,
-                bytes: acyclic_stream::OwnedBytes::from_static(&ZERO_BYTES[..count]),
+                bytes: acyclic_stream::OwnedBytes::from_static(ZERO_BYTES.get(..count).ok_or(MaterializeError::Work(WorkError::Overflow))?),
                 owned_bytes: 0,
             },
         )?;

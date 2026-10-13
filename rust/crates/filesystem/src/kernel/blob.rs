@@ -739,9 +739,8 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
 fn blob_build_error(error: FsError) -> BlobBuildError {
     match error {
         FsError::BlobBuild(error) => error,
-        FsError::Work(error) => BlobBuildError::Work(error),
+        FsError::Work(error) | FsError::Object(crate::ObjectStoreError::Work(error)) => BlobBuildError::Work(error),
         FsError::Cancelled(_) => BlobBuildError::Cancelled,
-        FsError::Object(crate::ObjectStoreError::Work(error)) => BlobBuildError::Work(error),
         FsError::Object(error) => BlobBuildError::Storage(error),
         FsError::Decode(error) => BlobBuildError::Encode(error),
         error => BlobBuildError::Context(Box::new(error)),
@@ -907,7 +906,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
                 ..WorkCounters::UNCHARGED
             })?;
         }
-        let owned = buffer.as_mut().expect("source storage is prepared once");
+        let owned = buffer.as_mut().ok_or(BlobBuildError::InvalidOptions)?;
         reserve_blob_vec(owned, maximum, accounting)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &native {
@@ -924,7 +923,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
                     ..crate::WorkCounters::UNCHARGED
                 })
             }?;
-            let owned = buffer.take().expect("original source storage");
+            let owned = buffer.take().ok_or(BlobBuildError::InvalidOptions)?;
             prepared = Some(
                 acyclic_stream::PreparedOwnedBytes::new(
                     owned.value,
@@ -955,10 +954,11 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             accounting.check()?;
             #[cfg(not(target_arch = "wasm32"))]
             let destination = match prepared.as_mut() {
-                Some(prepared) => &mut prepared.writable()[filled..maximum],
+                Some(prepared) => prepared.writable().get_mut(filled..maximum)
+                    .ok_or(BlobBuildError::TooLarge)?,
                 None => buffer
                     .as_mut()
-                    .expect("ordinary source storage")
+                    .ok_or(BlobBuildError::TooLarge)?
                     .value
                     .get_mut(filled..)
                     .ok_or(BlobBuildError::TooLarge)?,
@@ -966,7 +966,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             #[cfg(target_arch = "wasm32")]
             let destination = buffer
                 .as_mut()
-                .expect("ordinary source storage")
+                .ok_or(BlobBuildError::TooLarge)?
                 .value
                 .get_mut(filled..)
                 .ok_or(BlobBuildError::TooLarge)?;
@@ -1015,7 +1015,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
                     filled,
                 ));
             }
-            let mut buffer = buffer.expect("ordinary source storage");
+            let mut buffer = buffer.ok_or(BlobBuildError::TooLarge)?;
             buffer.value.truncate(filled);
             let logical_owned_bytes = usize_to_u64(buffer.value.capacity());
             let bytes = owned_read_bytes(buffer)?;
@@ -1554,7 +1554,7 @@ pub type BlobBuildFailure = OperationFailure<BlobBuildError>;
 
 /// An actual source failure in storage funded before the source operation.
 pub struct BlobDemandFailure {
-    error: Box<Option<crate::DemandError>>,
+    error: Box<crate::DemandError>,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: crate::NativeAllocation,
 }
@@ -1562,18 +1562,12 @@ pub struct BlobDemandFailure {
 impl BlobDemandFailure {
     /// Borrows the actual initialized provider cause.
     pub fn error(&self) -> &crate::DemandError {
-        self.error
-            .as_ref()
-            .as_ref()
-            .expect("published source failure is initialized")
+        &self.error
     }
 
-    /// Visits owned cause fields without cloning or replacing the prepaid holder.
+    /// Visits owned cause fields without replacing the prepaid holder.
     pub fn error_mut(&mut self) -> &mut crate::DemandError {
-        self.error
-            .as_mut()
-            .as_mut()
-            .expect("published source failure is initialized")
+        &mut self.error
     }
 }
 
@@ -1599,34 +1593,21 @@ impl std::error::Error for BlobDemandFailure {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct PreparedBlobDemandFailure {
-    storage: BlobDemandFailure,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl PreparedBlobDemandFailure {
+impl BlobDemandFailure {
     pub(crate) fn new(original: &crate::NativeMaterializationWork) -> Result<Self, FsError> {
-        let allocation = {
-            let claim_bytes = usize_to_u64(size_of::<Option<crate::DemandError>>());
-            original.claim(
-                claim_bytes,
-                u64::from(claim_bytes != 0),
-                crate::WorkCounters::UNCHARGED,
-            )
-        }?;
+        let bytes = usize_to_u64(size_of::<crate::DemandError>());
+        let allocation = original.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
         let prepared = Self {
-            storage: BlobDemandFailure {
-                error: Box::new(None),
-                _allocation: allocation,
-            },
+            error: Box::new(crate::DemandError::InvalidRequest),
+            _allocation: allocation,
         };
         original.admit(WorkCounters::UNCHARGED)?;
         Ok(prepared)
     }
 
-    pub(crate) fn failed(mut self, error: crate::DemandError) -> BlobDemandFailure {
-        *self.storage.error = Some(error);
-        self.storage
+    pub(crate) fn failed(mut self, error: crate::DemandError) -> Self {
+        *self.error = error;
+        self
     }
 }
 
@@ -2206,13 +2187,12 @@ impl BlobRangeMachine {
 fn blob_error(error: FsError) -> BlobReadError {
     match error {
         FsError::BlobRead(error) => error,
-        FsError::Work(error) => error.into(),
+        FsError::Work(error) | FsError::FileRead(super::FileRangeReadError::Work(error)) => error.into(),
         FsError::Cancelled(_) => BlobReadError::Cancelled,
         FsError::Object(error) => BlobReadError::Storage(error),
         FsError::FileRead(super::FileRangeReadError::AllocationFailed) => {
             BlobReadError::AllocationFailed
         }
-        FsError::FileRead(super::FileRangeReadError::Work(error)) => error.into(),
         error => BlobReadError::Context(Box::new(error)),
     }
 }

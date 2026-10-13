@@ -34,7 +34,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     )
                     .await?
                     .into_parts();
-                    records[index] = observed.0.lookup.record;
+                    *records.get_mut(index).ok_or(FsError::InvalidDiff)? = observed.0.lookup.record;
                     let bytes =
                         Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
                     Self::append_mutation_dependencies(
@@ -57,7 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     if index == 1 && id == ids[0] {
                         records[1] = records[0];
                     } else if let Some(id) = id {
-                        records[index] = lookup_file_record_async_with_accounting(
+                        *records.get_mut(index).ok_or(FsError::InvalidDiff)? = lookup_file_record_async_with_accounting(
                             &self.volume.fs.inner.objects,
                             self.base_root.file_table,
                             id,
@@ -199,12 +199,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         }
         let mut index = 0;
-        while index < regions.len() {
+        while let Some((_, region)) = regions.get(index) {
             accounting.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            let file_id = match &regions[index].1 {
+            let file_id = match region {
                 DependencyRegion::ContentRange { file_id, .. }
                 | DependencyRegion::FileLength(file_id)
                 | DependencyRegion::SparseSeek { file_id, .. } => Some(file_id),

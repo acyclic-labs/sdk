@@ -31,7 +31,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
                 .map_err(MountSourceError::NativeWork)?;
             self.allocation
                 .as_mut()
-                .expect("native inputs")
+                .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?
                 .absorb(&mut allocation)
                 .map_err(MountSourceError::NativeWork)?;
             return Ok(values);
@@ -154,10 +154,12 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
                     .map_err(MountSourceError::NativeWork)?,
             );
         } else {
+            let remaining = self.bytes.checked_sub(bytes)
+                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
             self.carrier
                 .with_work(|work| work.release(bytes))
                 .map_err(super::lazy::mount_demand_error)?;
-            self.bytes = self.bytes.checked_sub(bytes).expect("owned input release");
+            self.bytes = remaining;
         }
         Ok(())
     }
@@ -176,7 +178,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .map_err(MountSourceError::NativeWork)?;
         self.allocation
             .as_mut()
-            .expect("native host input")
+            .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?
             .absorb(&mut allocation)
             .map_err(MountSourceError::NativeWork)?;
         Ok(path)

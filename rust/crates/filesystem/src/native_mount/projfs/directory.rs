@@ -231,10 +231,12 @@ pub(super) fn source_listing(
                         ..crate::WorkCounters::UNCHARGED
                     })?;
                     let middle = low + (high - low) / 2;
+                    let existing = entries.0.get(middle)
+                        .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
                     // SAFETY: both names include NUL and retain their allocations.
                     let order = unsafe {
                         PrjFileNameCompare(
-                            PCWSTR::from_raw(entries.0[middle].name.as_ptr()),
+                            PCWSTR::from_raw(existing.name.as_ptr()),
                             PCWSTR::from_raw(projected.name.as_ptr()),
                         )
                     };

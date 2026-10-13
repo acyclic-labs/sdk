@@ -121,7 +121,9 @@ where S: AsyncObjectStore, F: Format {
         Ok(())
     }.await;
     match result {
-        Ok(()) => machine.finish(accounting),
+        Ok(()) => machine.finish(accounting).map(|Owned { value, allocation, .. }| {
+            (OperationReceipt { value, work: accounting.spent() }, allocation)
+        }),
         Err(error) => { machine.abort_cleanup(accounting)?; Err(error) }
     }
 }
@@ -222,12 +224,10 @@ impl<'a, F: Format> Machine<'a, F> {
         &mut self, request: Request<F::Key>, decoded: persistent_io::OwnedPage<F>,
         allocation: KernelOwnedAllocation, accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
-        let converted = decoded.into_owned_with_accounting(allocation, accounting);
-        let ((page, bytes), allocation) = match converted {
+        let mut page = match decoded.into_owned_with_accounting(allocation, accounting) {
             Ok(page) => page,
             Err(error) => { Self::retire_request(request, accounting)?; return Err(error); }
         };
-        let mut page = Owned::new(page, allocation, bytes);
         let accepted = match &mut page.value {
             Page::Leaf(entries) => self.accept_leaf(&request, entries, &mut page.allocation, &mut page.bytes, accounting),
             Page::Internal(children) => self.accept_internal(&request, children, accounting),
@@ -380,13 +380,10 @@ impl<'a, F: Format> Machine<'a, F> {
         self.cleanup_scratch(accounting)?.retire(accounting)
     }
 
-    fn finish(self, accounting: &mut KernelAccounting<'_>) -> Result<(OperationReceipt<Vec<Option<F::Value>>>, KernelOwnedAllocation), crate::FsError> {
+    fn finish(self, accounting: &mut KernelAccounting<'_>) -> Result<Owned<Vec<Option<F::Value>>>, crate::FsError> {
         let returned = accounting.charge(WorkCounters { items_returned: usize_to_u64(self.values.value.len()), ..WorkCounters::UNCHARGED });
         if let Err(error) = returned { self.abort_cleanup(accounting)?; return Err(error); }
-        let values = self.cleanup_scratch(accounting)?;
-        let Owned { value: values, allocation, .. } = values;
-        let work = accounting.spent();
-        Ok((OperationReceipt { value: values, work }, allocation))
+        self.cleanup_scratch(accounting)
     }
 }
 

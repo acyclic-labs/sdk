@@ -76,14 +76,14 @@ pub(super) fn host_windows_metadata(
     Ok(HostWindowsMetadata {
         identity: crate::NativeRootIdentity {
             device: u64::from(metadata.volume_serial_number),
-            object: (metadata.raw.FileId as u64),
+            object: metadata.raw.FileId.cast_unsigned(),
         },
-        links: Some(metadata.nlink() as u32),
+        links: Some(metadata.raw.NumberOfLinks),
         size: metadata.len(),
         attributes: metadata.raw.FileAttributes,
-        created: i64::try_from(metadata.raw.CreationTime as u64)
+        created: i64::try_from(metadata.raw.CreationTime.cast_unsigned())
             .map_err(|_| MountSourceError::Invalid("Windows creation time exceeds i64".into()))?,
-        modified: i64::try_from(metadata.raw.LastWriteTime as u64)
+        modified: i64::try_from(metadata.raw.LastWriteTime.cast_unsigned())
             .map_err(|_| MountSourceError::Invalid("Windows write time exceeds i64".into()))?,
     })
 }

@@ -48,8 +48,8 @@ where
                 inputs
                     .allocation
                     .as_mut()
-                    .expect("native directory output")
-                    .absorb(allocation.as_mut().expect("native name"))
+                    .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?
+                    .absorb(allocation.as_mut().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?)
                     .map_err(MountSourceError::NativeWork)?;
                 entries.push(MountDirectoryEntry {
                     name,

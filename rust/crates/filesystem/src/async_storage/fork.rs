@@ -173,7 +173,7 @@ pub(crate) async fn first_record<S: AsyncAuthorityStore + ?Sized, G: AuthorityGu
         AppendOutcome::Fenced { .. } | AppendOutcome::IdempotencyConflict { .. } => false,
     };
     if matches && retry {
-        seal(guard.as_deref_mut(), work).await?;
+        seal(guard, work).await?;
     }
     Ok(matches)
 }

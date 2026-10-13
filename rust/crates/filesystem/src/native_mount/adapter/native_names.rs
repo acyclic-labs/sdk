@@ -188,7 +188,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok((
             rooted,
             options,
-            inputs.retain().expect("native capture input"),
+            inputs.retain().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?,
         ))
     }
 }

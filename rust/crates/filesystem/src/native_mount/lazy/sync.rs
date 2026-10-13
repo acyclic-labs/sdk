@@ -44,11 +44,10 @@ where
                 .lock()
                 .map_err(|_| MountSourceError::Stale)?
                 .publication;
-            if let (Some((operation, proof)), Some((_, _, requested))) = (remembered, selected) {
-                if operation != requested || proof != selected_proof {
+            if let (Some((operation, proof)), Some((_, _, requested))) = (remembered, selected)
+                && (operation != requested || proof != selected_proof) {
                     return Err(MountSourceError::Stale.into());
                 }
-            }
             let retained = {
                 let mut checkout = adapter::await_lock(
                     self.authored.shared_checkout().lock(),

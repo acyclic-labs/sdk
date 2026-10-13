@@ -7,7 +7,7 @@ fn work(
     token: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
     acyclic_fs::NativeMaterializationWork::new(budget, token)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
 impl<P, A, O> Fixture<P, A, O>

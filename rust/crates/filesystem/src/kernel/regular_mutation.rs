@@ -368,9 +368,7 @@ pub(crate) async fn clone_extent_range_with_accounting<S: AsyncObjectStore>(
     }
     plan.retire(accounting)?;
     let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
-        store,
-        request.destination_root,
-        request.destination_logical_bytes,
+        store, (request.destination_root, request.destination_logical_bytes),
         &mutations.value,
         request.maximum_mutations,
         limits,
@@ -782,9 +780,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
         }
     };
     let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
-        store,
-        extents,
-        logical_bytes,
+        store, (extents, logical_bytes),
         &[extent_mutation],
         1,
         DecodeLimits::for_volume(config),
@@ -921,9 +917,7 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
         })
     } else {
         super::extent_mutation::apply_extent_mutations_with_accounting(
-            store,
-            extents,
-            logical_bytes,
+            store, (extents, logical_bytes),
             &mutations.value,
             config.limits.maximum_mutations_per_batch,
             DecodeLimits::for_volume(config),
@@ -1076,6 +1070,7 @@ pub(super) fn project_clone_error(error: FsError) -> ExtentCloneError {
     }
 }
 
+#[derive(Clone, Copy)]
 enum CloneStage {
     Source,
     Compile,
@@ -1099,18 +1094,12 @@ fn clone_stage_error(error: FsError, stage: CloneStage) -> FsError {
         CloneStage::Destination => {
             let error = match error {
                 FsError::DetachedMutation(RegularMutationError::Extent(error)) => error,
-                FsError::Work(error) => error.into(),
-                FsError::Decode(error) => error.into(),
-                FsError::BlobRead(BlobReadError::Storage(error)) => error.into(),
-                FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Decode(
-                    error,
-                ))) => error.into(),
-                FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Work(
-                    error,
-                ))) => error.into(),
-                FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Storage(
-                    error,
-                ))) => error.into(),
+                FsError::Work(error)
+                | FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Work(error))) => error.into(),
+                FsError::Decode(error)
+                | FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Decode(error))) => error.into(),
+                FsError::BlobRead(BlobReadError::Storage(error))
+                | FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Storage(error))) => error.into(),
                 FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),
                 error => return error,
             };

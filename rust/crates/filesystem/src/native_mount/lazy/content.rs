@@ -176,7 +176,7 @@ where
                 .push(Arc::downgrade(&file));
             return Ok((
                 (file, 0),
-                Some(mount_lookup(LazyLookup::Source { node, source }, id)),
+                Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
             ));
         }
         drop(lease);

@@ -57,7 +57,7 @@ impl Producer {
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation).map_err(
             |(cause, work)| Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work,
             },
         )?;
         let io = PreparationIo::from_native_work(&work)?;

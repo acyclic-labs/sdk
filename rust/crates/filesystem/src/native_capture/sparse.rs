@@ -35,7 +35,7 @@ pub(super) async fn settled_sparse_ranges(
                 ..WorkCounters::UNCHARGED
             })?;
             let chunk = reader
-                .read(wanted as usize, meter.runtime_meter(), true)
+                .read(usize::try_from(wanted).map_err(|_| WorkError::Overflow)?, meter.runtime_meter(), true)
                 .await
                 .map_err(|error| {
                     if let Some(cause) = meter.state.take_native_io_failure() {
@@ -56,7 +56,10 @@ pub(super) async fn settled_sparse_ranges(
             while start < read_end {
                 meter.clone().check().map_err(capture_demand_error)?;
                 let block_end = start.saturating_add(BLOCK - start % BLOCK).min(read_end);
-                let block = &chunk.0[(start - position) as usize..(block_end - position) as usize];
+                let start_index = usize::try_from(start - position).map_err(|_| WorkError::Overflow)?;
+                let end_index = usize::try_from(block_end - position).map_err(|_| WorkError::Overflow)?;
+                let block = chunk.0.get(start_index..end_index)
+                    .ok_or(CaptureError::InvalidOptions)?;
                 let mut nonzero = false;
                 for byte in block {
                     capture_charge(

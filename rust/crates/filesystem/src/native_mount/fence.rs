@@ -177,7 +177,7 @@ impl MountDestinationGuard {
         let separator = recovery
             && !canonical
                 .last()
-                .is_some_and(|unit| *unit == b'\\' as u16 || *unit == b'/' as u16);
+                .is_some_and(|unit| *unit == u16::from(b'\\') || *unit == u16::from(b'/'));
         #[cfg(unix)]
         let suffix_bytes = leaf.map_or(0, |leaf| leaf.len() as u64) + u64::from(separator);
         #[cfg(windows)]
@@ -212,17 +212,18 @@ impl MountDestinationGuard {
                 }
                 #[cfg(windows)]
                 if separator {
-                    identity.update(&(b'\\' as u16).to_le_bytes());
+                    identity.update(&(u16::from(b'\\')).to_le_bytes());
                 }
                 update_path_identity(&mut identity, Path::new(leaf));
             }
             work.record(hashed)?;
             let hex = identity.finalize().to_hex();
             let mut name = [0u8; NATIVE_FENCE_NAME_BYTES];
-            name[..NATIVE_FENCE_PREFIX.len()].copy_from_slice(NATIVE_FENCE_PREFIX.as_bytes());
-            name[NATIVE_FENCE_PREFIX.len()..NATIVE_FENCE_PREFIX.len() + 64]
-                .copy_from_slice(hex.as_bytes());
-            name[NATIVE_FENCE_PREFIX.len() + 64..].copy_from_slice(NATIVE_FENCE_SUFFIX.as_bytes());
+            let (prefix, tail) = name.split_at_mut(NATIVE_FENCE_PREFIX.len());
+            let (digest, suffix) = tail.split_at_mut(64);
+            prefix.copy_from_slice(NATIVE_FENCE_PREFIX.as_bytes());
+            digest.copy_from_slice(hex.as_bytes());
+            suffix.copy_from_slice(NATIVE_FENCE_SUFFIX.as_bytes());
             Ok::<_, NativeMountError>(name)
         })();
         let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> =
@@ -410,7 +411,7 @@ impl MountDestinationGuard {
         Ok(())
     }
 
-    /// Administrative LastDrop closes only the original held fence.
+    /// Administrative `LastDrop` closes only the original held fence.
     pub(super) fn close_administrative_fence(
         &mut self,
         original: &mut crate::NativeWorkReservation,
@@ -467,16 +468,13 @@ impl MountDestinationGuard {
             return Ok(());
         }
         let opened_directory;
-        let directory = match self.parent_directory.as_ref() {
-            Some(directory) => directory,
-            None => {
-                let parent = self
-                    .lock_path
-                    .parent()
-                    .ok_or(NativeMountError::InvalidDestination)?;
-                opened_directory = crate::native_host::open_root_directory(parent, work).map(|(directory, _)| directory)?;
-                &opened_directory
-            }
+        let directory = if let Some(directory) = self.parent_directory.as_ref() { directory } else {
+            let parent = self
+                .lock_path
+                .parent()
+                .ok_or(NativeMountError::InvalidDestination)?;
+            opened_directory = crate::native_host::open_root_directory(parent, work).map(|(directory, _)| directory)?;
+            &opened_directory
         };
         let lock_name = match self.fence_name.as_ref() {
             Some(name) => Path::new(

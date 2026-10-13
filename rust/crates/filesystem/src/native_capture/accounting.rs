@@ -5,7 +5,7 @@ pub(super) fn capture_work(
     cancellation: &CancellationToken,
 ) -> Result<crate::NativeMaterializationWork, OperationFailure<CaptureError>> {
     crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, completed)| OperationFailure::new(CaptureError::from(error), completed))
+        .map_err(|(error, completed)| OperationFailure::new(CaptureError::from(error), *completed))
 }
 
 pub(super) struct CaptureWorkScope {
@@ -111,7 +111,7 @@ pub(super) fn capture_sort_by<T>(
                         ..WorkCounters::UNCHARGED
                     },
                 )?;
-                if compare(&values[child], &values[child + 1]).is_lt() {
+                if compare(values.get(child).ok_or(CaptureError::InvalidOptions)?, values.get(child + 1).ok_or(CaptureError::InvalidOptions)?).is_lt() {
                     child += 1;
                 }
             }
@@ -122,7 +122,7 @@ pub(super) fn capture_sort_by<T>(
                     ..WorkCounters::UNCHARGED
                 },
             )?;
-            if !compare(&values[root], &values[child]).is_lt() {
+            if !compare(values.get(root).ok_or(CaptureError::InvalidOptions)?, values.get(child).ok_or(CaptureError::InvalidOptions)?).is_lt() {
                 break;
             }
             values.swap(root, child);
@@ -247,7 +247,7 @@ pub(super) fn capture_position<V>(
             },
         )?;
         let middle = low + (high - low) / 2;
-        match entries[middle].0.cmp(key) {
+        match entries.get(middle).ok_or(CaptureError::InvalidOptions)?.0.cmp(key) {
             std::cmp::Ordering::Less => low = middle + 1,
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => return Ok(Ok(middle)),
@@ -285,7 +285,7 @@ pub(super) fn capture_replace<V>(
     match capture_position(entries, &key, meter)? {
         Ok(index) => {
             capture_drop_path(key, meter)?;
-            entries[index].1 = value;
+            entries.get_mut(index).ok_or(CaptureError::InvalidOptions)?.1 = value;
             Ok(())
         }
         Err(index) => capture_insert_at(entries, index, key, value, meter),
@@ -307,7 +307,7 @@ pub(super) fn capture_entry<'a, V>(
             index
         }
     };
-    Ok(&mut entries[index].1)
+    Ok(&mut entries.get_mut(index).ok_or(CaptureError::InvalidOptions)?.1)
 }
 pub(super) fn capture_remove<V>(
     entries: &mut Vec<(NamespacePath, V)>,

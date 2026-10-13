@@ -451,15 +451,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     ) -> Result<ProofVec<'a, (TreePage, ProofGuard)>, crate::FsError> {
         Self::require_kind(root, ObjectKind::TreePage)?;
         let mut leaves = ProofVec::new(&self.meter);
-        let mut pending: ProofVec<
-            'a,
-            (
-                ObjectId,
-                Option<(LogicalName, ProofGuard)>,
-                Option<(LogicalName, ProofGuard)>,
-            ),
-        > = ProofVec::new(&self.meter);
-        pending.push((root, None, None))?;
+        let mut pending = ProofVec::new(&self.meter);
+        pending.push((root, None::<(LogicalName, ProofGuard)>, None::<(LogicalName, ProofGuard)>))?;
         let mut pages = ProofVec::new(&self.meter);
         while let Some((page_id, lower, upper)) = pending.pop() {
             self.examine(1)?;
@@ -624,15 +617,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     async fn prove_attributes(&mut self, root: ObjectId) -> Result<(), crate::FsError> {
         Self::require_kind(root, ObjectKind::AttributePage)?;
-        let mut pending: ProofVec<
-            'a,
-            (
-                ObjectId,
-                Option<(AttributeName, ProofGuard)>,
-                Option<(AttributeName, ProofGuard)>,
-            ),
-        > = ProofVec::new(&self.meter);
-        pending.push((root, None, None))?;
+        let mut pending = ProofVec::new(&self.meter);
+        pending.push((root, None::<(AttributeName, ProofGuard)>, None::<(AttributeName, ProofGuard)>))?;
         let mut pages = ProofVec::new(&self.meter);
         while let Some((page_id, lower, upper)) = pending.pop() {
             self.examine(1)?;
@@ -1522,7 +1508,8 @@ fn map_get<'v, K: Ord, V>(entries: &'v ProofVec<'_, (K, V)>, key: &K) -> Option<
         .values
         .binary_search_by(|entry| entry.0.cmp(key))
         .ok()
-        .map(|index| &entries.values[index].1)
+        .and_then(|index| entries.values.get(index))
+        .map(|(_, value)| value)
 }
 
 fn map_insert<K: Ord, V>(
@@ -1537,7 +1524,8 @@ fn map_insert<K: Ord, V>(
                 ..WorkCounters::UNCHARGED
             };
             entries.meter.admit(copied)?;
-            let previous = std::mem::replace(&mut entries.values[index].1, value);
+            let (_, slot) = entries.values.get_mut(index).ok_or(crate::FsError::InvalidDiff)?;
+            let previous = std::mem::replace(slot, value);
             entries.meter.record_completed(copied)?;
             Ok(Some(previous))
         }

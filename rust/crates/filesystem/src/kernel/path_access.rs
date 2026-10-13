@@ -282,7 +282,7 @@ impl<'a, S> OperationReadCache<'a, S> {
             for entry in state.slots.iter_mut() {
                 if let Some(value) = entry.as_ref() {
                     let vacant = probe_slots(&grown, value.object_id, accounting, None)?.1;
-                    grown[vacant] = entry.take();
+                    *grown.get_mut(vacant).ok_or(ObjectStoreError::Corrupt)? = entry.take();
                 }
             }
             let old = std::mem::replace(&mut state.slots, grown);
@@ -300,7 +300,7 @@ impl<'a, S> OperationReadCache<'a, S> {
             }
         }
         let vacant = probe_slots(&state.slots, object_id, accounting, None)?.1;
-        state.slots[vacant] = Some(CachedObject {
+        *state.slots.get_mut(vacant).ok_or(ObjectStoreError::Corrupt)? = Some(CachedObject {
             object_id,
             bytes: bytes.clone(),
         });
@@ -327,7 +327,7 @@ impl<'a, S> OperationReadCache<'a, S> {
                 // the caller retains the old baseline until this short leaf.
                 let (allocations, work, budget, _) = accounting
                     .standalone_parts()
-                    .expect("native residency keeps its physical guards");
+                    .ok_or(ObjectStoreError::Corrupt)?;
                 if actual >= state.accounted_bytes {
                     allocations
                         .record_owned_bytes(actual - state.accounted_bytes, work)
@@ -380,7 +380,8 @@ fn probe_slots(
         .ok_or(ObjectStoreError::Corrupt)?;
     let mut index = object_hash(object_id) & mask;
     for _ in 0..slots.len() {
-        let (found, next, vacant) = examine_item(accounting, custody, || match &slots[index] {
+        let slot = slots.get(index).ok_or(ObjectStoreError::Corrupt)?;
+        let (found, next, vacant) = examine_item(accounting, custody, || match slot {
             Some(entry) if entry.object_id == object_id => (
                 Some(ObjectRead {
                     bytes: entry.bytes.clone(),
@@ -447,7 +448,7 @@ fn compose_backend(
 ) -> Result<(), crate::FsError> {
     let (_, work, budget, _) = accounting
         .standalone_parts()
-        .expect("native backend work is original, never composed");
+        .ok_or(ObjectStoreError::Corrupt)?;
     *work = work.with_backend(backend, resident)?;
     work.verify(budget)?;
     Ok(())
@@ -497,7 +498,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             let result = async {
                 let resident = self.extra_resident()?;
                 let remaining = provider_remaining(&accounting, resident)?;
-                match {
+                let res = {
                     let __object_args = (object_id, bytes, remaining, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::new(__object_args.2, __object_args.3);
@@ -506,7 +507,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                         .put(__object_args.0, __object_args.1, &mut __object_work)
                         .await;
                     __object_work.receipt(__object_result)
-                } {
+                }; match res {
                     Ok(receipt) => compose_backend(&mut accounting, receipt.work, resident),
                     Err(failure) => {
                         compose_backend(&mut accounting, *failure.work, resident)?;
@@ -543,7 +544,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             let result = async {
                 let resident = self.extra_resident()?;
                 let remaining = provider_remaining(&accounting, resident)?;
-                match {
+                let res = {
                     let __object_args = (
                         authority_id,
                         record,
@@ -565,7 +566,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                         )
                         .await;
                     __object_work.receipt(__object_result)
-                } {
+                }; match res {
                     Ok(receipt) => {
                         compose_backend(&mut accounting, receipt.work, resident)?;
                         Ok(receipt.value)
@@ -666,7 +667,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             let result = async {
                 let resident = self.extra_resident()?;
                 let remaining = provider_remaining(&accounting, resident)?;
-                match {
+                let res = {
                     let __object_args = (scope, remaining, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -675,7 +676,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                         .flush_before_publish(__object_args.0, &mut __object_work)
                         .await;
                     __object_work.receipt(__object_result)
-                } {
+                }; match res {
                     Ok(receipt) => {
                         compose_backend(&mut accounting, receipt.work, resident)?;
                         Ok(receipt.value)
@@ -802,7 +803,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                 // Resident backend aliases coexist with a new table during growth.
                 let (allocations, work, _, _) = accounting
                     .standalone_parts()
-                    .expect("ordinary read owns its standalone projection");
+                    .ok_or(ObjectStoreError::Corrupt)?;
                 allocations
                     .record_owned_bytes(
                         resident.checked_add(owned).ok_or(WorkError::Overflow)?,
@@ -851,7 +852,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                 }
                 let resident = self.extra_resident()?;
                 let remaining = provider_remaining(&accounting, resident)?;
-                match {
+                let res = {
                     let __object_args = (object_id, remaining, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -860,7 +861,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                         .contains(__object_args.0, &mut __object_work)
                         .await;
                     __object_work.receipt(__object_result)
-                } {
+                }; match res {
                     Ok(receipt) => {
                         compose_backend(&mut accounting, receipt.work, resident)?;
                         Ok(receipt.value)
@@ -1575,11 +1576,11 @@ fn sift_active(
             return Ok(());
         };
         if child + 1 < end
-            && active_order(&values[child], &values[child + 1], accounting)? == Ordering::Less
+            && active_order(values.get(child).ok_or(ObjectStoreError::Corrupt)?, values.get(child + 1).ok_or(ObjectStoreError::Corrupt)?, accounting)? == Ordering::Less
         {
             child += 1;
         }
-        if active_order(&values[root], &values[child], accounting)? != Ordering::Less {
+        if active_order(values.get(root).ok_or(ObjectStoreError::Corrupt)?, values.get(child).ok_or(ObjectStoreError::Corrupt)?, accounting)? != Ordering::Less {
             return Ok(());
         }
         values.swap(root, child);
@@ -1622,11 +1623,11 @@ impl<'a> PathQueries<'a> {
             Self::Borrowed(paths) => paths.len(),
         }
     }
-    fn get(self, index: usize) -> &'a NamespacePath {
+    fn get(self, index: usize) -> Result<&'a NamespacePath, PathLookupError> {
         match self {
-            Self::Owned(paths) => &paths[index],
-            Self::Borrowed(paths) => paths[index],
-        }
+            Self::Owned(paths) => paths.get(index),
+            Self::Borrowed(paths) => paths.get(index).copied(),
+        }.ok_or(PathLookupError::KindMismatch)
     }
 }
 
@@ -1837,9 +1838,9 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
     }
     let mut total_components = 0_usize;
     for index in 0..paths.len() {
-        validate_path(paths.get(index), config, accounting)?;
+        validate_path(paths.get(index)?, config, accounting)?;
         total_components = total_components
-            .checked_add(paths.get(index).depth())
+            .checked_add(paths.get(index)?.depth())
             .ok_or(WorkError::Overflow)?;
     }
     let cache_entries = maximum_cache_entries_for_components(total_components, config)
@@ -1905,10 +1906,10 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
             let root = root.ok_or(PathLookupError::MissingRootRecord)?;
             drop(root_guard);
             for index in 0..count {
-                let is_root = examine_item(accounting, None, || paths.get(index).is_root())?;
+                let is_root = examine_item(accounting, None, || paths.get(index).map(NamespacePath::is_root))??;
                 if is_root {
-                    entries[index].record = Some(root);
-                    done[index] = 1;
+                    entries.get_mut(index).ok_or(PathLookupError::KindMismatch)?.record = Some(root);
+                    *done.get_mut(index).ok_or(PathLookupError::KindMismatch)? = 1;
                     if observe {
                         let expected = super::probe::capture_file_record_state_with_accounting(
                             root,
@@ -1922,33 +1923,33 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         });
                     }
                 } else {
-                    current[index] = Some(root);
+                    *current.get_mut(index).ok_or(PathLookupError::KindMismatch)? = Some(root);
                 }
             }
-            let maximum_depth = (0..count)
-                .map(|index| paths.get(index).depth())
-                .max()
-                .unwrap_or(0);
+            let maximum_depth = (0..count).try_fold(0_usize, |maximum, index| {
+                paths.get(index).map(|path| maximum.max(path.depth()))
+            })?;
             for depth in 0..maximum_depth {
                 pending.clear();
                 active.clear();
                 for index in 0..count {
                     let finished = examine_item(accounting, None, || {
-                        done[index] != 0 || paths.get(index).depth() <= depth
-                    })?;
+                        Ok::<_, PathLookupError>(done.get(index).copied().ok_or(PathLookupError::KindMismatch)? != 0
+                            || paths.get(index)?.depth() <= depth)
+                    })??;
                     if finished {
                         continue;
                     }
                     let FilePayload::Directory { entries: directory } =
-                        current[index].ok_or(PathLookupError::KindMismatch)?.payload
+                        current.get(index).copied().ok_or(PathLookupError::KindMismatch)?.ok_or(PathLookupError::KindMismatch)?.payload
                     else {
                         if matches!(mode, PathBatchMode::SelectedRestore) {
-                            entries[index] = PathBatchEntry {
+                            *entries.get_mut(index).ok_or(PathLookupError::KindMismatch)? = PathBatchEntry {
                                 record: None,
                                 parent: None,
                                 resolved_components: u16::try_from(depth).unwrap_or(u16::MAX),
                             };
-                            done[index] = 1;
+                            *done.get_mut(index).ok_or(PathLookupError::KindMismatch)? = 1;
                             continue;
                         }
                         return Err(PathLookupError::NotDirectory.into());
@@ -1961,13 +1962,14 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 sort_active(&mut active, accounting)?;
                 let mut cursor = 0;
                 while cursor < active.len() {
-                    let directory = active[cursor].directory;
+                    let directory = active.get(cursor).ok_or(PathLookupError::KindMismatch)?.directory;
                     let start = cursor;
                     cursor += 1;
                     while cursor < active.len() {
                         let same_directory = examine_item(accounting, None, || {
-                            active[cursor].directory == directory
-                        })?;
+                            active.get(cursor).map(|entry| entry.directory == directory)
+                                .ok_or(PathLookupError::KindMismatch)
+                        })??;
                         if !same_directory {
                             break;
                         }
@@ -1976,10 +1978,10 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     names.clear();
                     query_indices.clear();
                     let mut copied_bytes = 0_u64;
-                    for item in &active[start..cursor] {
+                    for item in active.get(start..cursor).ok_or(PathLookupError::KindMismatch)? {
                         query_indices.push(item.path_index);
                         let (name, guard) = copy_name(
-                            &paths.get(item.path_index).components()[depth],
+                            paths.get(item.path_index)?.components().get(depth).ok_or(PathLookupError::KindMismatch)?,
                             limits.maximum_name_bytes,
                             accounting,
                             data_custody,
@@ -2042,7 +2044,7 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             };
                             dependencies.push(Dependency {
                                 region: DependencyRegion::DirectoryName {
-                                    directory_id: current[*index]
+                                    directory_id: current.get(*index).copied().ok_or(PathLookupError::KindMismatch)?
                                         .ok_or(PathLookupError::KindMismatch)?
                                         .file_id,
                                     name,
@@ -2057,12 +2059,12 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 kind: binding.kind,
                             });
                         } else {
-                            entries[*index] = PathBatchEntry {
+                            *entries.get_mut(*index).ok_or(PathLookupError::KindMismatch)? = PathBatchEntry {
                                 record: None,
-                                parent: current[*index],
+                                parent: current.get(*index).copied().ok_or(PathLookupError::KindMismatch)?,
                                 resolved_components: u16::try_from(depth).unwrap_or(u16::MAX),
                             };
-                            done[*index] = 1;
+                            *done.get_mut(*index).ok_or(PathLookupError::KindMismatch)? = 1;
                         }
                     }
                     drop_bindings(bindings, accounting)?;
@@ -2098,7 +2100,7 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         return Err(PathLookupError::KindMismatch.into());
                     }
                     let next_depth = depth + 1;
-                    if next_depth == paths.get(binding.path_index).depth() {
+                    if next_depth == paths.get(binding.path_index)?.depth() {
                         if observe {
                             let expected = super::probe::capture_file_record_state_with_accounting(
                                 record,
@@ -2111,15 +2113,15 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 expected,
                             });
                         }
-                        entries[binding.path_index] = PathBatchEntry {
+                        *entries.get_mut(binding.path_index).ok_or(PathLookupError::KindMismatch)? = PathBatchEntry {
                             record: Some(record),
-                            parent: current[binding.path_index],
+                            parent: current.get(binding.path_index).copied().ok_or(PathLookupError::KindMismatch)?,
                             resolved_components: u16::try_from(next_depth).unwrap_or(u16::MAX),
                         };
-                        done[binding.path_index] = 1;
-                        current[binding.path_index] = None;
+                        *done.get_mut(binding.path_index).ok_or(PathLookupError::KindMismatch)? = 1;
+                        *current.get_mut(binding.path_index).ok_or(PathLookupError::KindMismatch)? = None;
                     } else {
-                        current[binding.path_index] = Some(record);
+                        *current.get_mut(binding.path_index).ok_or(PathLookupError::KindMismatch)? = Some(record);
                     }
                 }
                 drop_slots(records, accounting)?;

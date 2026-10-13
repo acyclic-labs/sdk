@@ -219,8 +219,9 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         Ok(())
     }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
+        let meter: Arc<dyn NativeReadMeter> = (*self).clone();
         acyclic_native_runtime::NativeOperationReservation::new(
-            self.runtime_meter(),
+            meter,
             NativeOperationKind::Write,
             1,
         )

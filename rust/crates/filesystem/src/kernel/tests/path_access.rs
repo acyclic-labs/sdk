@@ -10,7 +10,7 @@ use crate::kernel::{
 use crate::memory::MemoryObjectStore;
 use crate::model::{CaseSensitivity, ConcurrencyMode, Lifecycle, UnicodePolicy, VolumeLimits};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectResult,
+    ObjectFailure, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest,
     ObjectStoreError, object_digest,
 };
 use acyclic_stream::OwnedBytes;

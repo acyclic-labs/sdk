@@ -416,38 +416,7 @@ pub(crate) struct CheckoutRoots {
 }
 
 impl CheckoutRoots {
-    pub(crate) fn new_measured(
-        collection: Option<&Arc<Collection>>,
-        config: crate::model::VolumeConfig,
-        base: ObjectId,
-        working: GenerationRoot,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Self, crate::FsError> {
-        let mut accounting = KernelAccounting::borrowed_standalone(allocations, work, budget, cancellation);
-        Self::new_with_accounting(
-            collection, config, base, (working, crate::kernel::ProofDataClaim::default()),
-            &mut accounting, None,
-        )
-    }
-
-    /// Moves the decoder's same already-admitted working buffer and tag while
-    /// attaching exact held copies before any registration can fail.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn new_native_measured(
-        collection: Option<&Arc<Collection>>,
-        config: crate::model::VolumeConfig,
-        base: ObjectId,
-        working: (GenerationRoot, crate::kernel::ProofDataClaim),
-        accounting: &mut KernelAccounting<'_>,
-        owner: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<Self, crate::FsError> {
-        Self::new_with_accounting(collection, config, base, working, accounting, Some(owner))
-    }
-
-    fn new_with_accounting(
+    pub(crate) fn new(
         collection: Option<&Arc<Collection>>,
         config: crate::model::VolumeConfig,
         base: ObjectId,
@@ -472,22 +441,13 @@ impl CheckoutRoots {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn replicate_native_measured(
-        &self,
-        accounting: &mut KernelAccounting<'_>,
-        owner: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<Self, crate::FsError> {
-        self.replicate_with_accounting(accounting, Some(owner))
-    }
-
-    pub(crate) fn replicate_with_accounting(
+    pub(crate) fn replicate(
         &self,
         accounting: &mut KernelAccounting<'_>,
         native_owner: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> Result<Self, crate::FsError> {
         let working = clone_generation_root_with_control(&self.working, accounting, native_owner)?;
-        Self::new_with_accounting(
+        Self::new(
             self.hold.as_ref().map(|hold| &hold.collection), self.config,
             self.base, working, accounting, native_owner,
         )
@@ -831,7 +791,7 @@ mod tests {
             .map_err(|(cause, _)| cause)?;
         let producer = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         let custody = producer.private_control_custody();
-        let meter = (&original.state);
+        let meter = &original.state;
         let baseline = original.live_allocation_bytes();
         let physical = custody.physical_retained_bytes();
         let events = custody.native_control_events();
@@ -844,18 +804,18 @@ mod tests {
         assert_eq!(foreign_token.physical_retained_bytes(), 0);
         assert_eq!(original.live_allocation_bytes(), baseline);
         let collection = Arc::new(Collection::default());
-        let source = CheckoutRoots::new_measured(Some(&collection), roots.config, roots.base, roots.working, &mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation)?;
+        let source = CheckoutRoots::new(Some(&collection), roots.config, roots.base, (roots.working, crate::kernel::ProofDataClaim::default()), &mut KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation), None)?;
         let cancelled = crate::CancellationToken::new();
         cancelled.cancel();
         let mut accounting = KernelAccounting::native(&original, &cancelled);
-        let failed = source.replicate_native_measured(&mut accounting, &custody)
+        let failed = source.replicate(&mut accounting, Some(&custody))
             .err().ok_or("cancelled held registration installed a native replica")?;
         assert!(matches!(failed, crate::FsError::Cancelled(_)));
         assert_eq!(custody.native_control_events(), events, "cancelled preadmission owns no phantom buffers");
         assert_eq!(custody.physical_retained_bytes(), physical);
         assert_eq!(original.live_allocation_bytes(), baseline);
         let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let mut paid = source.replicate_native_measured(&mut accounting, &custody)?;
+        let mut paid = source.replicate(&mut accounting, Some(&custody))?;
         assert!(paid.same_original_scope(meter));
         let foreign = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
@@ -886,7 +846,7 @@ mod tests {
         assert_eq!(original.live_allocation_bytes(), baseline,
             "root buffers and exclusive slot quota retire but cached slots remain");
         let Held::Checkout(empty) = checkout_hold() else { unreachable!() };
-        let empty = CheckoutRoots::new_measured(None, empty.config, empty.base, empty.working, &mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation)?;
+        let empty = CheckoutRoots::new(None, empty.config, empty.base, (empty.working, crate::kernel::ProofDataClaim::default()), &mut KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation), None)?;
         assert!(empty.same_original_scope(meter), "actual zero-capacity buffers require no allocation tag");
         Ok(())
     }
@@ -898,11 +858,11 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let Held::Checkout(mut roots) = checkout_hold() else { unreachable!() };
         roots.working.parents = vec![crate::GenerationId::new(object(7).digest)];
-        let original = CheckoutRoots::new_measured(Some(&collection), roots.config, roots.base, roots.working, &mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation)?;
+        let original = CheckoutRoots::new(Some(&collection), roots.config, roots.base, (roots.working, crate::kernel::ProofDataClaim::default()), &mut KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation), None)?;
         let custody = Arc::new(crate::kernel::ProofDataCustody::default());
         let mut allocations = AllocationLedger::default();
         let mut work = WorkCounters::default();
-        let mut measured = original.replicate_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), None)?;
+        let mut measured = original.replicate(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), None)?;
         measured.attach_control_custody(&custody);
         let (copied_held, held_bytes) = {
             let holds = collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
@@ -921,7 +881,7 @@ mod tests {
         assert!(collection.holds.lock().unwrap_or_else(PoisonError::into_inner).slots.capacity() > 0,
             "freed per-handle buffers do not destroy or adopt cached slot backing");
         drop(copied_held);
-        let mut measured = original.replicate_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), None)?;
+        let mut measured = original.replicate(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), None)?;
         measured.attach_control_custody(&custody);
         assert!(custody.physical_retained_bytes() > 0);
         measured.set_working(original.working.clone());

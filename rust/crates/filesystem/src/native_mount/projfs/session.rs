@@ -3,7 +3,7 @@ use super::*;
 // SAFETY: the projection loop drains before its owner stops the SDK context.
 unsafe impl Send for SendContext {}
 
-pub(in crate::native_mount) fn has_pending_capture(
+pub(super) fn has_pending_capture(
     failure: &Mutex<PostOperationFailures>,
     path: &MountPath,
 ) -> bool {
@@ -15,9 +15,9 @@ pub(in crate::native_mount) fn has_pending_capture(
 }
 
 pub(in crate::native_mount) struct ProjFsSession {
-    pub(in crate::native_mount) controller: Option<Arc<Projector>>,
+    pub(super) controller: Option<Arc<Projector>>,
     pub(in crate::native_mount) context: Option<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>,
-    pub(in crate::native_mount) runtime: Option<Arc<Runtime>>,
+    pub(super) runtime: Option<Arc<Runtime>>,
     pub(in crate::native_mount) retirement: Option<super::super::NativeMountRetirement>,
     pub(in crate::native_mount) original_stop_work: crate::NativeMaterializationWork,
     pub(in crate::native_mount) sdk_stop_credit: Option<crate::NativeWorkReservation>,
@@ -277,8 +277,7 @@ impl ProjFsSession {
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
             capture_failure: self.capture_failure.take(),
             cleanup_failure,
-            qualification: self.qualification,
-            state,
+            _state: state,
             callbacks: Arc::clone(&runtime.post_operation_failure),
         });
         self.runtime = None;
@@ -384,7 +383,7 @@ impl ProjFsSession {
         let source = runtime.source.as_ref();
         flush_callback_gate(
             &runtime.callbacks,
-            Arc::clone(&runtime.post_operation_failure),
+            &runtime.post_operation_failure,
             |paths| {
                 let mut exact = Vec::new();
                 for (path, subtree) in paths {
@@ -492,7 +491,7 @@ impl ProjFsSession {
         runtime.projector.settle()
     }
 
-    pub(in crate::native_mount) fn live(
+    pub(super) fn live(
         &self,
     ) -> Result<(&Arc<Runtime>, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
         self.runtime
@@ -508,13 +507,12 @@ pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Engine(_) => HR_IO_DEVICE,
         MountSourceError::Stale | MountSourceError::Cancelled => HR_FILE_INVALID,
         MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
             HR_FILE_INVALID
         }
         MountSourceError::Io(error, _) => {
-            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117) as u32)
+            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117).cast_unsigned())
         }
         _ => HR_IO_DEVICE,
     }
@@ -524,7 +522,7 @@ pub(super) fn native_hresult(error: &NativeMountError) -> HRESULT {
     match error {
         NativeMountError::Source(error) => source_hresult(error),
         NativeMountError::Io(error) => {
-            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117) as u32)
+            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117).cast_unsigned())
         }
         NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
             HR_FILE_INVALID
