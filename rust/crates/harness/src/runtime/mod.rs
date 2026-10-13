@@ -73,6 +73,7 @@ pub use tools::*;
 mod children;
 mod dependencies;
 pub(crate) use children::*;
+pub(crate) use dependencies::{dependency_target, validate_task_dependencies};
 mod context_open;
 pub(crate) use context_open::*;
 mod admission_execution;

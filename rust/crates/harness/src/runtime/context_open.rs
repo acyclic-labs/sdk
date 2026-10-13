@@ -219,7 +219,7 @@ impl AgentHarness {
                     descendants,
                     Arc::new((AtomicUsize::new(0), None)),
                     None,
-                    None,
+                    None::<NativeCustody>,
                     IssuedContextPurpose::Read,
                 )
             }

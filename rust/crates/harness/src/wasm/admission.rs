@@ -270,7 +270,7 @@ pub fn validate_task_requirements_wasm(
     #[wasm_bindgen(unchecked_param_type = "WasmTaskDependencyInput")] value: JsValue,
 ) -> Result<(), JsValue> {
     let input: WasmTaskDependencyInput = from_js(value)?;
-    let mut tasks = std::collections::BTreeMap::new();
+    let mut tasks = std::collections::BTreeMap::<_, BTreeSet<String>>::new();
     for definition in input.tasks {
         let key = (definition.name, definition.version);
         if tasks
@@ -288,30 +288,60 @@ pub fn validate_task_requirements_wasm(
         .into_iter()
         .map(|definition| (definition.name, definition.version))
         .collect();
-    let extensions = input
-        .extensions
-        .into_iter()
-        .map(|definition| (definition.name, definition.version))
-        .collect();
-    let environment = TaskDependencyEnvironment {
-        model: input.components.model,
-        context: input.components.context,
-        interactions: input.components.interactions,
-        policy: input.components.policy,
-        host: input.components.host,
-        state: input.components.state,
-        spawner: input.components.spawner,
-        content: input.components.content,
-        artifacts: input.components.artifacts,
-        content_write: input.components.content_write,
-        artifacts_write: input.components.artifacts_write,
-        extensions,
-    };
-    validate_task_requirements(
-        tasks.iter().map(|((name, version), requirements)| ((name.as_str(), version.as_str()), requirements)),
-        |name, version| Ok(tools.iter().any(|(selected, revision)| selected == name && revision == version)),
-        &environment,
-        &crate::Capabilities::new(input.grants),
+    let tasks: Vec<_> = tasks.iter().collect();
+    let grants = crate::Capabilities::new(input.grants);
+    validate_task_dependencies(
+        tasks.len(),
+        |index| {
+            let ((name, version), requirements) = tasks[index];
+            (name.as_str(), version.as_str(), requirements)
+        },
+        |requirement| {
+            Ok(if let Some(value) = requirement.strip_prefix("tool:") {
+                let (name, version) = dependency_target(value)
+                    .ok_or_else(|| crate::Error::Invalid("invalid tool dependency".into()))?;
+                tools
+                    .iter()
+                    .any(|(selected, revision)| selected == name && revision == version)
+            } else if let Some(grant) = requirement.strip_prefix("grant:") {
+                !grant.is_empty() && grants.contains(grant)
+            } else if let Some(value) = requirement.strip_prefix("extension:") {
+                let (name, version) = dependency_target(value)
+                    .ok_or_else(|| crate::Error::Invalid("invalid extension dependency".into()))?;
+                let version = version
+                    .parse::<u32>()
+                    .map_err(|_| crate::Error::Invalid("invalid extension dependency".into()))?;
+                input
+                    .extensions
+                    .iter()
+                    .any(|identity| identity.name == name && identity.version == version)
+            } else {
+                let components = &input.components;
+                match requirement {
+                    "model" => {
+                        components.model
+                            && grants.contains(crate::contract::capability::MODEL_GENERATE)
+                    }
+                    "context" => {
+                        components.context
+                            && grants.contains(crate::contract::capability::CONTEXT_BUILD)
+                    }
+                    "interactions" => {
+                        components.interactions
+                            && grants.contains(crate::contract::capability::INTERACTION_ROUTE)
+                    }
+                    "policy" => components.policy,
+                    "host" => components.host || (components.state && components.spawner),
+                    "state" => components.host || components.state,
+                    "spawner" => components.host || components.spawner,
+                    "content" => components.content,
+                    "artifacts" => components.artifacts,
+                    "content:write" => components.content_write,
+                    "artifacts:write" => components.artifacts_write,
+                    _ => false,
+                }
+            })
+        },
         None,
     )
     .map_err(js_error)
@@ -405,9 +435,10 @@ pub fn admit_batch_request_wasm(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(js_error)?;
-    let input_digest = crate::executor::json::canonical_json_digest(&canonical, u64::MAX, &mut None)
-        .map_err(js_error)?
-        .to_vec();
+    let input_digest =
+        crate::executor::json::canonical_json_digest(&canonical, u64::MAX, &mut None)
+            .map_err(js_error)?
+            .to_vec();
     let projection = WasmBatchAdmissionRequest {
         contract: "harness.batch.v2",
         group_id: request.group_id,
