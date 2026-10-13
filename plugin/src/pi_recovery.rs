@@ -276,7 +276,7 @@ where
             None => PiTaskOrigin::RootState(state),
             Some(parent) => PiTaskOrigin::Child(parent),
         };
-        let input = authenticate_pi_task_inner(
+        let input = authenticate_pi_task(
             runtime,
             task.binding,
             origin,
@@ -450,25 +450,7 @@ where
     Ok(())
 }
 
-/// Transient authenticated references, never another persisted lease registry.
 pub(crate) async fn authenticate_pi_task<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>,
-    binding: &PiTaskBinding,
-    origin: PiTaskOrigin<'_>,
-    work: &NativeMaterializationWork,
-) -> Result<(PiTaskInput, NativeAllocation)>
-where
-    P: acyclic_stream::StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-{
-    let definition = PiTaskMachine::new(work)?.definition(work)?;
-    let admitted =
-        authenticate_pi_task_inner(runtime, binding, origin, work, definition.identity()).await?;
-    Ok((admitted.0.0, admitted.1))
-}
-
-async fn authenticate_pi_task_inner<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>,
     binding: &PiTaskBinding,
     origin: PiTaskOrigin<'_>,

@@ -24,6 +24,7 @@ impl PiControlHost<'_> {
             binding,
             pi_recovery::PiTaskOrigin::RootState(self.retained),
             &self.work,
+            self.runtime.definition.identity(),
         )
         .await?;
         let (recovered, custody) = {

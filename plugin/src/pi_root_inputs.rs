@@ -51,9 +51,15 @@ impl PiRootPreparation {
             let owner = PiOwnerConfig::load(private_root, session, work)?;
             runtime.verify_owner_with_native_work(&owner, work)?;
             owner.validate_root(binding, work)?;
-            let admitted =
-                super::pi_recovery::authenticate_pi_task(&runtime.runtime, binding, origin, work)
-                    .await?;
+            let admitted = super::pi_recovery::authenticate_pi_task(
+                &runtime.runtime,
+                binding,
+                origin,
+                work,
+                runtime.definition.identity(),
+            )
+            .await?;
+            let admitted = (admitted.0.0, admitted.1);
             let context = if let Some(context) = context {
                 context
             } else {
