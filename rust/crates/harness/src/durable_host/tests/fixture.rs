@@ -2,7 +2,6 @@
 use super::*;
 use crate::filesystem::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
-    FilesystemSchedulerPayloadStore,
 };
 use crate::runtime::{TaskDefinition, TaskRegistry};
 type Execution<P, A, O> = crate::filesystem::FilesystemExecutionJournal<P, A, O>;
@@ -248,14 +247,14 @@ where
             scope.limits().file_bytes,
             None,
         )?;
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             files.clone(),
             &storage,
             &verifier,
             &signed,
             scope.limits().file_bytes,
             None,
-        )?);
+        )?;
         let coordinator = DistributedCoordinator::open(
             &stream,
             reader.clone(),
@@ -355,14 +354,14 @@ where
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             self.files.clone(),
             &self.storage,
             &verifier,
             &signed,
             self.scope.limits().file_bytes,
             None,
-        )?);
+        )?;
         let mut host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(
                 &self.stream,

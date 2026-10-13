@@ -32,15 +32,15 @@ impl Command {
         use wire_codec::requests::*;
         match self {
             Self::Append(request) => {
-                message_header(output, 1, append_len(request));
+                header(output, 1, append_len(request));
                 append(output, request);
             }
             Self::Fork(request) => {
-                message_header(output, 2, fork_len(request));
+                header(output, 2, fork_len(request));
                 fork(output, request);
             }
             Self::Commit(request) => {
-                message_header(output, 5, commit_len(request));
+                header(output, 5, commit_len(request));
                 commit(output, request);
             }
         }

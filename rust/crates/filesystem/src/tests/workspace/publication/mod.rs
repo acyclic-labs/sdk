@@ -182,16 +182,13 @@ async fn first_fork_record(
                 records: 1,
                 payload_bytes: 4 * 1024,
             },
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
         )
         .await
     {
-        Ok(records) => Ok(records.value.into_iter().next()),
-        Err(failure) if matches!(failure.error, crate::storage::AuthorityStoreError::Missing) => {
-            Ok(None)
-        }
-        Err(failure) => Err(failure.error.into()),
+        Ok((records, _)) => Ok(records.into_iter().next()),
+        Err(crate::storage::AuthorityStoreError::Missing) => Ok(None),
+        Err(failure) => Err(failure.into()),
     }
 }
 
@@ -298,7 +295,7 @@ async fn fork_through_every_cut(
             let attempt = fork_workspace(&main, "agent", options()).await;
             let fired = cutting.disarm();
             let destination =
-                value!(fs.workspace_id("agent", WorkBudget::UNBOUNDED, &CancellationToken::new()))?;
+                fs.workspace_id("agent")?;
             let complete =
                 assert_fork_state_exact(&stream, &source, main.id().volume_id(), destination)
                     .await?;

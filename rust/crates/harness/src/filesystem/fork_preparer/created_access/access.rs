@@ -222,18 +222,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     })?;
             }
         }
-        match source {
-            Some(source) => {
-                self.writer()?
-                    .replace(operation, source, bytes, io, lease, root)
-                    .await
-            }
-            None => {
-                self.writer()?
-                    .publish_once(operation, path, bytes, media, display, io, lease, root)
-                    .await
-            }
-        }
+        self.writer()?.publish(operation, source, path, bytes, media, display, io, lease, root).await
     }
     async fn observe(
         &self,

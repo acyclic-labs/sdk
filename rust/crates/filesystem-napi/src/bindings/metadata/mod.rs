@@ -54,7 +54,7 @@ impl NativeCheckout {
     pub async fn read_metadata_by_id(&self, file_id: Buffer) -> Result<NativeMetadataResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout_call!(self, checkout, read_metadata_by_id(file_id,))?;
+        let receipt = checkout_call!(self, checkout, read_metadata(file_id,))?;
         Ok(NativeMetadataResult {
             canonical_bytes: Buffer::from(
                 encode_file_metadata(
@@ -104,7 +104,7 @@ impl NativeCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
-        let receipt = checkout_mutation!(self, set_attributes_by_id(file_id, metadata, None,))?;
+        let receipt = checkout_mutation!(self, set_attributes(file_id, metadata, None,))?;
         mutation_result(receipt.work)
     }
 
@@ -150,7 +150,7 @@ impl NativeCheckout {
             .transpose()?;
         let receipt = checkout_mutation!(
             self,
-            set_attributes_by_id(file_id, metadata, logical_bytes,)
+            set_attributes(file_id, metadata, logical_bytes,)
         )?;
         mutation_result(receipt.work)
     }

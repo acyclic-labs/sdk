@@ -139,13 +139,7 @@ impl ProjectionState {
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        unbind(
-            &mut self.by_inode,
-            &mut self.inode_by_file,
-            inode,
-            path,
-            work,
-        )?;
+        self.unbind(inode, path, work)?;
         if self.inode_by_path.get(path) == Some(&inode) {
             self.inode_by_path.remove(path);
         }
@@ -214,168 +208,164 @@ impl ProjectionState {
     }
 }
 
-pub(super) fn forget_unbound_names(
-    by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
-    inode: u64,
-    path: &MountPath,
-    still_bound: impl Fn(&MountPath, Option<ViewStamp>) -> Result<bool, NativeMountError>,
-    deferred: &mut FuseOwned<Vec<KernelCacheItem>>,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeMountError> {
-    let mut items = fuse_vec(0, work)?;
-    let Some(entry) = by_inode.get(&inode) else {
-        return Ok(());
-    };
-    let mut removed = fuse_vec(0, work)?;
-    for (index, binding) in entry.bindings.iter().enumerate() {
-        work.charge(Items.delta(1))?;
-        if *binding.path == *path || still_bound(&binding.path, binding.verified)? {
-            continue;
-        }
-        if binding.kernel.is_some()
-            && let Some(parent) = fuse_parent(&binding.path, work)?
-            && let Some(parent_inode) = inode_by_path.get(&*parent).copied()
-        {
-            let component = binding.path.components().last().ok_or(libc::ESTALE)?;
-            let name = fuse_copy_bytes(component, work)?;
-            fuse_reserve(&mut items, 1, work)?;
-            items.push(KernelCacheItem::Entry {
-                parent: parent_inode,
-                name,
-            });
-        }
-        fuse_reserve(&mut removed, 1, work)?;
-        removed.push(index);
-    }
-    let width = std::mem::size_of::<Binding>();
-    let mut remaining = entry.bindings.len();
-    let mut copied = 0_u64;
-    for index in removed.iter().rev().copied() {
-        let shifted = (remaining - index - 1)
-            .checked_mul(width)
-            .ok_or(crate::WorkError::Overflow)? as u64;
-        copied = copied
-            .checked_add(shifted)
-            .ok_or(crate::WorkError::Overflow)?;
-        remaining -= 1;
-    }
-    fuse_reserve(deferred, items.len(), work)?;
-    let appended = items
-        .len()
-        .checked_mul(std::mem::size_of::<KernelCacheItem>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    work.admit(
-        Copy.delta(
-            copied
-                .checked_add(appended)
-                .ok_or(crate::WorkError::Overflow)?,
-        ),
-    )?;
-    deferred.append(&mut items);
-    work.record_admitted(Copy.delta(appended))?;
-    let entry = by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
-    for index in removed.iter().rev().copied() {
-        let binding = entry.bindings.remove(index);
-        if inode_by_path.get(&*binding.path) == Some(&inode) {
-            inode_by_path.remove(&*binding.path);
-        }
-    }
-    work.record_admitted(Copy.delta(copied)).map_err(Into::into)
-}
-
-pub(super) fn bind_path(
-    by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
-    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
-    path: &MountPath,
-    inode: u64,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeMountError> {
-    work.charge(Items.delta(1))?;
-    if let Some(previous) = inode_by_path.get(path).copied() {
-        if previous != inode {
-            unbind(by_inode, inode_by_file, previous, path, work)?;
-        }
-        *inode_by_path
-            .get_mut(path)
-            .expect("existing path remains locked") = inode;
-        return Ok(());
-    }
-    let mut key = fuse_clone_path(path, work)?;
-    key.claim(
-        std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64,
-        work,
-    )?;
-    inode_by_path
-        .try_reserve(1)
-        .map_err(NativeMountError::Allocation)?;
-    inode_by_path.insert(key, inode);
-    Ok(())
-}
-
-pub(super) fn unbind(
-    by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
-    inode: u64,
-    path: &MountPath,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeMountError> {
-    let Some(entry) = by_inode.get_mut(&inode) else {
-        return Ok(());
-    };
-    let mut matched = None;
-    for (index, binding) in entry.bindings.iter().enumerate() {
-        work.charge(Items.delta(1))?;
-        if *binding.path == *path {
-            matched = Some(index);
-            break;
-        }
-    }
-    if let Some(index) = matched {
-        let copied = (entry.bindings.len() - index - 1)
-            .checked_mul(std::mem::size_of::<Binding>())
-            .ok_or(crate::WorkError::Overflow)? as u64;
-        work.admit(Copy.delta(copied))?;
-        entry.bindings.remove(index);
-        work.record_admitted(Copy.delta(copied))?;
-    }
-    if entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0 {
-        let entry = by_inode
-            .remove(&inode)
-            .expect("matched inode remains locked");
-        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
-    }
-    Ok(())
-}
-
-pub(super) fn forget_file(
-    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
-    file_id: crate::FileId,
-    inode: u64,
-) {
-    if inode_by_file
-        .get(&file_id)
-        .is_some_and(|(held, _)| *held == inode)
-    {
-        inode_by_file.remove(&file_id);
-    }
-}
-
-pub(super) fn retire_reused_identity(
-    by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
-    inode: u64,
-) {
-    if inode != ROOT_INODE
-        && let Some(entry) = by_inode.get(&inode)
-        && entry.bindings.is_empty()
-    {
-        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
-    }
-}
-
 impl ProjectionState {
+    pub(super) fn forget_unbound_names(
+        &mut self,
+        source: &dyn MountFilesystem,
+        confirmed: &HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
+        inode: u64,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let mut items = fuse_vec(0, work)?;
+        let Some(entry) = self.by_inode.get(&inode) else {
+            return Ok(());
+        };
+        let mut removed = fuse_vec(0, work)?;
+        for (index, binding) in entry.bindings.iter().enumerate() {
+            work.charge(Items.delta(1))?;
+            if *binding.path == *path
+                || name_is_bound(
+                    confirmed,
+                    source,
+                    entry.lookup.node.file_id,
+                    &binding.path,
+                    work,
+                )?
+                || match binding.verified {
+                    Some(stamp) => {
+                        source.unchanged_since_with_meter(&binding.path, None, stamp, work)?
+                    }
+                    None => false,
+                }
+            {
+                continue;
+            }
+            if binding.kernel.is_some()
+                && let Some(parent) = fuse_parent(&binding.path, work)?
+                && let Some(parent_inode) = self.inode_by_path.get(&*parent).copied()
+            {
+                let component = binding.path.components().last().ok_or(libc::ESTALE)?;
+                let name = fuse_copy_bytes(component, work)?;
+                fuse_reserve(&mut items, 1, work)?;
+                items.push(KernelCacheItem::Entry {
+                    parent: parent_inode,
+                    name,
+                });
+            }
+            fuse_reserve(&mut removed, 1, work)?;
+            removed.push(index);
+        }
+        let width = std::mem::size_of::<Binding>();
+        let mut remaining = entry.bindings.len();
+        let mut copied = 0_u64;
+        for index in removed.iter().rev().copied() {
+            let shifted = (remaining - index - 1)
+                .checked_mul(width)
+                .ok_or(crate::WorkError::Overflow)? as u64;
+            copied = copied
+                .checked_add(shifted)
+                .ok_or(crate::WorkError::Overflow)?;
+            remaining -= 1;
+        }
+        fuse_reserve(&mut self.invalidation.deferred, items.len(), work)?;
+        let appended = items
+            .len()
+            .checked_mul(std::mem::size_of::<KernelCacheItem>())
+            .ok_or(crate::WorkError::Overflow)? as u64;
+        work.admit(
+            Copy.delta(
+                copied
+                    .checked_add(appended)
+                    .ok_or(crate::WorkError::Overflow)?,
+            ),
+        )?;
+        self.invalidation.deferred.append(&mut items);
+        work.record_admitted(Copy.delta(appended))?;
+        let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
+        for index in removed.iter().rev().copied() {
+            let binding = entry.bindings.remove(index);
+            if self.inode_by_path.get(&*binding.path) == Some(&inode) {
+                self.inode_by_path.remove(&*binding.path);
+            }
+        }
+        work.record_admitted(Copy.delta(copied)).map_err(Into::into)
+    }
+
+    pub(super) fn bind_path(
+        &mut self,
+        path: &MountPath,
+        inode: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        work.charge(Items.delta(1))?;
+        if let Some(previous) = self.inode_by_path.get(path).copied() {
+            if previous != inode {
+                self.unbind(previous, path, work)?;
+            }
+            *self
+                .inode_by_path
+                .get_mut(path)
+                .expect("existing path remains locked") = inode;
+            return Ok(());
+        }
+        let mut key = fuse_clone_path(path, work)?;
+        key.claim(
+            std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64,
+            work,
+        )?;
+        self.inode_by_path
+            .try_reserve(1)
+            .map_err(NativeMountError::Allocation)?;
+        self.inode_by_path.insert(key, inode);
+        Ok(())
+    }
+
+    fn unbind(
+        &mut self,
+        inode: u64,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let Some(entry) = self.by_inode.get_mut(&inode) else {
+            return Ok(());
+        };
+        let mut matched = None;
+        for (index, binding) in entry.bindings.iter().enumerate() {
+            work.charge(Items.delta(1))?;
+            if *binding.path == *path {
+                matched = Some(index);
+                break;
+            }
+        }
+        if let Some(index) = matched {
+            let copied = (entry.bindings.len() - index - 1)
+                .checked_mul(std::mem::size_of::<Binding>())
+                .ok_or(crate::WorkError::Overflow)? as u64;
+            work.admit(Copy.delta(copied))?;
+            entry.bindings.remove(index);
+            work.record_admitted(Copy.delta(copied))?;
+        }
+        if entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0 {
+            let entry = self
+                .by_inode
+                .remove(&inode)
+                .expect("matched inode remains locked");
+            self.forget_file(entry.lookup.node.file_id, inode);
+        }
+        Ok(())
+    }
+
+    pub(super) fn forget_file(&mut self, file_id: crate::FileId, inode: u64) {
+        if self
+            .inode_by_file
+            .get(&file_id)
+            .is_some_and(|(held, _)| *held == inode)
+        {
+            self.inode_by_file.remove(&file_id);
+        }
+    }
+
     pub(super) fn intern_projected(
         &mut self,
         path: FuseOwned<MountPath>,
@@ -384,32 +374,27 @@ impl ProjectionState {
         lookup_reference: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<u64, NativeMountError> {
-        let Self {
-            next_inode,
-            by_inode,
-            inode_by_path,
-            inode_by_file,
-            ..
-        } = self;
         work.charge(Items.delta(1))?;
-        if let Some(inode) = inode_by_file
+        if let Some(inode) = self
+            .inode_by_file
             .get(&lookup.node.file_id)
             .map(|(inode, _)| *inode)
         {
-            let needs_binding = by_inode
+            let needs_binding = self
+                .by_inode
                 .get(&inode)
                 .ok_or(libc::ESTALE)?
                 .binding(&path)
                 .is_none();
             if needs_binding {
                 fuse_reserve(
-                    &mut by_inode.get_mut(&inode).ok_or(libc::ESTALE)?.bindings,
+                    &mut self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?.bindings,
                     1,
                     work,
                 )?;
             }
-            bind_path(by_inode, inode_by_path, inode_by_file, &path, inode, work)?;
-            let entry = by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
+            self.bind_path(&path, inode, work)?;
+            let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
             if needs_binding {
                 entry.bindings.push(Binding {
                     path,
@@ -426,7 +411,7 @@ impl ProjectionState {
             }
             return Ok(inode);
         }
-        let inode = *next_inode;
+        let inode = self.next_inode;
         if inode <= ROOT_INODE {
             return Err(libc::EOVERFLOW.into());
         }
@@ -442,22 +427,23 @@ impl ProjectionState {
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
-        by_inode
+        self.by_inode
             .try_reserve(1)
             .map_err(NativeMountError::Allocation)?;
-        inode_by_path
+        self.inode_by_path
             .try_reserve(1)
             .map_err(NativeMountError::Allocation)?;
-        inode_by_file
+        self.inode_by_file
             .try_reserve(1)
             .map_err(NativeMountError::Allocation)?;
-        if let Some(previous) = inode_by_path.get(&*key).copied() {
-            unbind(by_inode, inode_by_file, previous, &key, work)?;
+        if let Some(previous) = self.inode_by_path.get(&*key).copied() {
+            self.unbind(previous, &key, work)?;
         }
-        inode_by_path.insert(key, inode);
-        inode_by_file.insert(lookup.node.file_id, (inode, storage));
-        by_inode.insert(inode, entry);
-        *next_inode = following;
+        self.inode_by_path.insert(key, inode);
+        self.inode_by_file
+            .insert(lookup.node.file_id, (inode, storage));
+        self.by_inode.insert(inode, entry);
+        self.next_inode = following;
         Ok(inode)
     }
 }

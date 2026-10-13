@@ -75,7 +75,6 @@ fn pause_test_write() {
 const ROOT_INODE: u64 = 1;
 static ROOT_PATH: MountPath = MountPath::root();
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-const PAGE_STORE_LIMIT: u64 = 128 * 1024;
 const MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY: usize = 1024;
 const REQUESTED_CAPABILITIES: InitFlags = InitFlags::FUSE_DO_READDIRPLUS
     .union(InitFlags::FUSE_PARALLEL_DIROPS)

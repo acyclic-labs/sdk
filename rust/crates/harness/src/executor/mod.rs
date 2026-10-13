@@ -30,18 +30,13 @@ mod native_stock;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native_stock::{
-    completed_tool_projection_with_native_work, load_json_with_native_work,
-    replay_execution_with_native_work, retained_model_step_with_native_work,
-    stage_json_with_native_work,
-};
 pub(crate) use native_stock::{
     stage_json, stock_boundary, stock_string_copy, stock_string_push, stock_vec_push,
 };
 
 mod journal;
 pub use journal::ExecutionJournal;
+use journal::validate_journal;
 mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;

@@ -20,8 +20,50 @@ pub struct SourceDirectoryPublication {
     original: Option<crate::NativeMaterializationWork>,
     _ownership: SourcePayloadOwnership,
 }
-
+impl std::fmt::Debug for SourceDirectoryPublication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceDirectoryPublication")
+            .field("pending", &self.state.is_some())
+            .finish()
+    }
+}
+fn publication_cleanup() -> WorkCounters {
+    WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    }
+}
 impl SourceDirectoryPublication {
+    fn store(&mut self, end: Option<usize>) -> Result<(), DemandError> {
+        let mut active = self
+            .source
+            .inner
+            .cursors
+            .lock()
+            .map_err(|_| DemandError::StaleCursor)?;
+        if self.source.reference() != self.reference {
+            return Err(DemandError::StaleSource);
+        }
+        if self.restore && !active.contains_key(&self.token) {
+            return Err(DemandError::StaleCursor);
+        }
+        if let Some(mut state) = self.state.take() {
+            if let Some(end) = end {
+                state.offset = end;
+            }
+            if !self.restore
+                && active.len() >= 1024
+                && let Some(oldest) = active.keys().next().copied()
+            {
+                active.remove(&oldest);
+            }
+            active.insert(self.token, Some(state));
+        } else {
+            active.remove(&self.token);
+        }
+        self.restore = false;
+        Ok(())
+    }
     fn discard(&mut self) {
         self.state.take();
         if self.restore {
@@ -31,60 +73,75 @@ impl SourceDirectoryPublication {
             self.restore = false;
         }
     }
-
-    fn commit(&mut self, end: usize) -> Result<(), DemandError> {
-        let mut active = self
-            .source
-            .inner
-            .cursors
-            .lock()
-            .map_err(|_| DemandError::StaleCursor)?;
-        if self.source.reference() != self.reference {
-            return Err(DemandError::StaleSource);
-        }
+    fn restore(&mut self) -> Result<(), DemandError> {
         if self.restore {
-            let Some(slot) = active.get_mut(&self.token) else {
-                return Err(DemandError::StaleCursor);
-            };
-            let mut state = self.state.take().ok_or(DemandError::StaleCursor)?;
-            state.offset = end;
-            *slot = Some(state);
-            self.restore = false;
-        } else {
-            if active.len() >= 1024
-                && let Some(oldest) = active.keys().next().copied()
-            {
-                active.remove(&oldest);
-            }
-            let mut state = self.state.take().ok_or(DemandError::StaleCursor)?;
-            state.offset = end;
-            active.insert(self.token, Some(state));
+            self.store(None)?;
+        }
+        self.state.take();
+        Ok(())
+    }
+    fn retire(&mut self) -> Result<(), DemandError> {
+        self.state.take();
+        if let Some(original) = self.original.take() {
+            original.with_original_leaf(|work| {
+                work.complete(publication_cleanup(), publication_cleanup())
+            })?;
         }
         Ok(())
     }
+    fn check_owner(
+        &self,
+        accounting: &crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        match (&self.original, accounting.native_work()) {
+            (Some(owner), Some(work)) if owner.shares_allocation_context(work) => Ok(()),
+            (None, None) => Ok(()),
+            _ => Err(DemandError::NativeWorkUnavailable),
+        }
+    }
+    /// Commits the producer position after consumer projection succeeds.
+    pub fn accept(
+        &mut self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        self.check_owner(accounting)?;
+        accounting.check().map_err(DemandError::from)?;
+        if self.original.is_none() {
+            accounting
+                .charge(publication_cleanup())
+                .map_err(DemandError::from)?;
+        }
+        if let Some(state) = &self.state {
+            let more = !state.eof
+                || state
+                    .replay
+                    .as_ref()
+                    .is_some_and(|backing| self.end < backing.value.len());
+            if more {
+                self.store(Some(self.end))?;
+            } else {
+                self.discard();
+            }
+        }
+        self.retire()
+    }
+    /// Restores the producer position even if the consumer was cancelled.
+    pub fn abort(
+        &mut self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        self.check_owner(accounting)?;
+        if let Some((_, work, budget, _)) = accounting.standalone_parts() {
+            work.charge(&publication_cleanup(), &budget)?;
+        }
+        self.restore()?;
+        self.retire()
+    }
 }
-
-impl SourceDirectoryPublication {
-    fn restore(&mut self) -> Result<(), DemandError> {
-        if !self.restore {
-            self.state.take();
-            return Ok(());
-        }
-        let mut active = self
-            .source
-            .inner
-            .cursors
-            .lock()
-            .map_err(|_| DemandError::StaleCursor)?;
-        if self.source.reference() != self.reference {
-            return Err(DemandError::StaleSource);
-        }
-        let slot = active
-            .get_mut(&self.token)
-            .ok_or(DemandError::StaleCursor)?;
-        *slot = self.state.take();
-        self.restore = false;
-        Ok(())
+impl Drop for SourceDirectoryPublication {
+    fn drop(&mut self) {
+        let _ = self.restore();
+        let _ = self.retire();
     }
 }
 
@@ -171,85 +228,6 @@ impl NativeDemandSource {
             offset: 0,
             eof: false,
         })
-    }
-}
-
-impl std::fmt::Debug for SourceDirectoryPublication {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SourceDirectoryPublication")
-            .field("pending", &self.state.is_some())
-            .finish()
-    }
-}
-fn publication_cleanup() -> WorkCounters {
-    WorkCounters {
-        items_examined: 1,
-        ..WorkCounters::UNCHARGED
-    }
-}
-impl Drop for SourceDirectoryPublication {
-    fn drop(&mut self) {
-        let _ = self.restore();
-        let _ = self.retire();
-    }
-}
-impl SourceDirectoryPublication {
-    fn retire(&mut self) -> Result<(), DemandError> {
-        self.state.take();
-        if let Some(original) = self.original.take() {
-            original.with_original_leaf(|work| {
-                work.complete(publication_cleanup(), publication_cleanup())
-            })?;
-        }
-        Ok(())
-    }
-    fn check_owner(
-        &self,
-        accounting: &crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), DemandError> {
-        match (&self.original, accounting.native_work()) {
-            (Some(owner), Some(work)) if owner.shares_allocation_context(work) => Ok(()),
-            (None, None) => Ok(()),
-            _ => Err(DemandError::NativeWorkUnavailable),
-        }
-    }
-    /// Commits the producer position after consumer projection succeeds.
-    pub fn accept(
-        &mut self,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), DemandError> {
-        self.check_owner(accounting)?;
-        accounting.check().map_err(DemandError::from)?;
-        if self.original.is_none() {
-            accounting
-                .charge(publication_cleanup())
-                .map_err(DemandError::from)?;
-        }
-        if let Some(state) = &self.state {
-            let has_next = !state.eof
-                || state
-                    .replay
-                    .as_ref()
-                    .is_some_and(|backing| self.end < backing.value.len());
-            if has_next {
-                self.commit(self.end)?;
-            } else {
-                self.discard();
-            }
-        }
-        self.retire()
-    }
-    /// Restores the producer position even if the consumer was cancelled.
-    pub fn abort(
-        &mut self,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), DemandError> {
-        self.check_owner(accounting)?;
-        if let Some((_, work, budget, _)) = accounting.standalone_parts() {
-            work.charge(&publication_cleanup(), &budget)?;
-        }
-        self.restore()?;
-        self.retire()
     }
 }
 
@@ -358,23 +336,12 @@ impl NativeDemandSource {
         }
         state.replay.take();
         state.offset = 0;
-        let mut backing = account_source(context, |accounting, _| {
-            let mut backing =
-                crate::kernel::Owned::<Vec<SourceDirectoryEntry>>::allocate(maximum, accounting)
-                    .map_err(DemandError::from)?;
-            let bytes = crate::source_watch::arc_control_bytes::<
-                crate::kernel::Owned<Vec<SourceDirectoryEntry>>,
-            >();
-            let mut header = accounting
-                .claim_owned(bytes, 1)
-                .map_err(DemandError::from)?;
-            backing
-                .allocation
-                .absorb(&mut header)
-                .map_err(DemandError::from)?;
-            backing.bytes += bytes;
-            Ok(backing)
+        let mut page = account_source(context, |accounting, _| {
+            let entries =
+                crate::kernel::Owned::allocate(maximum, accounting).map_err(DemandError::from)?;
+            SourceDirectoryPage::stateless(entries, None, state.version, accounting)
         })?;
+        let backing = Arc::get_mut(&mut page.entries.backing).ok_or(DemandError::InvalidRequest)?;
         let (relative, allocation) = self.relative(&state.directory, context)?;
         let result = (|| {
             for _ in 0..maximum {
@@ -382,7 +349,7 @@ impl NativeDemandSource {
                 let Some((entry, _)) = &state.pending else {
                     break;
                 };
-                let converted = self.next_entry(&relative, entry, &mut backing, context)?;
+                let converted = self.next_entry(&relative, entry, backing, context)?;
                 let (entry, bytes) = state.pending.take().ok_or(DemandError::StaleCursor)?;
                 drop(entry);
                 state.ownership.retire(bytes)?;
@@ -399,14 +366,10 @@ impl NativeDemandSource {
         })();
         drop(relative);
         let released = context.release(allocation);
-        let end = backing.value.len();
-        let backing = Arc::new(backing);
-        state.replay = Some(backing.clone());
+        page.entries.range.end = backing.value.len();
+        state.replay = Some(page.entries.backing.clone());
         result.and(released)?;
-        Ok(SourceDirectoryEntries {
-            backing,
-            range: 0..end,
-        })
+        Ok(page.entries)
     }
 
     fn directory_page(
@@ -420,11 +383,7 @@ impl NativeDemandSource {
         if maximum == 0 || maximum > 4096 {
             return Err(DemandError::InvalidRequest);
         }
-        context.admit(WorkCounters {
-            items_examined: maximum as u64 * self.excluded.paths.len() as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        context.record(WorkCounters {
+        context.started_io(WorkCounters {
             items_examined: maximum as u64 * self.excluded.paths.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;

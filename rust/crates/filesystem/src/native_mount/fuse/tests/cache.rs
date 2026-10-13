@@ -335,17 +335,10 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
             &fuse_fixture_work(),
         )
         .map_err(native_callback_errno)?;
-    forget_unbound_names(
-        &mut state.by_inode,
-        &mut state.inode_by_path,
-        old,
-        &name("created"),
-        |path, _| Ok(*path != name("removed")),
-        &mut crate::native_mount::fuse::FuseOwned::default(),
-        &fuse_fixture_work(),
-    )
-    .map_err(native_callback_errno)?;
-    retire_reused_identity(&mut state.by_inode, &mut state.inode_by_file, old);
+    state
+        .remove_binding(old, &name("removed"), &fuse_fixture_work())
+        .map_err(native_callback_errno)?;
+    state.forget_file(reused.node.file_id, old);
     let created = state
         .intern_projected(
             crate::native_mount::fuse::FuseOwned::empty(name("created")),
@@ -361,34 +354,6 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
         "the old inode names no file"
     );
     Ok(())
-}
-
-#[test]
-pub(super) fn page_stores_and_content_claims_exclude_each_other() {
-    let [before, target, after] = positions();
-    let (stored, claimed) = (FileId::new(), FileId::new());
-    let mut stores = PageStores::default();
-    assert!(stores.may_begin(stored));
-    stores.begin(stored, before, &fuse_fixture_work()).unwrap();
-    assert!(!stores.may_begin(stored), "one store per file at a time");
-    assert!(stores.precede(target), "the barrier waits for older reads");
-    assert!(!stores.precede(before));
-
-    stores.claim(claimed, &fuse_fixture_work()).unwrap();
-    stores.claim(claimed, &fuse_fixture_work()).unwrap();
-    assert!(!stores.may_begin(claimed));
-    stores.release(claimed);
-    assert!(!stores.may_begin(claimed), "every claim must be released");
-    stores.release(claimed);
-    assert!(stores.may_begin(claimed));
-
-    stores.in_flight.remove(&stored);
-    assert!(!stores.precede(target));
-    stores.begin(stored, after, &fuse_fixture_work()).unwrap();
-    assert!(!stores.precede(target), "a newer read supersedes nothing");
-    stores.in_flight.remove(&stored);
-    stores.claim(stored, &fuse_fixture_work()).unwrap();
-    assert!(!stores.may_begin(stored));
 }
 
 #[test]

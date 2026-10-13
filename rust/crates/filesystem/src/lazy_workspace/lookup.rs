@@ -261,7 +261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     record,
                     crate::WorkspaceMetadata::from_engine(
                         checkout
-                            .read_metadata_by_id_with_accounting(
+                            .read_metadata_with_accounting(
                                 record.file_id,
                                 ctx,
                                 cancellation(ctx),

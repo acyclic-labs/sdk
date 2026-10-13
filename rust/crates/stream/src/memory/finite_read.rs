@@ -4,7 +4,7 @@ fn read_history(history: Option<&Arc<History>>, tail: u64, from: u64, limit: usi
     windows
         .into_iter()
         .flat_map(|window| {
-            (window.start..window.end).map(move |index| window.records[index].clone())
+            (window.start..window.end).map(move |index| window.records.records[index].clone())
         })
         .take(limit)
         .collect()

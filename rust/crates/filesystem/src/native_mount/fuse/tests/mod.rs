@@ -5,9 +5,8 @@ use super::super::{
 use super::{
     FuseSessionState, InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY,
     MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
-    MountSeekTarget, NativeMountError, PageStores, ProjectionCore, ROOT_INODE, ViewStamp,
-    confirm_name, forget_unbound_names, name_is_bound, native_callback_errno,
-    retire_reused_identity, run_fuse_session,
+    MountSeekTarget, NativeMountError, ProjectionCore, ROOT_INODE, ViewStamp, confirm_name,
+    name_is_bound, native_callback_errno, run_fuse_session,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};

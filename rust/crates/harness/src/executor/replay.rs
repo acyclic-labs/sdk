@@ -23,6 +23,7 @@ impl ExecutionReplay {
         journal: &dyn ExecutionJournal,
         io: Option<&PreparationIo>,
     ) -> Result<Option<Vec<ExecutionRecord>>> {
+        validate_journal(journal, io)?;
         validate_execution_page(EXECUTION_REPLAY_PAGE_RECORDS)?;
         let page = journal
             .replay(
@@ -86,13 +87,24 @@ impl ExecutionReplay {
     }
 }
 
-pub(crate) async fn replay_execution(
+pub(crate) async fn replay_execution<'a>(
     journal: &dyn ExecutionJournal,
     operation_id: OperationId,
     maximum_selected: usize,
     select: impl Fn(&ExecutionEvent) -> bool,
-    io: Option<&PreparationIo>,
-) -> Result<(u64, Vec<ExecutionRecord>)> {
+    io: Option<&'a PreparationIo>,
+) -> Result<(
+    u64,
+    Vec<ExecutionRecord>,
+    Option<crate::conversation::ContentHold<'a>>,
+)> {
+    validate_journal(journal, io)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let output_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        io.retain_owned(std::mem::size_of::<Vec<ExecutionRecord>>() as u64)?;
+    }
     let mut replay = ExecutionReplay::new(operation_id);
     let mut selected = Vec::new();
     loop {
@@ -142,5 +154,63 @@ pub(crate) async fn replay_execution(
         drop(replay);
         io.release(key_bytes)?;
     }
-    Ok((tail, selected))
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let hold = if stock_is_native(io) {
+        let bytes = native_size_add(
+            std::mem::size_of::<Vec<ExecutionRecord>>() as u64,
+            native_size_slots(selected.capacity(), std::mem::size_of::<ExecutionRecord>())?,
+        )?;
+        let bytes = selected.iter().try_fold(bytes, |bytes, record| {
+            native_size_add(bytes, record.payload_bytes()?)
+        })?;
+        super::payload::preparation_output(io, output_before, bytes)?
+    } else {
+        None
+    };
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let hold = None;
+    Ok((tail, selected, hold))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl ExecutionRecord {
+    fn payload_bytes(&self) -> Result<u64> {
+        use ExecutionEvent::*;
+        let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match &self.event {
+            Started { .. } => (None, [None; 3]),
+            ContextPrepared {
+                projection,
+                accounting,
+                ..
+            } => (None, [Some(projection), accounting.as_ref(), None]),
+            ContextCompacted {
+                projection,
+                compaction,
+                accounting,
+                ..
+            } => (None, [Some(projection), Some(compaction), Some(accounting)]),
+            ModelStarted { request: file, .. } | Model { event: file, .. } => {
+                (None, [Some(file), None, None])
+            }
+            ToolStarted {
+                call_id,
+                invocation,
+                ..
+            } => (Some(call_id), [Some(invocation), None, None]),
+            ToolCompleted {
+                call_id,
+                result,
+                projection,
+                ..
+            } => (Some(call_id), [Some(result), Some(projection), None]),
+            ToolFailed { call_id, .. } => (Some(call_id), [None; 3]),
+        };
+        let bytes = native_size_add(
+            self.idempotency_key.capacity() as u64,
+            call.map_or(0, |call| call.capacity() as u64),
+        )?;
+        files.into_iter().flatten().try_fold(bytes, |bytes, file| {
+            native_size_add(bytes, file.logical_owned_bytes()?)
+        })
+    }
 }

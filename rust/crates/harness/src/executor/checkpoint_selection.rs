@@ -12,7 +12,7 @@ pub async fn canonical_checkpoint_for_operation(
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _records_hold;
-    let (_, records) = replay_execution(
+    let (_, records, hold) = replay_execution(
         journal,
         operation_id,
         1,
@@ -20,6 +20,7 @@ pub async fn canonical_checkpoint_for_operation(
         io,
     )
     .await?;
+    let records = retain_preparation((records, hold));
     #[cfg(feature = "filesystem")]
     {
         _records_hold = io

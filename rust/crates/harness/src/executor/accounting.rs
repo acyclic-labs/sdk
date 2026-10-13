@@ -65,16 +65,17 @@ pub(super) fn stock_json_bound<T: Serialize>(
 ) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        return crate::executor::json::validate_json_byte_bound_native_trusted(
+        return crate::executor::json::count_json_bytes_trusted(
             value,
             crate::executor::json::JsonBounds {
                 maximum_bytes: maximum,
                 maximum_items: io.remaining()?.items_examined,
                 maximum_depth: 256,
             },
-            crate::wire::ErrorCode::Invalid,
+            Some(crate::wire::ErrorCode::Invalid),
             &mut |next| io.codec_charge(next, false),
-        );
+        )
+        .map(|_| ());
     }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
@@ -86,49 +87,6 @@ pub(super) fn stock_json_bound<T: Serialize>(
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
-}
-
-pub(super) fn stock_compact(
-    context: &crate::context::Context,
-    maximum: usize,
-    summary: Option<crate::context::ContextSummary>,
-    retention: &crate::context::CompactionRetention,
-    io: Option<&PreparationIo>,
-) -> Result<(crate::context::Context, crate::context::CompactionReference)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        let work = io.original_native_work().ok_or_else(|| {
-            stock_boundary(
-                io.into(),
-                crate::wire::ErrorCode::Unsupported,
-                "stock compaction requires original native work",
-            )
-        })?;
-        let (retention, custody) = crate::context::clone_retention_native(retention, work)?;
-        io.absorb_native_custody(custody)?;
-        return crate::context::DurableContextProvider::compact(
-            context,
-            maximum,
-            summary,
-            retention,
-            Some(io),
-        );
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    if io.is_some() {
-        return Err(stock_boundary(
-            io.into(),
-            crate::wire::ErrorCode::Unsupported,
-            "native stock compaction is unavailable",
-        ));
-    }
-    crate::context::DurableContextProvider::compact(
-        context,
-        maximum,
-        summary,
-        retention.clone(),
-        None,
-    )
 }
 
 impl StockExecution<'_> {

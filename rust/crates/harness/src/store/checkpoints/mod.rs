@@ -8,10 +8,10 @@ use crate::{
 };
 
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation,
-    IdempotencyKey, OwnedBytes, StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitOutcome, CommittedMutation, StreamPath, StreamProvider,
 };
 
+use crate::wire_codec::CodecQuota;
 use serde::{Deserialize, Serialize};
 
 /// Default checkpoint interval and cold decoded-event allowance, including its anchor.
@@ -31,8 +31,6 @@ pub const fn default_projection_read_limits() -> HistoryReadLimits {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProjectionLocation {
-    pub(super) authority: Authority,
-    pub(super) revision: u64,
     pub(super) bytes: u64,
     pub(super) digest: [u8; 32],
     pub(super) chunks: Vec<ProjectionChunk>,
@@ -55,28 +53,15 @@ pub(super) fn decode_projection_location_with_work(
         &[
             "ProjectionLocation",
             "ProjectionChunk",
-            "Authority",
-            "AggregateKind",
-            "String",
             "Vec",
             "u8",
             "u32",
             "u64",
-            "authority",
-            "revision",
             "bytes",
             "digest",
             "chunks",
-            "kind",
-            "id",
-            "agent",
-            "conversation",
-            "session",
-            "turn",
-            "task",
         ],
-        |shape, observer| {
-            observer.admit_copy(shape.input_bytes())?;
+        |shape, _| {
             shape
                 .lexical_items()
                 .checked_mul(2)
@@ -89,18 +74,15 @@ pub(super) fn decode_projection_location_with_work(
         },
         |location: &ProjectionLocation| {
             (
-                location.authority.id.capacity() as u64
-                    + location.chunks.capacity() as u64
-                        * std::mem::size_of::<ProjectionChunk>() as u64
+                location.chunks.capacity() as u64 * std::mem::size_of::<ProjectionChunk>() as u64
                     + std::mem::size_of::<ProjectionLocation>() as u64,
-                location.authority.id.len() as u64,
+                0,
             )
         },
         work,
     )?;
     let owned = if work.is_some() {
-        location.authority.id.capacity() as u64
-            + location.chunks.capacity() as u64 * std::mem::size_of::<ProjectionChunk>() as u64
+        location.chunks.capacity() as u64 * std::mem::size_of::<ProjectionChunk>() as u64
             + std::mem::size_of::<ProjectionLocation>() as u64
     } else {
         0
@@ -115,45 +97,11 @@ pub(super) struct LoadedProjection {
     pub(super) consumed_events: u32,
 }
 
-fn suffix(authority: &Authority) -> Result<String> {
-    authority
-        .stream_path(&mut None)?
-        .strip_prefix("harness/v2/")
-        .map(str::to_owned)
-        .ok_or_else(|| Error::Invalid("projection authority path is invalid".into()))
-}
-
-fn head_path(authority: &Authority) -> Result<StreamPath> {
-    Ok(StreamPath::new(format!(
-        "harness/v3/projection-checkpoints/{}",
-        suffix(authority)?
-    ))?)
-}
-
-fn chunk_path(authority: &Authority, chunk: &ProjectionChunk) -> Result<StreamPath> {
-    Ok(StreamPath::new(format!(
-        "harness/v3/projection-chunks/{}/{}",
-        suffix(authority)?,
-        blake3::Hash::from_bytes(chunk.digest).to_hex(),
-    ))?)
-}
-
 async fn tail<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
-    if work.is_none() {
-        let stream = acyclic_stream::Stream::new(
-            std::sync::Arc::clone(&client),
-            authority.stream_path(&mut None)?,
-        )?;
-        return match stream.tail().await {
-            Ok(tail) => Ok(tail),
-            Err(StreamError::NotFound) => Ok(0),
-            Err(error) => Err(error.into()),
-        };
-    }
     let (path, retained) = operations::publication_path(authority, "harness/v2/", None, work)?;
     let result = operations::tail_optional_with_work(client, &path, work)
         .await
@@ -260,87 +208,62 @@ pub(super) async fn load_with_work<P: StreamProvider>(
     }
     let (path, path_owned) =
         operations::publication_path(authority, "harness/v3/projection-checkpoints/", None, work)?;
-    let index = operations::one_record(client, &path, checkpoint_count - 1, work).await;
+    let mut quota = CodecQuota::from_retained(work, path_owned);
+    let index = operations::one_record(client, &path, checkpoint_count - 1, quota.work()).await;
     drop(path);
-    let index =
-        operations::release_owned_after_drop(index, path_owned, work)?.ok_or_else(|| {
-            super::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "canonical history requires a durable projection checkpoint",
-            )
-        })?;
-    let result = async {
-        let mut consumed_bytes = 0;
-        charge(
+    quota.relinquish(path_owned)?;
+    let index = index?.ok_or_else(|| {
+        super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Unsupported,
+            "canonical history requires a durable projection checkpoint",
+        )
+    })?;
+    let held = operations::sdk_record_retained_bytes(&index, quota.work());
+    quota.adopt(held)?;
+    let mut consumed_bytes = 0;
+    charge(
+        &mut consumed_bytes,
+        index.value.len() as u64,
+        limits.maximum_bytes,
+        quota.work(),
+    )?;
+    let (location, held) = decode_projection_location_with_work(&index.value, quota.work())?;
+    quota.adopt(held)?;
+    let revision = through_revision - through_revision % u64::from(DEFAULT_PROJECTION_EVENTS);
+    if location.bytes == 0
+        || location.bytes > MAX_PROJECTION_BYTES
+        || through_revision - revision >= u64::from(limits.maximum_events)
+    {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Invalid,
+            "projection checkpoint boundary exceeds read allowance",
+        ));
+    }
+    if location.bytes > limits.maximum_bytes - consumed_bytes {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Invalid,
+            "projection read exceeds byte allowance",
+        ));
+    }
+    let snapshot = location
+        .load_snapshot(
+            client,
+            verifier,
+            &index,
             &mut consumed_bytes,
-            index.value.len() as u64,
             limits.maximum_bytes,
-            work,
-        )?;
-        let (location, location_owned) = decode_projection_location_with_work(&index.value, work)?;
-        let result = async {
-            if &location.authority != authority
-                || location.revision
-                    != checkpoint_count
-                        .checked_mul(u64::from(DEFAULT_PROJECTION_EVENTS))
-                        .ok_or_else(|| {
-                            super::guarded_boundary(
-                                work,
-                                crate::wire::ErrorCode::Storage,
-                                "projection head revision overflows",
-                            )
-                        })?
-                || location.revision > through_revision
-                || location.bytes == 0
-                || location.bytes > MAX_PROJECTION_BYTES
-                || through_revision - location.revision >= u64::from(limits.maximum_events)
-            {
-                return Err(super::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "projection checkpoint boundary exceeds read allowance",
-                ));
-            }
-            if location.bytes > limits.maximum_bytes.saturating_sub(consumed_bytes) {
-                return Err(super::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "projection read exceeds byte allowance",
-                ));
-            }
-            let snapshot = location
-                .load_snapshot(
-                    client,
-                    verifier,
-                    &index.commit_id,
-                    &mut consumed_bytes,
-                    limits.maximum_bytes,
-                    work,
-                )
-                .await?;
-            Ok(LoadedProjection {
-                snapshot: Some(snapshot),
-                through_revision,
-                consumed_bytes,
-                consumed_events: 1,
-            })
-        }
-        .await;
-        drop(location);
-        operations::release_owned_after_drop(result, location_owned, work)
-    }
-    .await;
-    let index_bytes = operations::sdk_record_retained_bytes(&index, work);
-    drop(index);
-    let released = match work.as_deref_mut() {
-        Some(observer) => observer.release_owned(index_bytes),
-        None => Ok(()),
-    };
-    match result {
-        Ok(value) => released.map(|()| value),
-        Err(error) => Err(error),
-    }
+            quota.work(),
+        )
+        .await?;
+    Ok(LoadedProjection {
+        snapshot: Some(snapshot),
+        through_revision,
+        consumed_bytes,
+        consumed_events: 1,
+    })
 }
 
 impl ProjectionLocation {
@@ -348,107 +271,83 @@ impl ProjectionLocation {
         &self,
         client: &std::sync::Arc<P>,
         verifier: &AuthorityVerifier,
-        commit_id: &acyclic_stream::CommitId,
+        index: &acyclic_stream::Record,
         consumed_bytes: &mut u64,
         maximum_bytes: u64,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Snapshot> {
+        let authority = verifier.audience();
+        let revision = (index.sequence + 1) * u64::from(DEFAULT_PROJECTION_EVENTS);
         let (path, path_owned) =
-            operations::publication_path(&self.authority, "harness/v2/", None, work)?;
-        let canonical = operations::one_record(client, &path, self.revision - 1, work).await;
+            operations::publication_path(authority, "harness/v2/", None, work)?;
+        let mut quota = CodecQuota::from_retained(work, path_owned);
+        let canonical = operations::one_record(client, &path, revision - 1, quota.work()).await;
         drop(path);
-        let canonical = operations::release_owned_after_drop(canonical, path_owned, work)?
-            .ok_or_else(|| {
-                super::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Storage,
-                    "projection canonical anchor is missing",
-                )
-            })?;
-        let result = async {
-            charge(
-                consumed_bytes,
-                canonical.value.len() as u64,
-                maximum_bytes,
-                work,
-            )?;
-            if &canonical.commit_id != commit_id {
-                return Err(super::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Storage,
-                    "projection head is outside its canonical atomic commit",
-                ));
-            }
-            let ((actual_authority, event), event_retained) =
-                crate::wire_codec::decode_event(&canonical.value, work)?;
-            let authority_owned = if work.is_some() {
-                actual_authority.id.capacity() as u64
-            } else {
-                0
-            };
-            let result = async {
-                verifier.verify_event(&event, work)?;
-                if actual_authority != self.authority || event.revision != self.revision {
-                    return Err(super::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Storage,
-                        "projection canonical anchor differs",
-                    ));
-                }
-                if let Some(observer) = work.as_deref_mut() {
-                    observer.stage_output(self.bytes, 1)?;
-                }
-                let bytes = load_chunks(client, self, consumed_bytes, maximum_bytes, work).await?;
-                let result = (|| {
-                    let snapshot = Snapshot::decode(&bytes, maximum_bytes, work)?;
-                    if snapshot.authority != self.authority
-                        || snapshot.revision != self.revision
-                        || snapshot.events.last() != Some(&event)
-                    {
-                        return Err(super::guarded_boundary(
-                            work,
-                            crate::wire::ErrorCode::Storage,
-                            "projection snapshot differs from its canonical anchor",
-                        ));
-                    }
-                    if let Some(observer) = work.as_deref_mut() {
-                        observer.check_cancellation()?;
-                    }
-                    Ok(snapshot)
-                })();
-                let capacity = bytes.capacity() as u64;
-                drop(bytes);
-                let released = match work.as_deref_mut() {
-                    Some(observer) => observer.release_owned(capacity),
-                    None => Ok(()),
-                };
-                match result {
-                    Ok(snapshot) => released.map(|()| snapshot),
-                    Err(error) => Err(error),
-                }
-            }
-            .await;
-            drop(event);
-            drop(actual_authority);
-            let result = operations::release_owned_after_drop(result, event_retained, work);
-            operations::release_owned_after_drop(result, authority_owned, work)
+        quota.relinquish(path_owned)?;
+        let canonical = canonical?.ok_or_else(|| {
+            super::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection canonical anchor is missing",
+            )
+        })?;
+        let held = operations::sdk_record_retained_bytes(&canonical, quota.work());
+        quota.adopt(held)?;
+        charge(
+            consumed_bytes,
+            canonical.value.len() as u64,
+            maximum_bytes,
+            quota.work(),
+        )?;
+        if canonical.commit_id != index.commit_id {
+            return Err(super::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection head is outside its canonical atomic commit",
+            ));
         }
-        .await;
-        let canonical_bytes = operations::sdk_record_retained_bytes(&canonical, work);
-        drop(canonical);
-        let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_owned(canonical_bytes),
-            None => Ok(()),
-        };
-        match result {
-            Ok(snapshot) => released.map(|()| snapshot),
-            Err(error) => Err(error),
+        let (event, held) = super::history::verify_history_record_with_retained_quota(
+            verifier,
+            authority,
+            revision - 1,
+            &canonical,
+            quota.work(),
+        )?;
+        quota.adopt(held)?;
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.stage_output(self.bytes, 1)?;
         }
+        let bytes = load_chunks(
+            client,
+            authority,
+            self,
+            consumed_bytes,
+            maximum_bytes,
+            quota.work(),
+        )
+        .await?;
+        quota.adopt(bytes.capacity() as u64)?;
+        let snapshot = Snapshot::decode(&bytes, maximum_bytes, quota.work())?;
+        if &snapshot.authority != authority
+            || snapshot.revision != revision
+            || snapshot.events.last() != Some(&event)
+        {
+            return Err(super::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection snapshot differs from its canonical anchor",
+            ));
+        }
+        if let Some(io) = quota.work().as_deref() {
+            io.check_cancellation()?;
+        }
+        Ok(snapshot)
     }
 }
 
 async fn load_chunks<P: StreamProvider>(
     client: &std::sync::Arc<P>,
+    authority: &Authority,
     location: &ProjectionLocation,
     consumed: &mut u64,
     maximum: u64,
@@ -498,99 +397,77 @@ async fn load_chunks<P: StreamProvider>(
             "projection chunk manifest total differs",
         ));
     }
-    let mut bytes = match work.as_deref_mut() {
-        Some(work) => {
-            let mut bytes = Vec::new();
-            crate::store::history::reserve(&mut bytes, length, work)?;
-            bytes
-        }
-        None => Vec::with_capacity(length),
-    };
-    let result = async {
-        for chunk in &location.chunks {
-            let expected = chunk.bytes as usize;
-            if expected as u64 > maximum.saturating_sub(*consumed) {
-                return Err(super::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "projection read exceeds byte allowance",
-                ));
-            }
-            let digest = blake3::Hash::from_bytes(chunk.digest);
-            let (path, path_owned) = operations::publication_path(
-                &location.authority,
-                "harness/v3/projection-chunks/",
-                Some((&digest.to_hex(), 64)),
-                work,
-            )?;
-            let record = operations::one_record(client, &path, 0, work).await;
-            drop(path);
-            let record = operations::release_owned_after_drop(record, path_owned, work)?
-                .ok_or_else(|| {
-                    super::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Storage,
-                        "projection chunk is missing",
-                    )
-                })?;
-            let result = (|| {
-                charge(consumed, record.value.len() as u64, maximum, work)?;
-                let digest_matches = if record.value.len() == expected {
-                    if let Some(observer) = work.as_deref_mut() {
-                        observer.hashed_bytes(record.value.len() as u64)?;
-                    }
-                    blake3::hash(&record.value).as_bytes() == &chunk.digest
-                } else {
-                    false
-                };
-                if !digest_matches {
-                    return Err(super::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Storage,
-                        "projection chunk length or digest differs",
-                    ));
-                }
-                if let Some(observer) = work.as_deref_mut() {
-                    observer.copy_bytes(record.value.len() as u64)?;
-                }
-                bytes.extend_from_slice(&record.value);
-                Ok(())
-            })();
-            let record_bytes = operations::sdk_record_retained_bytes(&record, work);
-            drop(record);
-            let released = match work.as_deref_mut() {
-                Some(observer) => observer.release_owned(record_bytes),
-                None => Ok(()),
-            };
-            match result {
-                Ok(()) => released?,
-                Err(error) => return Err(error),
-            }
-        }
-        if let Some(observer) = work.as_deref_mut() {
-            observer.hashed_bytes(bytes.len() as u64)?;
-        }
-        if blake3::hash(&bytes).as_bytes() != &location.digest {
+    let mut quota = CodecQuota::from_retained(work, 0);
+    let mut bytes = crate::core::reserve_copy_vector(length, &mut quota)?;
+    for chunk in &location.chunks {
+        let expected = chunk.bytes as usize;
+        if expected as u64 > maximum.saturating_sub(*consumed) {
             return Err(super::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Storage,
-                "projection payload digest differs",
+                quota.work(),
+                crate::wire::ErrorCode::Invalid,
+                "projection read exceeds byte allowance",
             ));
         }
-        Ok(())
-    }
-    .await;
-    match result {
-        Ok(()) => Ok(bytes),
-        Err(error) => {
-            let capacity = bytes.capacity() as u64;
-            drop(bytes);
-            if let Some(observer) = work.as_deref_mut() {
-                let _ = observer.release_owned(capacity);
-            }
-            Err(error)
+        let digest = blake3::Hash::from_bytes(chunk.digest);
+        let (path, held) = operations::publication_path(
+            authority,
+            "harness/v3/projection-chunks/",
+            Some((&digest.to_hex(), 64)),
+            quota.work(),
+        )?;
+        let mut received = CodecQuota::from_retained(quota.work(), held);
+        let record = operations::one_record(client, &path, 0, received.work()).await;
+        drop(path);
+        received.relinquish(held)?;
+        let record = record?.ok_or_else(|| {
+            super::guarded_boundary(
+                received.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection chunk is missing",
+            )
+        })?;
+        let held = operations::sdk_record_retained_bytes(&record, received.work());
+        received.adopt(held)?;
+        charge(
+            consumed,
+            record.value.len() as u64,
+            maximum,
+            received.work(),
+        )?;
+        if record.value.len() != expected {
+            return Err(super::guarded_boundary(
+                received.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection chunk length or digest differs",
+            ));
         }
+        if let Some(io) = received.work().as_deref_mut() {
+            io.hashed_bytes(record.value.len() as u64)?;
+        }
+        if blake3::hash(&record.value).as_bytes() != &chunk.digest {
+            return Err(super::guarded_boundary(
+                received.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection chunk length or digest differs",
+            ));
+        }
+        if let Some(io) = received.work().as_deref_mut() {
+            io.copy_bytes(record.value.len() as u64)?;
+        }
+        bytes.extend_from_slice(&record.value);
     }
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.hashed_bytes(bytes.len() as u64)?;
+    }
+    if blake3::hash(&bytes).as_bytes() != &location.digest {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "projection payload digest differs",
+        ));
+    }
+    quota.transfer();
+    Ok(bytes)
 }
 
 mod staging;

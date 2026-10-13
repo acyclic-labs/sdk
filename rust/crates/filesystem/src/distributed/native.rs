@@ -31,37 +31,6 @@ impl<'a> AuthorityWork<'a> {
         self.check()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn native_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
-        let original = self
-            .original
-            .expect("native SDK boundary requires original funding");
-        original.state.clone()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn native_io_failure(&self, error: std::io::Error) -> AuthorityStoreError {
-        let original = self
-            .original
-            .expect("native I/O relay requires original funding");
-        AuthorityStoreError::NativeOriginal(original.runtime_error(error))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn result<T>(
-        &self,
-        result: acyclic_stream::NativeStreamResult<T>,
-    ) -> Result<(T, ProviderAllocation), AuthorityStoreError> {
-        let original = self
-            .original
-            .expect("native SDK relay requires original funding");
-        let output = result
-            .map_err(|error| AuthorityStoreError::NativeOriginal(original.runtime_error(error)))?
-            .map_err(AuthorityStoreError::from)?;
-        let (value, allocation) = output.into_parts();
-        Ok((value, Some(allocation)))
-    }
-
     pub(super) fn admit(&self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         self.check()?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -162,20 +131,46 @@ impl<'a> AuthorityWork<'a> {
         Ok(value)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn native_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
+        self.original.expect("native SDK funding").state.clone()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn native_io_failure(&self, error: std::io::Error) -> AuthorityStoreError {
+        AuthorityStoreError::NativeOriginal(
+            self.original
+                .expect("native SDK funding")
+                .runtime_error(error),
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn result<T>(
+        &self,
+        result: acyclic_stream::NativeStreamResult<T>,
+    ) -> Result<(T, ProviderAllocation), AuthorityStoreError> {
+        let (value, allocation) = result
+            .map_err(|error| self.native_io_failure(error))?
+            .map_err(AuthorityStoreError::from)?
+            .into_parts();
+        Ok((value, Some(allocation)))
+    }
+
     pub(super) fn vec_owned<T>(
         &mut self,
         capacity: usize,
     ) -> Result<(Vec<T>, AuthorityAllocation), AuthorityStoreError> {
         self.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = self.original {
+            let buffer = crate::native_host::buffer::<T, _>(capacity, &mut &*original)?;
+            self.check()?;
+            return Ok((buffer.0, Some(buffer.1)));
+        }
         let bytes = capacity
             .checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(crate::WorkError::Overflow)?;
-        let allocation_error = |error: crate::kernel::allocation::AllocationError| {
-            error.into_work_or(AuthorityStoreError::RejectedStatic(
-                "fork allocation failed",
-            ))
-        };
+            .ok_or(crate::WorkError::Overflow)? as u64;
         self.admit(WorkCounters {
             allocation_operations: u64::from(bytes != 0),
             peak_allocation_bytes: self
@@ -185,18 +180,14 @@ impl<'a> AuthorityWork<'a> {
                 .ok_or(crate::WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut allocation = self
-            .original
-            .map(|original| original.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED))
-            .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let allocation = None;
-        if !self.is_native() {
-            self.allocations
-                .claim_bytes(bytes, u64::from(bytes != 0), &mut self.work, self.budget)
-                .map_err(allocation_error)?;
-        }
+        let allocation_error = |error: crate::kernel::allocation::AllocationError| {
+            error.into_work_or(AuthorityStoreError::RejectedStatic(
+                "fork allocation failed",
+            ))
+        };
+        self.allocations
+            .claim_bytes(bytes, u64::from(bytes != 0), &mut self.work, self.budget)
+            .map_err(allocation_error)?;
         let mut values = Vec::new();
         values
             .try_reserve_exact(capacity)
@@ -204,40 +195,20 @@ impl<'a> AuthorityWork<'a> {
         let actual = values
             .capacity()
             .checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(crate::WorkError::Overflow)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut allocation {
-            allocation.reconcile_capacity(actual)?;
-        }
-        if !self.is_native() {
-            if actual >= bytes {
-                self.allocations
-                    .record_owned_bytes(actual - bytes, &mut self.work)
-                    .map_err(allocation_error)?;
-            } else {
-                self.allocations
-                    .release(bytes - actual)
-                    .map_err(allocation_error)?;
-            }
-        }
+            .ok_or(crate::WorkError::Overflow)? as u64;
+        // Successful reserve guarantees capacity >= the requested element count.
+        self.allocations
+            .record_owned_bytes(actual - bytes, &mut self.work)
+            .map_err(allocation_error)?;
         self.check()?;
-        Ok((values, allocation))
+        Ok((values, None))
     }
 
-    pub(super) fn bytes(
-        &mut self,
-        domain: &[u8],
-        fields: &[&[u8]],
-    ) -> Result<Bytes, AuthorityStoreError> {
-        let buffer = self.byte_buffer(domain, fields)?;
+    pub(super) fn bytes(&mut self, payload: &[u8]) -> Result<Bytes, AuthorityStoreError> {
+        let buffer = self.byte_buffer(&[], &[payload])?;
         #[cfg(not(target_arch = "wasm32"))]
-        if self.is_native() {
+        if let Some(original) = self.original {
             let mut buffer = buffer;
-            let original = self
-                .original
-                .expect("native allocation has its original owner");
-            // Filesystem payloads keep their existing intrinsic Bytes custody.
             let mut control = original.claim(
                 crate::kernel::allocation::bytes_owner_control_bytes::<ForkBytes>()?,
                 1,
@@ -252,59 +223,58 @@ impl<'a> AuthorityWork<'a> {
                 drop(buffer);
                 return Err(error.into());
             }
-            let value = Bytes::from_owner(ForkBytes {
+            return Ok(Bytes::from_owner(ForkBytes {
                 bytes: buffer.0,
                 _allocation: buffer.1.expect("native buffer custody"),
-            });
-            return Ok(value);
+            }));
         }
-        // Audited bytes 1.12 allocates a private sharing owner only for spare capacity.
-        let owner = WorkCounters {
-            allocation_operations: u64::from(buffer.0.capacity() != buffer.0.len()),
-            ..WorkCounters::default()
-        };
-        self.admit(owner)?;
-        let value = Bytes::from(buffer.0);
-        self.charge(owner)?;
-        Ok(value)
+        self.plain_bytes(buffer.0)
     }
 
-    /// Request records retain the canonical SDK byte carrier and original guard.
+    fn plain_bytes(&mut self, buffer: Vec<u8>) -> Result<Bytes, AuthorityStoreError> {
+        let owner = WorkCounters {
+            allocation_operations: u64::from(buffer.capacity() != buffer.len()),
+            ..WorkCounters::UNCHARGED
+        };
+        self.admit(owner)?;
+        let bytes = Bytes::from(buffer);
+        self.charge(owner)?;
+        Ok(bytes)
+    }
+
     pub(super) fn stream_bytes(
         &mut self,
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+        let mut buffer = self.byte_buffer(domain, fields)?;
         #[cfg(not(target_arch = "wasm32"))]
         if self.is_native() {
-            let mut buffer = self.byte_buffer(domain, fields)?;
-            let result = acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
+            return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
                 &mut buffer.0,
                 &mut buffer.1,
                 self.native_meter(),
-            );
-            return result.map_err(|error| self.native_io_failure(error));
+            )
+            .map_err(|error| self.native_io_failure(error));
         }
-        self.bytes(domain, fields).map(Into::into)
+        self.plain_bytes(buffer.0).map(Into::into)
     }
 
-    pub(super) fn byte_buffer(
+    fn byte_buffer(
         &mut self,
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<(Vec<u8>, AuthorityAllocation), AuthorityStoreError> {
         let length = fields
             .iter()
-            .try_fold(domain.len(), |total, field| total.checked_add(field.len()))
+            .try_fold(domain.len(), |n, field| n.checked_add(field.len()))
             .ok_or(crate::WorkError::Overflow)?;
-        // Framed records encode; an empty domain copies a raw payload.
         let writes = WorkCounters {
             bytes_encoded: if domain.is_empty() { 0 } else { length as u64 },
             bytes_copied: length as u64,
-            ..WorkCounters::default()
+            ..WorkCounters::UNCHARGED
         };
         self.admit(writes)?;
-        // Physical storage always retires before its original claim on failure.
         let mut buffer = self.vec_owned::<u8>(length)?;
         buffer.0.extend_from_slice(domain);
         for field in fields {
@@ -420,12 +390,12 @@ impl<'a> AuthorityWork<'a> {
         self.own_path(text)
     }
 
-    pub(super) fn stream_key(
+    pub(super) fn key(
         &mut self,
         domain: &[u8],
-        identity: &[u8],
+        fields: &[&[u8]],
     ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
-        let bytes = self.stream_bytes(domain, &[&[0], identity])?;
+        let bytes = self.stream_bytes(domain, fields)?;
         acyclic_stream::IdempotencyKey::new(bytes).map_err(|error| {
             if self.is_native() {
                 AuthorityStoreError::NativeStream(error)
@@ -435,50 +405,25 @@ impl<'a> AuthorityWork<'a> {
         })
     }
 
-    pub(super) fn operation_key(
-        &mut self,
-        authority: AuthorityId,
-        operation: OperationId,
-    ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
-        let delta = WorkCounters {
-            bytes_copied: 32,
-            ..WorkCounters::default()
-        };
-        self.admit(delta)?;
-        let mut identity = [0_u8; 32];
-        identity[..16].copy_from_slice(&authority.into_bytes());
-        identity[16..].copy_from_slice(&operation.into_bytes());
-        self.charge(delta)?;
-        self.stream_key(b"operation", &identity)
-    }
-
     pub(super) fn request_write_work(
         &self,
-        request: &acyclic_stream::CommitRequest,
+        request: &CommitRequest,
     ) -> Result<WorkCounters, AuthorityStoreError> {
+        let physical = u64::from(!self.is_native());
         let mut delta = WorkCounters {
-            backend_write_operations: 1,
-            durability_operations: 1,
-            ..WorkCounters::default()
+            backend_write_operations: physical,
+            durability_operations: physical,
+            ..WorkCounters::UNCHARGED
         };
-        if self.is_native() {
-            delta.backend_write_operations = 0;
-            delta.durability_operations = 0;
-        }
         for mutation in &request.mutations {
-            let records = match mutation {
-                acyclic_stream::CommitMutation::Append { records, .. }
-                | acyclic_stream::CommitMutation::Fork { records, .. } => records,
-            };
-            delta.authority_records_appended = delta
-                .authority_records_appended
-                .checked_add(records.len() as u64)
-                .ok_or(crate::WorkError::Overflow)?;
+            let (CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. }) =
+                mutation;
             for record in records {
-                delta.authority_bytes_written = delta
-                    .authority_bytes_written
-                    .checked_add(record.len() as u64)
-                    .ok_or(crate::WorkError::Overflow)?;
+                delta = delta.checked_add(WorkCounters {
+                    authority_records_appended: 1,
+                    authority_bytes_written: record.len() as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
             }
         }
         Ok(delta)
@@ -508,9 +453,14 @@ impl<'a> AuthorityWork<'a> {
     ) -> Result<Epoch, AuthorityStoreError> {
         let bytes = record_bytes::<8>(bytes, domain);
         let delta = WorkCounters {
-            bytes_copied: if bytes.is_some() { 8 } else { 0 },
-            ..WorkCounters::default()
+            bytes_copied: if self.is_native() && bytes.is_some() {
+                8
+            } else {
+                0
+            },
+            ..WorkCounters::UNCHARGED
         };
+        // Ordinary epoch reads retain main's unmetered fixed-header decode.
         if self.is_native() {
             self.admit(delta)?;
         }
@@ -544,16 +494,8 @@ impl<'a> AuthorityWork<'a> {
             _ => return Err(authority_corrupt(invalid, self)),
         };
         match step {
-            BeforeCopy(_) => self.admit(delta),
-            BeforeHash(_) => {
-                self.check()?;
-                self.admit(delta)
-            }
-            Copied(_) => self.record_completed(delta),
-            Hashed(_) => {
-                self.record_completed(delta)?;
-                self.check()
-            }
+            BeforeCopy(_) | BeforeHash(_) => self.admit(delta),
+            Copied(_) | Hashed(_) => self.record_completed(delta),
             _ => unreachable!("validated decoder step"),
         }
     }
@@ -641,7 +583,7 @@ impl<'a> AuthorityWork<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) struct ForkBytes {
+struct ForkBytes {
     bytes: Vec<u8>,
     _allocation: crate::NativeAllocation,
 }
