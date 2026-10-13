@@ -280,7 +280,8 @@ impl AgentHarness {
         let model_custody = native_work
             .map(|work| {
                 work.claim(
-                    std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64,
+                    (std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>()
+                        + 2 * std::mem::size_of::<usize>()) as u64,
                     1,
                     acyclic_fs::WorkCounters::default(),
                 )

@@ -12,44 +12,6 @@ fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializ
 }
 
 #[tokio::test]
-async fn cancelled_shared_context_preserves_original_cause_and_metadata_custody() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let original = work(&cancellation)?;
-    let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
-    let context = fixture
-        .harness
-        .durable_context(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            Some(&io),
-        )
-        .await?;
-    let bytes = context
-        .native_custody
-        .as_ref()
-        .expect("issued context custody")
-        .bytes();
-    cancellation.cancel();
-    assert!(matches!(
-        context.require_original_native_work(&original),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            ..
-        })
-    ));
-    assert_eq!(
-        context
-            .native_custody
-            .as_ref()
-            .expect("retained context custody")
-            .bytes(),
-        bytes
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
@@ -282,7 +244,16 @@ async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_fu
 
     drop(blocker);
     let original_io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+    let retained = original.live_allocation_bytes();
     cancellation.cancel();
+    assert!(matches!(
+        shared.require_original_native_work(&original),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert_eq!(original.live_allocation_bytes(), retained);
     assert!(matches!(
         ToolContext::new(shared, operation, &call_id, Some(&original_io)),
         Err(Error::NativeWork {
