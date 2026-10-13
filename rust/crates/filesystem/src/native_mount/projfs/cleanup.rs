@@ -91,7 +91,11 @@ fn collect_projection(
     use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
     let (mut reader, _reader_allocation) = root.read_dir_stats(&[], &mut &*work)?;
     while let Some((entry, _entry_allocation)) = reader.next(&mut &*work)? {
-        let Some(stat) = entry.stat else { continue };
+        // Name-only probes omit reparse entries; inspect their held no-follow metadata.
+        let stat = match entry.stat {
+            Some(stat) => stat,
+            None => root.stat(&entry.name, &mut &*work)?,
+        };
         let bytes = path.components().iter().map(Vec::len).sum::<usize>()
             + (path.components().len() * 2).max(4) * size_of::<Vec<u8>>();
         let copied = crate::WorkCounters {
@@ -141,7 +145,11 @@ fn collect_projection(
             )?;
         }
         files.push(file);
-        if directory && stat.raw.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0 {
+        if directory
+            && (stat.raw.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
+                || stat.raw.ReparseTag
+                    == windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
+        {
             let directory = root.open_dir_held(&entry.name, &mut &*work)?;
             let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
             if identity != stat.identity() {
