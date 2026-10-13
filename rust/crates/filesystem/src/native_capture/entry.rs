@@ -221,8 +221,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
                     let mut observed = Vec::new();
                     collect_host_subtree_roots(
                         &source_root,
-                        profile,
-                        limits,
+                        (profile, limits),
                         maximum,
                         &canonical,
                         &host_policy,

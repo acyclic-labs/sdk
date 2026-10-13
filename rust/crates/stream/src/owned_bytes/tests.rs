@@ -71,7 +71,7 @@ fn prepared_storage_freezes_after_cancellation_and_keeps_empty_aliases() {
     let observed = Arc::new(Meter::default());
     let meter = observed.original();
     let (data, claim) = funded(&meter, 23);
-    let mut prepared = PreparedOwnedBytes::new(data, claim, meter.clone()).unwrap();
+    let mut prepared = PreparedOwnedBytes::new(data, claim, &meter).unwrap();
     let held = observed.held.load(Order::Relaxed);
     let maximum = prepared.maximum_len();
     prepared = prepared.freeze(maximum + 1).unwrap_err();
@@ -106,7 +106,7 @@ fn rejected_preparation_preserves_data_and_original_cause() {
                 .limit
                 .store(observed.allocations.load(Order::Relaxed), Order::Relaxed);
         }
-        let failure = PreparedOwnedBytes::new(data, claim, meter).unwrap_err();
+        let failure = PreparedOwnedBytes::new(data, claim, &meter).unwrap_err();
         assert_eq!(failure.retained_capacity(), capacity);
         assert_eq!(observed.held.load(Order::Relaxed), capacity as u64);
         match failure.into_error() {
@@ -126,7 +126,7 @@ fn rejected_preparation_preserves_data_and_original_cause() {
     let meter = observed.original();
     let (mut data, claim) = funded(&meter, 13);
     data.truncate(data.capacity() - 1);
-    let failure = PreparedOwnedBytes::new(data, claim, meter).unwrap_err();
+    let failure = PreparedOwnedBytes::new(data, claim, &meter).unwrap_err();
     assert!(matches!(
         failure.error(),
         PreparedOwnedBytesError::NotFullyInitialized
@@ -155,7 +155,7 @@ fn in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first() {
         .limit
         .store(observed.allocations.load(Order::Relaxed), Order::Relaxed);
     let error =
-        OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut owner, meter.clone()).unwrap_err();
+        OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut owner, &meter).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
     assert_eq!((data.as_ptr(), data.capacity()), (pointer, capacity));
     assert_eq!(data, b"keep");
@@ -163,8 +163,7 @@ fn in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first() {
     assert_eq!(retired.load(Order::Relaxed), u64::MAX);
     assert_eq!(observed.held.load(Order::Relaxed), held);
     observed.limit.store(u64::MAX, Order::Relaxed);
-    let bytes =
-        OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut owner, meter.clone()).unwrap();
+    let bytes = OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut owner, &meter).unwrap();
     assert!(data.is_empty() && owner.is_none());
     assert_eq!(bytes.as_slice().as_ptr(), pointer);
     let held = observed.held.load(Order::Relaxed);

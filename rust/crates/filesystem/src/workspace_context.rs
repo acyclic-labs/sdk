@@ -147,7 +147,7 @@ pub trait WorkspaceContextStore: Send + Sync {
         async move {
             KernelAccounting::native(original, cancellation)
                 .check()
-                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
             Err((WorkspaceContextError::NativeOriginalUnsupported, None))
         }
     }
@@ -175,7 +175,7 @@ pub trait WorkspaceContextStore: Send + Sync {
         async move {
             KernelAccounting::native(original, cancellation)
                 .check()
-                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
             drop(replacement);
             Err((WorkspaceContextError::NativeOriginalUnsupported, None))
         }
@@ -257,7 +257,7 @@ pub enum WorkspaceContextError<E: std::error::Error + 'static> {
     /// The original native invocation rejected measured metadata work.
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
-    NativeFilesystem(crate::FsError),
+    NativeFilesystem(Box<crate::FsError>),
     /// A custom adapter has not implemented original-ledger metadata work.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("workspace-context store does not support original native work")]
@@ -762,13 +762,13 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
                     let accounting = KernelAccounting::native(original, cancellation);
                     accounting
                         .check()
-                        .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                        .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
                     let replacement =
                         clone_context_with_native_work(&record.context, original, cancellation)
                             .map_err(|error| (error, None))?;
                     accounting
                         .check()
-                        .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                        .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
                     self.store
                         .compare_and_swap_with_native_work(
                             context_id,
@@ -800,7 +800,7 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
                 } => {
                     KernelAccounting::native(original, cancellation)
                         .check()
-                        .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                        .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
                     self.store
                         .load_with_native_work(context_id, original, cancellation)
                         .await
@@ -952,11 +952,11 @@ fn native_root_record<E: std::error::Error + 'static>(
     let mut accounting = KernelAccounting::native(original, cancellation);
     accounting
         .check()
-        .map_err(WorkspaceContextError::NativeFilesystem)?;
+        .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
     let vec_bytes = (roots.0.capacity() as u64)
         .checked_mul(std::mem::size_of::<WorkspaceContextRoot>() as u64)
         .ok_or_else(|| {
-            WorkspaceContextError::NativeFilesystem(crate::WorkError::Overflow.into())
+            WorkspaceContextError::NativeFilesystem(Box::new(crate::WorkError::Overflow.into()))
         })?;
     let bytes = roots
         .0
@@ -966,11 +966,11 @@ fn native_root_record<E: std::error::Error + 'static>(
                 .checked_add(context_root_backing(root)?)
                 .ok_or_else(|| crate::FsError::from(crate::WorkError::Overflow))
         })
-        .map_err(WorkspaceContextError::NativeFilesystem)?;
+        .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
     if !roots.1.work().shares_allocation_context(original) || roots.1.bytes() != bytes {
-        return Err(WorkspaceContextError::NativeFilesystem(
+        return Err(WorkspaceContextError::NativeFilesystem(Box::new(
             crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout),
-        ));
+        )));
     }
     let (roots, allocation) = roots;
     let mut input = (roots, KernelOwnedAllocation::NativeOriginal(allocation));
@@ -984,25 +984,25 @@ fn native_root_record<E: std::error::Error + 'static>(
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
             })
-            .map_err(WorkspaceContextError::NativeFilesystem),
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error))),
         RootCollectionStep::Insert => {
             accounting
                 .admit(copied)
-                .map_err(WorkspaceContextError::NativeFilesystem)?;
+                .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
             let mut entry = accounting
                 .claim_owned(
                     std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64,
                     0,
                 )
-                .map_err(WorkspaceContextError::NativeFilesystem)?;
+                .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
             input
                 .1
                 .absorb(&mut entry)
-                .map_err(WorkspaceContextError::NativeFilesystem)
+                .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))
         }
         RootCollectionStep::Inserted => accounting
             .record_completed(copied)
-            .map_err(WorkspaceContextError::NativeFilesystem),
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error))),
     })?;
     let KernelOwnedAllocation::NativeOriginal(allocation) = input.1 else {
         return Err(WorkspaceContextError::IncompatibleState);
@@ -1025,10 +1025,10 @@ fn native_root_record<E: std::error::Error + 'static>(
         .as_mut()
         .expect("native root custody")
         .release(vec_bytes)
-        .map_err(|error| WorkspaceContextError::NativeFilesystem(error.into()))?;
+        .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error.into())))?;
     accounting
         .check()
-        .map_err(WorkspaceContextError::NativeFilesystem)?;
+        .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
     Ok(record)
 }
 
@@ -1092,7 +1092,7 @@ fn clone_context_with_native_work<E: std::error::Error + 'static>(
     let mut accounting = KernelAccounting::native(original, cancellation);
     let allocation = accounting
         .claim_owned(0, 0)
-        .map_err(WorkspaceContextError::NativeFilesystem)?;
+        .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
     let mut owned = (BTreeMap::new(), allocation);
     for (root_id, root) in &context.roots {
         accounting
@@ -1100,54 +1100,54 @@ fn clone_context_with_native_work<E: std::error::Error + 'static>(
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
             })
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         let mut entry = accounting
             .claim_owned(
                 std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64,
                 0,
             )
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         owned
             .1
             .absorb(&mut entry)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         let copied = crate::WorkCounters {
             bytes_copied: std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64,
             ..crate::WorkCounters::UNCHARGED
         };
         accounting
             .admit(copied)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         let mut source = clone_context_path(&root.source_path, &mut accounting)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         let mut name = clone_context_name(&root.workspace_name, &mut accounting)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         let mut mount = root
             .mount_path
             .as_deref()
             .map(|path| clone_context_path(path, &mut accounting))
             .transpose()
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         owned
             .1
             .absorb(&mut source.1)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         owned
             .1
             .absorb(&mut name.1)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         if let Some((_, allocation)) = &mut mount {
             owned
                 .1
                 .absorb(allocation)
-                .map_err(WorkspaceContextError::NativeFilesystem)?;
+                .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         }
         let source_path = source.0;
         let workspace_name = name.0;
         let mount_path = mount.map(|(path, _)| path);
         accounting
             .admit(copied)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
         owned.0.insert(
             *root_id,
             WorkspaceContextRoot {
@@ -1161,7 +1161,7 @@ fn clone_context_with_native_work<E: std::error::Error + 'static>(
         );
         accounting
             .record_completed(copied)
-            .map_err(WorkspaceContextError::NativeFilesystem)?;
+            .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
     }
     let header_copy = crate::WorkCounters {
         bytes_copied: std::mem::size_of::<WorkspaceContext>() as u64,
@@ -1169,7 +1169,7 @@ fn clone_context_with_native_work<E: std::error::Error + 'static>(
     };
     accounting
         .admit(header_copy)
-        .map_err(WorkspaceContextError::NativeFilesystem)?;
+        .map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
     let KernelOwnedAllocation::NativeOriginal(allocation) = owned.1 else {
         return Err(WorkspaceContextError::IncompatibleState);
     };
@@ -1181,7 +1181,7 @@ fn clone_context_with_native_work<E: std::error::Error + 'static>(
         roots: owned.0,
         state: context.state,
     }, allocation);
-    accounting.record_completed(header_copy).map_err(WorkspaceContextError::NativeFilesystem)?;
+    accounting.record_completed(header_copy).map_err(|error| WorkspaceContextError::NativeFilesystem(Box::new(error)))?;
     Ok(result)
 }
 
@@ -1423,7 +1423,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
     ) -> Result<Option<(WorkspaceContext, crate::NativeAllocation)>, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)> {
         KernelAccounting::native(original, cancellation).charge(crate::WorkCounters {
             items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+        }).map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
         let state = self.state.lock()
             .map_err(|_| (WorkspaceContextError::Store(MemoryWorkspaceContextStoreError), None))?;
         state.records.get(&context_id).map(|record| {
@@ -1457,7 +1457,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
             return Err((WorkspaceContextError::IncompatibleState, None));
         }
         let required = context_native_backing(&replacement.context)
-            .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
         if replacement
             .allocation
             .as_ref()
@@ -1473,7 +1473,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
             })
-            .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
         let mut state = self.state.lock().map_err(|_| {
             (
                 WorkspaceContextError::Store(MemoryWorkspaceContextStoreError),
@@ -1489,7 +1489,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
                     std::mem::size_of::<(WorkspaceContextId, ContextOwnedRecord)>() as u64,
                     0,
                 )
-                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
             if let KernelOwnedAllocation::NativeOriginal(backing) = backing {
                 replacement.entry_allocation = Some(backing);
             }
@@ -1504,9 +1504,9 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
                     )>() as u64)
                     .ok_or_else(|| {
                         (
-                            WorkspaceContextError::NativeFilesystem(
+                            WorkspaceContextError::NativeFilesystem(Box::new(
                                 crate::WorkError::Overflow.into(),
-                            ),
+                            )),
                             None,
                         )
                     })?;
@@ -1520,9 +1520,9 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
                     .checked_add(std::mem::size_of::<WorkspaceContextId>() as u64)
                     .ok_or_else(|| {
                         (
-                            WorkspaceContextError::NativeFilesystem(
+                            WorkspaceContextError::NativeFilesystem(Box::new(
                                 crate::WorkError::Overflow.into(),
-                            ),
+                            )),
                             None,
                         )
                     })?;
@@ -1530,14 +1530,14 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         }
         let mut backing = accounting
             .claim_owned(bytes, 0)
-            .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
         if let KernelOwnedAllocation::NativeOriginal(backing) = &mut backing {
             replacement
                 .allocation
                 .as_mut()
                 .expect("native record custody")
                 .absorb(backing)
-                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error.into()), None))?;
+                .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error.into())), None))?;
         }
         let copied = crate::WorkCounters {
             bytes_copied: std::mem::size_of::<(WorkspaceContextId, WorkspaceContext)>() as u64,
@@ -1545,11 +1545,11 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         };
         accounting
             .admit(copied)
-            .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
         replace_context_record(&mut state, context_id, replacement);
         accounting
             .record_completed(copied)
-            .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            .map_err(|error| (WorkspaceContextError::NativeFilesystem(Box::new(error)), None))?;
         Ok(true)
     }
 

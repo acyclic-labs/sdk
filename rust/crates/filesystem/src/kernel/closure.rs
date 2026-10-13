@@ -372,7 +372,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         root_file_id: FileId,
         records: &ProofVec<'a, (FileId, FileRecord)>,
     ) -> Result<(), crate::FsError> {
-        let root = map_get(&records, &root_file_id).ok_or(ClosureError::MissingRootFile)?;
+        let root = map_get(records, &root_file_id).ok_or(ClosureError::MissingRootFile)?;
         if !matches!(root.payload, FilePayload::Directory { .. }) {
             return Err(ClosureError::RootIsNotDirectory.into());
         }
@@ -711,7 +711,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         for pages in directories.iter().map(|(_, value)| value) {
             for entry in Self::tree_entries(pages) {
                 self.examine(1)?;
-                let record = map_get(&records, &entry.file_id)
+                let record = map_get(records, &entry.file_id)
                     .ok_or(ClosureError::MissingFileRecord(entry.file_id))?;
                 if record.kind != entry.kind {
                     return Err(ClosureError::NamespaceKindMismatch(entry.file_id).into());
@@ -743,12 +743,12 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 return Err(ClosureError::DirectoryHardLink(file_id).into());
             }
             set_insert(&mut reachable, file_id)?;
-            let pages = map_get(&directories, &file_id)
+            let pages = map_get(directories, &file_id)
                 .ok_or(ClosureError::MissingDirectoryTree(file_id))?;
             for entry in Self::tree_entries(pages) {
                 self.examine(1)?;
                 set_insert(&mut reachable, entry.file_id)?;
-                if map_get(&directories, &entry.file_id).is_some() {
+                if map_get(directories, &entry.file_id).is_some() {
                     pending.push(entry.file_id)?;
                 }
             }
@@ -1181,10 +1181,10 @@ impl<'a> ProofMeter<'a> {
                 let __object_args = (object, maximum, original, cancellation);
                 let mut __object_work =
                     crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                let __object_result = store
+
+                store
                     .read(__object_args.0, __object_args.1, &mut __object_work)
-                    .await;
-                __object_result
+                    .await
             }
             .map_err(|error| match error {
                 ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),

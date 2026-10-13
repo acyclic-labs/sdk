@@ -267,7 +267,7 @@ pub(crate) fn absorb_read_custody(
         KernelOwnedAllocation::Standalone => {}
         KernelOwnedAllocation::NativeOriginal(mut incoming) => match target {
             KernelOwnedAllocation::Standalone => {
-                *target = KernelOwnedAllocation::NativeOriginal(incoming)
+                *target = KernelOwnedAllocation::NativeOriginal(incoming);
             }
             KernelOwnedAllocation::NativeOriginal(target) => target.absorb(&mut incoming)?,
         },
@@ -328,10 +328,10 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
         return {
             let __object_args = (object, maximum, original, cancellation);
             let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
+
+            store
                 .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
+                .await
         }
         .map(|read| (read, 0))
         .map_err(read_store_error);
@@ -442,11 +442,11 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
         return {
             let __object_args = (requests, original, cancellation);
             let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store
+
+            store
                 .read_many(__object_args.0, &mut __object_work)
                 .await
-                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-            __object_result
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
         }
         .map(|batch| {
             let (value, custody) = batch;

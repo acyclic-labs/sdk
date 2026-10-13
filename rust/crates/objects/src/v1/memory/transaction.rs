@@ -20,8 +20,7 @@ impl MemoryObjects {
     ) -> Result<R, Error> {
         self.mutate_locked_engine(
             guard,
-            digest,
-            identity,
+            (digest, identity),
             |receipt| R::decode(receipt.response.as_slice()).map_err(|_| Unavailable.into()),
             action,
             |response, identity| {
@@ -63,13 +62,13 @@ impl MemoryObjects {
     pub(super) fn mutate_locked_engine<R, E: From<Error>>(
         &self,
         guard: &mut State,
-        digest: [u8; 32],
-        identity: &Option<wire::MutationIdentity>,
+        request: ([u8; 32], &Option<wire::MutationIdentity>),
         replay: impl FnOnce(&Receipt) -> Result<R, E>,
         action: impl FnOnce(&mut State) -> Result<R, E>,
         receipt: impl FnOnce(&R, &wire::MutationIdentity) -> Result<(SharedInfo<String>, Receipt), E>,
         commit: impl FnOnce(&State, &mut State) -> Result<(), E>,
     ) -> Result<R, E> {
+        let (digest, identity) = request;
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if let Some(journal) = &self.journal {
             journal.check()?;
@@ -141,7 +140,7 @@ impl MemoryObjects {
                     }) {
                     Ok(()) => *state = next,
                     Err(error) => {
-                        for result in &mut results[start..] {
+                        for result in results.iter_mut().skip(start) {
                             if result.is_ok() {
                                 *result = Err(error);
                             }
@@ -189,13 +188,12 @@ impl MemoryObjects {
         let name = query
             .bucket
             .as_ref()
-            .expect("validated put bucket")
+            .ok_or(Error::from(InvalidArgument))?
             .name
             .as_str();
         self.mutate_locked_engine(
             state,
-            digest,
-            &query.mutation,
+            (digest, &query.mutation),
             |receipt| {
                 let stored = receipt.put_info.as_ref().ok_or(Error::from(Unavailable))?;
                 let mut allocation = ReadAllocation::empty(meter);

@@ -75,7 +75,7 @@ impl MemoryStream {
             mutations: facts,
         };
         self.publish(bytes, || {
-            publish(&mut state, paths, histories, &envelope);
+            publish(&mut state, paths, histories, &envelope)?;
             state.decision = decision;
             state.last_committed_at_micros = time;
             retain(
@@ -88,7 +88,7 @@ impl MemoryStream {
             state
                 .retained
                 .last_mut()
-                .expect("retained append")
+                .ok_or(StreamError::Unavailable)?
                 ._allocation = allocation;
             Ok((outcome, Default::default()))
         })

@@ -42,9 +42,9 @@ pub enum WorkspaceError {
     #[error("workspace work merge failed: {error}")]
     WorkMerge {
         /// Work completed before the backend call.
-        prior: crate::WorkCounters,
+        prior: Box<crate::WorkCounters>,
         /// Work completed by the backend.
-        backend: crate::WorkCounters,
+        backend: Box<crate::WorkCounters>,
         /// Checked arithmetic failure.
         #[source]
         error: crate::WorkError,
@@ -175,8 +175,8 @@ pub(crate) fn workspace_bounded_error(
     }) = error.downcast_ref::<WorkspaceError>()
     {
         return Some(WorkspaceError::WorkMerge {
-            prior: *prior,
-            backend: *backend,
+            prior: prior.clone(),
+            backend: backend.clone(),
             error: *error,
         });
     }

@@ -42,7 +42,7 @@ impl<G: Send + Sync + 'static> GuardBundle<G> {
         Ok(Arc::new(Self {
             data: std::mem::take(data),
             metadata,
-            _original_guard: guard.take().expect("checked owner"),
+            _original_guard: guard.take().ok_or(io::ErrorKind::InvalidInput)?,
         }))
     }
 }
@@ -82,11 +82,14 @@ impl OwnedBytes {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
         let mut guard = Some(guard);
-        Self::from_vec_with_guard_in_place(&mut data, &mut guard, meter).map_err(|error| {
+        Self::from_vec_with_guard_in_place(&mut data, &mut guard, &meter).map_err(|error| {
+            let Some(original_guard) = guard else {
+                unreachable!("rejected transfer retains its owner")
+            };
             PreparedOwnedBytesFailure {
                 data,
                 error: PreparedOwnedBytesError::Admission(error),
-                original_guard: guard.expect("rejected transfer retains its owner"),
+                original_guard,
             }
         })
     }
@@ -95,10 +98,10 @@ impl OwnedBytes {
     pub fn from_vec_with_guard_in_place<G: Send + Sync + 'static>(
         data: &mut Vec<u8>,
         guard: &mut Option<G>,
-        meter: Arc<dyn NativeReadMeter>,
+        meter: &Arc<dyn NativeReadMeter>,
     ) -> io::Result<Self> {
         let (length, capacity) = (data.len(), data.capacity());
-        let guard = GuardBundle::new(data, guard, &meter)?;
+        let guard = GuardBundle::new(data, guard, meter)?;
         Ok(Self {
             data: Data::Native(guard),
             range: 0..length,
@@ -113,7 +116,7 @@ impl OwnedBytes {
             #[cfg(not(target_arch = "wasm32"))]
             Data::Native(guard) => guard.data.as_slice(),
         };
-        &bytes[self.range.clone()]
+        bytes.split_at(self.range.start).1.split_at(self.len()).0
     }
     /// Number of visible bytes.
     #[must_use]
@@ -162,6 +165,9 @@ impl OwnedBytes {
         }
     }
     /// Shares a checked range with its original allocation owner.
+    ///
+    /// # Panics
+    /// Panics when the range is outside the visible bytes.
     #[must_use]
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Self {
         if self.retained_capacity.is_none()
@@ -171,11 +177,17 @@ impl OwnedBytes {
         }
         let start = match range.start_bound() {
             Bound::Included(&start) => start,
-            Bound::Excluded(&start) => start.checked_add(1).expect("slice start overflow"),
+            Bound::Excluded(&start) => {
+                assert!(start < self.len(), "slice start exceeds visible bytes");
+                start + 1
+            }
             Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
-            Bound::Included(&end) => end.checked_add(1).expect("slice end overflow"),
+            Bound::Included(&end) => {
+                assert!(end < self.len(), "slice end exceeds visible bytes");
+                end + 1
+            }
             Bound::Excluded(&end) => end,
             Bound::Unbounded => self.len(),
         };

@@ -71,7 +71,7 @@ impl<T, E> Future for NativeProviderFuture<'_, T, E> {
             Self::Ready(result) => std::task::Poll::Ready(
                 result
                     .take()
-                    .expect("native provider future polled after completion"),
+                    .unwrap_or_else(|| Err(std::io::ErrorKind::InvalidInput.into())),
             ),
             Self::Funded { future, .. } => future.as_mut().poll(context),
         }

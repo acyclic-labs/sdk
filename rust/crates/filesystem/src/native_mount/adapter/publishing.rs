@@ -146,14 +146,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             if let Some(context) = context {
                 *acknowledged = Some(match operation {
                     Some(operation) => crate::NativePublicationSnapshot {
-                        context: context,
+                        context,
                         operation: Some(operation),
-                        generation: generation,
+                        generation,
                     },
                     None => crate::NativePublicationSnapshot {
-                        context: context,
+                        context,
                         operation: None,
-                        generation: generation,
+                        generation,
                     },
                 });
             }

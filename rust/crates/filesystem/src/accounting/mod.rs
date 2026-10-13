@@ -151,6 +151,7 @@ mod read;
 use proof::{prove_bytes, prove_published, verify_record};
 use read::AccountingReadWork;
 pub use read::accounting_page;
+#[cfg(feature = "distributed")]
 pub(crate) use read::accounting_page_at_head;
 
 #[cfg(test)]

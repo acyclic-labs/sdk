@@ -42,7 +42,7 @@ impl PreparedNativeCommit {
         self.record.supply(record);
         self.future
             .take()
-            .expect("prepared Commit future is transferred once")
+            .unwrap_or_else(|| NativeProviderFuture::ready(Ok(Err(StreamError::Unavailable))))
     }
 }
 
@@ -55,11 +55,13 @@ impl Drop for PreparedNativeCommit {
 }
 
 /// One private ingress cell, not a journal, authority or request queue.
+type RecordSlotState = (
+    Option<Result<OwnedBytes, StreamError>>,
+    Option<std::task::Waker>,
+);
+
 pub(crate) struct NativeCommitRecordSlot {
-    state: std::sync::Mutex<(
-        Option<Result<OwnedBytes, StreamError>>,
-        Option<std::task::Waker>,
-    )>,
+    state: std::sync::Mutex<RecordSlotState>,
     _allocation: acyclic_native_runtime::ReadAllocation,
 }
 

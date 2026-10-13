@@ -967,13 +967,13 @@ where
                 let __object_args = (hashed, work, self.cancellation);
                 let mut __object_work =
                     crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                let __object_result = crate::AsyncObjectStore::put_hashed(
+
+                crate::AsyncObjectStore::put_hashed(
                     self.store,
                     __object_args.0,
                     &mut __object_work,
                 )
-                .await;
-                __object_result
+                .await
             }
             .map_err(storage_error)?;
             drop(encoded);

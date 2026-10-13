@@ -266,7 +266,7 @@ fn zstd(mut input: &[u8], output: &mut [u8], length: usize) -> (bool, u64, usize
         while !input.is_empty() {
             let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut input).ok()?;
             loop {
-                let count = decoder.read(&mut output[completed..]).ok()?;
+                let count = decoder.read(output.get_mut(completed..)?).ok()?;
                 completed += count;
                 if completed > length {
                     return None;

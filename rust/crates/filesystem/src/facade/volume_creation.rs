@@ -181,16 +181,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             volume_id, config, ..
         } = creation;
         accounting.check()?;
-        let operation_id = match operation_id {
-            Some(id) => id,
-            None => {
-                accounting.charge(identity_hash_work(CREATION_OPERATION_DOMAIN))?;
-                OperationId::from_bytes(
-                    derived_digest(CREATION_OPERATION_DOMAIN, volume_id).as_bytes()[..16]
-                        .try_into()
-                        .expect("sixteen digest bytes"),
-                )
-            }
+        let operation_id = if let Some(id) = operation_id { id } else {
+            accounting.charge(identity_hash_work(CREATION_OPERATION_DOMAIN))?;
+            OperationId::from_bytes(
+                derived_digest(CREATION_OPERATION_DOMAIN, volume_id).as_bytes()[..16]
+                    .try_into()
+                    .expect("sixteen digest bytes"),
+            )
         };
         let encoded =
             crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {

@@ -174,7 +174,7 @@ impl NativeDemandFile {
                 let mut prepared = acyclic_stream::PreparedOwnedBytes::new(
                     std::mem::take(&mut data),
                     native_allocation.take(),
-                    original.runtime_meter(),
+                    &original.runtime_meter(),
                 )
                 .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
