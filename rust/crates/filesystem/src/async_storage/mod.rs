@@ -27,6 +27,7 @@ pub(crate) use fork::{first_record, seal, workspace_fork};
 mod work;
 #[cfg(not(target_arch = "wasm32"))]
 pub use work::NativeAuthorityGuard;
+pub(crate) use work::authority_error;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};
 mod authority;
 pub use authority::AsyncAuthorityStore;
