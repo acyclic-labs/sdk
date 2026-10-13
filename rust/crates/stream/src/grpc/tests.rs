@@ -383,3 +383,53 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
     server.await??;
     result
 }
+
+#[tokio::test]
+async fn translating_client_does_not_ack_before_downstream_delivery() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("accounts/events")?,
+            records: vec![OwnedBytes::from(b"delivered".to_vec())],
+            if_tail: Some(0),
+            idempotency_key: None,
+        })
+        .await?;
+    let acknowledgements = Arc::new(AtomicUsize::new(0));
+    let mut service = Service::new(provider);
+    service.test_delivery = Some((Bytes::from(vec![9; 32]), Arc::clone(&acknowledgements)));
+    let direct = Client::from_channel(channel(service), authorization("fixture")?);
+    let translating = direct.clone().without_delivery_acknowledgements();
+    let request = ReadRequest {
+        path: StreamPath::new("accounts/events")?,
+        from: 0,
+        limit: 1,
+    };
+    let record = direct
+        .read(request.clone())
+        .await?
+        .next()
+        .await
+        .ok_or("empty read")??;
+    assert_eq!(record.value, OwnedBytes::from(b"delivered".to_vec()));
+    assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
+    let record = translating
+        .read(request)
+        .await?
+        .next()
+        .await
+        .ok_or("empty read")??;
+    assert_eq!(record.value, OwnedBytes::from(b"delivered".to_vec()));
+    assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        direct.acknowledge_delivery(Bytes::new()).await,
+        Err(StreamError::InvalidArgument)
+    );
+    assert_eq!(
+        client(MemoryStream::default())?
+            .acknowledge_delivery(Bytes::from(vec![9; 32]))
+            .await,
+        Err(StreamError::Unsupported)
+    );
+    Ok(())
+}

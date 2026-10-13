@@ -111,7 +111,21 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 limit: request.limit,
             };
             let records = self.provider.read(request).await.map_err(wire_error)?;
-            Ok(observe_body(&span, records.map(record_frame)).boxed())
+            #[cfg(test)]
+            let records = {
+                let delivery = self.test_delivery.clone();
+                records.map(move |record| {
+                    record_frame(record).map(|mut frame| {
+                        if let Some((token, _)) = &delivery {
+                            frame.delivery_token = token.clone();
+                        }
+                        frame
+                    })
+                })
+            };
+            #[cfg(not(test))]
+            let records = records.map(record_frame);
+            Ok(observe_body(&span, records).boxed())
         })
         .await
     }
@@ -133,6 +147,24 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             Ok(observe_body(&span, records.map(record_frame)).boxed())
         })
         .await
+    }
+
+    async fn acknowledge_delivery(
+        &self,
+        request: Request<wire::AcknowledgeDeliveryRequest>,
+    ) -> Result<Response<wire::AcknowledgeDeliveryResponse>, Status> {
+        if request.get_ref().delivery_token.len() != 32 {
+            return Err(error_status(&StreamError::InvalidArgument));
+        }
+        #[cfg(test)]
+        if let Some((token, acknowledgements)) = &self.test_delivery {
+            if request.get_ref().delivery_token != *token {
+                return Err(error_status(&StreamError::InvalidArgument));
+            }
+            acknowledgements.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(Response::new(wire::AcknowledgeDeliveryResponse {}));
+        }
+        Err(error_status(&StreamError::Unsupported))
     }
 
     async fn children(

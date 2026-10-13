@@ -4,7 +4,7 @@ import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
@@ -17,6 +17,8 @@ export interface StreamGrpcOptions {
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
+  /** Translating servers acknowledge their own downstream receipt. */
+  readonly acknowledgeDeliveries?: boolean;
 }
 
 /** Complete Stream v1 gRPC client, including streaming reads/follow and atomic Commit. */
@@ -37,8 +39,16 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
   readonly #client: ReturnType<typeof createStreamGrpcClient>;
+  readonly #acknowledgeDeliveries: boolean;
   constructor(options: StreamGrpcOptions) {
     this.#client = createStreamGrpcClient(options);
+    this.#acknowledgeDeliveries = options.acknowledgeDeliveries !== false;
+  }
+  /** Acknowledges an opaque hosted transport receipt. */
+  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
+    const request = { $typeName: "acyclic.stream.v1.AcknowledgeDeliveryRequest" as const, deliveryToken: deliveryToken.slice() };
+    await encodeHttpRequest("delivery/acknowledge", toBinary(wire.AcknowledgeDeliveryRequestSchema, request));
+    await this.#call("acknowledge_delivery", () => this.#client.acknowledgeDelivery(request, { timeoutMs: 500 }));
   }
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
     try { return await call(); } catch (error) { throw providerError(error, operation); }
@@ -97,6 +107,9 @@ export class GrpcStreamProvider implements StreamProvider {
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
         const records = values.map((value, index) => checkedRecord(value, next + BigInt(index)));
+        if (this.#acknowledgeDeliveries && response.deliveryToken.length === 32) {
+          try { await this.acknowledgeDelivery(response.deliveryToken); } catch { /* Receipt failure preserves records. */ }
+        }
         next += BigInt(records.length);
         if (remaining !== undefined) remaining -= records.length;
         for (const record of records) {
