@@ -32,7 +32,7 @@ where
         let caller = self.caller(task, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            let binding = context.owned_task_binding_with_native_work(work)?;
+            let binding = context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             let owner = owner.ok_or_else(|| {
                 failure(
                     io,
@@ -238,7 +238,7 @@ where
     ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            let (task, fence) = context.owned_task_binding_with_native_work(work)?;
+            let (task, fence) = context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             let owner = self
                 .runtime(io)?
                 .task_host()
@@ -254,7 +254,7 @@ where
         Ok(Arc::new(
             self.runtime(io)?
                 .task_host()
-                .journal_owner(task, &(context.owned_task_fence()?), None)
+                .journal_owner(task, context.owned_task_binding(None)?.1, None)
                 .await?
                 .with_invocation_cancellation(cancellation),
         ))

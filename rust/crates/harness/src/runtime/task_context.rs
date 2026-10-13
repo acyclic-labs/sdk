@@ -2,22 +2,13 @@ use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
 pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
-    fn validate_scope(&self, scope: &RuntimeScope) -> Result<()>;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn validate_scope_with_native_work(
+    fn validate_scope(
         &self,
-        _scope: &RuntimeScope,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "mailbox has no original-ledger admitted scope verifier",
-        })
-    }
+        scope: &RuntimeScope,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()>;
     #[cfg(feature = "filesystem")]
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
-    #[cfg(feature = "filesystem")]
-    fn matches_task_binding(&self, task: TaskId, fence: &crate::scheduler::LeaseFence) -> bool;
     fn send<'a>(
         &'a self,
         recipient: TaskId,
@@ -30,35 +21,6 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         receive_operation: OperationId,
         item: &'a InboxItem,
     ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn send_with_native_work<'a>(
-        &'a self,
-        _recipient: TaskId,
-        _operation: OperationId,
-        _payload: &'a FileRef,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>,
-    > {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "owned mailbox has no original native-ledger sender",
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn inbox_with_native_work<'a>(
-        &'a self,
-        _after: u64,
-        _maximum: usize,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<InboxItem>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "owned mailbox has no original native-ledger inbox",
-        })
-    }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn read_received_with_native_work<'a>(
@@ -156,21 +118,33 @@ impl TaskContext {
         Ok(self)
     }
 
-    /// Returns only the original owner fence already bound to this exact task context.
+    /// Borrows the task and fence from this context's original owner.
     #[cfg(feature = "filesystem")]
-    pub fn owned_task_fence(&self) -> Result<crate::scheduler::LeaseFence> {
-        let owner = self
-            .owned_mailbox
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("task context has no original owner".into()))?;
-        owner.validate_scope(&self.scope)?;
+    pub fn owned_task_binding(
+        &self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(TaskId, &crate::scheduler::LeaseFence)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(|io| io.original_native_work()) {
+            self.require_original_native_work(work)?;
+        }
+        let owner = self.owned_mailbox.as_ref().ok_or_else(|| {
+            crate::conversation::content_error(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "task context has no original owner",
+            )
+        })?;
+        owner.validate_scope(&self.scope, io)?;
         let (task, fence) = owner.task_binding();
         if self.durable_task != Some(task) {
-            return Err(Error::Unauthorized(
-                "task context differs from original owner".into(),
+            return Err(crate::conversation::content_error(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "task context differs from original owner",
             ));
         }
-        Ok(fence.clone())
+        Ok((task, fence))
     }
 
     #[cfg(feature = "filesystem")]
@@ -183,7 +157,7 @@ impl TaskContext {
             && self
                 .owned_mailbox
                 .as_ref()
-                .is_some_and(|owner| owner.matches_task_binding(task, fence))
+                .is_some_and(|owner| owner.task_binding() == (task, fence))
     }
 
     #[cfg(feature = "filesystem")]

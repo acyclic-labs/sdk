@@ -54,36 +54,15 @@ impl TaskContext {
         Ok(())
     }
 
-    /// Borrows the original SDK mailbox binding without copying its fence or deriving a principal from the task identity.
-    pub fn owned_task_binding_with_native_work(
-        &self,
-        work: &NativeMaterializationWork,
-    ) -> Result<(crate::TaskId, &crate::scheduler::LeaseFence)> {
-        self.require_original_native_work(work)?;
-        let mailbox = self.owned_mailbox.as_ref().ok_or_else(|| {
-            boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "native task has no original SDK mailbox",
-            )
-        })?;
-        mailbox.validate_scope_with_native_work(&self.scope, work)?;
-        let (task, fence) = mailbox.task_binding();
-        if self.durable_task != Some(task) || !mailbox.matches_task_binding(task, fence) {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "native context differs from its original mailbox binding",
-            ));
-        }
-        Ok((task, fence))
-    }
-
     /// Revalidates the original issued execution owner before a native SDK read.
     pub async fn verify_original_execution_owner(
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.require_original_native_dispatch(work)?;
-        let (task, fence) = self.owned_task_binding_with_native_work(work)?;
+        let (task, fence) = self.owned_task_binding(Some(
+            &crate::executor::PreparationIo::from_native_work(work)?,
+        ))?;
         let host = self.harness.host.as_ref().ok_or_else(|| {
             boundary(
                 crate::wire::ErrorCode::Unsupported,
@@ -164,7 +143,9 @@ impl TaskContext {
             &self.scope,
             Some(&crate::executor::PreparationIo::from_native_work(work)?),
         )?;
-        let (task, fence) = self.owned_task_binding_with_native_work(work)?;
+        let (task, fence) = self.owned_task_binding(Some(
+            &crate::executor::PreparationIo::from_native_work(work)?,
+        ))?;
         let host = self.harness.host.as_ref().ok_or_else(|| {
             boundary(
                 crate::wire::ErrorCode::Unsupported,

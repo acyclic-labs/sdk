@@ -504,7 +504,7 @@ impl ToolContext {
             ));
         }
         let context = self.task();
-        context.owned_task_binding_with_native_work(work)?;
+        context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
         Ok(context)
     }
 }
