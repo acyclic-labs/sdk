@@ -162,6 +162,8 @@ foreach ($family in @('actors')) {
   node "scripts/build-$family-native.mjs" stage --bundle $clientBundle
 }
 cargo build --offline --locked -p acyclic-actors --example conformance-certificate
-bun test --parallel=4 --reporter=junit `
+
+# Bun's Windows isolated test worker crashed while loading the Pi native bridge.
+bun test --reporter=junit `
     --reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition

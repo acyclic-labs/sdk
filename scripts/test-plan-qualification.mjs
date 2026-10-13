@@ -640,7 +640,7 @@ test("Windows native audits are independent required lanes without moving public
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   assert.doesNotMatch(script, /Start-Background|Complete-Background/);
   for (const command of ["cargo test --workspace --all-features --locked", "cargo test -p acyclic-plugin --all-features --locked --test fork_join",
-    "bun test --parallel=4 --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "bun run check"])
+    "bun test --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "bun run check"])
     assert.ok(script.includes(command), command);
   assert.match(script, /test-qualify-ci-windows\.ps1/);
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
