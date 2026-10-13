@@ -1,0 +1,525 @@
+use super::*;
+
+/// Immutable byte descriptor checked before a file is admitted.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct FileDescriptor {
+    pub(super) sha256: [u8; 32],
+    #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[serde(deserialize_with = "deserialize_file_length")]
+    pub(super) byte_length: u64,
+    #[serde(deserialize_with = "deserialize_media_type")]
+    pub(super) media_type: String,
+}
+
+impl FileDescriptor {
+    pub(crate) fn logical_owned_bytes(&self) -> u64 {
+        self.media_type.capacity() as u64
+    }
+
+    /// Constructs a descriptor after validating its media type.
+    pub fn new(sha256: [u8; 32], byte_length: u64, media_type: String) -> Result<Self> {
+        let value = Self {
+            sha256,
+            byte_length,
+            media_type,
+        };
+        value.validate(&mut None)?;
+        Ok(value)
+    }
+
+    /// Computes a descriptor under the optional work observer.
+    pub fn from_bytes(
+        bytes: &[u8],
+        media_type: &str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+                items: media_type.len() as u64 + 1,
+            })?;
+        }
+        if let Some(reason) = Self::validation_fields(bytes.len() as u64, media_type) {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                reason,
+            ));
+        }
+        if let Some(io) = work.as_deref_mut() {
+            io.hashed_bytes(bytes.len() as u64)?;
+        }
+        let sha256 = Sha256::digest(bytes).into();
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let media_type = crate::core::copy_text(media_type, &mut quota)?;
+        quota.transfer();
+        Ok(Self {
+            sha256,
+            byte_length: bytes.len() as u64,
+            media_type,
+        })
+    }
+
+    /// Verifies through the existing borrowed cumulative history observer.
+    pub fn verify(
+        &self,
+        bytes: &[u8],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        if bytes.len() as u64 == self.byte_length {
+            if let Some(io) = work.as_deref_mut() {
+                io.hashed_bytes(bytes.len() as u64)?;
+            }
+            if Sha256::digest(bytes).as_slice() == self.sha256 {
+                return Ok(());
+            }
+        }
+        Err(conversation_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "file content does not match its descriptor",
+        ))
+    }
+
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            inspect_native_metadata(native, self.media_type.len())?;
+        }
+        Self::validation_fields(self.byte_length, &self.media_type).map_or(Ok(()), |reason| {
+            Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                reason,
+            ))
+        })
+    }
+
+    pub(super) fn validation_fields(byte_length: u64, media_type: &str) -> Option<&'static str> {
+        if byte_length > MAX_EXACT_JS_INTEGER {
+            return Some("file byte length exceeds cross-language precision");
+        }
+        let Some((kind, subtype)) = media_type.split_once('/') else {
+            return Some("media type is invalid");
+        };
+        if kind.is_empty()
+            || subtype.is_empty()
+            || media_type.chars().any(|character| {
+                !character.is_ascii_alphanumeric()
+                    && !matches!(character, '/' | '-' | '+' | '.' | '_')
+            })
+        {
+            return Some("media type is invalid");
+        }
+        None
+    }
+
+    /// SHA-256 digest of the exact bytes.
+    #[must_use]
+    pub const fn sha256(&self) -> &[u8; 32] {
+        &self.sha256
+    }
+
+    /// Exact file length.
+    #[must_use]
+    pub const fn byte_length(&self) -> u64 {
+        self.byte_length
+    }
+
+    /// Declared MIME type.
+    #[must_use]
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn inspect_native_metadata(
+    work: &acyclic_fs::NativeMaterializationWork,
+    bytes: usize,
+) -> Result<()> {
+    let items_examined = (bytes as u64).checked_add(1).ok_or(Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "metadata inspection count overflow",
+    })?;
+    let next = acyclic_fs::WorkCounters {
+        items_examined,
+        ..Default::default()
+    };
+    work.admit(next).map_err(|cause| Error::NativeWork {
+        cause,
+        custody: None,
+    })?;
+    work.charge(next).map_err(|cause| Error::NativeWork {
+        cause,
+        custody: None,
+    })
+}
+
+/// An immutable version of a file within a scoped volume.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct FileRef {
+    pub(super) volume: VolumeRef,
+    #[serde(deserialize_with = "deserialize_path")]
+    pub(super) path: String,
+    #[serde(deserialize_with = "deserialize_label")]
+    pub(super) version: String,
+    pub(super) descriptor: FileDescriptor,
+    #[serde(deserialize_with = "deserialize_label")]
+    pub(super) display_name: String,
+}
+
+impl FileRef {
+    /// Creates a reference after checking paths, version and descriptor.
+    pub fn new(
+        volume: VolumeRef,
+        path: String,
+        version: String,
+        descriptor: FileDescriptor,
+        display_name: String,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let value = Self {
+            volume,
+            path,
+            version,
+            descriptor,
+            display_name,
+        };
+        value.validate(work)?;
+        Ok(value)
+    }
+
+    pub(crate) fn from_value(
+        value: serde_json::Value,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work
+            .as_deref()
+            .is_some_and(|io| io.original_native_work().is_some())
+        {
+            let mut file = native_owned_wire_object(
+                value,
+                Some(&["volume", "path", "version", "descriptor", "display_name"]),
+                work,
+            )?;
+            let mut volume = native_owned_wire_object(
+                native_owned_wire_field(&mut file, "volume", work)?,
+                Some(&["provider", "id", "class", "owner"]),
+                work,
+            )?;
+            let mut provider = native_owned_wire_object(
+                native_owned_wire_field(&mut volume, "provider", work)?,
+                Some(&["namespace", "family", "version"]),
+                work,
+            )?;
+            let provider = ProviderRef::new(
+                native_owned_wire_text(
+                    native_owned_wire_field(&mut provider, "namespace", work)?,
+                    work,
+                )?,
+                native_owned_wire_text(
+                    native_owned_wire_field(&mut provider, "family", work)?,
+                    work,
+                )?,
+                native_owned_wire_text(
+                    native_owned_wire_field(&mut provider, "version", work)?,
+                    work,
+                )?,
+                work,
+            )?;
+            let id =
+                native_owned_wire_text(native_owned_wire_field(&mut volume, "id", work)?, work)?;
+            let class = native_owned_volume_class(
+                native_owned_wire_field(&mut volume, "class", work)?,
+                work,
+            )?;
+            let mut owner = native_owned_wire_object(
+                native_owned_wire_field(&mut volume, "owner", work)?,
+                None,
+                work,
+            )?;
+            let kind =
+                native_owned_wire_text(native_owned_wire_field(&mut owner, "kind", work)?, work)?;
+            let owner_id =
+                native_owned_wire_text(native_owned_wire_field(&mut owner, "id", work)?, work)?;
+            let owner = match kind.as_str() {
+                "project" => VolumeOwner::Project(owner_id),
+                "session" => VolumeOwner::Session(owner_id),
+                "agent" => {
+                    let id = Uuid::parse_str(&owner_id).map_err(|_| {
+                        conversation_error(
+                            work,
+                            crate::wire::ErrorCode::Invalid,
+                            "volume agent identity is invalid",
+                        )
+                    })?;
+                    VolumeOwner::Agent(AgentId::from_bytes(*id.as_bytes()))
+                }
+                _ => {
+                    return Err(conversation_error(
+                        work,
+                        crate::wire::ErrorCode::Invalid,
+                        "volume owner kind is invalid",
+                    ));
+                }
+            };
+            let volume = VolumeRef {
+                provider,
+                id,
+                class,
+                owner,
+            };
+            volume.validate(work)?;
+            let path =
+                native_owned_wire_text(native_owned_wire_field(&mut file, "path", work)?, work)?;
+            let version =
+                native_owned_wire_text(native_owned_wire_field(&mut file, "version", work)?, work)?;
+            let display_name = native_owned_wire_text(
+                native_owned_wire_field(&mut file, "display_name", work)?,
+                work,
+            )?;
+            let mut descriptor = native_owned_wire_object(
+                native_owned_wire_field(&mut file, "descriptor", work)?,
+                Some(&["sha256", "byte_length", "media_type"]),
+                work,
+            )?;
+            let digest = native_owned_wire_field(&mut descriptor, "sha256", work)?;
+            native_owned_wire_inspect(work)?;
+            let serde_json::Value::Array(digest) = digest else {
+                return Err(conversation_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "SHA-256 digest must contain exactly 32 bytes",
+                ));
+            };
+            if digest.len() != 32 {
+                return Err(conversation_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "SHA-256 digest must contain exactly 32 bytes",
+                ));
+            }
+            let mut sha256 = [0_u8; 32];
+            for (slot, value) in sha256.iter_mut().zip(digest) {
+                native_owned_wire_inspect(work)?;
+                *slot = value
+                    .as_u64()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .ok_or_else(|| {
+                        conversation_error(
+                            work,
+                            crate::wire::ErrorCode::Invalid,
+                            "SHA-256 digest byte is invalid",
+                        )
+                    })?;
+            }
+            let length = native_owned_wire_field(&mut descriptor, "byte_length", work)?;
+            native_owned_wire_inspect(work)?;
+            let byte_length = length.as_u64().ok_or_else(|| {
+                conversation_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "file byte length is invalid",
+                )
+            })?;
+            let media_type = native_owned_wire_text(
+                native_owned_wire_field(&mut descriptor, "media_type", work)?,
+                work,
+            )?;
+            let descriptor = FileDescriptor {
+                sha256,
+                byte_length,
+                media_type,
+            };
+            descriptor.validate(work)?;
+            let file = FileRef {
+                volume,
+                path,
+                version,
+                display_name,
+                descriptor,
+            };
+            file.validate(work)?;
+            return Ok(file);
+        }
+        let file: Self =
+            serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+        file.validate(work)?;
+        Ok(file)
+    }
+
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            inspect_native_metadata(native, 0)?;
+        }
+        self.volume.validate(work)?;
+        validate_content_path(&self.path, work)?;
+        validate_label(&self.version, work)?;
+        validate_label(&self.display_name, work)?;
+        self.descriptor.validate(work)
+    }
+
+    /// Owning volume.
+    #[must_use]
+    pub const fn volume(&self) -> &VolumeRef {
+        &self.volume
+    }
+
+    /// Normalized volume-relative path.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Immutable provider-owned revision.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Integrity and rendering metadata.
+    #[must_use]
+    pub const fn descriptor(&self) -> &FileDescriptor {
+        &self.descriptor
+    }
+
+    /// Human-facing file name.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    /// Owner-issued capability for reading precisely this immutable version.
+    pub fn read_capability(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<String> {
+        self.validate(work)?;
+        content_label(
+            "file:read:",
+            crate::executor::json::canonical_json_digest(
+                self,
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )?,
+            work,
+        )
+    }
+}
+
+impl FileRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        [
+            self.path.capacity(),
+            self.version.capacity(),
+            self.descriptor.media_type.capacity(),
+            self.display_name.capacity(),
+        ]
+        .into_iter()
+        .try_fold(self.volume.logical_owned_bytes()?, |bytes, capacity| {
+            bytes.checked_add(capacity as u64)
+        })
+        .ok_or_else(|| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "file capacity inventory overflows",
+                }
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            {
+                Error::Invalid("file capacity inventory overflows".into())
+            }
+        })
+    }
+
+    pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
+        let owner = match &self.volume.owner {
+            VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,
+            VolumeOwner::Agent(_) => 0,
+        };
+        let provider = &self.volume.provider;
+        [
+            provider.namespace().len(),
+            provider.family().len(),
+            provider.version().len(),
+            self.volume.id.len(),
+            self.path.len(),
+            self.version.len(),
+            self.descriptor.media_type.len(),
+            self.display_name.len(),
+        ]
+        .into_iter()
+        .try_fold(owner, |bytes, length| bytes.checked_add(length as u64))
+        .ok_or_else(|| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "reference clone bytes overflow",
+                }
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            {
+                Error::Invalid("file clone ownership overflow".into())
+            }
+        })
+    }
+
+    /// Copies file fields under the optional work observer.
+    pub fn copy(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let file = self.clone_in_quota(&mut quota)?;
+        quota.transfer();
+        Ok(file)
+    }
+
+    pub(crate) fn clone_in_quota(
+        &self,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        if quota.work().is_none() {
+            return Ok(self.clone());
+        }
+        self.validate(quota.work())?;
+        let volume = self.volume.clone_in_quota(quota)?;
+        let path = crate::core::copy_text(&self.path, quota)?;
+        let version = crate::core::copy_text(&self.version, quota)?;
+        Ok(Self {
+            volume,
+            path,
+            version,
+            descriptor: FileDescriptor {
+                sha256: self.descriptor.sha256,
+                byte_length: self.descriptor.byte_length,
+                media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
+            },
+            display_name: crate::core::copy_text(&self.display_name, quota)?,
+        })
+    }
+}
