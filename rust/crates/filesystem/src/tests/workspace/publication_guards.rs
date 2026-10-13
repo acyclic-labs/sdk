@@ -203,7 +203,10 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
                 .await
                 .map(|_| ())
         };
-        assert!(matches!(result, Err(OwnerError::Denied(23))));
+        assert!(
+            matches!(&result, Err(OwnerError::Denied(23))),
+            "create={create}: {result:?}"
+        );
         assert!(unbounded!(fs, open_workspace("denied")).is_err());
         original.receipt().verify(selected_transaction_budget())?;
     }
