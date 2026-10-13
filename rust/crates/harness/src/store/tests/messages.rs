@@ -168,7 +168,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
     let selection = crate::conversation::ModelContextSelection {
         conversation_revision: 10_000,
         message_ids: [1, 5_000, 10_000]
-            .map(|sequence| uuid::Uuid::from_u128(sequence))
+            .map(uuid::Uuid::from_u128)
             .into(),
         checkpoint: None,
     };

@@ -78,6 +78,7 @@ impl StreamProvider for MemoryStream {
             request.idempotency_key,
             digest,
             IdempotencyOutcome::Fork(receipt.clone()),
+            Default::default(),
         );
         Ok(receipt)
     }

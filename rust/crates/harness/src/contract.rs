@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-pub(crate) use crate::executor::json::count_json_bytes_trusted;
 
 /// Maximum UTF-8 byte length for names crossing a component boundary.
 pub const COMPONENT_LABEL_MAX_BYTES: usize = crate::conversation::MAX_PORTABLE_COUNT;
@@ -268,7 +267,7 @@ impl Capabilities {
                 continue;
             }
             let slot = std::mem::size_of::<String>() as u64;
-            let bytes = slot.checked_add(value.len() as u64).ok_or_else(|| {
+            let bytes = slot.checked_add(value.len() as u64).ok_or({
                 acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)
             })?;
             io.admit_owned(bytes)?;
@@ -402,8 +401,6 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
 
 #[path = "contract_errors.rs"]
 mod errors;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use errors::native_work_error_code;
 pub use errors::{Error, InteractionRejection, Result};
 
 #[cfg(test)]

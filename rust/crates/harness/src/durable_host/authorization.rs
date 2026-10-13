@@ -238,20 +238,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         mut self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
-        if !self.native_shared_work_matches(work) {
-            return Err(Error::Unauthorized(
-                "owner lacks original metadata custody".into(),
-            ));
-        }
+        let custody = self
+            .native_custody
+            .as_mut()
+            .filter(|held| held.work().shares_allocation_context(work))
+            .ok_or_else(|| Error::Unauthorized("owner lacks original metadata custody".into()))?;
         let mut header = work.claim(
             (2 * std::mem::size_of::<usize>()) as u64,
             1,
             acyclic_fs::WorkCounters::default(),
         )?;
-        self.native_custody
-            .as_mut()
-            .expect("verified owner custody")
-            .absorb(&mut header)?;
+        custody.absorb(&mut header)?;
         Ok(Arc::new(self))
     }
 

@@ -555,15 +555,14 @@ where
                 | crate::conversation::MessageKind::Assistant
                 | crate::conversation::MessageKind::ToolCall
                 | crate::conversation::MessageKind::ToolResult
-        ) {
-            if selected_ids.next() != Some(&message.id) {
+        )
+            && selected_ids.next() != Some(&message.id) {
                 return Err(canonical_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,
                     "checkpoint skips uncovered canonical history",
                 ));
             }
-        }
     }
     if selected_ids.next().is_some() {
         return Err(canonical_boundary(

@@ -327,7 +327,7 @@ async fn native_tool_scope_restricts_without_replacing_the_issued_context_or_lin
     ));
     drop(stock);
 
-    let clone = tool.clone();
+    let clone = tool;
     assert!(matches!(
         clone.validate_stock_scope_with_native_work(&requested, limits, &original),
         Err(Error::NativeBoundary {

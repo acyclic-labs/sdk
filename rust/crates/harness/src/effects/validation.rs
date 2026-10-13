@@ -48,7 +48,7 @@ pub(crate) fn validate_schema_bytes(
             })?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         drop(decode_schema(reference, bytes, Some(&decode))?);
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     Err(Error::Unsupported(
@@ -97,7 +97,7 @@ pub(crate) fn validate_result_bytes(
             bytes,
             crate::wire::ErrorCode::Storage,
         )?;
-        return crate::executor::with_history_io(Some(&decode), |work| crate::executor::validate_json_schema_value(&schema, &value.0, "effect result", work));
+        crate::executor::with_history_io(Some(&decode), |work| crate::executor::validate_json_schema_value(&schema, &value.0, "effect result", work))
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     Err(Error::Unsupported(

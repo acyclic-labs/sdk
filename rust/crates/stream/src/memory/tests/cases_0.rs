@@ -628,7 +628,13 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
         })
         .await?;
     assert_eq!(page.children.len(), 1);
-    assert_eq!(page.children[0].path, path("a/child")?);
+    assert_eq!(
+        page.children
+            .first()
+            .ok_or(StreamError::InvalidArgument)?
+            .path,
+        path("a/child")?
+    );
     Ok(())
 }
 

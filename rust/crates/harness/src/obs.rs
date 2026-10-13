@@ -65,14 +65,14 @@ pub(crate) fn traced<'a, T: 'a>(
     #[cfg(not(target_arch = "wasm32"))]
     {
         let operation = span.clone();
-        return Box::pin(span.scope(async move {
+        Box::pin(span.scope(async move {
             let result = future.await;
             operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
             if let Err(error) = &result {
                 operation.record("error.kind", error.kind());
             }
             result
-        }));
+        }))
     }
     #[cfg(target_arch = "wasm32")]
     {

@@ -156,7 +156,10 @@ impl LocalStream {
             .map_err(|error| match error {
                 LocalStreamError::InvalidLimits => StreamError::Capacity,
                 LocalStreamError::Io(error) => match &self.work {
-                    Some(work) => work.record::<()>(Err(error)).unwrap_err(),
+                    Some(work) => {
+                        let _ = work.record::<()>(Err(error));
+                        StreamError::Unavailable
+                    }
                     None => StreamError::Unavailable,
                 },
                 _ => StreamError::Unavailable,
@@ -169,7 +172,10 @@ impl LocalStream {
             .map_err(|error| match error {
                 LocalStreamError::InvalidLimits => StreamError::Capacity,
                 LocalStreamError::Io(error) => match &self.work {
-                    Some(work) => work.record::<()>(Err(error)).unwrap_err(),
+                    Some(work) => {
+                        let _ = work.record::<()>(Err(error));
+                        StreamError::Unavailable
+                    }
                     None => StreamError::Unavailable,
                 },
                 _ => StreamError::Unavailable,
@@ -295,7 +301,7 @@ impl LocalStream {
                     let inner = Arc::clone(&self.inner);
                     let work = self.work.clone();
                     tokio::task::spawn_blocking(move || {
-                        inner.flush_through(target, &file, durability, work);
+                        inner.flush_through(target, &file, durability, work.as_deref());
                     })
                     .await
                     .map_err(|_| self.inner.poison())?;

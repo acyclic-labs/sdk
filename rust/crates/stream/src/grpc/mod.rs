@@ -129,16 +129,15 @@ impl Client {
         if endpoint.uri().scheme_str() != Some("https") {
             return Err(ConnectError::InsecureEndpoint);
         }
-        let endpoint = match certificate_pem {
-            Some(pem) => endpoint
-                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?,
-            None => {
-                let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-                    rustls::crypto::ring::default_provider(),
-                ))
-                .map_err(ConnectError::PlatformVerifier)?;
-                endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
-            }
+        let endpoint = if let Some(pem) = certificate_pem {
+            endpoint
+                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?
+        } else {
+            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .map_err(ConnectError::PlatformVerifier)?;
+            endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
         };
         Ok(Self::from_channel(endpoint.connect().await?, authorization))
     }

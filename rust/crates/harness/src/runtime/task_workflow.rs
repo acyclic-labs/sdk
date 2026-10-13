@@ -60,7 +60,7 @@ pub(super) async fn observe_task_open_admission(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(host.observe_admission(task).await?)
+    host.observe_admission(task).await
 }
 
 pub(super) fn initialize_task_machine(
@@ -75,7 +75,7 @@ pub(super) fn initialize_task_machine(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(machine.initialize(input)?)
+    machine.initialize(input)
 }
 
 pub(super) fn retain_task_value<T>(
@@ -114,7 +114,7 @@ pub(super) async fn admit_workflow_open(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(journal.admit(admission).await?)
+    journal.admit(admission).await
 }
 
 pub(super) async fn validate_latest_task_transition(

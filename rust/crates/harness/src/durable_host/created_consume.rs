@@ -88,14 +88,13 @@ pub(super) fn consume_receipts(
                     "created content authority differs".into(),
                 ));
             }
-            if let Some(scratch) = &binding.scratch_creation {
-                if scratch.volume() != &binding.volume
+            if let Some(scratch) = &binding.scratch_creation
+                && (scratch.volume() != &binding.volume
                     || scratch.origin() != &receipt.origin
-                    || binding.artifact_writer
+                    || binding.artifact_writer)
                 {
                     return Err(Error::Unauthorized("scratch provenance differs".into()));
                 }
-            }
             for operation in [
                 Some(VolumeOperation::Read),
                 binding

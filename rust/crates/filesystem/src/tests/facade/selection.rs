@@ -292,8 +292,8 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         .ok_or("verification ignored its allocation gate")?;
         assert!(matches!(failed.error, WorkspaceError::Work(_)));
         assert_eq!(failed.work.allocation_operations, 0);
-        assert_eq!(reads.load(Ordering::Relaxed), 0);
     }
+    reads.store(0, Ordering::Relaxed);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failed =

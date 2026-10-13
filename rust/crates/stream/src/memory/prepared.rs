@@ -41,35 +41,7 @@ impl MemoryStream {
         ),
         StreamError,
     > {
-        if maximum > MAX_RECORD_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
-        normalize_commit(&mut request)?;
-        validate_commit_shape(&request)?;
-        let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
-            return Err(StreamError::InvalidArgument);
-        };
-        if request.conditions.len() != 2
-            || request
-                .conditions
-                .iter()
-                .any(|condition| !matches!(condition, CommitCondition::Tail { .. }))
-            || records.len() != 1
-            || !records.first().is_some_and(Bytes::is_empty)
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        let expected = request
-            .conditions
-            .iter()
-            .find_map(|condition| match condition {
-                CommitCondition::Tail {
-                    path: guarded,
-                    expected,
-                } if guarded == path => Some(*expected),
-                _ => None,
-            })
-            .ok_or(StreamError::InvalidArgument)?;
+        let expected = prepared_tail(&mut request, maximum)?;
         let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         let input = self.request_claim(&request)?;
         let maximum_hash = commit_hash_bytes(&request) + maximum as u64;
@@ -348,12 +320,8 @@ impl PreparedCommit {
                         Some(self.key),
                         digest,
                         IdempotencyOutcome::Commit(CommitOutcome::Conflict(cached)),
+                        resident,
                     );
-                    state
-                        .retained
-                        .last_mut()
-                        .ok_or(StreamError::Unavailable)?
-                        ._allocation = resident;
                     Ok((value, output_claim))
                 }
             })
@@ -386,14 +354,11 @@ fn append_mut(value: &mut CommitOutcome) -> &mut crate::CommittedAppend {
     append
 }
 fn history_record(history: &mut Arc<History>) -> Result<&mut Record, StreamError> {
-    let History::Batch { records, .. } = Arc::get_mut(history).ok_or(StreamError::Unavailable)?
-    else {
+    let Some(History::Batch { records, .. }) = Arc::get_mut(history) else {
         return Err(StreamError::Unavailable);
     };
     Arc::get_mut(records)
-        .ok_or(StreamError::Unavailable)?
-        .records
-        .first_mut()
+        .and_then(|batch| batch.records.first_mut())
         .ok_or(StreamError::Unavailable)
 }
 fn digest(conditions: &[CommitCondition; 2], path: &StreamPath, body: &Bytes) -> ([u8; 32], u64) {
@@ -479,4 +444,36 @@ fn copied_bytes(value: &CommitOutcome) -> u64 {
             (conflicts.len() * std::mem::size_of::<CommitConflict>()) as u64
         }
     }
+}
+
+fn prepared_tail(request: &mut CommitRequest, maximum: usize) -> Result<u64, StreamError> {
+    if maximum > MAX_RECORD_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
+    normalize_commit(request)?;
+    validate_commit_shape(request)?;
+    let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
+        return Err(StreamError::InvalidArgument);
+    };
+    if request.conditions.len() != 2
+        || request
+            .conditions
+            .iter()
+            .any(|condition| !matches!(condition, CommitCondition::Tail { .. }))
+        || records.len() != 1
+        || !records.first().is_some_and(Bytes::is_empty)
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    request
+        .conditions
+        .iter()
+        .find_map(|condition| match condition {
+            CommitCondition::Tail {
+                path: guarded,
+                expected,
+            } if guarded == path => Some(*expected),
+            _ => None,
+        })
+        .ok_or(StreamError::InvalidArgument)
 }

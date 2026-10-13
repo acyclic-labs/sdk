@@ -37,6 +37,12 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
                 .await?;
         }
         commit(&mut remote, &cancel).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if native {
+            local = local.private_candidate(
+                &mut crate::kernel::KernelAccounting::native(&original, &cancel), &cancel,
+            )?;
+        }
         let before = (
             checkout_state(&local),
             local.authored_operation_id,
@@ -44,14 +50,10 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
         );
         #[cfg(not(target_arch = "wasm32"))]
         if native && safe {
-            let denied = crate::NativeMaterializationWork::new(
-                WorkBudget {
-                    allocation_operations: 1,
-                    ..B
-                },
-                &cancel,
-            )
-            .map_err(|(error, _)| error)?;
+            let denied = original.native_volume_work(WorkBudget {
+                allocation_operations: 1,
+                ..B
+            })?;
             assert!(local.rebase_head(8, &denied, &cancel).await.is_err());
             assert_eq!(
                 before,

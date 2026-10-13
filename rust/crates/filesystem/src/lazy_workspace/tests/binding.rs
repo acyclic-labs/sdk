@@ -120,8 +120,10 @@ async fn full_directory_page_is_funded_before_projection() {
         .await
         .unwrap();
     assert_eq!(page.entries.len(), 1024);
+    let output_bytes = (page.entries.len() * std::mem::size_of::<crate::LazyDirectoryEntry>()) as u64;
+    assert!(ctx.spent().peak_allocation_bytes >= output_bytes);
     let budget = WorkBudget {
-        peak_allocation_bytes: ctx.spent().peak_allocation_bytes - 1,
+        peak_allocation_bytes: output_bytes - 1,
         ..WorkBudget::UNBOUNDED
     };
     let fs = Fs::memory();

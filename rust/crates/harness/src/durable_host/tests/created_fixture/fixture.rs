@@ -4,17 +4,7 @@ impl CreationFixture {
     pub(crate) async fn new() -> Result<Self> {
         Self::new_with_grants(&[]).await
     }
-    pub(crate) async fn new_with_grants(grants: &[&str]) -> Result<Self> {
-        Self::open(grants, None).await
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn new_with_original_root_births(
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        Self::open(&[], Some(work)).await
-    }
-
-    async fn open(extra: &[&str], native: crate::NativeWork<'_>) -> Result<Self> {
+    pub(crate) async fn new_with_grants(extra: &[&str]) -> Result<Self> {
         let stream = Arc::new(MemoryStream::default());
         let filesystem_provider = ProviderRef::new(
             "created-controls".into(),
@@ -31,19 +21,7 @@ impl CreationFixture {
             VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
             &mut None,
         )?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let original_root_births = if let Some(work) = native {
-            Some(super::roots::create(&backend, &filesystem, &payload, work).await?)
-        } else {
-            filesystem.create_volume(&payload).await?;
-            None
-        };
-        #[cfg(target_arch = "wasm32")]
-        let original_root_births = {
-            filesystem.create_volume(&payload).await?;
-            None
-        };
-        let _ = native;
+        filesystem.create_volume(&payload).await?;
         let authority = Authority {
             kind: AggregateKind::Task,
             id: "created-owner".into(),
@@ -74,7 +52,7 @@ impl CreationFixture {
             (
                 "parent-private",
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(AgentId::from_bytes([90; 16])),
+                VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
             ),
         ] {
             grants.push(
@@ -121,14 +99,8 @@ impl CreationFixture {
             filesystem.clone(),
             &issuer,
             #[cfg(not(target_arch = "wasm32"))]
-            native,
+            None,
         )?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let filesystem_creator = match native {
-            Some(work) => creator.into_native_shared(work)?,
-            None => Arc::new(creator),
-        };
-        #[cfg(target_arch = "wasm32")]
         let filesystem_creator = Arc::new(creator);
         let runtime = FilesystemTaskRuntime::open(
             stream.clone(),
@@ -150,7 +122,8 @@ impl CreationFixture {
             root_scope.limits().file_bytes,
             Arc::new(SystemUnixMillisClock),
             None,
-            &[filesystem_creator.clone()],
+            &[filesystem_creator.clone()
+                as Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
             &crate::durable_tool::ResumableToolRegistry::default(),
             None,
         )
@@ -192,11 +165,9 @@ impl CreationFixture {
             filesystem,
             stream,
             filesystem_provider,
-            filesystem_creator,
             root,
             root_lease,
             worker,
-            original_root_births,
             task,
             machine,
         })

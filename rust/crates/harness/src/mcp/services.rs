@@ -41,11 +41,11 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
             check::<rmcp::model::CallToolRequestParams>(params, work)
         }
         _ => {
-            return Err(error(
+            Err(error(
                 work,
                 ErrorCode::Unsupported,
                 "MCP service method not selected",
-            ));
+            ))
         }
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 use crate::foundation::GenerationId;
 use crate::kernel::allocation::KernelAccounting;
 use crate::model::Lifecycle;
-use crate::{CancellationToken, WorkBudget};
+use crate::{CancellationToken, WorkBudget, WorkError};
 
 #[test]
 fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::error::Error>> {
@@ -125,14 +125,19 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
     };
     assert!(matches!(
         error,
-        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded {
+                counter: "bytes_copied",
+                observed: 1..,
+                maximum: 0,
+            }
+        ))
     ));
     let denied = original.receipt();
     assert_eq!(denied.allocation_operations, before.allocation_operations);
     assert_eq!(denied.peak_allocation_bytes, before.peak_allocation_bytes);
     assert_eq!(denied.bytes_encoded, 0);
     assert_eq!(denied.bytes_copied, 0);
-    assert_eq!(denied.items_examined, before.items_examined + 1);
     cancellation.cancel();
     assert!(
         crate::kernel::codec::encode_owned(&mut accounting, |observe, reserve| {

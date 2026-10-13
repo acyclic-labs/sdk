@@ -18,7 +18,6 @@ use crate::{
         VolumeRef,
     },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
-    distributed::SchedulerPayloadStore,
     fork::{
         ForkPublicationGuard, ForkSeed, ForkSeedVerifier, InheritedConversationPrefix,
         ReferenceGrant, ResourceRevision,
@@ -29,8 +28,7 @@ use crate::{
 use acyclic_fs::WorkCounters;
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, DirectoryPage,
-    ForkOptions, Fs, Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness,
+    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, DirectoryPage, Fs, Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness,
     JoinHistory, JoinOutcome, JoinPlan, MergeConflict, MergePlan, PublicationReservation,
     TransactionCommit, Workspace, WorkspaceError, WorkspaceStat,
 };
@@ -38,7 +36,7 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     future::Future,
     sync::Arc,
 };
@@ -149,7 +147,6 @@ pub use content_verifier::FilesystemContentVerifier;
 use content_verifier::*;
 mod fork_verifier;
 pub use fork_verifier::FilesystemForkVerifier;
-use fork_verifier::*;
 mod project_verifier;
 pub use project_verifier::FilesystemProjectMergeVerifier;
 mod parent;

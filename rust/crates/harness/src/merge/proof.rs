@@ -70,10 +70,10 @@ fn proof_numbers_are_js_safe(
                 }
             }
             serde_json::Value::Array(items) => {
-                append_proof_values(&mut pending, items.iter(), items.len(), &mut quota)?
+                append_proof_values(&mut pending, items.iter(), items.len(), &mut quota)?;
             }
             serde_json::Value::Object(fields) => {
-                append_proof_values(&mut pending, fields.values(), fields.len(), &mut quota)?
+                append_proof_values(&mut pending, fields.values(), fields.len(), &mut quota)?;
             }
             _ => {}
         }

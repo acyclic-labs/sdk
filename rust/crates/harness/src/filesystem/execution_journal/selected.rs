@@ -273,8 +273,8 @@ where
             &resolver,
             crate::conversation::Limits {
                 context_messages: messages,
-                attachments: attachments,
-                render_bytes: render_bytes,
+                attachments,
+                render_bytes,
                 ..Default::default()
             },
             attachments,
