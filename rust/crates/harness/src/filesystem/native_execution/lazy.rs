@@ -1,6 +1,6 @@
 use super::preparation_record::invalid;
 use super::*;
-use crate::{NativeFutureBundle, runtime::NativeVolumePublicationGuard};
+use crate::NativeFutureBundle;
 use acyclic_fs::native_mount::NativeMountPublicationFailure;
 use acyclic_fs::{LazyMount, LazySnapshotRef, LazyWorkspaceStore, NativePublicationSnapshot};
 
@@ -32,7 +32,7 @@ pub(super) trait Backend: Send + Sync {
 struct Mount<P: StreamProvider, A, O, D, S> {
     mount: Arc<LazyMount<A, O, D, S>>,
     owner: Arc<TaskJournalOwner<P>>,
-    callback: Arc<dyn NativeVolumePublicationGuard>,
+    callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
 }
 
 impl NativeExistingLazyVolume {
@@ -85,9 +85,7 @@ impl NativeExistingLazyVolume {
                 return Err(invalid());
             }
             let io = PreparationIo::from_native_work(work)?;
-            let callback = guard
-                .for_volume(owner, binding.volume, binding.writable, work)?
-                .1;
+            let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?;
             let (path, custody) = work.path(mount.path(), None)?;
             io.absorb_native_custody(custody)?;
             let mapping = NativeVolumeMapping {
@@ -174,7 +172,13 @@ where
                         move |actual: &NativeMaterializationWork| {
                             let actual = actual.clone();
                             let callback = callback.clone();
-                            async move { callback.check(&actual)?.await }
+                            async move {
+                                callback
+                                    .check(&actual)
+                                    .map_err(Error::from)?
+                                    .await
+                                    .map_err(Error::from)
+                            }
                         },
                     )
                     .await);
@@ -194,7 +198,15 @@ where
                     }));
                 }
             };
-            if let Err(cause) = async { self.callback.check(work)?.await }.await {
+            if let Err(cause) = async {
+                self.callback
+                    .check(work)
+                    .map_err(Error::from)?
+                    .await
+                    .map_err(Error::from)
+            }
+            .await
+            {
                 return Ok(Err(NativeMountPublicationFailure {
                     cause,
                     accounting_failure: None,

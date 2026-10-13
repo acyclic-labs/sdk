@@ -780,6 +780,7 @@ async fn append_receipt<P: StreamProvider>(
             &key,
             acyclic_stream::OwnedBytes::from(bytes),
             write,
+            &mut None,
         )
         .await
 }

@@ -121,7 +121,6 @@ pub struct BrowserLiveTransactionResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Applies one ordered sparse mutation batch atomically within this volume.
     #[wasm_bindgen(js_name = applyTransaction)]
     pub async fn apply_transaction(
         &mut self,

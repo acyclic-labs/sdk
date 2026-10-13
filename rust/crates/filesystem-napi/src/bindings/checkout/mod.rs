@@ -11,13 +11,11 @@ pub struct NativeCheckout {
 
 #[napi]
 impl NativeCheckout {
-    /// Returns exact bounded work used to acquire this checkout handle.
     #[napi(getter)]
     pub fn acquisition_work_json(&self) -> Result<String> {
         work_json(&self.acquisition_work)
     }
 
-    /// Discards the private overlay and returns to its current immutable base.
     #[napi]
     pub async fn discard(&self) -> Result<NativeMutationResult> {
         let mut checkout = Box::pin(self.inner.lock()).await;
@@ -29,7 +27,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Cooperatively cancels this checkout's future operations.
     #[napi]
     pub fn cancel(&self) {
         self.cancellation.cancel();

@@ -11,7 +11,7 @@ pub(super) async fn verify_binding<P: StreamProvider + 'static, A, O>(
     guard: &crate::runtime::NativeVolumeCallbackGuard<P>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    guard.require_volume_with_native_work(owner, binding.volume, binding.writable, work)?;
+    guard.require_volume(owner, binding.volume, binding.writable, work)?;
     let io = PreparationIo::from_native_work(work)?;
     for operation in [VolumeOperation::Read]
         .into_iter()
@@ -329,7 +329,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     None => {
                         let identity =
                             materializer.backend().mapping_root_identity(binding.path)?;
-                        let (sdk, callback) = guards[index].for_volume(
+                        let callback = guards[index].for_volume(
                             owner,
                             binding.volume,
                             binding.writable,
@@ -341,8 +341,11 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         } else {
                             acyclic_fs::MountOptions::read_only()
                         };
-                        let mount =
-                            mount.native_context(&volume_work, Some(sdk), Some(&volume_work));
+                        let mount = mount.native_context(
+                            &volume_work,
+                            Some(Arc::clone(&callback)),
+                            Some(&volume_work),
+                        );
                         let view = generation
                             .attach_native_working_set(
                                 &mount,

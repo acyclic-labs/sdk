@@ -346,7 +346,7 @@ impl PiNativeCommandHost {
                     },
                 ];
                 let scratch_guard = shared
-                    .volume_callback_guard_with_native_work(&owner, work)
+                    .volume_callback_guard(&owner, work)
                     .await?;
                 let guards = [scratch_guard, project_capture.2];
                 let existing_lazy = [None, Some(&project_capture.1)];

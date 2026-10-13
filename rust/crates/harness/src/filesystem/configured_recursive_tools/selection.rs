@@ -15,7 +15,7 @@ where
         source: &RetainedSourceBinding<A, O>,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(TaskAdmissionRecord, Scope)> {
-        use crate::executor::{stock_string_copy as clone_text, stock_boundary as failure};
+        use crate::executor::{stock_boundary as failure, stock_string_copy as clone_text};
         let mut child = 'child: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
@@ -40,12 +40,15 @@ where
         let references = 'references: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(observer) = &reference_io {
-                break 'references crate::conversation::BoundedContentFuture::new(Some(observer), || {
+                break 'references crate::conversation::BoundedContentFuture::new(
+                    Some(observer),
+                    || {
                         source
                             .preparer
                             .required_reference_grants(&source.request, Some(observer))
-                    })?
-                    .await?;
+                    },
+                )?
+                .await?;
             }
             source
                 .preparer
@@ -89,7 +92,10 @@ where
         }
         for file in &allocation.input_files {
             self.delegate_file(context, file, io).await?;
-            let grant = match io { Some(io) => io.capability(file, "file:read:"), None => file.read_capability(&mut None) }?;
+            let grant = match io {
+                Some(io) => io.capability(file, "file:read:"),
+                None => file.read_capability(&mut None),
+            }?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
@@ -110,7 +116,10 @@ where
             {
                 self.delegate_file(context, file, io).await?;
             }
-            let grant = match io { Some(io) => io.capability(&reference.file, "file:read:"), None => reference.file.read_capability(&mut None) }?;
+            let grant = match io {
+                Some(io) => io.capability(&reference.file, "file:read:"),
+                None => reference.file.read_capability(&mut None),
+            }?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
@@ -130,7 +139,7 @@ where
         }
         let scoped = Capabilities(scoped);
         let scope = crate::executor::with_history_io(io, |work| {
-            allocation.child.issuer().issue(
+            allocation.child.issuer.issue(
                 allocation.child.scope.id(),
                 &scoped,
                 Some(arguments.id),
@@ -170,12 +179,12 @@ where
             drop(
                 context
                     .task()
-                    .read_file_with_native_work(file, work)
+                    .read_file(file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?,
             );
             return Ok(());
         }
-        drop(context.task().read_file(file).await?);
+        drop(context.task().read_file(file, None).await?);
         Ok(())
     }
     pub(super) async fn select_source(
@@ -185,8 +194,8 @@ where
         cancellation: &CancellationToken,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<RecursiveForkSourceIntent> {
-        use crate::filesystem::fork_preparer_io;
         use crate::executor::stock_boundary as failure;
+        use crate::filesystem::fork_preparer_io;
         use crate::wire::ErrorCode;
         let caller = self
             .authenticate(
@@ -292,7 +301,7 @@ where
                     "caller lacks its source read",
                 ));
             }
-            ContentGrant::verify(
+            ContentGrant::authorize_volume(
                 &verifier(&caller.owner)?,
                 &caller.owner.scope,
                 &caller.project,
@@ -304,8 +313,8 @@ where
         let config = crate::executor::with_history_io(io, |work| {
             Ok::<_, Error>(RecursiveForkConfig {
                 child: match work.as_deref_mut() {
-                    Some(work) => work.clone_authority(allocation.child.authority())?,
-                    None => allocation.child.authority().clone(),
+                    Some(work) => work.clone_authority(allocation.child.issuer.audience())?,
+                    None => allocation.child.issuer.audience().clone(),
                 },
                 child_project: allocation.project.copy(work)?,
                 child_private: allocation.private_volume.copy(work)?,

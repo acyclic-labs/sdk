@@ -9,11 +9,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     #[cfg(not(target_arch = "wasm32"))]
     fn root_bootstrap_sources(&self, operation: OperationId)
         -> [Option<(&crate::durable_host::TaskVolumeSnapshot,
-            &crate::durable_host::RootBootstrapBindingWitness)>; 2]
+            &crate::store::VerifiedRootBinding)>; 2]
     {
         self.roots.each_ref().map(|slot|
-            slot.get().filter(|allocation| allocation.witness.binding().original_task() == crate::runtime::task_id_for_admission(operation))
-                .map(|allocation| (&allocation.request, allocation.witness.as_ref())))
+            slot.get().filter(|allocation| allocation.witness.0.original_task() == crate::runtime::task_id_for_admission(operation))
+                .map(|allocation| (&allocation.request, &allocation.witness.0)))
     }
     fn verify<'a>(
         &'a self,
@@ -55,7 +55,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 VolumeClass::SessionShared => None,
             }.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root content has no configured protected original allocation" })?;
             work.remaining()?;
-            let root = allocation.witness.binding();
+            let root = &allocation.witness.0;
             if context.owner() != allocation.owner() || context.audience() != root.audience()
                 || context.agent() != root.agent() || context.original_root().parent.is_some()
                 || context.original_root().task_id() != root.original_task()

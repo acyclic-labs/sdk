@@ -1,7 +1,6 @@
 use super::*;
 
 /// A genuine prepared Commit-family ingress.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct PreparedNativeCommit {
     future: Option<NativeProviderFuture<'static, CommitOutcome>>,
     recovery: Option<NativeProviderFuture<'static, Option<IdempotencyObservation>>>,
@@ -9,7 +8,6 @@ pub struct PreparedNativeCommit {
     maximum_record_bytes: usize,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl PreparedNativeCommit {
     pub(crate) fn new(
         future: NativeProviderFuture<'static, CommitOutcome>,
@@ -48,7 +46,6 @@ impl PreparedNativeCommit {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Drop for PreparedNativeCommit {
     fn drop(&mut self) {
         if self.future.is_some() {
@@ -58,17 +55,14 @@ impl Drop for PreparedNativeCommit {
 }
 
 /// One private ingress cell, not a journal, authority or request queue.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeCommitRecordSlot {
     state: std::sync::Mutex<(
         Option<Result<OwnedBytes, StreamError>>,
         Option<std::task::Waker>,
     )>,
-    ready: std::sync::Condvar,
     _allocation: acyclic_native_runtime::ReadAllocation,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl NativeCommitRecordSlot {
     pub(crate) fn new(
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -78,7 +72,6 @@ impl NativeCommitRecordSlot {
         meter.admit_codec(0, bytes as u64, 0)?;
         let record = Arc::new(Self {
             state: std::sync::Mutex::new((None, None)),
-            ready: std::sync::Condvar::new(),
             _allocation: allocation,
         });
         meter.record_codec(0, bytes as u64, 0)?;
@@ -110,24 +103,6 @@ impl NativeCommitRecordSlot {
         .await
     }
 
-    /// The already submitted Local journal worker waits without holding a provider visibility or journal lock.
-    #[cfg(feature = "local")]
-    pub(crate) fn receive_blocking(&self) -> Result<OwnedBytes, StreamError> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        loop {
-            if let Some(record) = &mut state.0 {
-                return std::mem::replace(record, Err(StreamError::Unavailable));
-            }
-            state = self
-                .ready
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-    }
-
     fn supply(&self, record: Result<OwnedBytes, StreamError>) {
         let waiter = {
             let mut state = self
@@ -140,7 +115,6 @@ impl NativeCommitRecordSlot {
         if let Some(waiter) = waiter {
             waiter.wake();
         }
-        self.ready.notify_one();
     }
 
     pub(crate) fn close(&self) {
@@ -155,6 +129,5 @@ impl NativeCommitRecordSlot {
         if let Some(waiter) = waiter {
             waiter.wake();
         }
-        self.ready.notify_one();
     }
 }

@@ -245,29 +245,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<(VolumeCreated, OperationId), FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            accounting.check()?;
-            let mut work = authority_work(&accounting, cancellation)?;
-            let result = self
-                .inner
-                .authority
-                .replay(
-                    volume_authority_id(volume_id),
-                    Sequence::GENESIS,
-                    ReplayLimit {
-                        records: 1,
-                        payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                    },
-                    &mut work,
-                )
-                .await;
-            record_authority_work(&mut accounting, &work)?;
-            let (records, _allocation) = result?;
-            decode_first_creation_record(volume_id, &records, &mut accounting)
-        }
-        .await;
+        let result = self
+            .read_creation(volume_id, &mut accounting, cancellation)
+            .await;
         budget.finish(result, &accounting)
     }
+
+    pub(super) async fn read_creation(
+        &self,
+        volume_id: VolumeId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(VolumeCreated, OperationId), FsError> {
+        accounting.check()?;
+        let mut work = authority_work(accounting, cancellation)?;
+        let result = self
+            .inner
+            .authority
+            .replay(
+                volume_authority_id(volume_id),
+                Sequence::GENESIS,
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                },
+                &mut work,
+            )
+            .await;
+        record_authority_work(accounting, &work)?;
+        let (records, _allocation) = result?;
+        decode_first_creation_record(volume_id, &records, accounting)
+    }
+
     pub(super) async fn build_empty_generation(
         &self,
         volume_id: VolumeId,

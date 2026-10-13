@@ -90,7 +90,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_process::{
-    NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider,
+    NativeProcessAuthority, NativeProcessProvider,
     NativeProcessPublishedVolume, NativeProcessReceipt,
 };
 mod native_capture_bounds;
@@ -121,15 +121,10 @@ pub use default_tools::{
 pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationReceipt,
-    NativePreparationRoot, NativeProcessView, NativePublicationCleanup, NativePublicationFailure,
-    NativePublicationReservationFailure, NativeRecordedPreparation, NativeRootOutputSource,
-    NativeTaskViewDrainReceipt, NativeTaskWorkingView, NativeViewPublicationError,
-    NativeViewPublicationReceipt, NativeVolumeView, copy_native_mapping_with_work,
-    observe_preparation,
+    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationRoot, NativeRecordedPreparation, NativeRootOutputSource,
+    NativeTaskWorkingView, NativeViewPublicationError,
+    NativeVolumeView, observe_preparation,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use recursive::restore_recursive_fork_source_with_native_work;
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,

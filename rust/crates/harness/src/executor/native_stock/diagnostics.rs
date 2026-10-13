@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::executor) const fn stock_serde_diagnostic_label_bytes() -> u64 {
-    crate::model::model_serde_diagnostic_label_bytes() + 1098
+    crate::model::MODEL_DIAGNOSTIC_LABEL_BYTES + 1098
 }
 
 #[cfg(feature = "filesystem")]

@@ -60,7 +60,7 @@ enum PreparedVolume<A, O> {
         view: NativeWorkingSet<A, O>,
         publication: PublicationPermit,
         work: NativeMaterializationWork,
-        callback: Arc<dyn crate::runtime::NativeVolumePublicationGuard>,
+        callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
     },
     Lazy(Arc<NativeExistingLazyVolume>),
 }
@@ -173,7 +173,13 @@ where
                             move |actual: &NativeMaterializationWork| {
                                 let actual = actual.clone();
                                 let callback = Arc::clone(&callback);
-                                async move { callback.check(&actual)?.await }
+                                async move {
+                                    callback
+                                        .check(&actual)
+                                        .map_err(Error::from)?
+                                        .await
+                                        .map_err(Error::from)
+                                }
                             },
                         )
                         .await?
