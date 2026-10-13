@@ -59,25 +59,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     } => {
                         owner.require_effect_grants(provider, true, work)?;
                         #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(native) =
-                            work.as_deref().and_then(|io| io.original_native_work())
-                        {
-                            owner.validate_input_file(
-                                request,
-                                Some(&crate::filesystem::PreparationIo::from_native_work(native)?),
-                            )?;
-                            owner.validate_input_file(
-                                result_schema,
-                                Some(&crate::filesystem::PreparationIo::from_native_work(native)?),
-                            )?;
-                        } else {
-                            owner.validate_input_file(request, None)?;
-                            owner.validate_input_file(result_schema, None)?;
-                        }
+                        let io = work
+                            .as_deref()
+                            .and_then(|io| io.original_native_work())
+                            .map(crate::filesystem::PreparationIo::from_native_work)
+                            .transpose()?;
                         #[cfg(target_arch = "wasm32")]
-                        {
-                            owner.validate_input_file(request, None)?;
-                            owner.validate_input_file(result_schema, None)?;
+                        let io = None;
+                        for file in [request, result_schema] {
+                            owner.validate_input_file(file, io.as_ref())?;
                         }
                         crate::distributed::JournalWrite::Fresh
                     }
@@ -188,22 +178,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Reconciles a possibly committed append without issuing another append.
     pub async fn reconcile(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
-        async {
-            let result = self.reconcile_inner(command).await?;
-            if result.is_some()
-                && let crate::core::Action::PublishFork { seed } = &command.action
-            {
-                self.release_replayed_fork_fence(seed).await?;
-            }
-            Ok(result)
-        }
-        .await
-    }
-
-    pub(super) async fn reconcile_inner(
-        &mut self,
-        command: &Command,
-    ) -> Result<Option<ApplyResult>> {
         if let Some((result, _)) = self
             .replay(
                 command,
@@ -213,6 +187,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
             .await?
         {
+            if let Action::PublishFork { seed } = &command.action {
+                self.release_replayed_fork_fence(seed).await?;
+            }
             return Ok(Some(result));
         }
         let key = stream_idempotency_key_with_work(
