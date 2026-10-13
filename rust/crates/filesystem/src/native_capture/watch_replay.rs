@@ -1,25 +1,124 @@
 use super::*;
 
-pub(super) fn capture_watch_owned_bytes(
-    changes: &[WatchChange],
-    incoming: &crate::watch::WatchBatchOriginal,
-    storage_bytes: u64,
-    meter: &NativeMaterializationWork,
-) -> Result<u64, CaptureError> {
-    let mut bytes = storage_bytes;
-    for (index, change) in changes.iter().enumerate() {
-        if incoming.change_has_native_payload_custody(index) {
-            continue;
-        }
-        let (first, second) = match change {
-            WatchChange::Created(path)
-            | WatchChange::Modified(path)
-            | WatchChange::Arrived(path)
-            | WatchChange::Removed(path)
-            | WatchChange::MetadataChanged(path) => (path, None),
-            WatchChange::Renamed { from, to } => (from, Some(to)),
+/// Replays one watcher batch with the caller's full original native resource.
+pub async fn capture_watch_batch<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    W: crate::facade::FsWork,
+>(
+    checkout: &mut Checkout<A, O>,
+    batch: WatchBatch,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: W,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
+    let accounting = budget.accounting(cancellation);
+    let native = match accounting.native_work() {
+        Some(original) => original.clone(),
+        None => capture_work(
+            accounting
+                .remaining()
+                .map_err(|error| OperationFailure::new(error.into(), accounting.spent()))?,
+            cancellation,
+        )?,
+    };
+    let mut candidate = checkout
+        .private_candidate(
+            &mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation),
+            cancellation,
+        )
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    let scope = CaptureWorkScope::new(&native)?;
+    let result = async {
+        let checkout = &mut candidate;
+        let meter = &scope.native;
+        cancellation.check()?;
+        meter.clone().check().map_err(capture_demand_error)?;
+        let WatchBatch::Changes {
+            original: incoming,
+            epoch,
+            first_sequence,
+            next_sequence,
+            changes,
+        } = batch
+        else {
+            let WatchBatch::RescanRequired { epoch, reason } = batch else {
+                unreachable!("watch batch variants are exhaustive")
+            };
+            return Err(CaptureError::RescanRequired { epoch, reason });
         };
-        for path in std::iter::once(first).chain(second) {
+        let changes_storage_native = incoming.has_native_changes_storage_custody();
+        // Drop moved hints before their meter allocation guards, including on early failure.
+        let incoming = (changes, incoming);
+        let changes_bytes = vector_bytes(&incoming.0);
+        let mut bytes = if changes_storage_native {
+            0
+        } else {
+            changes_bytes
+        };
+        for (index, change) in incoming.0.iter().enumerate() {
+            if incoming.1.change_has_native_payload_custody(index) {
+                continue;
+            }
+            let (first, second) = match change {
+                WatchChange::Created(path)
+                | WatchChange::Modified(path)
+                | WatchChange::Arrived(path)
+                | WatchChange::Removed(path)
+                | WatchChange::MetadataChanged(path) => (path, None),
+                WatchChange::Renamed { from, to } => (from, Some(to)),
+            };
+            for path in std::iter::once(first).chain(second) {
+                capture_charge(
+                    meter,
+                    WorkCounters {
+                        items_examined: 1 + path.depth() as u64,
+                        source_path_components: path.depth() as u64,
+                        ..WorkCounters::UNCHARGED
+                    },
+                )?;
+                bytes = bytes
+                    .checked_add(path.retained_bytes())
+                    .ok_or(CaptureError::from(WorkError::Overflow))?;
+            }
+        }
+        meter
+            .with_original_leaf(|work| work.claim_allocation(bytes, 0, WorkCounters::UNCHARGED))
+            .map_err(capture_demand_error)?;
+        let cancellation = meter.cancellation();
+        if options.maximum_paths == 0
+            || options.maximum_extent_spans == 0
+            || incoming.0.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
+        {
+            return Err(CaptureError::InvalidOptions);
+        }
+        let source_root = open_source_root(options, meter)?;
+        let mut receipt = CaptureReceipt::default();
+        let mut mutations = Vec::new();
+        let mut ordinary = Vec::new();
+        let mut rename_records = Vec::new();
+        let mut renamed_directories = Vec::new();
+
+        for (index, change) in incoming.0.into_iter().enumerate() {
+            let (mut path, mut destination, intent) = match change {
+                WatchChange::Created(path) => (path, None, CaptureIntent::Replace),
+                WatchChange::Modified(path) | WatchChange::Removed(path) => {
+                    (path, None, CaptureIntent::Complete)
+                }
+                WatchChange::Arrived(path) => (path, None, CaptureIntent::Arrived),
+                WatchChange::MetadataChanged(path) => (path, None, CaptureIntent::MetadataOnly),
+                WatchChange::Renamed { from, to } => (from, Some(to), CaptureIntent::Complete),
+            };
+            if incoming.1.change_has_native_payload_custody(index) {
+                let owned = clone_capture_path(&path, meter)?;
+                drop(path);
+                path = owned;
+                if let Some(to) = destination.take() {
+                    destination = Some(clone_capture_path(&to, meter)?);
+                    drop(to);
+                }
+            }
             capture_charge(
                 meter,
                 WorkCounters {
@@ -27,530 +126,409 @@ pub(super) fn capture_watch_owned_bytes(
                     ..WorkCounters::UNCHARGED
                 },
             )?;
-            for _ in path.components() {
-                capture_charge(
-                    meter,
-                    WorkCounters {
-                        source_path_components: 1,
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    },
-                )?;
-            }
-            bytes = bytes
-                .checked_add(path.retained_bytes())
-                .ok_or(CaptureError::from(WorkError::Overflow))?;
-        }
-    }
-    Ok(bytes)
-}
-
-/// Replays one watcher batch against the original shared invocation ledger.
-#[allow(clippy::too_many_lines)]
-pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    batch: WatchBatch,
-    options: &CaptureOptions,
-    policy: &CapturePolicy,
-    cancellation: &CancellationToken,
-    meter: &NativeMaterializationWork,
-) -> Result<WatchCaptureReceipt, CaptureError> {
-    // The facade opens fixed accounting leaves only; owned helpers and drops remain outside those short meter-meter loans.
-    let cancellation = {
-        cancellation.check()?;
-        meter.clone().check().map_err(capture_demand_error)?;
-        if let WatchBatch::Changes {
-            changes,
-            original: incoming,
-            ..
-        } = &batch
-        {
-            let storage_bytes = if incoming.has_native_changes_storage_custody() {
-                0
+            let excluded = capture_excludes(policy, &path, meter)?;
+            let (path, intent) = if let Some(to) = destination {
+                match (excluded, capture_excludes(policy, &to, meter)?) {
+                    (false, false) => {
+                        let from = path;
+                        cancellation.check()?;
+                        let prior_source = capture_remove(&mut ordinary, &from, meter)?;
+                        let prior_source = if let Some((key, value)) = prior_source {
+                            capture_drop_path(key, meter)?;
+                            Some(value)
+                        } else {
+                            None
+                        };
+                        if let Some((key, _)) = capture_remove(&mut ordinary, &to, meter)? {
+                            capture_drop_path(key, meter)?;
+                        }
+                        let record = if let Some((key, record)) =
+                            capture_remove(&mut rename_records, &from, meter)?
+                        {
+                            capture_drop_path(key, meter)?;
+                            record
+                        } else if matches!(prior_source, Some((CurrentRecord::Known(None), _))) {
+                            None
+                        } else {
+                            let source = checkout
+                                .lookup_no_follow(&from, meter, &cancellation)
+                                .await?;
+                            source.record
+                        };
+                        if let Some(record) = record {
+                            if record.kind == FileKind::Directory {
+                                capture_reserve(&mut renamed_directories, 1, meter)?;
+                                renamed_directories.push((
+                                    clone_capture_path(&from, meter)?,
+                                    clone_capture_path(&to, meter)?,
+                                ));
+                            }
+                            capture_reserve(&mut mutations, 1, meter)?;
+                            mutations.push(AuthoredMutation::Rename {
+                                source: clone_capture_path(&from, meter)?,
+                                destination: clone_capture_path(&to, meter)?,
+                                replace: true,
+                            });
+                            let destination = clone_capture_path(&to, meter)?;
+                            capture_replace(&mut rename_records, destination, Some(record), meter)?;
+                        } else {
+                            let destination = clone_capture_path(&to, meter)?;
+                            {
+                                capture_replace(
+                                    &mut ordinary,
+                                    destination,
+                                    (CurrentRecord::Lookup, CaptureIntent::Replace),
+                                    meter,
+                                )
+                            }?;
+                        }
+                        if from != to {
+                            capture_replace(&mut rename_records, from, None, meter)?;
+                        } else {
+                            capture_drop_path(from, meter)?;
+                        }
+                        if record.is_none()
+                            && let Some((key, _)) = capture_remove(&mut rename_records, &to, meter)?
+                        {
+                            capture_drop_path(key, meter)?;
+                        }
+                        capture_drop_path(to, meter)?;
+                        continue;
+                    }
+                    (true, false) => {
+                        capture_drop_path(path, meter)?;
+                        (to, CaptureIntent::Replace)
+                    }
+                    (false, true) => {
+                        capture_drop_path(to, meter)?;
+                        (path, CaptureIntent::Complete)
+                    }
+                    (true, true) => {
+                        capture_drop_path(path, meter)?;
+                        capture_drop_path(to, meter)?;
+                        continue;
+                    }
+                }
+            } else if excluded {
+                capture_drop_path(path, meter)?;
+                continue;
             } else {
-                (changes.capacity() as u64)
-                    .checked_mul(std::mem::size_of::<WatchChange>() as u64)
-                    .ok_or(CaptureError::from(WorkError::Overflow))?
+                (path, intent)
             };
-            let bytes = capture_watch_owned_bytes(changes, incoming, storage_bytes, meter)?;
+            let current = current_record(&rename_records, &path, meter)?;
+            let entry = capture_entry(&mut ordinary, path, (current, intent), meter)?;
+            match intent {
+                CaptureIntent::Replace => *entry = (current, intent),
+                CaptureIntent::Arrived if entry.1 != CaptureIntent::Replace => entry.1 = intent,
+                CaptureIntent::Complete if entry.1 == CaptureIntent::MetadataOnly => {
+                    entry.1 = intent
+                }
+                _ => {}
+            }
+        }
+        if !changes_storage_native {
             meter
-                .with_original_leaf(|work| {
-                    work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)
-                })
+                .clone()
+                .release(changes_bytes)
                 .map_err(capture_demand_error)?;
         }
-        meter.with_original_leaf(|work| work.cancellation().clone())
-    };
-    let WatchBatch::Changes {
-        original: incoming,
-        epoch,
-        first_sequence,
-        next_sequence,
-        changes,
-    } = batch
-    else {
-        let WatchBatch::RescanRequired { epoch, reason } = batch else {
-            unreachable!("watch batch variants are exhaustive")
-        };
-        return Err(CaptureError::RescanRequired {
-            epoch: epoch,
-            reason,
-        });
-    };
-    let changes_storage_native = incoming.has_native_changes_storage_custody();
-    // Drop moved hints before their meter allocation guards, including on early failure.
-    let incoming = (changes, incoming);
-    if options.maximum_paths == 0
-        || options.maximum_extent_spans == 0
-        || incoming.0.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
-    {
-        return Err(CaptureError::InvalidOptions);
-    }
-    let source_root = open_source_root(options, meter)?;
-    let mut receipt = CaptureReceipt::default();
-    let changes_bytes = incoming.0.capacity() as u64 * std::mem::size_of::<WatchChange>() as u64;
-    let mut mutations = Vec::new();
-    let mut ordinary = Vec::new();
-    let mut rename_records = Vec::new();
-    let mut renamed_directories = Vec::new();
-    let mut moved_away = Vec::new();
+        drop(incoming.1);
 
-    for (index, change) in incoming.0.into_iter().enumerate() {
-        let change = if incoming.1.change_has_native_payload_custody(index) {
-            let copied = match &change {
-                WatchChange::Created(path) => {
-                    WatchChange::Created(clone_capture_path(path, meter)?)
-                }
-                WatchChange::Modified(path) => {
-                    WatchChange::Modified(clone_capture_path(path, meter)?)
-                }
-                WatchChange::Arrived(path) => {
-                    WatchChange::Arrived(clone_capture_path(path, meter)?)
-                }
-                WatchChange::Removed(path) => {
-                    WatchChange::Removed(clone_capture_path(path, meter)?)
-                }
-                WatchChange::MetadataChanged(path) => {
-                    WatchChange::MetadataChanged(clone_capture_path(path, meter)?)
-                }
-                WatchChange::Renamed { from, to } => WatchChange::Renamed {
-                    from: clone_capture_path(from, meter)?,
-                    to: clone_capture_path(to, meter)?,
-                },
-            };
-            drop(change);
-            copied
-        } else {
-            change
-        };
-        {
+        expand_directory_hints(
+            checkout,
+            &mut ordinary,
+            &source_root,
+            options.maximum_paths,
+            policy,
+            meter,
+        )
+        .await?;
+
+        // A watcher may report a nested file before any ancestor has been observed in this lazy checkout. Capture only the missing ancestors, rather than expanding their entire host subtrees as event roots.
+        let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
+        let mut renamed_paths = 0;
+        for (_, record) in &rename_records {
             capture_charge(
                 meter,
                 WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 },
-            )
-        }?;
-        let change = match change {
-            WatchChange::Renamed { from, to } => {
-                let excluded_from = capture_excludes(policy, &from, meter)?;
-                let excluded_to = capture_excludes(policy, &to, meter)?;
-                match (excluded_from, excluded_to) {
-                    (false, false) => WatchChange::Renamed { from, to },
-                    (true, false) => {
-                        capture_drop_path(from, meter)?;
-                        WatchChange::Created(to)
-                    }
-                    (false, true) => {
-                        capture_drop_path(to, meter)?;
-                        WatchChange::Removed(from)
-                    }
-                    (true, true) => {
-                        capture_drop_path(from, meter)?;
-                        capture_drop_path(to, meter)?;
-                        continue;
-                    }
-                }
+            )?;
+            renamed_paths += usize::from(record.is_some());
+        }
+        let ancestors = watch_ancestor_candidates(
+            ordinary
+                .iter()
+                .map(|(path, _)| path)
+                .chain(
+                    rename_records
+                        .iter()
+                        .filter_map(|(path, record)| record.map(|_| path)),
+                )
+                .chain(mutations.iter().filter_map(|mutation| match mutation {
+                    AuthoredMutation::Rename { destination, .. } => Some(destination),
+                    _ => None,
+                })),
+            &ordinary,
+            &rename_records,
+            renamed_paths,
+            policy,
+            maximum_paths,
+            checkout.volume_config().limits,
+            meter,
+        )?;
+        let missing_ancestors = hydrate_watch_ancestors(
+            checkout,
+            &mut ordinary,
+            ancestors,
+            &source_root,
+            epoch,
+            maximum_paths.saturating_sub(renamed_paths),
+            meter,
+        )
+        .await?;
+
+        let mut lookup_paths = capture_vec(ordinary.len(), meter)?;
+        for (path, (current, _)) in &ordinary {
+            if matches!(current, CurrentRecord::Lookup) {
+                lookup_paths.push(clone_capture_path(path, meter)?);
             }
-            change => {
-                let path = match &change {
-                    WatchChange::Created(path)
-                    | WatchChange::Modified(path)
-                    | WatchChange::Arrived(path)
-                    | WatchChange::Removed(path)
-                    | WatchChange::MetadataChanged(path) => path,
-                    WatchChange::Renamed { .. } => unreachable!("renames were classified above"),
-                };
-                if capture_excludes(policy, path, meter)? {
-                    let bytes = path.retained_bytes();
-                    drop(change);
-                    meter.clone().release(bytes).map_err(capture_demand_error)?;
-                    continue;
-                }
-                change
-            }
-        };
-        match change {
-            WatchChange::Renamed { from, to } => {
-                cancellation.check()?;
-                let prior_source = capture_remove(&mut ordinary, &from, meter)?;
-                let prior_source = if let Some((key, value)) = prior_source {
-                    capture_drop_path(key, meter)?;
-                    Some(value)
-                } else {
-                    None
-                };
-                if let Some((key, _)) = capture_remove(&mut ordinary, &to, meter)? {
-                    capture_drop_path(key, meter)?;
-                }
-                let record = if let Some((key, record)) =
-                    capture_remove(&mut rename_records, &from, meter)?
-                {
-                    capture_drop_path(key, meter)?;
-                    Some(record)
-                } else if matches!(prior_source, Some((CurrentRecord::Known(None), _)))
-                    || capture_position(&moved_away, &from, meter)?.is_ok()
-                {
-                    None
-                } else {
-                    let source = checkout
-                        .lookup_no_follow(&from, meter, &cancellation)
-                        .await?;
-                    source.record
-                };
-                if let Some(record) = record {
-                    if record.kind == FileKind::Directory {
-                        capture_reserve(&mut renamed_directories, 1, meter)?;
-                        renamed_directories.push((
-                            clone_capture_path(&from, meter)?,
-                            clone_capture_path(&to, meter)?,
-                        ));
-                    }
-                    capture_reserve(&mut mutations, 1, meter)?;
-                    mutations.push(AuthoredMutation::Rename {
-                        source: clone_capture_path(&from, meter)?,
-                        destination: clone_capture_path(&to, meter)?,
-                        replace: true,
-                    });
-                    let destination = clone_capture_path(&to, meter)?;
-                    capture_replace(&mut rename_records, destination, record, meter)?;
-                } else {
-                    let destination = clone_capture_path(&to, meter)?;
-                    {
-                        capture_replace(
-                            &mut ordinary,
-                            destination,
-                            (CurrentRecord::Lookup, CaptureIntent::Replace),
+        }
+        if !lookup_paths.is_empty() {
+            let lookup = checkout
+                .lookup_batch_no_follow(&lookup_paths, meter, &cancellation)
+                .await?;
+
+            let lookup_paths_bytes =
+                lookup_paths.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
+            for (path, entry) in lookup_paths.into_iter().zip(lookup.0.entries) {
+                let mut record = entry.record;
+                if record.is_none()
+                    && let Some(prior_path) = {
+                        remap_renamed_directory_path(
+                            &path,
+                            &renamed_directories,
+                            checkout.volume_config().limits,
                             meter,
                         )
-                    }?;
+                    }?
+                {
+                    let prior = checkout
+                        .lookup_no_follow(&prior_path, meter, &cancellation)
+                        .await?;
+                    record = prior.record;
+                    capture_drop_path(prior_path, meter)?;
                 }
-                capture_replace(&mut moved_away, from, (), meter)?;
-                if let Some((key, ())) = capture_remove(&mut moved_away, &to, meter)? {
-                    capture_drop_path(key, meter)?;
-                }
+                let Ok(index) = capture_position(&ordinary, &path, meter)? else {
+                    return Err(CaptureError::InvalidOptions);
+                };
+                let (current, _) = &mut ordinary[index].1;
+                *current = CurrentRecord::Known(record);
+                capture_drop_path(path, meter)?;
+            }
+            drop(lookup.1);
+            meter
+                .clone()
+                .release(lookup_paths_bytes)
+                .map_err(capture_demand_error)?;
+        } else {
+            release_capture_paths(lookup_paths, meter)?;
+        }
+        {
+            let storage_bytes = renamed_directories.capacity() as u64
+                * std::mem::size_of::<(NamespacePath, NamespacePath)>() as u64;
+            for (from, to) in renamed_directories {
+                capture_drop_path(from, meter)?;
                 capture_drop_path(to, meter)?;
             }
-            change => {
-                let (path, intent) = match change {
-                    WatchChange::Created(path) => (path, CaptureIntent::Replace),
-                    WatchChange::Modified(path) | WatchChange::Removed(path) => {
-                        (path, CaptureIntent::Complete)
-                    }
-                    WatchChange::Arrived(path) => (path, CaptureIntent::Arrived),
-                    WatchChange::MetadataChanged(path) => (path, CaptureIntent::MetadataOnly),
-                    WatchChange::Renamed { .. } => unreachable!("renames were handled above"),
-                };
-                let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                let entry = capture_entry(&mut ordinary, path, (current, intent), meter)?;
-                match intent {
-                    CaptureIntent::Replace => *entry = (current, intent),
-                    CaptureIntent::Arrived if entry.1 != CaptureIntent::Replace => entry.1 = intent,
-                    CaptureIntent::Complete if entry.1 == CaptureIntent::MetadataOnly => {
-                        entry.1 = intent
-                    }
-                    _ => {}
-                }
-            }
+            meter
+                .clone()
+                .release(storage_bytes)
+                .map_err(capture_demand_error)
+        }?;
+
+        let mut host_links = Vec::new();
+        // Hydration preserves ancestor depth order, so parents precede every rename.
+        let rename_mutations = std::mem::take(&mut mutations);
+        let missing_bytes = vector_bytes(&missing_ancestors);
+        for (path, current) in missing_ancestors {
+            prepare_final_path(
+                checkout,
+                path,
+                current,
+                CaptureIntent::Replace,
+                &source_root,
+                None,
+                &mut host_links,
+                Some(epoch),
+                None,
+                &mut mutations,
+                &mut receipt,
+                options.maximum_extent_spans,
+                meter,
+            )
+            .await?;
         }
-    }
-    if !changes_storage_native {
         meter
             .clone()
-            .release(changes_bytes)
+            .release(missing_bytes)
             .map_err(capture_demand_error)?;
-    }
-    drop(incoming.1);
-    release_capture_set(moved_away, meter)?;
-
-    expand_directory_hints(
-        checkout,
-        &mut ordinary,
-        &source_root,
-        options.maximum_paths,
-        policy,
-        meter,
-    )
-    .await?;
-
-    // A watcher may report a nested file before any ancestor has been observed in this lazy checkout. Capture only the missing ancestors, rather than expanding their entire host subtrees as event roots.
-    let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
-    let ancestors = watch_ancestor_candidates(
-        ordinary
-            .iter()
-            .map(|(path, _)| path)
-            .chain(rename_records.iter().map(|(path, _)| path))
-            .chain(mutations.iter().filter_map(|mutation| match mutation {
-                AuthoredMutation::Rename { destination, .. } => Some(destination),
-                _ => None,
-            })),
-        &ordinary,
-        &rename_records,
-        policy,
-        maximum_paths,
-        checkout.volume_config().limits,
-        meter,
-    )?;
-    let missing_ancestors = hydrate_watch_ancestors(
-        checkout,
-        &mut ordinary,
-        ancestors,
-        &source_root,
-        epoch,
-        maximum_paths.saturating_sub(rename_records.len()),
-        meter,
-    )
-    .await?;
-
-    let mut lookup_paths = capture_vec(ordinary.len(), meter)?;
-    for (path, (current, _)) in &ordinary {
-        if matches!(current, CurrentRecord::Lookup) {
-            lookup_paths.push(clone_capture_path(path, meter)?);
-        }
-    }
-    if !lookup_paths.is_empty() {
-        let lookup = checkout
-            .lookup_batch_no_follow(&lookup_paths, meter, &cancellation)
-            .await?;
-
-        let lookup_paths_bytes =
-            lookup_paths.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
-        for (path, entry) in lookup_paths.into_iter().zip(lookup.0.entries) {
-            let mut record = entry.record;
-            if record.is_none()
-                && let Some(prior_path) = {
-                    remap_renamed_directory_path(
-                        &path,
-                        &renamed_directories,
-                        checkout.volume_config().limits,
-                        meter,
-                    )
-                }?
-            {
-                let prior = checkout
-                    .lookup_no_follow(&prior_path, meter, &cancellation)
-                    .await?;
-                record = prior.record;
-                capture_drop_path(prior_path, meter)?;
+        let rename_mutations_bytes =
+            rename_mutations.capacity() as u64 * std::mem::size_of::<AuthoredMutation>() as u64;
+        capture_reserve(&mut mutations, rename_mutations.len(), meter)?;
+        {
+            capture_charge(
+                meter,
+                WorkCounters {
+                    bytes_copied: rename_mutations.len() as u64
+                        * std::mem::size_of::<AuthoredMutation>() as u64,
+                    ..WorkCounters::UNCHARGED
+                },
+            )
+        }?;
+        mutations.extend(rename_mutations);
+        meter
+            .clone()
+            .release(rename_mutations_bytes)
+            .map_err(capture_demand_error)?;
+        let namespace_boundary = mutations.len();
+        let rename_records_bytes = vector_bytes(&rename_records);
+        for (path, record) in rename_records {
+            let Some(record) = record else {
+                capture_drop_path(path, meter)?;
+                continue;
+            };
+            if capture_position(&ordinary, &path, meter)?.is_ok() {
+                capture_drop_path(path, meter)?;
+                continue;
             }
-            let Ok(index) = capture_position(&ordinary, &path, meter)? else {
+            prepare_final_path(
+                checkout,
+                path,
+                Some(record),
+                CaptureIntent::Complete,
+                &source_root,
+                None,
+                &mut host_links,
+                Some(epoch),
+                None,
+                &mut mutations,
+                &mut receipt,
+                options.maximum_extent_spans,
+                meter,
+            )
+            .await?;
+        }
+        meter
+            .clone()
+            .release(rename_records_bytes)
+            .map_err(capture_demand_error)?;
+        let mut observed_ordinary = capture_vec(ordinary.len(), meter)?;
+        let ordinary_bytes = vector_bytes(&ordinary);
+        for (path, (current, intent)) in ordinary {
+            let CurrentRecord::Known(current) = current else {
                 return Err(CaptureError::InvalidOptions);
             };
-            let (current, _) = &mut ordinary[index].1;
-            *current = CurrentRecord::Known(record);
-            capture_drop_path(path, meter)?;
+            let host_path = namespace_to_host_path_measured(&path, meter)?;
+            let observation = observe_host_path(&source_root, &host_path, meter)?;
+            capture_drop_host_path(host_path, meter)?;
+            observed_ordinary.push((path, current, intent, observation));
         }
-        drop(lookup.1);
         meter
             .clone()
-            .release(lookup_paths_bytes)
+            .release(ordinary_bytes)
             .map_err(capture_demand_error)?;
-    } else {
-        release_capture_paths(lookup_paths, meter)?;
-    }
-    {
-        let storage_bytes = renamed_directories.capacity() as u64
-            * std::mem::size_of::<(NamespacePath, NamespacePath)>() as u64;
-        for (from, to) in renamed_directories {
-            capture_drop_path(from, meter)?;
-            capture_drop_path(to, meter)?;
+        let mut ordinary = observed_ordinary;
+        {
+            capture_sort_by(
+                &mut ordinary,
+                |left, right| match (left.3.is_some(), right.3.is_some()) {
+                    (true, true) => left
+                        .0
+                        .depth()
+                        .cmp(&right.0.depth())
+                        .then_with(|| left.0.cmp(&right.0)),
+                    (false, false) => right
+                        .0
+                        .depth()
+                        .cmp(&left.0.depth())
+                        .then_with(|| left.0.cmp(&right.0)),
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                },
+                meter,
+            )
+        }?;
+        let observed_bytes = ordinary.capacity() as u64
+            * std::mem::size_of::<(
+                NamespacePath,
+                Option<FileRecord>,
+                CaptureIntent,
+                Option<HostStat>,
+            )>() as u64;
+        for (path, current, intent, observation) in ordinary {
+            prepare_final_path(
+                checkout,
+                path,
+                current,
+                intent,
+                &source_root,
+                observation,
+                &mut host_links,
+                Some(epoch),
+                None,
+                &mut mutations,
+                &mut receipt,
+                options.maximum_extent_spans,
+                meter,
+            )
+            .await?;
         }
         meter
             .clone()
-            .release(storage_bytes)
-            .map_err(capture_demand_error)
-    }?;
-
-    let mut host_links = Vec::new();
-    // Hydration preserves ancestor depth order, so parents precede every rename.
-    let rename_mutations = std::mem::take(&mut mutations);
-    let missing_bytes = vector_bytes(&missing_ancestors);
-    for (path, current) in missing_ancestors {
-        prepare_final_path(
-            checkout,
-            path,
-            current,
-            CaptureIntent::Replace,
-            &source_root,
-            None,
-            &mut host_links,
-            Some(epoch),
-            None,
-            &mut mutations,
-            &mut receipt,
-            options.maximum_extent_spans,
-            meter,
-        )
-        .await?;
-    }
-    meter
-        .clone()
-        .release(missing_bytes)
-        .map_err(capture_demand_error)?;
-    let rename_mutations_bytes =
-        rename_mutations.capacity() as u64 * std::mem::size_of::<AuthoredMutation>() as u64;
-    capture_reserve(&mut mutations, rename_mutations.len(), meter)?;
-    {
-        capture_charge(
-            meter,
-            WorkCounters {
-                bytes_copied: rename_mutations.len() as u64
-                    * std::mem::size_of::<AuthoredMutation>() as u64,
-                ..WorkCounters::UNCHARGED
-            },
-        )
-    }?;
-    mutations.extend(rename_mutations);
-    meter
-        .clone()
-        .release(rename_mutations_bytes)
-        .map_err(capture_demand_error)?;
-    let namespace_boundary = mutations.len();
-    let rename_records_bytes = vector_bytes(&rename_records);
-    for (path, record) in rename_records {
-        if capture_position(&ordinary, &path, meter)?.is_ok() {
-            capture_drop_path(path, meter)?;
-            continue;
-        }
-        prepare_final_path(
-            checkout,
-            path,
-            Some(record),
-            CaptureIntent::Complete,
-            &source_root,
-            None,
-            &mut host_links,
-            Some(epoch),
-            None,
-            &mut mutations,
-            &mut receipt,
-            options.maximum_extent_spans,
-            meter,
-        )
-        .await?;
-    }
-    meter
-        .clone()
-        .release(rename_records_bytes)
-        .map_err(capture_demand_error)?;
-    let mut observed_ordinary = capture_vec(ordinary.len(), meter)?;
-    let ordinary_bytes = vector_bytes(&ordinary);
-    for (path, (current, intent)) in ordinary {
-        let CurrentRecord::Known(current) = current else {
-            return Err(CaptureError::InvalidOptions);
-        };
-        let host_path = namespace_to_host_path_measured(&path, meter)?;
-        let observation = observe_host_path(&source_root, &host_path, meter)?;
-        capture_drop_host_path(host_path, meter)?;
-        observed_ordinary.push((path, current, intent, observation));
-    }
-    meter
-        .clone()
-        .release(ordinary_bytes)
-        .map_err(capture_demand_error)?;
-    let mut ordinary = observed_ordinary;
-    {
-        capture_sort_by(
-            &mut ordinary,
-            |left, right| match (left.3.is_some(), right.3.is_some()) {
-                (true, true) => left
-                    .0
-                    .depth()
-                    .cmp(&right.0.depth())
-                    .then_with(|| left.0.cmp(&right.0)),
-                (false, false) => right
-                    .0
-                    .depth()
-                    .cmp(&left.0.depth())
-                    .then_with(|| left.0.cmp(&right.0)),
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-            },
-            meter,
-        )
-    }?;
-    let observed_bytes = ordinary.capacity() as u64
-        * std::mem::size_of::<(
-            NamespacePath,
-            Option<FileRecord>,
-            CaptureIntent,
-            Option<HostStat>,
-        )>() as u64;
-    for (path, current, intent, observation) in ordinary {
-        prepare_final_path(
-            checkout,
-            path,
-            current,
-            intent,
-            &source_root,
-            observation,
-            &mut host_links,
-            Some(epoch),
-            None,
-            &mut mutations,
-            &mut receipt,
-            options.maximum_extent_spans,
-            meter,
-        )
-        .await?;
-    }
-    meter
-        .clone()
-        .release(observed_bytes)
-        .map_err(capture_demand_error)?;
-    release_host_links(host_links, meter)?;
-    if namespace_boundary == 0 || namespace_boundary == mutations.len() {
-        apply_capture_transaction(checkout, mutations, meter).await?;
-    } else {
-        // The public entry point owns the unpublished candidate for both phases.
-        let final_state = {
-            let count = mutations.len() - namespace_boundary;
-            let bytes = count
-                .checked_mul(std::mem::size_of::<AuthoredMutation>())
-                .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
-            let copied = WorkCounters {
-                bytes_copied: bytes,
-                ..WorkCounters::UNCHARGED
+            .release(observed_bytes)
+            .map_err(capture_demand_error)?;
+        release_host_links(host_links, meter)?;
+        if namespace_boundary == 0 || namespace_boundary == mutations.len() {
+            apply_capture_transaction(checkout, mutations, meter).await?;
+        } else {
+            // The public entry point owns the unpublished candidate for both phases.
+            let final_state = {
+                let count = mutations.len() - namespace_boundary;
+                let bytes = count
+                    .checked_mul(std::mem::size_of::<AuthoredMutation>())
+                    .ok_or(CaptureError::from(WorkError::Overflow))?
+                    as u64;
+                let copied = WorkCounters {
+                    bytes_copied: bytes,
+                    ..WorkCounters::UNCHARGED
+                };
+                crate::native_host::NativeHostWork::admit(&mut meter.clone(), copied)
+                    .map_err(capture_demand_error)?;
+                let mut final_state = capture_vec(count, meter)?;
+                final_state.extend(mutations.drain(namespace_boundary..));
+                meter.clone().record(copied).map_err(capture_demand_error)?;
+                final_state
             };
-            crate::native_host::NativeHostWork::admit(&mut meter.clone(), copied)
-                .map_err(capture_demand_error)?;
-            let mut final_state = capture_vec(count, meter)?;
-            final_state.extend(mutations.drain(namespace_boundary..));
-            meter.clone().record(copied).map_err(capture_demand_error)?;
-            final_state
-        };
-        apply_capture_transaction(checkout, mutations, meter).await?;
-        apply_capture_transaction(checkout, final_state, meter).await?;
-        {
-            cancellation.check()?;
-            meter.clone().check().map_err(capture_demand_error)
-        }?;
+            apply_capture_transaction(checkout, mutations, meter).await?;
+            apply_capture_transaction(checkout, final_state, meter).await?;
+            {
+                cancellation.check()?;
+                meter.clone().check().map_err(capture_demand_error)
+            }?;
+        }
+        Ok(WatchCaptureReceipt {
+            epoch,
+            first_sequence,
+            next_sequence,
+            capture: receipt,
+        })
     }
-    Ok(WatchCaptureReceipt {
-        epoch,
-        first_sequence,
-        next_sequence,
-        capture: receipt,
-    })
+    .await;
+    let receipt = capture_scope_result(scope, result)?;
+    cancellation
+        .commit_if_live(|| *checkout = candidate)
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    Ok(receipt)
 }
