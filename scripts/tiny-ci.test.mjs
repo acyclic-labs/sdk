@@ -99,3 +99,57 @@ test('publishers consume only this coordinated run and explicitly named artifact
   }
  }
 });
+
+
+test('native builds and mount checks overlap qualification and still gate publication',()=>{
+ const release=YAML.parse(read('release.yml'));
+ const workflow=YAML.parse(read('release-acyclic.yml'));
+ const {build,assemble}=workflow.jobs;
+ assert.equal(build.needs,undefined);
+ assert.equal(workflow.jobs['sdk-qualification'].needs,undefined);
+ assert.equal(workflow.jobs['agent-host-qualification'].needs,undefined);
+ assert.equal(workflow.jobs['native-mount'],undefined);
+ assert.deepEqual(assemble.needs,['build','sdk-qualification','agent-host-qualification']);
+ assert.equal(assemble.if,undefined);
+ const matrix=build.strategy.matrix.include;
+ assert.deepEqual(matrix.map(row=>row.target).sort(),['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-arm64','win32-x64']);
+ assert.deepEqual(matrix.filter(row=>row.backend).map(row=>[row.target,row.backend,row.qualifier]),[
+  ['linux-x64-gnu','linux-fuse','native-mount-qualify'],
+  ['darwin-arm64','macos-nfs','native-mount-qualify'],
+  ['win32-x64','windows-projfs','native-mount-qualify.exe'],
+ ]);
+ for(const target of ['linux-arm64-gnu','linux-arm64-musl','win32-x64']){
+  const row=matrix.find(row=>row.target===target)??assert.fail(target);
+  assert.match(row.runner,/blacksmith-16vcpu-/);
+  assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(row.runner));
+ }
+ const steps=build.steps;
+ const linux=steps.find(step=>step.name==='Qualify Linux or macOS native mount');
+ const windows=steps.find(step=>step.name==='Qualify Windows native mount');
+ assert.equal(linux.if,"matrix.backend && runner.os != 'Windows'");
+ assert.equal(windows.if,"matrix.backend == 'windows-projfs'");
+ assert.equal(linux.run,"bash scripts/qualify-native-mount.sh '${{ matrix.backend }}'");
+ assert.equal(windows.run,".\\scripts\\qualify-native-mount.ps1 -Backend '${{ matrix.backend }}'");
+ for(const step of [linux,windows]){
+  assert.equal(step['timeout-minutes'],20);
+  assert.equal(step.env.ACYCLIC_RELEASE_EXECUTABLE,'${{ runner.temp }}/release/${{ matrix.target }}/${{ matrix.executable }}');
+  assert.equal(step.env.ACYCLIC_QUALIFIER_EXECUTABLE,'${{ runner.temp }}/release/${{ matrix.target }}/${{ matrix.qualifier }}');
+ }
+ const compile=steps.find(step=>step.name==='Build the unified executable');
+ assert.ok(compile.run.includes('--target-dir "$RUNNER_TEMP/target-qualifier"'));
+ const stage=steps.find(step=>step.name==='Stage normalized executable');
+ assert.ok(stage.run.includes('"$RUNNER_TEMP/target-qualifier/'));
+ assert.ok(stage.run.includes('mkdir -p "$RUNNER_TEMP/release/'));
+ const product=steps.find(step=>step.with?.name==='acyclic-${{ matrix.target }}');
+ assert.equal(product.with.path,'${{ runner.temp }}/release');
+ const retained=steps.find(step=>step.name==='Retain native-mount qualification');
+ assert.equal(retained.if,'matrix.backend');
+ assert.equal(retained.with.name,'native-mount-${{ matrix.backend }}');
+ assert.equal(retained.with['if-no-files-found'],'error');
+ assert.ok(steps.indexOf(linux)>steps.findIndex(step=>step.name==='Stage normalized executable'));
+ assert.ok(steps.indexOf(retained)>steps.indexOf(windows));
+ for(const name of ['npm','cargo','publish']){
+  assert.ok(release.jobs[name].needs.includes('qualify'));
+  assert.equal(release.jobs[name].if,'inputs.publish');
+ }
+});
