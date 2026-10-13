@@ -694,7 +694,6 @@ mod tests {
                 std::sync::Arc::new(Ignored), &mut crate::native_host::ordinary_work(),
             )?),
             &mut crate::native_host::ordinary_work(),
-            &mut crate::native_host::ordinary_work(),
         )?);
         for limit in [1, 7, 9, 10, 11, 12] {
             let mut budget = finite_budget();

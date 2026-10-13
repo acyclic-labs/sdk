@@ -53,7 +53,7 @@ pub(super) fn open_unix<W: NativeHostWork>(
             use std::os::fd::FromRawFd as _;
             // SAFETY: callers retain the parent and name; a successful open returns one owned descriptor.
             let fd =
-                unsafe { libc::openat(directory, name.as_ptr(), flags, 0o666 as libc::mode_t) };
+                unsafe { libc::openat(directory, name.as_ptr(), flags, 0o666 as libc::c_uint) };
             if fd < 0 {
                 Err(io::Error::last_os_error())
             } else {
