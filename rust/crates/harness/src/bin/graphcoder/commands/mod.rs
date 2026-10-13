@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(feature = "filesystem-local")]
 mod native;
+
 pub(super) async fn execute(
     command: &str,
     backend: &mut Option<Backend>,
@@ -12,11 +13,9 @@ pub(super) async fn execute(
     output: &mut impl std::io::Write,
 ) -> acyclic_harness::Result<String> {
     use acyclic_harness::{Error, wire, wire_api::current_protocol};
-    let api = backend.as_ref().ok_or_else(|| {
-        Error::Conflict(
-            "session is closed after failed reopen; restart with the explicit config".into(),
-        )
-    })?;
+    let api = backend
+        .as_ref()
+        .ok_or_else(|| Error::Conflict("session is closed".into()))?;
     #[cfg(not(feature = "filesystem-local"))]
     let _ = output;
     if command == "/reset" {
@@ -24,9 +23,7 @@ pub(super) async fn execute(
             Backend::Fixture(fixture) => *cursor = fixture.start_cursor(),
             #[cfg(feature = "filesystem-local")]
             Backend::Native(_) => {
-                return Err(Error::Unsupported(
-                    "native sessions never reset authoritative state".into(),
-                ));
+                return Err(Error::Unsupported("native sessions cannot reset".into()));
             }
         }
         return Ok("fixture display reset; no session restored\n".into());
@@ -38,42 +35,22 @@ pub(super) async fn execute(
         })
     } else if let Some(path) = command.strip_prefix("/cursor ") {
         let wire::client_frame::Frame::Resume(request) = read_request(path)? else {
-            return Err(Error::Invalid(
-                "cursor file must contain a Resume frame".into(),
-            ));
+            return Err(Error::Invalid("cursor must contain a Resume frame".into()));
         };
         acyclic_harness::wire_api::validate_resume_protocol(&request)?;
         if request.cursors.len() != 1 {
             return Err(Error::Invalid("select exactly one aggregate cursor".into()));
         }
         wire::client_frame::Frame::Resume(request)
-    } else if let Some(path) = command.strip_prefix("/cancel ") {
-        let request = read_request(path)?;
-        if !matches!(request, wire::client_frame::Frame::Cancel(_)) {
-            return Err(Error::Invalid(
-                "cancel file must contain a Cancel frame".into(),
-            ));
-        }
-        request
-    } else if let Some(path) = command
-        .strip_prefix("/input ")
-        .or_else(|| command.strip_prefix("/approve "))
-    {
+    } else if let Some(path) = command.strip_prefix("/approve ") {
         let request = read_request(path)?;
         let wire::client_frame::Frame::Command(envelope) = &request else {
             return Err(Error::Invalid(
-                "input/approval file must contain a scoped Command frame".into(),
+                "approval must contain a Command frame".into(),
             ));
         };
-        let expected = if command.starts_with("/input ") {
-            "append_conversation_message"
-        } else {
-            "resolve_interaction"
-        };
-        if envelope.action_type != expected {
-            return Err(Error::Invalid(
-                "prepared command has the wrong input/approval action".into(),
-            ));
+        if envelope.action_type != "resolve_interaction" {
+            return Err(Error::Invalid("approval has the wrong action".into()));
         }
         request
     } else if let Some(path) = command.strip_prefix("/request ") {
@@ -83,15 +60,15 @@ pub(super) async fn execute(
         return native::execute(command, backend, parent, workers, output).await;
         #[cfg(not(feature = "filesystem-local"))]
         return Err(Error::Unsupported(
-            "operation requires a durable product host; fixture input is not queued".into(),
+            "operation requires a durable product host".into(),
         ));
     };
-    let requested_cursor = match &request {
+    let selected = match &request {
         wire::client_frame::Frame::Resume(request) => request.cursors.first().cloned(),
         _ => None,
     };
     let Some(frame) = terminal::dispatch(api.api(), request).await? else {
-        if let Some(selected) = requested_cursor {
+        if let Some(selected) = selected {
             *cursor = selected;
         }
         return Ok(if matches!(api, Backend::Fixture(_)) {

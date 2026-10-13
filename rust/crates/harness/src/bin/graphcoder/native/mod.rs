@@ -213,7 +213,10 @@ pub(super) async fn runtime(
         )?;
         source.with_project_source_policy(issuer, Arc::new(policy))?;
     }
-    let toolset = acyclic_harness::filesystem::recursive_default_tools(Some(source.clone()), MAX_FRAME_BYTES as u64)?;
+    let toolset = acyclic_harness::filesystem::recursive_default_tools(
+        Some(source.clone()),
+        MAX_FRAME_BYTES as u64,
+    )?;
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let mailbox = Arc::new(MailboxModelMachine::default());
@@ -264,6 +267,3 @@ pub(super) async fn runtime(
     source.bind_runtime(&runtime)?;
     Ok(runtime)
 }
-#[cfg(test)]
-#[path = "../native_tests.rs"]
-mod tests;
