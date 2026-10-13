@@ -467,12 +467,10 @@ impl TaskAdmissionRecord {
                 crate::executor::json::JsonValueSchema::TaskAdmissionRecord,
                 &mut |charge| match charge {
                     crate::executor::json::JsonCodecCharge::Admission { value_shape, .. } => {
-                        let containers = crate::executor::json::json_decode_owned_bytes(
-                            value_shape,
-                            false,
-                            Some(crate::wire::ErrorCode::Invalid),
-                        )?
-                        .0;
+                        let containers =
+                            crate::executor::json::json_owned_value_conversion_additional_bytes(
+                                value_shape,
+                            )?;
                         let diagnostics = crate::executor::json::json_typed_diagnostic_owned_bytes(
                             value_shape,
                             crate::executor::json::preparation_serde_diagnostic_label_bytes(),
