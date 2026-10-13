@@ -79,7 +79,7 @@ impl WasmTaskRegistry {
     #[wasm_bindgen(js_name = registerForkPreparation)]
     pub fn register_fork_preparation(&mut self) -> std::result::Result<(), JsValue> {
         let machine = Arc::new(crate::filesystem::ForkPreparationMachine::new());
-        let definition = machine.wire_definition().map_err(js_error)?;
+        let definition = machine.definition().map_err(js_error)?;
         self.register_definition(machine, definition)
     }
 }

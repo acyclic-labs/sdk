@@ -143,14 +143,14 @@ fn hash_native_entry(
                 crate::native_host::with_wide_path(entry.1, &mut &*work, |path, meter| {
                     entry
                         .0
-                        .read_link_wide(path, work.remaining()?.source_bytes_read, meter)
+                        .read_link(path, work.remaining()?.source_bytes_read, meter)
                 })?;
             for unit in target {
                 hash_bytes(&unit.to_le_bytes(), hasher, work)?;
             }
         }
     } else if kind.is_dir() {
-        let directory = entry.0.open_dir_held(entry.1, &mut &*work)?;
+        let directory = { #[cfg(unix)] { entry.0.open_dir_held(entry.1, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry.1, &mut &*work, |path, work| entry.0.open_dir_held(path, work)) } }?;
         let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
         if identity != metadata.identity() {
             return Err(NativeTreeMaterializationError::ExternalMutation);
@@ -159,7 +159,7 @@ fn hash_native_entry(
             directory,
             identity,
         };
-        let (mut reader, _buffer) = root.read_dir_stats(Path::new(""), &mut &*work)?;
+        let (mut reader, _buffer) = { #[cfg(unix)] { root.read_dir_stats(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| root.read_dir_stats(path, work)) } }?;
         let mut names = Vec::new();
         let mut capacity = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         while let Some(name) = next_name(&mut reader, work)? {
@@ -170,11 +170,11 @@ fn hash_native_entry(
         for (name, _allocation) in names {
             hash_native_os_str(&name, hasher, work)?;
             let path = Path::new(&name);
-            let metadata = root.stat(path, &mut &*work)?;
+            let metadata = { #[cfg(unix)] { root.stat(path, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(path, &mut &*work, |path, work| root.stat(path, work)) } }?;
             hash_native_entry(&(&root, path), &metadata, hasher, work)?;
         }
     } else if kind.is_file() {
-        let file = entry.0.open_file(entry.1, &mut &*work)?.into_std();
+        let file = { #[cfg(unix)] { entry.0.open_file(entry.1, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry.1, &mut &*work, |path, work| entry.0.open_file(path, ::windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT, work)) } }?.into_std();
         let actual = crate::native_host::stat_file(&file, &mut &*work)?;
         if actual.identity() != metadata.identity() {
             return Err(NativeTreeMaterializationError::ExternalMutation);
@@ -241,23 +241,23 @@ pub(super) fn apply_native_metadata(
     expected: Option<[u8; 32]>,
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    let parent = entry.0.open_dir_held(
-        entry
+    let parent = { #[cfg(unix)] { entry.0.open_dir_held(entry
             .1
             .parent()
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        &mut &*work,
-    )?;
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry
+            .1
+            .parent()
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &*work, |path, work| entry.0.open_dir_held(path, work)) } }?;
     let leaf = Path::new(
         entry
             .1
             .file_name()
             .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
     );
-    let metadata = entry.0.stat(entry.1, &mut &*work)?;
+    let metadata = { #[cfg(unix)] { entry.0.stat(entry.1, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry.1, &mut &*work, |path, work| entry.0.stat(path, work)) } }?;
     #[cfg(unix)]
     let file = if metadata.is_dir() {
-        entry.0.open_dir_held(entry.1, &mut &*work)?.into_std_file()
+        { #[cfg(unix)] { entry.0.open_dir_held(entry.1, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry.1, &mut &*work, |path, work| entry.0.open_dir_held(path, work)) } }?.into_std_file()
     } else {
         crate::native_host::open_leaf(
             &parent,
@@ -271,13 +271,7 @@ pub(super) fn apply_native_metadata(
         use windows::Win32::Storage::FileSystem::{
             FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
         };
-        crate::native_host::open_windows_leaf_handle(
-            &parent,
-            name,
-            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
-            Some(metadata.is_dir()),
-            meter,
-        )
+        crate::native_host::open_windows_at(&parent, name, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, windows::Wdk::Storage::FileSystem::FILE_OPEN, windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT | if metadata.is_dir() { windows::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE } else { windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE }, meter)
     })?;
     let actual = crate::native_host::stat_file(&file, &mut &*work)?;
     let mut hasher = blake3::Hasher::new();

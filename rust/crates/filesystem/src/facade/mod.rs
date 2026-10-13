@@ -18,7 +18,7 @@ use crate::kernel::{
     lookup_file_record_async_with_accounting, lookup_path_async_with_accounting, lookup_paths,
     lookup_paths_async_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    merge_generation_with_borrowed_resolutions_with_accounting, observe_path_edges_async,
+    merge_generation_with_borrowed_resolutions_with_accounting,
     plan_extent_range_with_accounting, prove_record_closure_async, read_blob_range_with_accounting,
     read_generation_root_with_accounting, retire_allocation, types,
 };
@@ -193,15 +193,13 @@ use candidates::root_parent_bytes;
 pub use checkout::Checkout;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use collection::LocalGarbageCollection;
-pub(crate) use content_model::ContentAddress;
 pub use content_model::ContentChange;
-pub(crate) use content_model::ContentFile;
-pub(crate) use content_model::ContentOperation;
 pub use content_model::ContentTimes;
 pub use content_model::FileCloneRequest;
 pub use content_model::GroupedChange;
 pub use content_model::GroupedOutcome;
 use content_model::content_input_path_bytes;
+pub(crate) use content_model::{ContentAddress, ContentFile};
 pub use detached::DetachedFile;
 pub use diff::DirectoryBindingChange;
 pub use diff::FileRecordChange;
@@ -268,7 +266,6 @@ use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;
 pub(crate) use metadata::read_record_metadata_to_file_root_with_accounting;
 use proof::DependencyLedger;
-use proof::ObservedPathMap;
 use proof::Proof;
 use publication::LastCommit;
 pub(crate) use publication::PublicationClosure;

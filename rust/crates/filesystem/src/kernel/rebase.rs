@@ -213,14 +213,6 @@ impl ProofDataCustody {
         std::mem::size_of::<Self>() as u64
     }
 
-    pub(crate) fn completed_data_work(&self) -> WorkCounters {
-        self.completed_data_work.lock().total
-    }
-
-    pub(crate) fn pending_data_work(&self) -> WorkCounters {
-        self.completed_data_work.lock().pending
-    }
-
     pub(crate) fn record_data_work(&self, mut work: WorkCounters) -> Result<(), WorkError> {
         let mut completed = self.completed_data_work.lock();
         work.peak_allocation_bytes = work.peak_allocation_bytes

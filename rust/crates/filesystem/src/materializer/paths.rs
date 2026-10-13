@@ -41,8 +41,8 @@ pub(super) fn validate_layout(
     if root.identity().device != operation.identity().device {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    let root = root.open_dir_held(Path::new(""), &mut &*work)?;
-    let operation = operation.open_dir_held(Path::new(""), &mut &*work)?;
+    let root = { #[cfg(unix)] { root.open_dir_held(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| root.open_dir_held(path, work)) } }?;
+    let operation = { #[cfg(unix)] { operation.open_dir_held(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| operation.open_dir_held(path, work)) } }?;
     #[cfg(unix)]
     let nested = {
         let (root, _root) = crate::native_host::canonical_directory_path_held(root, &mut &*work)?;

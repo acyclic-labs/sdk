@@ -64,7 +64,7 @@ fn rename<W: SourceDemandReadWork>(
     identity: NativeRootIdentity,
     work: &mut W,
 ) -> Result<(), DemandError> {
-    host::rename_no_replace_held(from, from_name, to, to_name, Some(identity), work)?;
+    host::with_wide_path(from_name, work, |name, work| host::with_wide_path(to_name, work, |target, work| host::rename_held(from, name, to, target, acyclic_native_runtime::RenameMode::NoReplace, Some(identity), work)))?;
     host::sync_directory_held(from, work)?;
     host::sync_directory_held(to, work)
 }
@@ -93,7 +93,7 @@ pub(super) fn create_entry_witness<W: SourceDemandReadWork>(
     work: &mut W,
 ) -> Result<NativeRootIdentity, DemandError> {
     let mut file = host::with_wide_path(witness, work, |name, work| {
-        host::create_windows_wide_at(left, name, false, false, false, true, work)
+        host::open_windows_at(left, name, ::windows::Win32::Storage::FileSystem::FILE_GENERIC_READ | ::windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE | ::windows::Win32::Storage::FileSystem::DELETE, ::windows::Wdk::Storage::FileSystem::FILE_CREATE, ::windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE | ::windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT | ::windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE, work)
     })?;
     write_all(&mut file, ENTRY_WITNESS, work)?;
     for identity in [
@@ -211,9 +211,7 @@ pub(super) fn recover_entry_held<W: SourceDemandReadWork>(
     requested_right: Option<(&cap_std::fs::Dir, &Path)>,
     work: &mut W,
 ) -> Result<bool, DemandError> {
-    let mut file = host::with_wide_path(witness, work, |name, work| {
-        host::open_windows_leaf_with_options(left, name, &host::NativeOpenOptions::Read, work)
-    })?;
+    let mut file = host::open_leaf(left, witness, &host::NativeOpenOptions::Read, work)?;
     let (witness_identity, length) = host::file_identity_and_length(&file, work)?;
     let published = with_witness(&mut file, length, work, |mut input, file, work| {
         let magic = take(&mut input, 16).map_err(std::io::Error::from)?;

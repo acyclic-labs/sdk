@@ -177,7 +177,12 @@ impl ControlPlane {
                     .map_err(display)?;
                 self.roots.insert(
                     key.clone(),
-                    LazyWorkspace::open_or_attach(workspace, Arc::clone(&source), self.store.clone())
+                    LazyWorkspace::bind(workspace, Arc::clone(&source), self.store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                        allocations: Default::default(),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        budget: WorkBudget::UNBOUNDED,
+                        cancellation: &CancellationToken::new(),
+                    })
                         .await
                         .map_err(display)?,
                 );
@@ -314,7 +319,22 @@ impl ControlPlane {
                         .await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?.value;
                     let source = Arc::clone(&physical.source);
                     let source_reference = source.reference();
-                    let workspace = LazyWorkspace::attach_with_config(&self.fs, &workspace_name, Arc::clone(&source), self.store.clone(), VolumeConfig::native(Lifecycle::Durable))
+                    let workspace = self.fs
+                        .create_workspace_with_config(
+                            &workspace_name,
+                            VolumeConfig::native(Lifecycle::Durable),
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| display(failure.error))?;
+                    let workspace = LazyWorkspace::bind(workspace, Arc::clone(&source), self.store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                        allocations: Default::default(),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        budget: WorkBudget::UNBOUNDED,
+                        cancellation: &CancellationToken::new(),
+                    })
                         .await
                         .map_err(display)?;
                     WorkspaceGraph::new(self.store.clone())
@@ -380,7 +400,22 @@ impl ControlPlane {
             // can repeat all three, binding the root afresh if its attach was lost.
             let (store, durability) = self.store.defer_durability();
 
-            let workspace = LazyWorkspace::attach_with_config(&self.fs, &workspace_name, Arc::clone(&source), store.clone(), VolumeConfig::native(Lifecycle::Durable))
+            let workspace = self.fs
+                .create_workspace_with_config(
+                    &workspace_name,
+                    VolumeConfig::native(Lifecycle::Durable),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| display(failure.error))?;
+            let workspace = LazyWorkspace::bind(workspace, Arc::clone(&source), store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            })
                 .await
                 .map_err(display)?;
             let context_id = if self.state.root_context_id == [0; 16] {

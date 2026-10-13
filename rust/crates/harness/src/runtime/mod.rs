@@ -1,6 +1,5 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
-mod native_startup;
 use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
@@ -31,12 +30,11 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::{StreamExt as _, stream};
-use native_startup::StartupIo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
     any::Any,
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     future::Future,
     sync::{
         Arc,
@@ -53,8 +51,6 @@ mod native_context;
 mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_volume_callback::NativeVolumeCallbackGuard;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_volume_callback::NativeVolumePublicationGuard;
 
 mod tasks;
 pub use tasks::*;
@@ -76,9 +72,8 @@ mod bindings;
 pub use bindings::*;
 mod tools;
 pub use tools::*;
-mod dependencies;
-pub use dependencies::*;
 mod children;
+mod dependencies;
 pub(crate) use children::*;
 mod context_open;
 pub(crate) use context_open::*;

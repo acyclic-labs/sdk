@@ -3,65 +3,40 @@ use super::*;
 /// Exact hard limits enforced before externally controlled work.
 #[napi(object)]
 pub struct NativeVolumeLimits {
-    /// Maximum encoded bytes in an absolute path.
     pub maximum_path_bytes: NapiU32,
-    /// Maximum encoded bytes in one component.
     pub maximum_component_bytes: NapiU32,
-    /// Maximum number of path components.
     pub maximum_path_depth: NapiU32,
-    /// Maximum canonical immutable-object bytes.
     pub maximum_object_bytes: BigInt,
-    /// Maximum operations in one atomic mutation.
     pub maximum_mutations_per_batch: NapiU32,
-    /// Maximum paths in one shared lookup batch.
     pub maximum_paths_per_batch: NapiU32,
-    /// Maximum exact dependencies retained by a checkout.
     pub maximum_checkout_dependencies: NapiU32,
-    /// Maximum entries returned by one listing page.
     pub maximum_directory_page_entries: NapiU32,
-    /// Maximum authenticated tree height.
     pub maximum_page_height: NapiU32,
-    /// Maximum bytes returned by one range read.
     pub maximum_read_bytes: BigInt,
-    /// Maximum files in one generation closure.
     pub maximum_files_per_generation: BigInt,
-    /// Maximum objects in one generation closure.
     pub maximum_objects_per_generation: BigInt,
-    /// Maximum canonical bytes in one generation closure.
     pub maximum_generation_bytes: BigInt,
 }
 
 /// Complete independently configured volume semantics.
 #[napi(object)]
 pub struct NativeVolumeOptions {
-    /// `portable`, `posix`, `windows`, or `browser`.
     pub profile: String,
-    /// `exclusive-writer`, `optimistic`, or `serialized-authority`.
     pub concurrency: String,
-    /// `ephemeral` or `durable`.
     pub lifecycle: String,
-    /// `sensitive` or `profile-folded`.
     pub case_sensitivity: String,
-    /// `preserve` or `require-nfc`.
     pub unicode: String,
-    /// Whether symbolic links are representable.
     pub symbolic_links: bool,
-    /// Whether multiple names may share one file identity.
     pub hard_links: bool,
-    /// Whether holes remain distinct from allocated zeroes.
     pub sparse_files: bool,
-    /// Mandatory externally controlled work bounds.
     pub limits: NativeVolumeLimits,
 }
 
 /// Checkout behavior selected independently for each volume view.
 #[napi(object)]
 pub struct NativeCheckoutOptions {
-    /// `read-only` or `read-write`.
     pub access: String,
-    /// One of `pinned`, `tracking-safe`, `live`, or `manual`.
     pub consistency: String,
-    /// One of `none`, `private-cow`, or `direct-live`.
     pub mutation_mode: String,
 }
 

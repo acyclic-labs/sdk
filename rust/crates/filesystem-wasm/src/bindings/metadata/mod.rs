@@ -41,7 +41,6 @@ pub struct BrowserNamedAttributeNameResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Reads complete canonical metadata bytes for one path.
     #[wasm_bindgen(js_name = readMetadata)]
     pub async fn read_metadata(
         &mut self,
@@ -60,7 +59,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Reads complete canonical metadata by stable file identity.
     #[wasm_bindgen(js_name = readMetadataById)]
     pub async fn read_metadata_by_id(
         &mut self,
@@ -79,7 +77,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Atomically replaces complete canonical metadata for one path.
     #[wasm_bindgen(js_name = setMetadata)]
     pub async fn set_metadata(
         &mut self,
@@ -103,7 +100,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Replaces complete canonical metadata by stable file identity.
     #[wasm_bindgen(js_name = setMetadataById)]
     pub async fn set_metadata_by_id(
         &mut self,
@@ -121,7 +117,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Atomically replaces metadata and optional logical size for one path.
     #[wasm_bindgen(js_name = setAttributes)]
     pub async fn set_attributes(
         &mut self,
@@ -140,7 +135,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Atomically replaces metadata and optional logical size by file identity.
     #[wasm_bindgen(js_name = setAttributesById)]
     pub async fn set_attributes_by_id(
         &mut self,
@@ -162,7 +156,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Reads one exact named attribute value.
     #[wasm_bindgen(js_name = readNamedAttribute)]
     pub async fn read_named_attribute(
         &mut self,
@@ -181,7 +174,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Returns one bounded ordered named-attribute page.
     #[wasm_bindgen(js_name = listNamedAttributes)]
     pub async fn list_named_attributes(
         &mut self,
@@ -221,7 +213,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Inserts or replaces one exact named attribute.
     #[wasm_bindgen(js_name = writeNamedAttribute)]
     pub async fn write_named_attribute(
         &mut self,
@@ -242,7 +233,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Removes one exact named attribute.
     #[wasm_bindgen(js_name = removeNamedAttribute)]
     pub async fn remove_named_attribute(
         &mut self,

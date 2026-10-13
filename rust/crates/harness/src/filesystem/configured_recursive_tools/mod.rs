@@ -12,11 +12,10 @@ use crate::{
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
-        ForkToolArguments, MergeToolArguments, RecursiveDefaultToolSource, RecursiveDefaultToolset,
-        RecursiveForkConfig, RecursiveForkSourceIntent, RecursiveForkToolBinding,
-        RecursiveForkToolPlan, RecursiveMergeToolBinding, RecursiveMergeToolPlan,
-        RecursiveToolOwner, RetainedSourceBinding, recursive_default_tools,
-        restore_recursive_fork_source,
+        ForkToolArguments, MergeToolArguments, RecursiveDefaultToolSource, RecursiveForkConfig,
+        RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
+        RecursiveMergeToolBinding, RecursiveMergeToolPlan, RecursiveToolOwner,
+        RetainedSourceBinding, restore_recursive_fork_source,
     },
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
@@ -185,10 +184,6 @@ where
         self.project_policy.set((issuer, provider)).map_err(|_| {
             Error::Conflict("configured source project policy was already bound".into())
         })
-    }
-    /// Builds the default tools from this source.
-    pub fn tools(self: &Arc<Self>, maximum_bytes: u64) -> Result<RecursiveDefaultToolset> {
-        recursive_default_tools(Some(self.clone()), maximum_bytes)
     }
     pub(super) fn runtime(
         &self,
@@ -452,7 +447,7 @@ fn validate_result_volume(
 }
 
 fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = binding.issuer().verifier(&mut None).expect("verifier copy");
+    let verifier = binding.issuer.verifier(&mut None).expect("verifier copy");
     verifier.verify(&binding.scope, &mut None)?;
     Ok(verifier)
 }
@@ -481,8 +476,8 @@ fn allocation_digest(
         let descriptor = Descriptor {
             contract: "harness.configured-recursive-allocation.v2",
             admission: admission.canonical_payload(),
-            authority: allocation.child.authority(),
-            issuer: allocation.child.issuer().id(),
+            authority: allocation.child.issuer.audience(),
+            issuer: allocation.child.issuer.id(),
             agent: scope.agent(),
             grants: scope.capabilities(),
             message_pointer: &allocation.child_message_pointer,

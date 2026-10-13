@@ -315,8 +315,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     &key,
                     self.preparer.resolver.as_ref(),
                     self.io.as_ref(),
-                    self.task_preparation.map(Arc::as_ref),
-                    #[cfg(not(target_arch = "wasm32"))]
                     self.task_preparation,
                 )
                 .await?;

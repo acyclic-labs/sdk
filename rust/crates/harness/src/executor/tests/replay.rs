@@ -132,27 +132,11 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
 #[tokio::test]
 async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
     let model = Arc::new(ScriptedModel::default());
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({"type": "object"}),
-                    output_schema: json!({"type": "object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type": "object"}),
-                    ),
-                },
-                executor: Arc::new(FakeTool(AtomicUsize::new(0))),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        Arc::new(FakeTool(AtomicUsize::new(0))),
+        json!({"type": "object"}),
+        json!({"type": "object"}),
+        crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let base = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,

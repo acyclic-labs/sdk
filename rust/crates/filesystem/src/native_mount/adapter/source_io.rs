@@ -69,16 +69,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         )
     }
 
-    pub(crate) fn native_source_io_lease(
-        self: &Arc<Self>,
-    ) -> Result<NativeSourceIoLease, MountSourceError>
-    where
-        Self: Send + Sync + 'static,
-    {
-        self.native_source_io_lease_for_owner(Arc::clone(self) as Arc<dyn Send + Sync>)
-    }
-
-    pub(in crate::native_mount) fn native_source_io_lease_for_owner(
+    pub(in crate::native_mount) fn native_source_io_lease(
         &self,
         owner: Arc<dyn Send + Sync>,
     ) -> Result<NativeSourceIoLease, MountSourceError> {

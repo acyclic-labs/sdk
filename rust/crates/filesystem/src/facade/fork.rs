@@ -106,57 +106,49 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<Owned<VerifiedPublication<A, O>>, FsError> {
         let limits = closure_limits(config);
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let (proof, mut allocation) = prove_generation_closure_with_native_work(
-                &self.inner.objects,
-                generation_root,
-                limits,
-                original,
-                cancellation,
-            )
-            .await?;
-            if proof.root.volume_id != volume_id {
-                return Err(FsError::VolumeMismatch);
-            }
-            let root_bytes = root_parent_bytes(&proof.root)?;
-            let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
-            drop(proof.root);
-            allocation.release(root_bytes)?;
-            return Ok(Owned::new(
-                VerifiedPublication {
-                    filesystem: self.clone(),
+        let (proof, mut allocation) = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work: original, .. } => {
+                let (proof, allocation) = prove_generation_closure_with_native_work(
+                    &self.inner.objects,
                     generation_root,
-                    volume_id,
                     limits,
-                    objects: proof.objects,
-                    proven_at,
-                    _allocation: KernelOwnedAllocation::Standalone,
-                },
-                KernelOwnedAllocation::NativeOriginal(allocation),
-                bytes,
-            ));
-        }
-        let result = prove_generation_closure(
-            &self.inner.objects,
-            generation_root,
-            limits,
-            accounting.remaining()?,
-            cancellation,
-        )
-        .await;
-        let work = match &result {
-            Ok(proof) => proof.work,
-            Err(failure) => *failure.work,
+                    original,
+                    cancellation,
+                )
+                .await?;
+                (proof, KernelOwnedAllocation::NativeOriginal(allocation))
+            }
+            _ => {
+                let result = prove_generation_closure(
+                    &self.inner.objects,
+                    generation_root,
+                    limits,
+                    accounting.remaining()?,
+                    cancellation,
+                )
+                .await;
+                let work = match &result {
+                    Ok(proof) => proof.work,
+                    Err(failure) => *failure.work,
+                };
+                merge_creation_backend_work(accounting, work)?;
+                let proof = result.map_err(|failure| FsError::from(failure.error))?;
+                let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
+                let allocation = accounting.claim_owned(bytes, 0)?;
+                (proof, allocation)
+            }
         };
-        merge_creation_backend_work(accounting, work)?;
-        let proof = result.map_err(|failure| FsError::from(failure.error))?;
         if proof.root.volume_id != volume_id {
             return Err(FsError::VolumeMismatch);
         }
-        drop(proof.root);
+        let root_bytes = root_parent_bytes(&proof.root)?;
         let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
-        let allocation = accounting.claim_owned(bytes, 0)?;
+        drop(proof.root);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let KernelOwnedAllocation::NativeOriginal(guard) = &mut allocation {
+            guard.release(root_bytes)?;
+        }
         Ok(Owned::new(
             VerifiedPublication {
                 filesystem: self.clone(),
@@ -230,8 +222,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 )
                 .await?;
             match self
-                .read_fork_creation_with_accounting(volume_id, accounting, cancellation)
+                .read_creation(volume_id, accounting, cancellation)
                 .await
+                .map_err(WorkspaceError::from)
             {
                 Ok((created, operation)) => {
                     if operation != idempotency_key.operation_id()
@@ -316,8 +309,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
             fork_root.retire(accounting)?;
             let (created, operation) = self
-                .read_fork_creation_with_accounting(volume_id, accounting, cancellation)
-                .await?;
+                .read_creation(volume_id, accounting, cancellation)
+                .await
+                .map_err(WorkspaceError::from)?;
             if operation != idempotency_key.operation_id()
                 || created.config != config
                 || created.initial_generation_root != original_root
@@ -371,31 +365,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(|failure| failure.error)
     }
 
-    pub(super) async fn read_fork_creation_with_accounting(
-        &self,
-        volume_id: VolumeId,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(VolumeCreated, OperationId), WorkspaceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return self
-                .read_creation_record(volume_id, original, cancellation)
-                .await
-                .map_err(WorkspaceError::from);
-        }
-        let read = self
-            .read_creation_record(volume_id, accounting.remaining()?, cancellation)
-            .await;
-        let work = match &read {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
-        merge_fork_backend_work(accounting, work)?;
-        read.map(|receipt| receipt.value)
-            .map_err(|failure| WorkspaceError::from(failure.error))
-    }
-
     /// The source lineage a fork's authority starts from: the published
     pub(super) async fn fork_lineage_with_accounting(
         &self,
@@ -406,42 +375,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if !self.inner.authority.supports_generation_lineage_prefix() {
             return Ok(None);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let head = source
-                .workspace
-                .volume
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode::read_only_pinned(),
-                    original,
-                    cancellation,
-                )
-                .await?;
-            return Ok(Some(crate::GenerationForkSource {
-                authority: volume_authority_id(source.workspace.volume.id),
-                generation: source.id,
-                lineage: if head.generation_id() == source.id {
-                    crate::GenerationFork::PublishedPrefix
-                } else {
-                    crate::GenerationFork::Independent
-                },
-            }));
-        }
-        let head = source
+        let (root, _) = source
             .workspace
-            .head(accounting.remaining()?, cancellation)
-            .await;
-        let work = match &head {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
-        merge_fork_backend_work(accounting, work)?;
-        let head = head.map_err(|failure| failure.error)?;
+            .volume
+            .resolve_head_generation(accounting, cancellation)
+            .await?;
+        let (decoded, allocation) = read_generation_root_with_accounting(
+            &self.inner.objects,
+            root,
+            source.workspace.volume.config,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        if decoded.volume_id != source.workspace.volume.id {
+            return Err(FsError::VolumeMismatch.into());
+        }
+        let bytes = root_parent_bytes(&decoded)?;
+        Owned::new(decoded, allocation, bytes).retire(accounting)?;
         Ok(Some(crate::GenerationForkSource {
             authority: volume_authority_id(source.workspace.volume.id),
             generation: source.id,
-            lineage: if head.value.id == source.id {
+            lineage: if root.digest == source.id.digest() {
                 crate::GenerationFork::PublishedPrefix
             } else {
                 crate::GenerationFork::Independent

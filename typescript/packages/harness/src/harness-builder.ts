@@ -13,7 +13,6 @@ export interface RegisteredTool<Input, Output> {
   readonly definition: ToolDefinition<Input, Output>;
   readonly handle: ToolRef<Input, Output>;
   readonly executor?: ToolExecutor<Input, Output>;
-  readonly machine?: WasmMachineIdentityWire;
 }
 
 export class HarnessBuilder {
@@ -125,7 +124,7 @@ export class HarnessBuilder {
     const handle = Object.freeze({ definition: Object.freeze({ name, revision, description, inputSchema, outputSchema, projectionSchema: pinned.projection.schema }),
       ...(machine ? { machine } : {}) }) as ToolRef<Input, Output>;
     this.#tools.set(key, (Object.freeze({ source: definition, definition: pinned, handle,
-      ...(executor ? { executor } : {}), ...(machine ? { machine } : {}) }) as unknown as RegisteredTool<never, unknown>));
+      ...(executor ? { executor } : {}) }) as unknown as RegisteredTool<never, unknown>));
     if (previouslyRegistered) this.#selectedTools.delete(pinned.name);
     else this.#selectedTools.set(pinned.name, pinned.revision);
     return this;
@@ -158,7 +157,7 @@ export class HarnessBuilder {
         throw new TypeError("fork publisher belongs to another parent");
       }
     }
-    if ([...this.#tools.values()].some(tool => tool.machine) && !components.state?.executeTool) {
+    if ([...this.#tools.values()].some(tool => tool.handle.machine) && !components.state?.executeTool) {
       throw new TypeError("resumable tools require owner-host durable tool execution");
     }
     // Snapshot provider identities before asynchronous validation.

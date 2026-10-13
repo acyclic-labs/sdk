@@ -96,7 +96,8 @@ impl PreparationIo {
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_native_custody(custody: acyclic_fs::NativeAllocation) -> Self {
+    /// Adopts retained input storage on its original native ledger.
+    pub fn from_native_custody(custody: acyclic_fs::NativeAllocation) -> Self {
         Self::Native {
             work: custody.work().clone(),
             custody: Mutex::new(custody),

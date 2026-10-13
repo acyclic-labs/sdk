@@ -524,9 +524,9 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
     let directory = root.join("directory");
     std::fs::create_dir(&directory)?;
     let before = native_metadata(
-        &backend
+        &{ #[cfg(unix)] { backend
             .held_root
-            .stat(Path::new("directory"), &mut backend.work())?,
+            .stat(Path::new("directory"), &mut backend.work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("directory"), &mut backend.work(), |path, work| backend.held_root.stat(path, work)) } }?,
     );
     let mut desired = before.clone();
     #[cfg(unix)]
@@ -561,9 +561,9 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
         )
         .await?;
     let applied = native_metadata(
-        &backend
+        &{ #[cfg(unix)] { backend
             .held_root
-            .stat(Path::new("directory"), &mut backend.work())?,
+            .stat(Path::new("directory"), &mut backend.work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("directory"), &mut backend.work(), |path, work| backend.held_root.stat(path, work)) } }?,
     );
     assert_eq!(applied.posix_mode, desired.posix_mode);
     assert_eq!(applied.windows_attributes, desired.windows_attributes);
@@ -575,9 +575,9 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
         )
         .await?;
     let restored = native_metadata(
-        &backend
+        &{ #[cfg(unix)] { backend
             .held_root
-            .stat(Path::new("directory"), &mut backend.work())?,
+            .stat(Path::new("directory"), &mut backend.work()) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new("directory"), &mut backend.work(), |path, work| backend.held_root.stat(path, work)) } }?,
     );
     assert_eq!(restored.posix_mode, before.posix_mode);
     assert_eq!(restored.windows_attributes, before.windows_attributes);

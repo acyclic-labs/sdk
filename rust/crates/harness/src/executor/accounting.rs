@@ -58,34 +58,6 @@ pub(super) fn stock_count_tokens(
     provider.count_tokens(request)
 }
 
-pub(super) fn stock_context_prefix(
-    context: &crate::context::Context,
-    through: usize,
-    io: Option<&PreparationIo>,
-) -> Result<crate::context::Context> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        io.original_native_work().ok_or_else(|| {
-            stock_boundary(
-                io.into(),
-                crate::wire::ErrorCode::Unsupported,
-                "stock summary prefix requires original native work",
-            )
-        })?;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    if io.is_some() {
-        return Err(stock_boundary(
-            io.into(),
-            crate::wire::ErrorCode::Unsupported,
-            "native stock summary prefix is unavailable",
-        ));
-    }
-    with_history_io(io, |work| {
-        crate::context::clone_context(context, Some(through), work).map(|(prefix, _)| prefix)
-    })
-}
-
 pub(super) fn stock_json_bound<T: Serialize>(
     value: &T,
     maximum: u64,

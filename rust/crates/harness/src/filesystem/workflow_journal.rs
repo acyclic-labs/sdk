@@ -156,11 +156,12 @@ where
         let mut journal = Self::new(owner.stream(), host, &identity, volume, verifier, scope,
             maximum_payload_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let owner = match io.and_then(PreparationIo::original_native_work) {
-            Some(work) => owner.into_native_shared(work)?,
-            None => Arc::new(owner),
-        };
-        #[cfg(target_arch = "wasm32")]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            if !owner.native_shared_work_matches(work) {
+                return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                    "workflow owner belongs to another native ledger"));
+            }
+        }
         let owner = Arc::new(owner);
         Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
@@ -746,7 +747,7 @@ where
         if let Some(owner) = &self.owner {
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            return owner.append_workflow_with_work(admission, revision, &key, bytes, &mut work).await;
+            return owner.append_workflow(admission, revision, &key, bytes, &mut work).await;
         }
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, path, io)?;
@@ -786,10 +787,8 @@ where
                 io.preflight(step)?;
                 io.charge(step)?;
             }
-            if let Some(owner) = &self.owner
-                && owner.verify_created_input_with_io(&command.payload, io).await?
-            {
-                continue;
+            if let Some(owner) = &self.owner {
+                owner.validate_input_file(&command.payload, io)?;
             }
             if command.payload.volume() != &self.volume {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,

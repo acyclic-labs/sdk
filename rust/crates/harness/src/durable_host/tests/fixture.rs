@@ -54,7 +54,11 @@ where
             }
         };
         self.host
-            .journal_owner(TaskId::from_bytes([byte; 16]), (&lease.reservation).into())
+            .journal_owner(
+                TaskId::from_bytes([byte; 16]),
+                &((&lease.reservation).into()),
+                None,
+            )
             .await
     }
 
@@ -92,7 +96,15 @@ where
         use crate::conversation::ContentPublisher;
         let task = TaskId::from_bytes([byte; 16]);
         self.host
-            .suspend_workflow(task, self.owner(byte).await?.task_binding().1.clone(), 1)
+            .suspend_workflow(
+                task,
+                self.owner(byte).await?.task_binding().1,
+                1,
+                None,
+                None,
+                None,
+                &mut None,
+            )
             .await?;
         let (input, _) = self
             .publisher

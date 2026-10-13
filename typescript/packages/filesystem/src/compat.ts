@@ -90,20 +90,7 @@ export interface CompatibilityWire {
   decode(kind: CompatibilityWireKind, envelope: CompatibilityWireEnvelope): CompatibilityJson;
 }
 
-
-/** Decodes an exact byte identity without JavaScript's truncating coercions. */
-export function decodeFixedBytes(value: unknown, length: number, name: string): Uint8Array {
-  if (
-    !Array.isArray(value) ||
-    value.length !== length ||
-    value.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)
-  ) {
-    throw new TypeError(`${name} must be a ${length}-byte identity`);
-  }
-  return Uint8Array.from(value as number[]);
-}
-
-function compatibilityJson(value: unknown, name: string): CompatibilityJson {
+function compatibilityJson(value: unknown): CompatibilityJson {
   if (
     value === null ||
     typeof value === "boolean" ||
@@ -111,17 +98,17 @@ function compatibilityJson(value: unknown, name: string): CompatibilityJson {
     (typeof value === "number" && Number.isFinite(value))
   ) return value;
   if (Array.isArray(value)) {
-    return value.map((entry, index) => compatibilityJson(entry, `${name}[${index}]`));
+    return value.map(compatibilityJson);
   }
   if (
     typeof value === "object" &&
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
   ) {
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, compatibilityJson(entry, `${name}.${key}`)]),
+      Object.entries(value).map(([key, entry]) => [key, compatibilityJson(entry)]),
     );
   }
-  throw new TypeError(`${name} is not finite JSON data`);
+  throw new TypeError("compatibility value is not finite JSON data");
 }
 
 function isCompatibilityObject(
@@ -131,7 +118,7 @@ function isCompatibilityObject(
 }
 
 function compatibilityEnvelope(value: unknown, kind: CompatibilityWireKind): CompatibilityWireEnvelope {
-  const decoded = compatibilityJson(value, "compatibility envelope");
+  const decoded = compatibilityJson(value);
   if (
     !isCompatibilityObject(decoded) ||
     decoded.kind !== kind ||
@@ -169,7 +156,6 @@ export function adaptCompatibilityWire(raw: Pick<typeof import("../generated/was
       compatibilityEnvelope(envelope, kind);
       return compatibilityJson(
         JSON.parse(functions[kind][1](JSON.stringify(envelope))) as unknown,
-        "decoded compatibility value",
       );
     },
   };
@@ -566,8 +552,7 @@ function bytes(value: unknown, length: number | undefined, label: string): numbe
   return values as number[];
 }
 
-// Lazy source epochs are Rust u64 values. Read the original JSON token before
-// JavaScript rounds it; older engines fail closed on an unsafe numeric value.
+// Read u64 epochs before JSON rounds them; reject unsafe numbers on older engines.
 function parseGitJson(json: string): unknown {
   return JSON.parse(json, (key: string, value: unknown, context?: { source?: string }) => {
     if (key !== "epoch" || typeof value !== "number") return value;
@@ -593,8 +578,7 @@ function u64(value: unknown, label: string): bigint {
   return epoch;
 }
 
-// Rust's transparent OperationId wraps uuid::Uuid: JSON uses its canonical
-// string form, while the native N-API boundary accepts the same 16 raw bytes.
+// Rust OperationId uses UUID strings in JSON and 16 bytes at the N-API boundary.
 function uuidIdentity(value: unknown, label: string): OperationIdentity {
   if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
     throw new TypeError(`Git ${label} must be a UUID string`);
