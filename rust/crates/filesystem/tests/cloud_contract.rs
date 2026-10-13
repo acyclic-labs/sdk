@@ -272,13 +272,27 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip()
 fn hosted_setup_cases(cases: &[Value]) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     let mut result = cases.to_vec();
     let mut workspace = cases.get(1).ok_or("missing workspace golden")?["response"].clone();
-    workspace["workspace"]["head"] =
-        cases.get(2).ok_or("missing written golden")?["response"]["generation"].clone();
+    let written = cases
+        .get(2)
+        .ok_or("missing written golden")?
+        .pointer("/response/generation")
+        .cloned()
+        .unwrap_or_default();
+    workspace
+        .get_mut("workspace")
+        .and_then(Value::as_object_mut)
+        .ok_or("missing workspace response")?
+        .insert("head".into(), written);
     result.push(serde_json::json!({
         "method": "OpenWorkspace", "input": "OpenWorkspaceRequest", "output": "WorkspaceResponse",
         "request": {"name": "same-name"}, "response": workspace
     }));
-    let removed = cases.get(6).ok_or("missing removed golden")?["response"]["generation"].clone();
+    let removed = cases
+        .get(6)
+        .ok_or("missing removed golden")?
+        .pointer("/response/generation")
+        .cloned()
+        .unwrap_or_default();
     result.push(serde_json::json!({
         "method": "GetGeneration", "input": "GetGenerationRequest", "output": "GenerationResponse",
         "request": {"generation": removed}, "response": {"generation": removed}
