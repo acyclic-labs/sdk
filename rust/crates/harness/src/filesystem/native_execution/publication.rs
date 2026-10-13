@@ -1,4 +1,4 @@
-use crate::{Error, conversation::FileRef};
+use crate::Error;
 
 /// Publication failure retaining the SDK acknowledgement and completed prefix.
 #[derive(Debug)]
@@ -7,10 +7,8 @@ pub struct NativeViewPublicationError {
     pub cause: acyclic_fs::native_mount::NativeMountPublicationFailure<Error>,
     /// Snapshots returned before this failure.
     pub published: Vec<(usize, acyclic_fs::NativePublicationSnapshot)>,
-    /// Output retained before publication.
-    pub diagnostic: Option<FileRef>,
     /// Original allocation ownership.
-    pub custody: Option<acyclic_fs::NativeAllocation>,
+    pub custody: acyclic_fs::NativeAllocation,
 }
 impl std::fmt::Display for NativeViewPublicationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

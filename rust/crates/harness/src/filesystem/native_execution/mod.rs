@@ -166,8 +166,7 @@ where
                 failure: Box::new(NativeViewPublicationError {
                     cause,
                     published,
-                    diagnostic: None,
-                    custody: Some(custody),
+                    custody,
                 }),
                 custody: Some(failure_slot),
             }),

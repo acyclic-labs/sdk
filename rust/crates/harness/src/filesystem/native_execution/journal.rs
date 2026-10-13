@@ -108,7 +108,7 @@ pub(super) struct Store<P: StreamProvider> {
 impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
     type Error = Error;
     type ActionCompletion<'a>
-        = crate::NativeFutureBundle<'a, MaterializationJournal>
+        = crate::NativeFutureBundle<'static, MaterializationJournal>
     where
         Self: 'a;
 
