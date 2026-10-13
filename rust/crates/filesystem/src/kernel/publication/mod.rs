@@ -161,5 +161,5 @@ pub(crate) use api::publish_generation_async_guarded_with_native_work;
 pub(crate) use api::{publish_generation_async_guarded, publish_generation_async_with_permit};
 
 #[cfg(all(test, feature = "memory"))]
-#[path = "../tests/publication.rs"]
+#[path = "../tests/publication/mod.rs"]
 mod tests;

@@ -1,0 +1,282 @@
+use super::*;
+
+async fn evidence_fixture() -> TestResult<(
+    PublishGenerationRequest,
+    GenerationProof,
+    GuardedAppend,
+    VolumeConfig,
+)> {
+    let objects = MemoryObjectStore::default();
+    let volume_id = VolumeId::from_bytes([61; 16]);
+    let metadata = metadata_object(&objects).await?;
+    let extents = put(
+        &objects,
+        ObjectKind::ExtentPage,
+        encode_extent_page(
+            &ExtentPage::Leaf(vec![Extent {
+                offset: 0,
+                length: u64::MAX,
+                kind: ExtentKind::Hole,
+            }]),
+            8,
+            accept,
+            allocation_failed,
+        )?,
+    )
+    .await?;
+    let first = FileId::from_bytes([2; 16]);
+    let second = FileId::from_bytes([3; 16]);
+    let [tree, table, root] = generation(
+        &objects,
+        volume_id,
+        FileId::from_bytes([1; 16]),
+        metadata,
+        vec![entry(b"first", first)?, entry(b"second", second)?],
+        vec![
+            regular(first, metadata, u64::MAX, extents),
+            regular(second, metadata, u64::MAX, extents),
+        ],
+        Vec::new(),
+    )
+    .await?;
+    let request = PublishGenerationRequest {
+        authority_id: volume_authority_id(volume_id),
+        volume_id,
+        epoch: Epoch::new(7)?,
+        expected: Head {
+            epoch: Epoch::new(7)?,
+            sequence: Sequence::new(23),
+            digest: Digest::from_bytes([62; 32]),
+        },
+        operation_id: OperationId::from_bytes([63; 16]),
+        generation_root: root,
+    };
+    let proof = prove_generation_closure(
+        &objects,
+        root,
+        limits(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let mut expected_objects = vec![metadata, extents, tree, table, root];
+    expected_objects.sort_unstable();
+    assert_eq!(proof.objects, expected_objects);
+    assert_eq!(proof.object_count, 5);
+    assert_eq!(proof.file_count, 3);
+    assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
+    let cancellation = CancellationToken::new();
+    let commit = prepare_publication_commit(
+        request,
+        None,
+        None,
+        &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+        &cancellation,
+    )?;
+    let append = GuardedAppend {
+        authority_id: request.authority_id,
+        epoch: request.epoch,
+        expected: request.expected,
+        commit,
+        permit: PublicationPermit::Unrestricted,
+    };
+    let mut config = VolumeConfig::portable(Lifecycle::Durable);
+    config.limits.maximum_objects_per_generation = 17;
+    config.limits.maximum_files_per_generation = 19;
+    Ok((request, proof, append, config))
+}
+
+#[tokio::test]
+async fn publication_evidence_preserves_original_complete_closure_and_every_permit() -> TestResult {
+    let (request, proof, mut append, config) = evidence_fixture().await?;
+    for permit in [
+        PublicationPermit::Unrestricted,
+        PublicationPermit::Lease {
+            authority_id: [71; 16],
+            workspace_id: [72; 16],
+            lease_id: [73; 16],
+            expires_at_millis: u64::MAX - 1,
+        },
+        PublicationPermit::Reservation {
+            operation_id: request.operation_id.into_bytes(),
+            gate_tail: 42,
+            expected: request.expected,
+        },
+    ] {
+        append.permit = permit;
+        let encoded =
+            encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+        assert_eq!(
+            encoded.sha256,
+            <[u8; 32]>::from(Sha256::digest(&encoded.bytes))
+        );
+        let decoded = decode_generation_publication_evidence(
+            &encoded.bytes,
+            &encoded.sha256,
+            encoded.bytes.len() as u64,
+            proof.object_count,
+        )?;
+        assert_eq!(decoded.request, request);
+        assert_eq!(decoded.append, append);
+        assert_eq!(decoded.root, proof.root);
+        assert_eq!(decoded.manifest.config, config);
+        assert_eq!(decoded.manifest.volume_id, request.volume_id);
+        assert_eq!(decoded.manifest.generation_root, request.generation_root);
+        assert_eq!(decoded.manifest.objects, proof.objects);
+        assert_eq!(decoded.manifest.file_count, proof.file_count);
+        assert_eq!(decoded.manifest.generation_id, proof.generation_id);
+        assert_eq!(decoded.logical_file_bytes, u128::from(u64::MAX) * 2);
+        assert_eq!(
+            encode_generation_publication_evidence(
+                &decoded.request,
+                &proof,
+                &decoded.append,
+                decoded.manifest.config,
+                encoded.bytes.len() as u64,
+            )?,
+            encoded
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds() -> TestResult {
+    let (request, proof, append, config) = evidence_fixture().await?;
+    let encoded =
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+    let mut digest = encoded.sha256;
+    digest[0] ^= 1;
+    assert!(matches!(
+        decode_generation_publication_evidence(
+            &encoded.bytes,
+            &digest,
+            64 * 1024,
+            proof.object_count
+        ),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    for index in [0, encoded.bytes.len() / 2, encoded.bytes.len() - 1] {
+        let mut altered = encoded.bytes.to_vec();
+        altered[index] ^= 1;
+        assert!(matches!(
+            decode_generation_publication_evidence(
+                &altered,
+                &encoded.sha256,
+                64 * 1024,
+                proof.object_count,
+            ),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    for bound in [0, encoded.bytes.len() as u64 - 1] {
+        assert!(matches!(
+            encode_generation_publication_evidence(&request, &proof, &append, config, bound),
+            Err(PublicationEvidenceError::TooLarge)
+        ));
+        assert!(matches!(
+            decode_generation_publication_evidence(
+                &encoded.bytes,
+                &encoded.sha256,
+                bound,
+                proof.object_count,
+            ),
+            Err(PublicationEvidenceError::TooLarge)
+        ));
+    }
+    for bound in [0, proof.object_count - 1] {
+        assert!(matches!(
+            decode_generation_publication_evidence(
+                &encoded.bytes,
+                &encoded.sha256,
+                64 * 1024,
+                bound,
+            ),
+            Err(PublicationEvidenceError::Manifest(
+                GenerationExportManifestError::TooManyObjects
+            ))
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append() -> TestResult {
+    let (request, proof, append, config) = evidence_fixture().await?;
+    let mutations: [fn(&mut PublishGenerationRequest); 6] = [
+        |request| request.authority_id = AuthorityId::from_bytes([81; 16]),
+        |request| request.volume_id = VolumeId::from_bytes([81; 16]),
+        |request| request.operation_id = OperationId::from_bytes([81; 16]),
+        |request| request.epoch = Epoch::new(8).expect("nonzero epoch"),
+        |request| request.expected = Head::genesis(request.epoch),
+        |request| request.generation_root.digest = Digest::from_bytes([81; 32]),
+    ];
+    for mutate in mutations {
+        let mut changed = request;
+        mutate(&mut changed);
+        assert!(matches!(
+            encode_generation_publication_evidence(&changed, &proof, &append, config, 64 * 1024),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    let mut changed = proof.clone();
+    changed.object_count += 1;
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &changed, &append, config, 64 * 1024),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    let mut changed = proof.clone();
+    changed.root.volume_id = VolumeId::from_bytes([81; 16]);
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &changed, &append, config, 64 * 1024),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    let mutations: [fn(&mut GuardedAppend); 4] = [
+        |append| append.authority_id = AuthorityId::from_bytes([81; 16]),
+        |append| append.epoch = Epoch::new(8).expect("nonzero epoch"),
+        |append| append.expected = Head::genesis(append.epoch),
+        |append| append.commit.operation_id = OperationId::from_bytes([81; 16]),
+    ];
+    for mutate in mutations {
+        let mut changed = append.clone();
+        mutate(&mut changed);
+        assert!(matches!(
+            encode_generation_publication_evidence(&request, &proof, &changed, config, 64 * 1024),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    let mut changed = append.clone();
+    changed.commit.payload = bytes::Bytes::from(encode_publication_payload(
+        VolumeId::from_bytes([81; 16]),
+        request.generation_root,
+    ));
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &proof, &changed, config, 64 * 1024),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_evidence_rejects_trailing_and_truncated_frames_with_fresh_digests()
+-> TestResult {
+    let (request, proof, append, config) = evidence_fixture().await?;
+    let encoded =
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+    let mut trailing = encoded.bytes.to_vec();
+    trailing.push(0);
+    let digest = Sha256::digest(&trailing).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(&trailing, &digest, 64 * 1024, proof.object_count),
+        Err(PublicationEvidenceError::Decode(
+            CanonicalDecodeError::TrailingBytes
+        ))
+    ));
+    let truncated = &encoded.bytes[..encoded.bytes.len() - 1];
+    let digest = Sha256::digest(truncated).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(truncated, &digest, 64 * 1024, proof.object_count),
+        Err(PublicationEvidenceError::Decode(_))
+    ));
+    Ok(())
+}
