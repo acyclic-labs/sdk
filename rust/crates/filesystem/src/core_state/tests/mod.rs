@@ -93,7 +93,7 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
     MaterializationJournal {
         #[cfg(not(target_arch = "wasm32"))]
         custody: None,
-        version: 2,
+        version: 4,
         revision: 1,
         root_identity: None,
         preparation_identity: None,

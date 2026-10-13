@@ -60,8 +60,16 @@ fn native_work_json_preserves_full_u64_values() {
             .values()
             .all(serde_json::Value::is_string)
     );
-    assert_eq!(value["authorityRecordsRead"], "9007199254740993");
-    assert_eq!(value["bytesCopied"], u64::MAX.to_string());
+    assert_eq!(
+        value
+            .get("authorityRecordsRead")
+            .and_then(serde_json::Value::as_str),
+        Some("9007199254740993")
+    );
+    assert_eq!(
+        value.get("bytesCopied").and_then(serde_json::Value::as_str),
+        Some(u64::MAX.to_string().as_str())
+    );
 }
 
 #[test]

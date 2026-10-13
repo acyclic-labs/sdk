@@ -105,8 +105,8 @@ impl NativeCheckout {
                         offset: bigint_u64(&offset, "offset")?,
                         length: bigint_u64(&length, "length")?,
                     },
-                    allocated: allocated,
-                    extend: extend,
+                    allocated,
+                    extend,
                 },
                 acyclic_fs::ContentTimes::Preserve,
             )
@@ -133,8 +133,8 @@ impl NativeCheckout {
                         offset: bigint_u64(&offset, "offset")?,
                         length: bigint_u64(&length, "length")?,
                     },
-                    allocated: allocated,
-                    extend: extend,
+                    allocated,
+                    extend,
                 },
                 acyclic_fs::ContentTimes::Preserve,
             )
@@ -160,7 +160,7 @@ impl NativeCheckout {
                         offset: bigint_u64(&offset, "offset")?,
                         length: bigint_u64(&length, "length")?,
                     },
-                    keep_size: keep_size,
+                    keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,
             )
@@ -186,7 +186,7 @@ impl NativeCheckout {
                         offset: bigint_u64(&offset, "offset")?,
                         length: bigint_u64(&length, "length")?,
                     },
-                    keep_size: keep_size,
+                    keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,
             )

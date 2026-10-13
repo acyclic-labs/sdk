@@ -106,7 +106,8 @@ impl NativeJoinPlan {
                 ApplyOptions {
                     if_target,
                     idempotency_key,
-                }, std::collections::BTreeMap::new(),
+                },
+                std::collections::BTreeMap::new(),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )
             .await
@@ -200,8 +201,7 @@ impl NativeGeneration {
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path))))
-            .map(|value| native_workspace_stat(value))
+        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path)))).map(native_workspace_stat)
     }
 
     #[napi(js_name = listDirectory)]

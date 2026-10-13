@@ -136,7 +136,13 @@ impl NativeWorkspaceTransaction {
         let length = bigint_u64(&length, "length")?;
         sdk_value!(unbounded_future!(
             self.inner.lock().await,
-            clone_range(&source, source_offset, &destination, destination_offset, length)
+            clone_range(
+                &source,
+                source_offset,
+                &destination,
+                destination_offset,
+                length
+            )
         ))
     }
 
@@ -158,7 +164,10 @@ impl NativeWorkspaceTransaction {
     }
 
     #[napi]
-    pub async fn rebase(&self, maximum_conflicts: NapiU32) -> Result<NativeTransactionRebaseResult> {
+    pub async fn rebase(
+        &self,
+        maximum_conflicts: NapiU32,
+    ) -> Result<NativeTransactionRebaseResult> {
         let maximum_conflicts = maximum_conflicts.into_inner();
         sdk_value!(unbounded_future!(
             self.inner.lock().await,
@@ -269,7 +278,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         DependencyRegion::DirectoryName { directory_id, name } => {
             "directory-name".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = Some(native_workspace_name_value(name));
+            result.name = Some(native_workspace_name_value(&name));
         }
         DependencyRegion::DirectoryRange {
             directory_id,
@@ -278,7 +287,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         } => {
             "directory-range".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = after.map(native_workspace_name_value);
+            result.name = after.as_ref().map(native_workspace_name_value);
             result.maximum_entries = Some(maximum_entries);
         }
     }
