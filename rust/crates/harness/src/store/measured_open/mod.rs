@@ -1,6 +1,6 @@
 use super::*;
 
-use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
+use acyclic_fs::{CancellationToken, WorkBudget};
 
 use std::sync::atomic::Ordering;
 

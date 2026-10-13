@@ -1,4 +1,5 @@
 //! Host-only Pi operator transport. Signing material never enters a native caller scope.
+pub(crate) mod evidence;
 use crate::{
     ControlCommand, ControlRequest, pi_owner::PiOwnerConfig, pi_root_provider,
     pi_selected_host::PiSelectedCommand,
@@ -38,7 +39,6 @@ pub(crate) struct PiPreparedApproval<
     /// Child snapshot sealed by the actual selected import, not its native mount.
     pub(crate) selected_snapshot: LazySnapshotRef,
     pub(crate) imported: GenerationId,
-    pub(crate) import_receipt: crate::pi_selected_host::PiSelectedImportReceipt<S, V, P>,
     pub(crate) journal: J,
     pub(crate) canonical_digest_input: S,
     pub(crate) root_path: S,
@@ -69,7 +69,7 @@ pub(crate) struct PiOperatorFileEvidence {
     pub(crate) maximum_bytes: u32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PiOperatorBody {
     Inspect {
@@ -150,7 +150,7 @@ impl PiOperatorRequest {
             std::borrow::Cow::Borrowed(body_value),
             bounds,
             0,
-            acyclic_harness::wire::ErrorCode::Invalid,
+            Some(acyclic_harness::wire::ErrorCode::Invalid),
             acyclic_harness::JsonValueSchema::None,
             &mut |charge| operator_decode_charge(charge, work, &mut custody),
         );
@@ -161,22 +161,29 @@ impl PiOperatorRequest {
         let mut session = work
             .display(session)
             .map_err(acyclic_harness::Error::from)?;
-        let mut scope = Scope::from_value_with_native_work(scope_value, work)?;
+        let decoded = json_from_value_bounded(
+            std::borrow::Cow::Borrowed(scope_value),
+            bounds,
+            std::mem::size_of::<Scope>() as u64,
+            Some(acyclic_harness::wire::ErrorCode::Invalid),
+            acyclic_harness::JsonValueSchema::None,
+            &mut |charge| operator_decode_charge(charge, work, &mut custody),
+        );
+        let scope: Scope = match decoded {
+            Ok(scope) => scope,
+            Err(error) => return Err(operator_decode_error(error, custody)),
+        };
         let mut request = (
             Self {
                 session_id: session.0,
                 body,
-                operator: scope.0,
+                operator: scope,
             },
             custody,
         );
         request
             .1
             .absorb(&mut session.1)
-            .map_err(acyclic_harness::Error::from)?;
-        request
-            .1
-            .absorb(&mut scope.1)
             .map_err(acyclic_harness::Error::from)?;
         Ok(request)
     }
@@ -199,30 +206,6 @@ pub(crate) fn body_hash(
         ));
     }
     pi_root_provider::digest_pi_value(body, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
-}
-pub(crate) fn approval_body_hash(
-    prepared: &PiPreparedApproval,
-    digest: &str,
-    decision: PiOperatorDecision,
-    work: &NativeMaterializationWork,
-) -> Result<(String, NativeAllocation)> {
-    #[derive(Serialize)]
-    struct BorrowedApproval<'a> {
-        action: &'static str,
-        prepared: &'a PiPreparedApproval,
-        digest: &'a str,
-        decision: PiOperatorDecision,
-    }
-    pi_root_provider::digest_pi_value(
-        &BorrowedApproval {
-            action: "approval",
-            prepared,
-            digest,
-            decision,
-        },
-        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-        work,
-    )
 }
 fn capability(body: &PiOperatorBody, hash: &str) -> String {
     format!("pi:operator:{}:{hash}", body.session())
@@ -286,9 +269,9 @@ pub(crate) fn verify_request(
 ) -> Result<()> {
     owner.authority(work)?.verifier.verify(
         &request.operator,
-        &mut Some(
-            &mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-        ),
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
     )?;
     let hash_custody = body_hash(&request.body, work)?;
     let hash = &hash_custody.0;
@@ -445,182 +428,14 @@ pub(crate) fn parse_digest(digest: &str) -> Result<[u8; 32]> {
     Ok(bytes)
 }
 
-pub(crate) const fn prepared_labels_bytes() -> u64 {
-    pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "PiPreparedApproval",
-        "PiSelectedCommand",
-        "PiSelectedImportReceipt",
-        "VolumeRefWire",
-        "ProviderRefWire",
-        "VolumeOwner",
-        "MaterializationJournal",
-        "MaterializationPlan",
-        "MaterializationEdit",
-        "MaterializationIntent",
-        "MaterializationPreparationIdentity",
-        "MaterializationPreparationProgress",
-        "MaterializationPreparationAllocation",
-        "MaterializationPreparationSelection",
-        "MaterializationPreimage",
-        "LazySnapshotRef",
-        "SourceReference",
-        "WorkCounters",
-        "version",
-        "session",
-        "command",
-        "operation",
-        "approval_digest",
-        "private_volume",
-        "source_snapshot",
-        "selected_snapshot",
-        "imported",
-        "import_receipt",
-        "journal",
-        "canonical_digest_input",
-        "root_path",
-        "source_path",
-        "caller",
-        "sdk_operation",
-        "source",
-        "root",
-        "directory",
-        "cursor",
-        "maximum_entries",
-        "destination",
-        "paths",
-        "confirm",
-        "import_operation",
-        "destination_snapshot",
-        "provider",
-        "id",
-        "class",
-        "owner",
-        "namespace",
-        "family",
-        "kind",
-        "project",
-        "agent",
-        "session",
-        "agent_private",
-        "session_shared",
-        "revision",
-        "plan",
-        "root_identity",
-        "preparation_identity",
-        "preparation_progress",
-        "work",
-        "preimages",
-        "phase",
-        "applied",
-        "restored",
-        "operation_id",
-        "intent",
-        "edits",
-        "GenerationTransition",
-        "NativePreparation",
-        "from",
-        "to",
-        "selection",
-        "original",
-        "provider_identity",
-        "volume",
-        "generation",
-        "Install",
-        "Remove",
-        "Rename",
-        "SetMetadata",
-        "path",
-        "image",
-        "target",
-        "backup",
-        "parent",
-        "pending",
-        "Operation",
-        "Target",
-        "Backup",
-        "Preparing",
-        "Prepared",
-        "Applying",
-        "Applied",
-        "RollingBack",
-        "RolledBack",
-        "workspace_id",
-        "authored_generation",
-        "identity",
-        "epoch",
-        "overlay",
-        "shadows",
-        "authorityRecordsRead",
-        "authorityRecordsAppended",
-        "authorityBytesRead",
-        "authorityBytesWritten",
-        "objectProbes",
-        "backendReadOperations",
-        "backendWriteOperations",
-        "durabilityOperations",
-        "pageReads",
-        "pageWrites",
-        "objectBytesRead",
-        "objectBytesWritten",
-        "bytesHashed",
-        "bytesCopied",
-        "bytesEncoded",
-        "sourceBytesRead",
-        "sourcePathComponents",
-        "sourceEntriesVisited",
-        "outputBytes",
-        "itemsExamined",
-        "itemsReturned",
-        "allocationOperations",
-        "peakAllocationBytes",
-        "materializations",
-        "provider identity is invalid",
-        "file or volume label is invalid",
-        "unknown variant ``, expected one of ",
-        "unknown field ``, expected one of ",
-        "duplicate field ``",
-        "missing field ``",
-        "invalid type: , expected ",
-        "invalid value: , expected ",
-        "invalid length , expected ",
-        " at line  column ",
-        "a sequence",
-        "a map",
-        "a string",
-        "a byte array",
-        "an integer",
-        "an array of length 16",
-        "an array of length 32",
-        "a valid UUID string",
-        "invalid request: ",
-        "storage failure: ",
-    ])
-}
+// Audited closed prepared-approval diagnostic allowance.
+pub(crate) const PREPARED_LABEL_BYTES: u64 = 2468;
 
 /// Audited closed operator DTO quota, including its internally tagged body and adjacent VolumeOwner content.
 fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u64> {
-    let body_labels_bytes = pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "PiOperatorBody",
-        "PiOperatorFileEvidence",
-        "PiOperatorFileCursor",
-        "PiOperatorDecision",
-        "action",
-        "inspect",
-        "approval",
-        "prepared",
-        "digest",
-        "decision",
-        "session_id",
-        "operator",
-        "project_files",
-        "file_evidence",
-        "offset",
-        "maximum_bytes",
-        "approve",
-        "decline",
-    ]);
+    let body_labels_bytes = 266;
     let diagnostic_static_bytes =
-        4 * (prepared_labels_bytes() + body_labels_bytes + 2 * u64::from(usize::BITS));
+        4 * (PREPARED_LABEL_BYTES + body_labels_bytes + 2 * u64::from(usize::BITS));
     let content_slot =
         std::mem::size_of::<serde::__private229::de::Content<'static>>().max(std::mem::size_of::<(
             serde::__private229::de::Content<'static>,
@@ -690,11 +505,11 @@ fn operator_decode_error(error: Error, custody: NativeAllocation) -> Error {
             cause,
             custody: Some(custody),
         },
-        Error::NativeDecode {
+        Error::NativeJson {
             code,
             source,
             custody: None,
-        } => Error::NativeDecode {
+        } => Error::NativeJson {
             code,
             source,
             custody: Some(custody),
@@ -750,16 +565,11 @@ pub(crate) async fn run_cli(
         })?;
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;
     let directory = crate::service::session_directory(data, &cli.session);
-    let private =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(data, &work)
-            .map_err(|cause| {
-                ControlRequestError::NativeWork(acyclic_harness::Error::from(cause))
-            })?;
     let relative = directory
         .strip_prefix(data)
         .map_err(|_| ControlRequestError::Response("Pi owner escaped its data directory".into()))?;
     let owner =
-        PiOwnerConfig::load(&private, relative, &work).map_err(ControlRequestError::NativeWork)?;
+        PiOwnerConfig::load(data, relative, &work).map_err(ControlRequestError::NativeWork)?;
     let inspect_custody;
     let inspect;
     (inspect, inspect_custody) = build_control_request(

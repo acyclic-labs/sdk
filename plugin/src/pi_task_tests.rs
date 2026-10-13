@@ -86,21 +86,16 @@ async fn storage(
 async fn open(
     path: &Path,
     binding: &PiTaskBinding,
-) -> acyclic_harness::Result<(
-    PiTaskRuntime,
-    acyclic_fs::NativeMaterializationWork,
-)> {
+) -> acyclic_harness::Result<(PiTaskRuntime, acyclic_fs::NativeMaterializationWork)> {
     let work = work();
-    let root =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, &work)?;
-    let owner = PiOwnerConfig::load_with_native_work(&root, Path::new(""), &work)?;
+    let owner = PiOwnerConfig::load(path, Path::new(""), &work)?;
     owner.validate_root(binding, &work)?;
     let (filesystem, stream) = storage(path, owner.policy().journal.provider()).await;
     let runtime = PiTaskRuntime::open_with_native_work(
         stream,
         filesystem,
         &owner.policy().journal,
-        owner.authority_with_native_work(&work)?,
+        owner.authority(&work)?,
         &work,
     )
     .await?;
@@ -378,12 +373,7 @@ async fn selected_root_recovery_requires_original_admission() {
     drop(runtime);
     let state = crate::load_saved_state(directory.path()).unwrap();
     let (filesystem, stream) = storage(directory.path(), binding.scratch.volume.provider()).await;
-    let private = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
-        directory.path(),
-        &work,
-    )
-    .unwrap();
-    let owner = PiOwnerConfig::load_with_native_work(&private, Path::new(""), &work).unwrap();
+    let owner = PiOwnerConfig::load(directory.path(), Path::new(""), &work).unwrap();
     let reopened = PiTaskRuntime::reopen(&owner, &state, stream, filesystem, &work)
         .await
         .unwrap();
@@ -628,7 +618,10 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .unwrap()
         .await
         .unwrap();
-    assert_eq!(replay.0.last().unwrap().checkpoint().unwrap(), (&checkpoint.machine, checkpoint.revision, &checkpoint.state));
+    assert_eq!(
+        replay.0.last().unwrap().checkpoint().unwrap(),
+        (&checkpoint.machine, checkpoint.revision, &checkpoint.state)
+    );
     drop(replay);
     let mut wrong = fence.clone();
     wrong.reservation_id.push_str("-foreign");

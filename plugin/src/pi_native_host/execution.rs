@@ -29,14 +29,9 @@ impl PiNativeCommandHost {
                 .runtime
                 .run_operation(&worker, task, self, 8, Some(&io))
                 .await?;
-            let PreparationIo::Native { custody, .. } = io else {
-                unreachable!()
-            };
             Ok::<_, acyclic_harness::Error>((
                 value,
-                custody
-                    .into_inner()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                acyclic_harness::store::HistoryWork::new(io).into_custody()?,
             ))
         }
         .await;
@@ -63,7 +58,9 @@ impl PiNativeCommandHost {
     ) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
         self.child_admission(task, work).await?;
         let observed = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -121,7 +118,7 @@ impl PiNativeCommandHost {
     pub(super) async fn effect_progress(
         &self,
         bound: &BoundEffect,
-        mut observed: (EffectStatus, NativeAllocation),
+        mut observed: (EffectStatus, Option<NativeAllocation>),
     ) -> Result<TaskCommandProgress> {
         if !matches!(
             &observed.0,
@@ -130,27 +127,15 @@ impl PiNativeCommandHost {
             return Ok(TaskCommandProgress::Indeterminate);
         }
         let task = bound.owner.task_id();
-        let work = self.preparation_work(&self.registered_entry(task)?).await?;
-        let receipt = bound
-            .provider
-            .receipt(bound.provider.original_attempt(), &work, None)
-            .await?
-            .ok_or(Error::Indeterminate(bound.command))?;
-        if !receipt.observed
-            || receipt.task != task
-            || receipt.command != bound.command
-            || receipt.effect.status != observed.0
-        {
-            return Err(Error::Indeterminate(bound.command));
-        }
-        let (effect, mut original_custody) = receipt.into_effect()?;
+        let entry = self.registered_entry(task)?;
+        let work = self.preparation_work(&entry).await?;
         let maximum = bound
             .context
             .scope()
             .limits()
             .file_bytes
             .min(self.protected.policy().maximum_payload_bytes);
-        let mut completed = match effect.status {
+        let mut completed = match observed.0 {
             EffectStatus::Succeeded { result } => crate::pi_root_provider::guarded_pi_value(
                 &Outcome::Succeeded(result),
                 maximum,
@@ -163,9 +148,9 @@ impl PiNativeCommandHost {
             )?,
             _ => return Err(Error::Indeterminate(bound.command)),
         };
-        completed.1.absorb(&mut original_custody)?;
-        completed.1.absorb(&mut observed.1)?;
-        drop(observed.0);
+        if let Some(custody) = &mut observed.1 {
+            completed.1.absorb(custody)?;
+        }
         let (value, custody) = completed;
         Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
     }
@@ -260,7 +245,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     let progress = self
                         .execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work)
                         .await?;
-                    return self.settle_progress(input.binding.task_id, progress).await;
+                    return Ok(progress);
                 }
                 let planned = effect.status == EffectStatus::Planned;
                 let recovery = self
@@ -273,13 +258,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                         work,
                     )
                     .await?;
-                if planned
-                    && recovery
-                        .provider
-                        .receipt(recovery.provider.original_attempt(), work, None)
-                        .await?
-                        .is_none()
-                {
+                if planned {
                     let bound = self
                         .prepare_effect(
                             Arc::clone(&shared),
@@ -307,23 +286,23 @@ impl TaskCommandHost for PiNativeCommandHost {
                     let progress = self
                         .execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work)
                         .await?;
-                    return self.settle_progress(input.binding.task_id, progress).await;
+                    return Ok(progress);
                 }
                 let progress = self
                     .effect_progress(
                         &recovery,
                         recovery
                             .effects
-                            .reconcile_task_effect_with_native_work(
+                            .reconcile_task_effect(
                                 &recovery.owner,
                                 recovery.command,
                                 &recovery.plan.0,
-                                &recovery.work,
+                                Some(&recovery.work),
                             )
                             .await?,
                     )
                     .await?;
-                return self.settle_progress(input.binding.task_id, progress).await;
+                return Ok(progress);
             }
             let bound = self
                 .prepare_effect(
@@ -343,7 +322,7 @@ impl TaskCommandHost for PiNativeCommandHost {
             let progress = self
                 .execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work)
                 .await?;
-            self.settle_progress(input.binding.task_id, progress).await
+            Ok(progress)
         })
     }
 
@@ -380,18 +359,6 @@ impl TaskCommandHost for PiNativeCommandHost {
                 .original_effect(context, input, command.operation_id, work)
                 .await?;
             let Some(effect) = recorded_effect.0.as_ref() else {
-                let entry = self.registered_entry(input.binding.task_id)?;
-                if entry.handles.lock().await.preparation_owner.is_some() {
-                    self.rollback_preparation_owned(
-                        input.binding.task_id,
-                        &entry,
-                        work,
-                        work.cancellation(),
-                    )
-                    .await?;
-                } else {
-                    return Err(Error::Indeterminate(command.operation_id));
-                }
                 return Ok(TaskCommandProgress::Ready(Value::Null));
             };
             let bound = self
@@ -402,16 +369,16 @@ impl TaskCommandHost for PiNativeCommandHost {
                     &bound,
                     bound
                         .effects
-                        .reconcile_task_effect_with_native_work(
+                        .reconcile_task_effect(
                             &bound.owner,
                             bound.command,
                             &bound.plan.0,
-                            &bound.work,
+                            Some(&bound.work),
                         )
                         .await?,
                 )
                 .await?;
-            self.settle_progress(input.binding.task_id, progress).await
+            Ok(progress)
         })
     }
 }

@@ -1,180 +1,151 @@
-//! Portable exact text replacement, independent of model family and storage.
+//! Portable exact text replacement.
+use crate::wire::ErrorCode::{Conflict, Invalid};
+use crate::{Error, NativeCustody, Result};
 
-use crate::{Error, Result};
-
-/// Shared allocation hooks; ordinary transformations use the same engine.
-pub(crate) struct AlgorithmWork {
+pub(crate) fn allocation(work: crate::NativeWork<'_>, bytes: usize) -> Result<NativeCustody> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
+    if let Some(work) = work {
+        return Ok(Some(work.claim(
+            bytes as u64,
+            0,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?));
+    }
+    let _ = (work, bytes);
+    Ok(None)
 }
 
-impl AlgorithmWork {
-    pub(crate) fn new(work: crate::NativeWork<'_>, bytes: usize) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let custody = work
-            .map(|work| {
-                let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-                io.retain_owned(bytes as u64)?;
-                io.into_native_custody(bytes as u64)
-            })
-            .transpose()?;
-        let _ = (work, bytes);
-        Ok(Self {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            custody,
-        })
+pub(super) fn invalid(work: &NativeCustody, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::NativeBoundary {
+            code: Invalid,
+            reason,
+        };
     }
-
-    pub(super) fn invalid(&self, reason: &'static str) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.custody.is_some() {
-            return Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason,
-            };
-        }
-        Error::Invalid(reason.into())
+    let _ = work;
+    Error::Invalid(reason.into())
+}
+pub(super) fn conflict(work: &NativeCustody, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::NativeBoundary {
+            code: Conflict,
+            reason,
+        };
     }
+    let _ = work;
+    Error::Conflict(reason.into())
+}
 
-    pub(super) fn conflict(&self, reason: &'static str) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.custody.is_some() {
-            return Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason,
-            };
-        }
-        Error::Conflict(reason.into())
+pub(super) fn retain(work: &mut NativeCustody, bytes: usize) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(custody) = work {
+        let total = custody
+            .bytes()
+            .checked_add(bytes as u64)
+            .ok_or(Error::NativeBoundary {
+                code: Invalid,
+                reason: "tool logical ownership overflow",
+            })?;
+        custody.resize(total)?;
     }
+    let _ = (work, bytes);
+    Ok(())
+}
 
-    fn allocation_error(
-        &self,
-        cause: std::collections::TryReserveError,
-        reason: &'static str,
-    ) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.custody.is_some() {
-            return Error::Allocation(cause);
-        }
-        let _ = cause;
-        self.invalid(reason)
+fn admit(work: &mut NativeCustody, bytes: usize) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(custody) = work {
+        custody.grow(bytes as u64)?;
     }
+    let _ = (work, bytes);
+    Ok(())
+}
 
-    pub(super) fn retain(&mut self, bytes: usize) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = &mut self.custody {
-            let total =
-                custody
-                    .bytes()
-                    .checked_add(bytes as u64)
-                    .ok_or_else(|| Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "tool logical ownership overflow",
-                    })?;
-            custody.resize(total).map_err(native_error)?;
-        }
-        let _ = bytes;
-        Ok(())
+fn capacity(work: &mut NativeCustody, requested: usize, actual: usize, old: usize) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(custody) = work {
+        // The allocator retired the old buffer before capacity reconciliation.
+        let bytes = custody
+            .bytes()
+            .checked_sub(requested as u64)
+            .and_then(|n| n.checked_add(actual as u64))
+            .and_then(|n| n.checked_sub(old as u64))
+            .ok_or(Error::NativeBoundary {
+                code: Invalid,
+                reason: "tool allocation capacity overflow",
+            })?;
+        custody.reconcile_capacity(bytes)?;
     }
+    let _ = (work, requested, actual, old);
+    Ok(())
+}
 
-    fn admit_allocation(&mut self, bytes: usize) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = &mut self.custody {
-            custody.grow(bytes as u64).map_err(native_error)?;
-        }
-        let _ = bytes;
-        Ok(())
-    }
-
-    fn record_capacity(&mut self, requested: usize, actual: usize, old: usize) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = &mut self.custody {
-            // Record the completed allocator capacity before observing late cancellation; the old allocation has now physically retired.
-            let bytes = custody
-                .bytes()
-                .checked_sub(requested as u64)
-                .and_then(|n| n.checked_add(actual as u64))
-                .and_then(|n| n.checked_sub(old as u64))
-                .ok_or_else(|| Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "tool allocation capacity overflow",
-                })?;
-            custody.reconcile_capacity(bytes).map_err(native_error)?;
-        }
-        let _ = (requested, actual, old);
-        Ok(())
-    }
-
-    pub(super) fn reserve_vec<T>(&mut self, value: &mut Vec<T>, length: usize) -> Result<()> {
-        if length <= value.capacity() {
-            return Ok(());
-        }
-        let length = length.max(value.capacity().checked_mul(2).unwrap_or(length));
-        let slots = std::mem::size_of::<T>();
-        let requested = length
-            .checked_mul(slots)
-            .ok_or_else(|| self.invalid("tool vector capacity overflow"))?;
-        let old = value
-            .capacity()
-            .checked_mul(slots)
-            .ok_or_else(|| self.invalid("tool vector capacity overflow"))?;
-        self.admit_allocation(requested)?;
-        value
-            .try_reserve_exact(length - value.len())
-            .map_err(|cause| self.allocation_error(cause, "tool vector allocation failed"))?;
-        self.record_capacity(requested, value.capacity() * slots, old)
-    }
-
-    pub(super) fn reserve_string(&mut self, value: &mut String, length: usize) -> Result<()> {
-        if length <= value.capacity() {
-            return Ok(());
-        }
-        let length = length.max(value.capacity().checked_mul(2).unwrap_or(length));
-        let old = value.capacity();
-        self.admit_allocation(length)?;
-        value
-            .try_reserve_exact(length - value.len())
-            .map_err(|cause| self.allocation_error(cause, "tool text allocation failed"))?;
-        self.record_capacity(length, value.capacity(), old)
-    }
-
-    pub(super) fn examine(&self, items: u64) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = &self.custody {
-            custody
-                .work()
-                .charge(acyclic_fs::WorkCounters {
-                    items_examined: items,
-                    ..Default::default()
-                })
-                .map_err(native_error)?;
-        }
-        let _ = items;
-        Ok(())
-    }
-
-    pub(super) fn copy(&self, bytes: usize) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = &self.custody {
-            custody
-                .work()
-                .charge(acyclic_fs::WorkCounters {
-                    bytes_copied: bytes as u64,
-                    ..Default::default()
-                })
-                .map_err(native_error)?;
-        }
-        let _ = bytes;
-        Ok(())
+fn allocation_error(
+    work: &NativeCustody,
+    cause: std::collections::TryReserveError,
+    reason: &'static str,
+) -> Error {
+    if work.is_some() {
+        Error::Allocation(cause)
+    } else {
+        invalid(work, reason)
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
+pub(super) fn reserve_vec<T>(
+    work: &mut NativeCustody,
+    value: &mut Vec<T>,
+    length: usize,
+) -> Result<()> {
+    if length <= value.capacity() {
+        return Ok(());
     }
+    let length = length.max(value.capacity().checked_mul(2).unwrap_or(length));
+    let slots = std::mem::size_of::<T>();
+    let requested = length
+        .checked_mul(slots)
+        .ok_or_else(|| invalid(work, "tool vector capacity overflow"))?;
+    let old = value
+        .capacity()
+        .checked_mul(slots)
+        .ok_or_else(|| invalid(work, "tool vector capacity overflow"))?;
+    admit(work, requested)?;
+    value
+        .try_reserve_exact(length - value.len())
+        .map_err(|cause| allocation_error(work, cause, "tool vector allocation failed"))?;
+    capacity(work, requested, value.capacity() * slots, old)
+}
+
+pub(super) fn reserve_string(
+    work: &mut NativeCustody,
+    value: &mut String,
+    length: usize,
+) -> Result<()> {
+    if length <= value.capacity() {
+        return Ok(());
+    }
+    let length = length.max(value.capacity().checked_mul(2).unwrap_or(length));
+    let old = value.capacity();
+    admit(work, length)?;
+    value
+        .try_reserve_exact(length - value.len())
+        .map_err(|cause| allocation_error(work, cause, "tool text allocation failed"))?;
+    capacity(work, length, value.capacity(), old)
+}
+
+pub(super) fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(custody) = work {
+        custody.work().charge(acyclic_fs::WorkCounters {
+            bytes_copied,
+            items_examined,
+            ..Default::default()
+        })?;
+    }
+    let _ = (work, bytes_copied, items_examined);
+    Ok(())
 }
 
 /// Rejects unbounded or empty allowances at both transformation and I/O boundaries.
@@ -193,47 +164,47 @@ pub(crate) fn exact_replace(
     old_text: &str,
     new_text: &str,
     maximum_bytes: u64,
-    work: &mut AlgorithmWork,
+    work: &mut NativeCustody,
 ) -> Result<String> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        return Err(work.invalid("edit byte bound must be positive and finite"));
+        return Err(invalid(work, "edit byte bound must be positive and finite"));
     }
     if source.len() as u64 > maximum_bytes
         || old_text.len() as u64 > maximum_bytes
         || new_text.len() as u64 > maximum_bytes
         || old_text.is_empty()
     {
-        return Err(work.invalid("exact edit has invalid text or byte bounds"));
+        return Err(invalid(work, "exact edit has invalid text or byte bounds"));
     }
-    work.examine(1)?;
+    charge(work, 0, 1)?;
     let start = source
         .find(old_text)
-        .ok_or_else(|| work.conflict("exact edit text is missing"))?;
+        .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
     let first_character_bytes = old_text.chars().next().map_or(0, char::len_utf8);
     let next_start = start + first_character_bytes;
-    work.examine(1)?;
+    charge(work, 0, 1)?;
     if source
         .get(next_start..)
         .is_some_and(|tail| tail.contains(old_text))
     {
-        return Err(work.conflict("exact edit text is ambiguous"));
+        return Err(conflict(work, "exact edit text is ambiguous"));
     }
     let output_bytes = source
         .len()
         .checked_sub(old_text.len())
         .and_then(|length| length.checked_add(new_text.len()))
         .filter(|length| *length as u64 <= maximum_bytes)
-        .ok_or_else(|| work.invalid("exact edit output exceeds byte bound"))?;
+        .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?;
     let mut output = String::new();
-    work.reserve_string(&mut output, output_bytes)?;
+    reserve_string(work, &mut output, output_bytes)?;
     let end = start + old_text.len();
     let prefix = source
         .get(..start)
-        .ok_or_else(|| work.invalid("exact edit match is not UTF-8 aligned"))?;
+        .ok_or_else(|| invalid(work, "exact edit match is not UTF-8 aligned"))?;
     let suffix = source
         .get(end..)
-        .ok_or_else(|| work.invalid("exact edit match is not UTF-8 aligned"))?;
-    work.copy(output_bytes)?;
+        .ok_or_else(|| invalid(work, "exact edit match is not UTF-8 aligned"))?;
+    charge(work, (output_bytes) as u64, 0)?;
     output.push_str(prefix);
     output.push_str(new_text);
     output.push_str(suffix);
@@ -246,7 +217,7 @@ mod tests {
 
     #[test]
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
-        let mut work = AlgorithmWork::new(None, 0)?;
+        let mut work = None;
         assert_eq!(
             exact_replace("before 🦀 after", "🦀", "日本語", 64, &mut work)?,
             "before 日本語 after"
@@ -271,7 +242,7 @@ mod tests {
 
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
-        let mut work = AlgorithmWork::new(None, 0)?;
+        let mut work = None;
         assert_eq!(exact_replace("abc", "b", "", 3, &mut work)?, "ac");
         assert_eq!(exact_replace("abc", "abc", "xyz", 3, &mut work)?, "xyz");
         assert!(exact_replace("abc", "b", "long", 4, &mut work).is_err());
@@ -284,7 +255,7 @@ mod tests {
 
     #[test]
     fn bounded_matching_agrees_with_all_utf8_start_positions() {
-        let mut work = AlgorithmWork::new(None, 0).unwrap();
+        let mut work = None;
         for alphabet in [['a', 'b'], ['é', '🦀']] {
             for length in 1..=6 {
                 for bits in 0..(1 << length) {

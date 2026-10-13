@@ -2,27 +2,23 @@
 
 use crate::contract::capability;
 use crate::{
-    Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
-    Result, TaskId,
+    Admission, BatchId, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
     distributed::{DistributedCoordinator, SchedulerPayloadStore},
-    interaction::{Interaction, InteractionOutcome},
     registry::ComponentIdentity,
     runtime::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
         DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord,
-        TaskChildrenPage, TaskRegistry, TaskStateProvider, ToolPolicy, check_tool_approval,
-        read_granted, require_descendant_grant, validate_policy_identity, validate_task_schemas,
+        TaskChildrenPage, TaskRegistry, TaskStateProvider, ToolPolicy, read_granted,
+        require_descendant_grant, validate_policy_identity, validate_task_schemas,
     },
     scheduler::{
         DurableOwner, EntrypointRef, InboxItem, OperationSpec, Orchestration, ParentLink,
         ResourceRequest,
     },
-    tool::ToolDefinition,
     workflow::MachineRegistry,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider, UnixMillisClock,

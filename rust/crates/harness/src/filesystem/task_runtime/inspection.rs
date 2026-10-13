@@ -441,24 +441,4 @@ where
         .await
     }
 
-    /// Settles only the tools admitted by a retained model step through the ordinary stock resolver.
-    pub async fn resolve_model_tools(
-        &self,
-        input: &TurnInput,
-        step: u32,
-    ) -> Result<crate::executor::ExecutionProgress<Vec<crate::model::ModelMessage>>> {
-        self.validate_input(input)?;
-        deadline::run(
-            &self.host,
-            self.task,
-            Some(&self.fence),
-            self.run_limits.deadline_epoch_ms,
-            self.operation_id,
-            self.executor
-                .resolve_model_tools(&self.journal, input, step),
-            None,
-            |_| false,
-        )
-        .await
-    }
 }

@@ -10,7 +10,7 @@ use crate::{
     pi_task::{NATIVE_LAUNCH_TASK_COMMAND_KIND, PiTaskExecution, PiTaskInput},
 };
 use acyclic_fs::{
-    CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork, WorkBudget,
+    CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork,
 };
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
@@ -52,13 +52,15 @@ pub(crate) fn project_snapshot(
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
     let native = crate::pi_root_provider::guarded_pi_value(&frozen, maximum, work)?;
-    let generation = acyclic_harness::resources::GenerationRef::new_with_native_work(
+    let generation = acyclic_harness::resources::GenerationRef::new(
         project.provider(),
         frozen.authored_generation.digest().as_bytes(),
         None,
-        work,
+        Some(work),
     )?;
-    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
     let project = project.copy(&mut Some(&mut io))?;
     let mut owned = (
         ProjectSourceSnapshot {
@@ -67,7 +69,11 @@ pub(crate) fn project_snapshot(
             native_snapshot: Some(native.0),
         },
         slot,
-        [native.1, generation.1, io.into_custody()?],
+        [
+            native.1,
+            generation.1.expect("native generation custody"),
+            io.into_custody()?,
+        ],
     );
     for allocation in &mut owned.2 {
         owned.1.absorb(allocation)?;
@@ -207,91 +213,7 @@ impl PiForkPlan {
 pub(crate) const FORK_PLAN_DIAGNOSTIC_LABEL_BYTES: u64 =
     crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
         + crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES
-        + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-            "PiForkPlan",
-            "original",
-            "commit",
-            "preparation",
-            "request",
-            "source_checkpoint",
-            "source",
-            "frozen",
-            "project_creation",
-            "RetainedSpawnCommit",
-            "sdk_operation",
-            "alias",
-            "prompt",
-            "caller",
-            "source_task",
-            "child",
-            "launch",
-            "TaskAdmissionRecord",
-            "operation_id",
-            "task",
-            "machine",
-            "input",
-            "input_schema",
-            "output_schema",
-            "parent",
-            "resource_proofs",
-            "grants",
-            "limits",
-            "run_limits",
-            "policy",
-            "extensions",
-            "execution",
-            "ComponentIdentity",
-            "MachineIdentity",
-            "name",
-            "version",
-            "digest",
-            "TaskRunLimits",
-            "concurrency",
-            "max_steps",
-            "deadline_epoch_ms",
-            "ResourceCreationProofRef",
-            "provider",
-            "resource",
-            "evidence",
-            "ResourcePreparationRequest",
-            "resources",
-            "creation_grant",
-            "maximum_resources",
-            "maximum_work",
-            "maximum_bytes",
-            "payload",
-            "command",
-            "input_files",
-            "read_authorization",
-            "RecursiveSourceSnapshot",
-            "project",
-            "project_generation",
-            "private_volume",
-            "private_generation",
-            "HistoryReadLimits",
-            "maximum_events",
-            "LazySnapshotRef",
-            "id",
-            "workspace_id",
-            "authored_generation",
-            "overlay",
-            "shadows",
-            "SourceReference",
-            "identity",
-            "epoch",
-            "ExtensionAdmission",
-            "source",
-            "selected",
-            "configurations",
-            "ExecutionPlacement",
-            "build",
-            "environment",
-            "readiness_revision",
-            "LeaseFence",
-            "reservation_id",
-            "placement",
-            "an array of length 16",
-        ]);
+        + 251;
 
 pub(crate) struct PreparedPiFork {
     pub(crate) binding: PiTaskBinding,
@@ -374,7 +296,9 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspace(source, custody))
+    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspace(
+        source, custody,
+    ))
 }
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {

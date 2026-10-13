@@ -150,7 +150,9 @@ async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected(
 #[test]
 fn resumable_task_requires_pinned_nontrivial_input_and_output_schemas() -> Result<()> {
     let original = resumable_fixture("test.machine", [1; 32])?;
-    let machine = original.machine().unwrap().clone();
+    let TaskImplementation::Resumable(machine) = original.implementation else {
+        unreachable!()
+    };
     let input = serde_json::json!({"type": "object", "required": ["value"]});
     let output = serde_json::json!({"type": "integer"});
     assert!(

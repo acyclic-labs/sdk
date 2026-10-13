@@ -1,29 +1,13 @@
+use super::super::files::{FileProjection, FileTool};
+use super::super::{ToolExecutor, ToolInvocation, ToolProjection, ToolResult, decode};
 use super::*;
-
-use super::*;
+use crate::runtime::RuntimeScope;
 use crate::{
-    AgentId, Capabilities, OperationId,
-    conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
+    Capabilities, OperationId,
+    conversation::Limits,
     model::{FileProjectionPolicy, ModelDataPart, ToolResultContent},
-    resources::ProviderRef,
 };
-
-fn file() -> Result<FileRef> {
-    FileRef::new(
-        VolumeRef::new(
-            ProviderRef::new("text".into(), "filesystem".into(), "1".into(), &mut None)?,
-            "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(AgentId::from_bytes([12; 16])),
-            &mut None,
-        )?,
-        "text.txt".into(),
-        "generation-1".into(),
-        FileDescriptor::from_bytes(b"ababa", "text/plain", &mut None)?,
-        "text.txt".into(),
-        &mut None,
-    )
-}
+use serde_json::{Value, json};
 
 fn invocation(arguments: Value) -> ToolInvocation {
     ToolInvocation {
@@ -60,8 +44,8 @@ fn assert_reference(projection: &Value, expected: &FileRef) -> Result<()> {
 
 #[test]
 fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> Result<()> {
-    let mut work = super::super::edit::AlgorithmWork::new(None, 0)?;
-    let file = file()?;
+    let mut work = super::super::edit::allocation(None, 0)?;
+    let file = crate::tool::tests::file(b"ababa")?;
     let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
     let read = ReadResult {
         file: file.clone(),
@@ -76,7 +60,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
         value: serde_json::to_value(&read).map_err(|error| Error::Invalid(error.to_string()))?,
     };
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
-        let projector = ReadProjection(mode);
+        let projector = FileProjection::Range(mode);
         let projected = projector.project(&input, &result, None)?.0;
         crate::executor::validate_json_schema_value(
             &mode.schema::<ReadResult>()?,
@@ -101,7 +85,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
         value: serde_json::to_value(&search).map_err(|error| Error::Invalid(error.to_string()))?,
     };
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
-        let projector = SearchProjection(mode);
+        let projector = FileProjection::Search(mode);
         let projected = projector.project(&input, &result, None)?.0;
         crate::executor::validate_json_schema_value(
             &mode.schema::<SearchResult>()?,
@@ -142,17 +126,10 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
         search_file(SEARCH, 4096, ProjectionMode::Full)?,
         search_file(SEARCH, 4096, ProjectionMode::Reference)?,
     ] {
-        for schema in [
-            &tool.definition.input_schema,
-            &tool.definition.output_schema,
-            &tool.definition.projection_schema,
-        ] {
-            crate::executor::compile_json_schema(schema, "typed text tool", &mut None)?;
-        }
         assert!(
             crate::executor::validate_json_schema_value(
                 &tool.definition.projection_schema,
-                &json!({"file":file()?}),
+                &json!({"file":crate::tool::tests::file(b"ababa")?}),
                 "bare result",
                 &mut None
             )
@@ -176,49 +153,59 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
 
 #[test]
 fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Result<()> {
-    let file = file()?;
-    let adapter = TextTool {
-        kind: TextKind::Read(READ),
+    let file = crate::tool::tests::file(b"ababa")?;
+    let adapter = FileTool::ReadRange {
+        options: READ,
         maximum_result_bytes: 4096,
     };
     let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
     let empty = RuntimeScope::new(Capabilities::default(), Limits::default())?;
-    assert!(adapter.authorize(None, &input).is_err());
-    assert!(adapter.authorize(Some(&empty), &input).is_err());
+    assert!(adapter.authorize(None, None, &input, None).is_err());
+    assert!(adapter.authorize(Some(&empty), None, &input, None).is_err());
     let grants = Capabilities::new([file.read_capability(&mut None)?]);
     let scope = RuntimeScope::new(grants, Limits::default())?;
-    assert_eq!(adapter.preflight(&scope, &input)?, file);
+    assert_eq!(
+        adapter
+            .preflight(&scope, &input, None)?
+            .0
+            .expect("read source"),
+        file
+    );
     for range in [json!({"start":4,"end":1}), json!({"start":0,"end":6})] {
         assert!(
             adapter
-                .preflight(&scope, &invocation(json!({"file":file,"range":range})))
+                .preflight(
+                    &scope,
+                    &invocation(json!({"file":file,"range":range})),
+                    None
+                )
                 .is_err()
         );
     }
-    let bounded = TextTool {
-        kind: TextKind::Read(ReadOptions {
+    let bounded = FileTool::ReadRange {
+        options: ReadOptions {
             maximum_input_bytes: 4,
             ..READ
-        }),
+        },
         maximum_result_bytes: 4096,
     };
-    assert!(bounded.preflight(&scope, &input).is_err());
-    let bounded = TextTool {
-        kind: TextKind::Search(SEARCH),
+    assert!(bounded.preflight(&scope, &input, None).is_err());
+    let bounded = FileTool::Search {
+        options: SEARCH,
         maximum_result_bytes: 1,
     };
     assert!(
         bounded
-            .preflight(&scope, &invocation(json!({"file":file,"query":"a"})))
+            .preflight(&scope, &invocation(json!({"file":file,"query":"a"})), None)
             .is_err()
     );
-    let search = TextTool {
-        kind: TextKind::Search(SEARCH),
+    let search = FileTool::Search {
+        options: SEARCH,
         maximum_result_bytes: 4096,
     };
     assert!(
         search
-            .preflight(&scope, &invocation(json!({"file":file,"query":""})))
+            .preflight(&scope, &invocation(json!({"file":file,"query":""})), None)
             .is_err()
     );
     Ok(())

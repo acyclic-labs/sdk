@@ -228,7 +228,7 @@ async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable(
                     invocation.operation_id,
                     &invocation.call_id, None,)?;
                 assert!(matches!(
-                    tool.executor.authorize_with_context(&context, &invocation),
+                    tool.executor.authorize(None, Some(&context), &invocation, None),
                     Err(Error::Unsupported(_))
                 ));
                 assert!(matches!(
@@ -524,7 +524,7 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
                 assert!(matches!(tool.executor.execute(invocation, Some(context)).await, Err(Error::Unauthorized(_))));
             }
             let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: "list".into(), name: "acyclic.list_files".into(), arguments: json!({"path":"","maximum_entries":8}) };
-            assert!(matches!(tools.get("acyclic.list_files", None, None)?.ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
+            assert!(matches!(tools.get("acyclic.list_files", None, None)?.ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), None, &invocation, None), Err(Error::Unauthorized(_))));
             Ok(())
         }
     }).await

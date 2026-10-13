@@ -1,17 +1,6 @@
 //! Bounded JSON on the original native ledger.
 use super::*;
 
-/// Counts actual closed DTO labels plus serde's expected-list punctuation.
-pub(crate) const fn pi_serde_diagnostic_labels_bytes(labels: &[&str]) -> u64 {
-    let mut total = 0_u64;
-    let mut index = 0;
-    while index < labels.len() {
-        total += labels[index].len() as u64 + 4;
-        index += 1;
-    }
-    total
-}
-
 pub(crate) fn guarded_pi_bytes<T: Serialize>(
     value: &T,
     maximum_bytes: u64,
@@ -87,21 +76,17 @@ fn encode_pi<T>(
                 }
                 if let Some(mut quota) = parser_quota.take() {
                     custody.absorb(&mut quota)?;
-                    custody
-                        .release(custody.bytes().checked_sub(observed).ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))?)
-                        .map_err(acyclic_harness::Error::from)
-                } else {
-                    custody
-                        .resize(observed)
-                        .map_err(acyclic_harness::Error::from)
                 }
+                custody
+                    .resize(observed)
+                    .map_err(acyclic_harness::Error::from)
             }
             charge => native_buffer_codec_charge(work, &mut custody, charge),
         }
     });
     match result {
         Ok(value) => Ok((value, custody)),
-        Err(Error::NativeEncode {
+        Err(Error::NativeJson {
             code,
             source,
             custody: None,
@@ -112,7 +97,7 @@ fn encode_pi<T>(
             if custody.bytes() != 0 {
                 diagnostic.absorb(&mut custody)?;
             }
-            Err(Error::NativeEncode {
+            Err(Error::NativeJson {
                 code,
                 source,
                 custody: Some(diagnostic),
@@ -165,7 +150,10 @@ pub(crate) fn native_buffer_codec_charge(
             Ok(())
         }
         JsonCodecCharge::Release { .. } => unreachable!(),
-        charge => acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?).codec_charge(charge),
+        charge => acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )
+        .codec_charge(charge),
     }
 }
 
@@ -180,7 +168,7 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
     operation: OperationId,
     label: &str,
     maximum_owned_bytes: u64,
-    value_schema: JsonValueSchema,
+    value_schema: &'static JsonValueSchema,
     schema_label_bytes: u64,
     context: &TaskContext,
     work: &NativeMaterializationWork,
@@ -192,7 +180,10 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
     };
     let reference = (reference, custody);
     let bytes = context
-        .read_file(&reference.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
+        .read_file(
+            &reference.0,
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        )
         .await?;
     let maximum = owner
         .policy()
@@ -247,7 +238,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     maximum_bytes: u64,
     maximum_owned_bytes: u64,
     code: ErrorCode,
-    value_schema: JsonValueSchema,
+    value_schema: &'static JsonValueSchema,
     schema_label_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
@@ -301,14 +292,16 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     );
     match result {
         Ok(value) => {
-            custody.release(custody.bytes().checked_sub(retained_owned).ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))?)?;
+            custody.release(custody.bytes().checked_sub(retained_owned).ok_or(
+                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            )?)?;
             Ok((value, custody))
         }
-        Err(Error::NativeDecode {
+        Err(Error::NativeJson {
             code,
             source,
             custody: None,
-        }) => Err(Error::NativeDecode {
+        }) => Err(Error::NativeJson {
             code,
             source,
             custody: Some(custody),

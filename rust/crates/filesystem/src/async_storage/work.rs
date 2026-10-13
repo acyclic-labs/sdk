@@ -152,28 +152,90 @@ impl<'a> AuthorityWork<'a> {
     }
 
     pub(crate) fn check(&self) -> Result<(), AuthorityStoreError> {
+        self.admit(WorkCounters::UNCHARGED)
+    }
+
+    pub(crate) fn admit(&self, mut delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         self.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
-            return original.admit(WorkCounters::UNCHARGED).map_err(Into::into);
+            return original.admit(delta).map_err(Into::into);
         }
         self.work.verify(self.budget)?;
-        let peak = self
-            .allocations
-            .live_bytes()
+        delta.peak_allocation_bytes = delta
+            .peak_allocation_bytes
+            .max(self.allocations.live_bytes())
             .checked_add(self.opaque_live_upper_bytes)
             .ok_or(WorkError::Overflow)?;
-        self.work
-            .admit(
-                &WorkCounters {
-                    peak_allocation_bytes: peak,
-                    ..WorkCounters::UNCHARGED
-                },
-                &self.budget,
-            )
-            .map_err(Into::into)
+        self.work.admit(&delta, &self.budget).map_err(Into::into)
+    }
+
+    pub(crate) fn operation(&self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
+        self.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = self.original {
+            return Ok(Self::native(original, self.cancellation));
+        }
+        Ok(Self::new(self.remaining()?, self.cancellation))
+    }
+
+    pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = self.original {
+            let result = original.record_admitted(delta);
+            return result.map_err(AuthorityStoreError::from);
+        }
+        self.work.try_add_assign(&delta)?;
+        self.check()
+    }
+
+    pub(crate) fn vec_owned<T>(
+        &mut self,
+        capacity: usize,
+    ) -> Result<(Vec<T>, AuthorityAllocation), AuthorityStoreError> {
+        self.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = self.original {
+            let buffer = crate::native_host::buffer::<T, _>(capacity, &mut &*original)?;
+            self.check()?;
+            return Ok((buffer.0, Some(buffer.1)));
+        }
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(crate::WorkError::Overflow)? as u64;
+        self.admit(WorkCounters {
+            allocation_operations: u64::from(bytes != 0),
+            peak_allocation_bytes: self
+                .allocations
+                .live_bytes()
+                .checked_add(bytes)
+                .ok_or(crate::WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let allocation_error = |error: crate::kernel::allocation::AllocationError| {
+            error.into_work_or(AuthorityStoreError::RejectedStatic(
+                "fork allocation failed",
+            ))
+        };
+        self.allocations
+            .claim_bytes(bytes, u64::from(bytes != 0), &mut self.work, self.budget)
+            .map_err(allocation_error)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(capacity)
+            .map_err(|_| AuthorityStoreError::RejectedStatic("fork allocation failed"))?;
+        let actual = values
+            .capacity()
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(crate::WorkError::Overflow)? as u64;
+        // Successful reserve guarantees capacity >= the requested element count.
+        self.allocations
+            .record_owned_bytes(actual - bytes, &mut self.work)
+            .map_err(allocation_error)?;
+        self.check()?;
+        Ok((values, None))
     }
 
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
@@ -265,14 +327,7 @@ pub trait AuthorityGuard: ProviderTask {
                 return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));
             };
             let meter = original.state.clone();
-            let result = match deadline {
-                Some(deadline) => {
-                    provider
-                        .native_commit_before(request, deadline, meter)
-                        .await
-                }
-                None => provider.native_commit(request, meter).await,
-            };
+            let result = provider.native_commit(request, deadline, meter).await;
             result.map(|result| result.map_err(AuthorityError::from))
         }
     }

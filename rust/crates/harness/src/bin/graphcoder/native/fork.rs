@@ -14,12 +14,20 @@ impl NativeSession {
             .iter()
             .find(|source| source.caller == caller && source.request.operation_id == operation)
             .ok_or_else(|| Error::NotFound("original fork source".into()))?;
-        let reducer = acyclic_harness::core::Reducer::restore(
-            source.snapshot.copy(&mut None)?,
-            source.owner.verifier()?,
+        let binding = self.caller_binding(caller).await?;
+        let reducer = StreamAggregate::open(
+            &self.stream,
+            binding.authority.clone(),
+            binding.verifier()?,
             SchemaRegistry::default(),
+            None,
+            HISTORY_LIMITS,
+            acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+            Some(source.request.parent_revision),
             &mut None,
-        )?;
+        )
+        .await?
+        .into_reducer();
         json_line(
             "fork-selection",
             &source
@@ -60,16 +68,16 @@ impl NativeSession {
                 "report changed the retained preparation".into(),
             ));
         }
-        let source = self
-            .config
-            .fork_sources
-            .iter()
-            .find(|source| {
-                source.caller == caller
-                    && source.owner.authority == report.request.parent
-                    && source.snapshot.revision == report.request.parent_revision
-            })
-            .ok_or_else(|| Error::Unsupported("source publication binding unavailable".into()))?;
+        if !self.config.fork_sources.iter().any(|source| {
+            source.caller == caller
+                && source.request.parent == report.request.parent
+                && source.request.parent_revision == report.request.parent_revision
+        }) {
+            return Err(Error::Unsupported(
+                "source publication binding unavailable".into(),
+            ));
+        }
+        let owner = self.caller_binding(caller).await?;
         let binding = self
             .config
             .bindings()
@@ -79,7 +87,7 @@ impl NativeSession {
             &self.stream,
             &self.files,
             &self.config.stream_provider,
-            &source.owner,
+            owner,
         )
         .await?;
         let mut child = open_aggregate(
@@ -93,7 +101,7 @@ impl NativeSession {
             .spawn_from_report(
                 &mut parent,
                 report,
-                source.owner.scope.clone(),
+                owner.scope.clone(),
                 binding.scope.clone(),
             )
             .await?;

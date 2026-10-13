@@ -82,65 +82,46 @@ impl<P: StreamProvider> StreamAggregate<P> {
             *choice.finalize().as_bytes(),
             &mut None,
         )?;
-        let (original_task, admission_digest, original_fence) = owner.binding_origin();
+        let (original_task, admission_digest, fence) = owner.binding_origin();
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let proof = VerifiedRootBinding {
             original_task,
             admission_digest,
             fence: crate::scheduler::LeaseFence {
-                reservation_id: match work.as_deref_mut() {
-                    Some(work) => work.clone_text(&original_fence.reservation_id)?,
-                    None => original_fence.reservation_id.clone(),
-                },
-                placement: match work.as_deref_mut() {
-                    Some(work) => work.clone_text(&original_fence.placement)?,
-                    None => original_fence.placement.clone(),
-                },
+                reservation_id: crate::core::copy_text(&fence.reservation_id, &mut quota)?,
+                placement: crate::core::copy_text(&fence.placement, &mut quota)?,
             },
             agent: *agent,
-            audience: match work.as_deref_mut() {
-                Some(work) => work.clone_authority(self.reducer.authority())?,
-                None => self.reducer.authority().clone(),
-            },
+            audience: crate::core::copy_authority(self.reducer.authority(), &mut quota)?,
             bind_operation: command.operation_id,
             intent_digest: intent,
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let proof = {
-            let custody = if let Some(observer) = work.as_deref_mut() {
-                if observer.original_native_work().is_some() {
-                    let bytes = (proof.fence.reservation_id.capacity() as u64)
-                        .checked_add(proof.fence.placement.capacity() as u64)
-                        .and_then(|bytes| bytes.checked_add(proof.audience.id.capacity() as u64))
-                        .ok_or(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Invalid,
-                            reason: "root binding proof custody overflows",
-                        })?;
-                    Some(observer.take_native_custody(bytes)?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            (proof, custody)
+        let held = quota.retained();
+        #[cfg(not(target_arch = "wasm32"))]
+        let custody = match quota.work().as_deref_mut() {
+            Some(io) if io.original_native_work().is_some() => Some(io.take_native_custody(held)?),
+            _ => None,
         };
+        #[cfg(target_arch = "wasm32")]
+        let custody = None;
+        let proof = (proof, custody);
+        if proof.1.is_some() {
+            quota.transfer();
+        }
         let result = self
             .publish(
                 command,
                 Some(owner),
                 crate::distributed::JournalWrite::Fresh,
                 true,
-                work,
+                quota.work(),
             )
             .await?
             .0;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let (proof, custody) = proof;
-            owner.retain_root_binding(proof, custody)?;
+        if owner.retain_root_binding(proof.0, proof.1)? {
+            quota.transfer();
         }
-        #[cfg(target_arch = "wasm32")]
-        owner.retain_root_binding(proof, None)?;
         drop(gate);
         Ok(result)
     }
@@ -191,17 +172,19 @@ impl<P: StreamProvider> StreamAggregate<P> {
             returned_custody.transfer();
             return Ok((value, returned_owned));
         }
-        let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
-            && self
-                .reducer
-                .operation_revision(command.operation_id)
-                .is_none();
+        if matches!(command.action, Action::MigrateExtensionState { .. }) {
+            return Err(guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "extension migration executor is not installed",
+            ));
+        }
         let mut transient = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let (planned, planned_quota) = if transient.work().is_some() {
             self.reducer
                 .plan_indexed_with_retained_quota(&command, false, transient.work())?
         } else {
-            (self.plan_command(&command, fresh_migration).await?, 0)
+            (self.plan_command(&command).await?, 0)
         };
         transient.adopt(planned_quota)?;
         let ApplyResult::Applied { event } = planned else {
@@ -209,9 +192,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok((planned, planned_quota));
         };
         if transient.work().is_none() {
-            if !fresh_migration {
-                self.validate_admission_content(&command.action).await?;
-            }
+            self.validate_admission_content(&command.action).await?;
         } else {
             #[cfg(feature = "filesystem")]
             {

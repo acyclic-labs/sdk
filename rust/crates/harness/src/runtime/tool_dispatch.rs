@@ -48,8 +48,7 @@ impl TaskContext {
             None,
         )?;
         binding
-            .executor
-            .authorize_with_context(&context, &invocation)?;
+            .executor.authorize(None, Some(&context), &invocation, None)?;
         if let Some(operation) = self.authorize_tool(tool, &invocation).await? {
             return Err(Error::Indeterminate(operation));
         }

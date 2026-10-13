@@ -27,7 +27,7 @@ fn batch_members_have_stable_indexed_identities_and_pinned_authority() -> Result
         execution: None,
     };
     assert_ne!(request.operation_id(0), request.operation_id(1));
-    let original = crate::contract::canonical_json_digest(&request.canonical_value())?;
+    let original = crate::executor::preparation_digest(&request.canonical_value(), None)?;
     let restored = DurableBatchRequest::from_canonical_value(request.canonical_value())?;
     assert_eq!(restored.canonical_value(), request.canonical_value());
     for (key, value) in [
@@ -45,13 +45,13 @@ fn batch_members_have_stable_indexed_identities_and_pinned_authority() -> Result
     request.inputs.swap(0, 1);
     assert_ne!(
         original,
-        crate::contract::canonical_json_digest(&request.canonical_value())?
+        crate::executor::preparation_digest(&request.canonical_value(), None)?
     );
     request.inputs.swap(0, 1);
     request.scope = RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?;
     assert_ne!(
         original,
-        crate::contract::canonical_json_digest(&request.canonical_value())?
+        crate::executor::preparation_digest(&request.canonical_value(), None)?
     );
     Ok(())
 }

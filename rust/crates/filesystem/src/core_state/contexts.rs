@@ -591,25 +591,11 @@ pub(super) fn live_context_ids(
     root: &Namespace,
     log: &mut CoreLog,
 ) -> Result<Vec<WorkspaceContextId>, LocalCoreStateStoreError> {
-    let entries = match std::fs::read_dir(root.family(WORKSPACE_CONTEXT_FAMILY)) {
-        Ok(entries) => Some(entries),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
     let mut ids = BTreeSet::new();
-    for entry in entries.into_iter().flatten() {
-        let name = entry?.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(stem) = name.strip_suffix(".json") else {
-            continue;
-        };
-        let Ok(bytes) = hex::decode(stem) else {
-            continue;
-        };
-        let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
-            continue;
-        };
-        ids.insert(WorkspaceContextId::from_bytes(bytes));
+    for stem in collection::family_stems(root, WORKSPACE_CONTEXT_FAMILY, &[".json"])? {
+        if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
+            ids.insert(WorkspaceContextId::from_bytes(bytes));
+        }
     }
     ids.extend(log.resident_keys(|key| match key {
         RecordKey::Context(context_id) => Some(context_id),

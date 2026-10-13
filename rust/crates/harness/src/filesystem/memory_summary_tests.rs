@@ -108,7 +108,7 @@ async fn sealed_summary_preparation(
     fork: &ForkRequest,
     maximum_work: u64,
     maximum_bytes: u64,
-) -> Result<(crate::resource_preparation::TaskResourcePreparation, crate::filesystem::InvocationCancellation)> {
+) -> Result<(crate::resource_preparation::TaskResourcePreparation, crate::filesystem::default_tools::InvocationCancellation)> {
     let owner_id = OperationId::new();
     let authority = Authority { kind: AggregateKind::Task, id: format!("summary-preparation-{owner_id}") };
     let issuer = AuthorityIssuer::new("summary-preparation", [173; 32], authority.clone());
@@ -200,7 +200,7 @@ read_authorization: fork.authorized_source.clone(),
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
     host.start_task(&lease, &mut None).await?;
-    let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
+    let invocation = crate::filesystem::default_tools::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, &((&lease.reservation).into()), None).await?
         .with_invocation_cancellation(&invocation.0));
     Ok((owner.resource_preparation(request, &mut None).await?, invocation))
@@ -454,18 +454,18 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     )?;
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
-    assert!(preparer.prepare_for_task(request.clone(), &Arc::new(quota_preparation)).await.is_err());
+    assert!(preparer.prepare_for_task(&request, &Arc::new(quota_preparation), None).await.is_err());
     let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name(&mut None)?)?;
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (cancelled_preparation, cancelled_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
     cancelled_invocation.0.cancel();
-    assert!(preparer.prepare_for_task(request.clone(), &Arc::new(cancelled_preparation)).await.is_err());
+    assert!(preparer.prepare_for_task(&request, &Arc::new(cancelled_preparation), None).await.is_err());
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (task_preparation, _successful_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
     let task_preparation = Arc::new(task_preparation);
-    let lost_acknowledgement = preparer.prepare_for_task(request.clone(), &task_preparation).await?;
+    let lost_acknowledgement = preparer.prepare_for_task(&request, &task_preparation, None).await?;
     let preparer = preparer.with_task_preparation(task_preparation)?;
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
     assert_eq!(report, lost_acknowledgement);

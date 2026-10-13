@@ -51,9 +51,7 @@ pub(crate) async fn run_service_with_identity(
     let original_bootstrap_work = acyclic_fs::NativeMaterializationWork::new(
         pi_root_provider::allocation_budget(), &cancellation,
     ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
-    let private_root = acyclic_fs::materializer::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
-        &data, &original_bootstrap_work,
-    ).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    let private_root = data.clone();
     let result = run_locked_service(
         data, identity_override, ready, configured, private_root, &original_bootstrap_work,
     ).await;
@@ -66,7 +64,7 @@ async fn run_locked_service(
     identity_override: Option<String>,
     ready: Option<acyclic_native_runtime::ServiceReadySignal>,
     configured: crate::service::ServiceConfiguredInfrastructure,
-    private_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
+    private_root: PathBuf,
     original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<SessionCloseState> {
     let mut service = ConcurrentServiceControl::open(data.clone(), configured, private_root, original_bootstrap_work).await?;

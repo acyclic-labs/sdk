@@ -2,13 +2,6 @@
 use super::*;
 
 impl<'a> PiForkCoordinator<'a> {
-    pub(super) fn remaining(&self, fallback: WorkBudget) -> Result<WorkBudget> {
-        self.work
-            .remaining()
-            .map(|remaining| remaining.intersect_budget(fallback))
-            .map_err(acyclic_harness::Error::from)
-    }
-
     pub(super) async fn authenticate(
         &self,
         context: &acyclic_harness::runtime::TaskContext,
@@ -21,7 +14,12 @@ impl<'a> PiForkCoordinator<'a> {
             self.runtime
                 .verify_owner_with_native_work(&self.owner, work)?;
             owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    )),
+                )
                 .await?;
             let (value, allocation) = host
                 .observe_admission_with_native_work(owner.task_id(), work)?
@@ -93,7 +91,9 @@ impl<'a> PiForkCoordinator<'a> {
         )?;
         let mut project = None;
         for volume in original.0.binding.project_volumes.values() {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             if volume.storage_name(&mut Some(&mut io))? == source.workspace().name().as_str() {
                 project = Some(volume);
                 break;
@@ -122,8 +122,23 @@ impl<'a> PiForkCoordinator<'a> {
             native_snapshot,
         };
         let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-        let handle = owner.authorize_project_source(context, &self.runtime.authority.issuer, &policy, source_task, operation, &selected.0, maximum_work, maximum_bytes, Some(&io)).await?;
-        Ok((handle, acyclic_harness::store::HistoryWork::new(io).into_custody()?))
+        let handle = owner
+            .authorize_project_source(
+                context,
+                &self.runtime.authority.issuer,
+                &policy,
+                source_task,
+                operation,
+                &selected.0,
+                maximum_work,
+                maximum_bytes,
+                Some(&io),
+            )
+            .await?;
+        Ok((
+            handle,
+            acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+        ))
     }
 
     pub(super) async fn selected_graph(
@@ -198,7 +213,7 @@ impl<'a> PiForkCoordinator<'a> {
     pub(super) fn native_copy<T: serde::de::DeserializeOwned, S: Serialize>(
         &self,
         value: &S,
-        schema: acyclic_harness::JsonValueSchema,
+        schema: &'static acyclic_harness::JsonValueSchema,
         work: &NativeMaterializationWork,
     ) -> Result<(T, acyclic_fs::NativeAllocation)> {
         let maximum = self.owner.policy().maximum_payload_bytes;
@@ -224,11 +239,30 @@ impl<'a> PiForkCoordinator<'a> {
         acyclic_harness::resources::GenerationRef,
         acyclic_fs::NativeAllocation,
     )> {
-        context
-            .verify_original_volume_read_with_native_work(owner, volume, work)
-            .await?;
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        owner.require_volume_grant(
+            volume,
+            acyclic_harness::conversation::VolumeOperation::Read,
+            &mut Some(&mut io),
+        )?;
+        let read = volume.capability(
+            acyclic_harness::conversation::VolumeOperation::Read,
+            &mut Some(&mut io),
+        )?;
+        if context.durable_task_id() != Some(owner.task_id())
+            || !context.scope().grants().contains(&read)
+        {
+            return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "generation is outside the original task read scope",
+            });
+        }
         let name = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -239,21 +273,32 @@ impl<'a> PiForkCoordinator<'a> {
             .await
             .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
+            )
             .await?;
         let head = workspace
             .head(work, work.cancellation())
             .await
             .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
+            )
             .await?;
-        acyclic_harness::resources::GenerationRef::new_with_native_work(
+        acyclic_harness::resources::GenerationRef::new(
             volume.provider(),
             head.id().digest().as_bytes(),
             None,
-            work,
+            Some(work),
         )
+        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))
     }
 
     #[allow(

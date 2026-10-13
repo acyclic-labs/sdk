@@ -10,7 +10,7 @@ use acyclic_fs::NativeAllocation;
 
 pub(crate) type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
-pub(crate) type LocalLazySource = FilteredDemandSource<NativeDemandSource>;
+pub(crate) type LocalLazySource = NativeDemandSource;
 pub(crate) type LocalLazyWorkspace =
     LazyWorkspace<LocalAuthorityBackend, LocalObjectBackend, LocalLazySource, LocalCoreStateStore>;
 pub(crate) type LocalSingleMount =
@@ -186,7 +186,7 @@ impl SharedPhysicalRoot {
             .await
             .map_err(|error| format!("physical root validation worker failed: {error}"))?
             .map_err(display)?;
-        if current != self.source.inner().root_identity() {
+        if current != self.source.root_identity() {
             return Err(format!(
                 "physical root {} changed identity while it was in use",
                 display_path.display()
@@ -218,13 +218,7 @@ impl SharedPhysicalRoot {
             |prior_source, reference| {
                 let batch = poll()?;
                 let source = if observation_consumes_changes(&batch) {
-                    self.source
-                        .inner()
-                        .invalidate(&mut acyclic_fs::demand::DemandWork::new(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        ))
-                        .map_err(display)?
+                    self.source.invalidate()
                 } else {
                     prior_source
                 };
@@ -274,11 +268,11 @@ impl SharedPhysicalRoot {
     /// acquisition exposes resident source backing to lazy restore callers.
     /// The caller authenticates before entry and keeps the returned tuple
     /// through its final original-owner proof.
-    fn observe_native_transaction(
+    pub(crate) fn observe_native_transaction(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(SharedRootObservation, NativeAllocation)> {
-        use native_root_source::{native_source_error, native_watch_error};
+        use native_root_source::native_watch_error;
 
         self.observe_transaction(
             || acyclic_harness::Error::NativeBoundary {
@@ -286,9 +280,6 @@ impl SharedPhysicalRoot {
                 reason: "physical root reference state is poisoned",
             },
             |prior_source, reference| {
-                self.source.inner()
-                    .validate_current(prior_source, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))
-                    .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
                     acyclic_harness::Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Storage,
@@ -301,7 +292,8 @@ impl SharedPhysicalRoot {
                 let (batch, allocation) = watcher
                     .poll_with_native_work_guarded(65_536, work, |batch| {
                         if observation_consumes_changes(batch) {
-                            source = self.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))?;
+                            work.cancellation().check().map_err(|_| acyclic_fs::DemandError::Cancelled)?;
+                            source = self.source.invalidate();
                             // The SDK source epoch has really advanced. Keep
                             // shared state aligned even if later publication
                             // fails; the watcher preserves rescan on that error.
@@ -320,7 +312,7 @@ impl SharedPhysicalRoot {
     /// Serializes the complete watcher/source publication across every session
     /// sharing this root. Native and ordinary instrumentation use this same
     /// reference transaction rather than independent observation caches.
-    fn observe_transaction<T, E>(
+    pub(crate) fn observe_transaction<T, E>(
         &self,
         poisoned: impl FnOnce() -> E,
         observe: impl FnOnce(SourceReference, &mut SourceReference) -> Result<T, E>,
@@ -379,7 +371,7 @@ impl SharedRootRegistry {
             if Arc::strong_count(registration) != 1 {
                 return true;
             }
-            registration.try_lock().map_or(true, |state| {
+            registration.state.try_lock().map_or(true, |state| {
                 state.live.strong_count() != 0
                     || state.pending_raw_watcher.is_some()
                     || state.pending_watcher.is_some()
@@ -497,7 +489,7 @@ impl LocalMount {
 
     pub(crate) fn abandon(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.abandon().map_err(display)?;
+            mount.retire(&CancellationToken::new()).map(drop).map_err(display)?;
         }
         Ok(())
     }

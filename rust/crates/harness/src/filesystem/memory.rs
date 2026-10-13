@@ -101,7 +101,7 @@ impl MemoryHarnessStorage {
                 "tool file limit exceeds the bound storage volume".into(),
             ));
         }
-        let mut tools = super::recursive_default_tools(source, limits.file_bytes)?.tools;
+        let mut tools = super::recursive_default_tools(source, limits.file_bytes)?;
         tools.register((self.list_files_tool(limits), None), &mut None, None)?;
         Ok(tools)
     }

@@ -104,8 +104,7 @@ impl HostRoot {
         mode: u32,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        let mode =
-            libc::mode_t::try_from(mode & 0o7777).map_err(|_| DemandError::InvalidRequest)?;
+        let mode = (mode & 0o7777) as libc::mode_t;
         with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
             // SAFETY: held parent and terminated name remain live.
             unix_mutation(work, || unsafe {

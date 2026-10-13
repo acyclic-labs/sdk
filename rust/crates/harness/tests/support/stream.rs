@@ -763,19 +763,13 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_commit(
-        &self, request: acyclic_stream::CommitRequest,
+        &self, request: acyclic_stream::CommitRequest, deadline: Option<u64>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
-        self.native_commit_with_deadline(request, None, meter)
+        self.native_commit_with_deadline(request, deadline, meter)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_commit_before(
-        &self, request: acyclic_stream::CommitRequest, deadline_unix_millis: u64,
-        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
-        self.native_commit_with_deadline(request, Some(deadline_unix_millis), meter)
-    }
+
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -927,10 +921,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             if aggregate_fault == 1 {
                 return Ok(Err(StreamError::Unavailable));
             }
-            let result = match deadline {
-                Some(deadline) => self.inner.native_commit_before(request, deadline, original.clone()).await?,
-                None => self.inner.native_commit(request, original.clone()).await?,
-            };
+            let result = self.inner.native_commit(request, deadline, original.clone()).await?;
             let mut output = match result {
                 Ok(output) => output,
                 Err(error) => return Ok(Err(error)),

@@ -2,52 +2,8 @@
 
 use super::*;
 
-pub(super) fn command_stage(
-    command: &WorkflowCommand,
-    report: Option<&ForkReport>,
-    io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<&'static str> {
-    match command.kind.as_str() {
-        TASK_ADMIT_PREPARED_COMMAND_KIND => Ok(if report.is_some() {
-            "child-admit"
-        } else {
-            "prepare"
-        }),
-        FORK_OBSERVE => Ok("observe"),
-        FORK_PUBLISH => Ok("fork-publish"),
-        MERGE_APPLY => Ok("merge-apply"),
-        MERGE_PUBLISH => Ok("merge-publish"),
-        _ => Err(recursive_reject(
-            io,
-            crate::wire::ErrorCode::Unauthorized,
-            "recursive command identity or kind changed",
-        )),
-    }
-}
-pub(super) fn command_kind(stage: &str) -> &'static str {
-    match stage {
-        "prepare" | "child-admit" => TASK_ADMIT_PREPARED_COMMAND_KIND,
-        "observe" => FORK_OBSERVE,
-        "fork-publish" => FORK_PUBLISH,
-        "merge-apply" => MERGE_APPLY,
-        "merge-publish" => MERGE_PUBLISH,
-        _ => unreachable!("recursive command stage is derived before dispatch"),
-    }
-}
-pub(super) fn next_stage(stage: &str, value: &Value) -> Option<&'static str> {
-    match stage {
-        "prepare" => Some("observe"),
-        "observe" => Some("fork-publish"),
-        "fork-publish" => Some("child-admit"),
-        "merge-apply" if value.get("status").and_then(Value::as_str) == Some("applied") => {
-            Some("merge-publish")
-        }
-        _ => None,
-    }
-}
 pub(in crate::filesystem) fn recursive_decode_slot_bytes<T>() -> u64 {
     let typed = [
-        std::mem::size_of::<State>(),
         std::mem::size_of::<Plan>(),
         std::mem::size_of::<RecursiveForkToolPlan>(),
         std::mem::size_of::<RecursiveMergeToolPlan>(),
@@ -90,8 +46,7 @@ recursive_preparation_records!(
     ForkToolArguments => None, MergeToolArguments => None,
     RecursiveForkSourceIntent => RecursiveForkSourceIntent, RecursiveForkToolPlan => RecursiveForkToolPlan,
     RecursiveMergeToolPlan => RecursiveMergeToolPlan,
-    Plan => RecursivePlan, State => RecursiveState, Receipt => RecursiveReceipt,
-    ForkSeed => ForkSeed,
+    Plan => RecursivePlan,
     TaskId => None, ProjectMergeReceipt => ProjectMergeReceipt,
 );
 
@@ -101,7 +56,10 @@ pub(super) fn recursive_inspect(
     items: u64,
 ) -> Result<()> {
     if let Some(io) = io {
-        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items }, false)?;
+        io.codec_charge(
+            crate::executor::json::JsonCodecCharge::Inspect { items },
+            false,
+        )?;
     }
     Ok(())
 }
@@ -228,32 +186,6 @@ pub(super) fn derived(
     Ok(OperationId::from_bytes(bytes))
 }
 
-pub(super) fn transition_identity(
-    effect: OperationId,
-    revision: u64,
-    io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<(OperationId, IdempotencyKey)> {
-    let operation = {
-        let _label;
-        let label = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("transition-{revision}"), work)
-        })?;
-        _label = io
-            .map(|io| io.guard_owned(label.capacity() as u64))
-            .transpose()?;
-        derived(effect, &label, io)?
-    };
-    let key = crate::executor::with_history_io(io, |work| {
-        crate::executor::preparation_format(
-            format_args!("recursive-tool:{effect}:{revision}"),
-            work,
-        )
-    })?;
-    if let Some(io) = io {
-        io.retain_owned(std::mem::size_of::<IdempotencyKey>() as u64)?;
-    }
-    Ok((operation, IdempotencyKey(key)))
-}
 pub(super) fn recursive_conflict_keys<S: serde::Serializer>(
     conflicts: &[acyclic_fs::MergeConflict],
     serializer: S,
@@ -267,33 +199,29 @@ pub(super) fn recursive_conflict_keys<S: serde::Serializer>(
         ) -> std::result::Result<S::Ok, S::Error> {
             use acyclic_fs::kernel::NameEncoding;
             use serde::ser::SerializeSeq as _;
-            match self.0 {
-                acyclic_fs::MergeConflict::File(id) => {
-                    let mut sequence = serializer.serialize_seq(Some(17))?;
-                    sequence.serialize_element(&1_u8)?;
-                    for byte in id.into_bytes() {
-                        sequence.serialize_element(&byte)?;
-                    }
-                    sequence.end()
-                }
+            let (tag, id, name) = match self.0 {
+                acyclic_fs::MergeConflict::File(id) => (1_u8, *id, None),
                 acyclic_fs::MergeConflict::Binding { directory_id, name } => {
-                    let mut sequence =
-                        serializer.serialize_seq(Some(18 + name.as_bytes().len()))?;
-                    sequence.serialize_element(&2_u8)?;
-                    for byte in directory_id.into_bytes() {
-                        sequence.serialize_element(&byte)?;
-                    }
-                    sequence.serialize_element(&match name.encoding() {
-                        NameEncoding::Utf8 => 1_u8,
-                        NameEncoding::PosixBytes => 2,
-                        NameEncoding::WindowsUtf16Le => 3,
-                    })?;
-                    for byte in name.as_bytes() {
-                        sequence.serialize_element(byte)?;
-                    }
-                    sequence.end()
+                    (2_u8, *directory_id, Some(name))
+                }
+            };
+            let mut sequence = serializer
+                .serialize_seq(Some(17 + name.map_or(0, |name| 1 + name.as_bytes().len())))?;
+            sequence.serialize_element(&tag)?;
+            for byte in id.into_bytes() {
+                sequence.serialize_element(&byte)?;
+            }
+            if let Some(name) = name {
+                sequence.serialize_element(&match name.encoding() {
+                    NameEncoding::Utf8 => 1_u8,
+                    NameEncoding::PosixBytes => 2,
+                    NameEncoding::WindowsUtf16Le => 3,
+                })?;
+                for byte in name.as_bytes() {
+                    sequence.serialize_element(byte)?;
                 }
             }
+            sequence.end()
         }
     }
     let mut sequence = serializer.serialize_seq(Some(conflicts.len()))?;
@@ -349,4 +277,18 @@ pub(in crate::filesystem) fn recursive_transition_owned_bytes(
         MachineStatus::Failed { message } => message.capacity() as u64,
     };
     recursive_owned_add(bytes, status)
+}
+
+pub(super) fn recursive_decode_bytes<T: crate::filesystem::PreparationRecord>(
+    bytes: &[u8],
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<T> {
+    if let Some(io) = io {
+        return Ok(crate::filesystem::retain_decoded(io.decode(
+            std::marker::PhantomData::<T>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
+        )?));
+    }
+    crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
 }

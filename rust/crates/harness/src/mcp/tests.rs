@@ -9,8 +9,8 @@ use crate::{
     Error, InteractionId, OperationId, Result,
     runtime::ToolContext,
     tool::{
-        JsonToolProjection, Tool, ToolApprovalVerifier, ToolExecutor, ToolInvocation,
-        ToolProjection, ToolRegistry,
+        JsonToolProjection, Tool, ToolApprovalVerifier, ToolInvocation, ToolProjection,
+        ToolRegistry,
     },
 };
 use acyclic_stream::BoxProviderFuture;
@@ -197,7 +197,8 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
         .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("installed tool".into()))?;
     assert!(matches!(
-        tool.executor.authorize(Some(&installer), &invocation),
+        tool.executor
+            .authorize(Some(&installer), None, &invocation, None),
         Err(Error::Unauthorized(_))
     ));
     assert_eq!(
@@ -370,11 +371,20 @@ async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Res
         name: tool.definition.name.clone(),
         arguments: json!({}),
     };
-    assert!(tool.executor.authorize(None, &invocation).is_err());
+    assert!(
+        tool.executor
+            .authorize(None, None, &invocation, None)
+            .is_err()
+    );
     let scope = RuntimeScope::new(Capabilities::new(["mcp:call:other"]), Limits::default())?;
-    assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
+    assert!(
+        tool.executor
+            .authorize(Some(&scope), None, &invocation, None)
+            .is_err()
+    );
     let scope = RuntimeScope::new(Capabilities::new(["mcp:call:fixture"]), Limits::default())?;
-    tool.executor.authorize(Some(&scope), &invocation)?;
+    tool.executor
+        .authorize(Some(&scope), None, &invocation, None)?;
     assert!(
         tool.executor
             .reconcile(invocation.clone(), None)
@@ -471,7 +481,9 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
         arguments: json!({}),
     };
     let scope = RuntimeScope::new(Capabilities::new(["mcp:call:fixture"]), Limits::default())?;
-    admitted.executor.authorize(Some(&scope), &invocation)?;
+    admitted
+        .executor
+        .authorize(Some(&scope), None, &invocation, None)?;
     let mut call = admitted.executor.execute(invocation.clone(), None);
     assert!(futures::poll!(&mut call).is_pending());
     catalog("2", &["a"]).install(

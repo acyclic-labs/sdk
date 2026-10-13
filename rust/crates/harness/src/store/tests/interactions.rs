@@ -4,7 +4,7 @@ use futures::TryStreamExt as _;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn admission_content_keeps_original_published_bytes_until_last_alias() -> Result<()> {
-    use crate::conversation::VolumeOperation;
+    use crate::conversation::{ContentPublisher as _, VolumeOperation};
     use crate::filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
     };
@@ -63,7 +63,7 @@ async fn admission_content_keeps_original_published_bytes_until_last_alias() -> 
     )?;
     let published = crate::contract::canonical_json_bytes(&request)?;
     let reference = publisher
-        .stage_once(
+        .stage(
             OperationId::from_bytes([95; 16]),
             "interactions/request.json",
             &published,

@@ -8,7 +8,6 @@ pub(super) struct AuthenticatedAllocation {
     pub(super) prepared_generation: GenerationRef,
     pub(super) agent: crate::AgentId,
     pub(super) authority: Option<Authority>,
-    pub(super) creation_operation: acyclic_fs::OperationId,
     pub(super) reference_files: Vec<FileRef>,
 }
 
@@ -91,7 +90,8 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         drop(workspace);
         drop(held);
     }
-    let index = request.resources()
+    let index = request
+        .resources()
         .position(|resource| resource == &proof.resource)
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
     let volume = creation_volumes(&fork)
@@ -236,7 +236,6 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 )?,
                 agent: fork.child_agent,
                 authority: None,
-                creation_operation: acyclic_fs::OperationId::from_bytes(key.into_bytes()),
                 reference_files: Vec::new(),
             });
         }
@@ -278,7 +277,10 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     for file in &request.input_files {
         if !crate::runtime::read_granted(&selected.origin.source_grants, file)?
-            || !request.child.grants.contains(&file.read_capability(&mut None)?)
+            || !request
+                .child
+                .grants
+                .contains(&file.read_capability(&mut None)?)
         {
             return Err(Error::Unauthorized(
                 "child input lacks original donor and exact child read authority".into(),

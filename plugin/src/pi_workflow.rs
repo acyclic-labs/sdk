@@ -10,7 +10,7 @@ use acyclic_harness::{
     scheduler::LeaseFence,
     workflow::{MachineCheckpoint, WorkflowCommand},
 };
-use pi_selected_host::PiControlHost;
+use pi_host::PiControlHost;
 
 impl PiControlHost<'_> {
     pub(crate) async fn drive_root(
@@ -27,7 +27,9 @@ impl PiControlHost<'_> {
         )
         .await?;
         let (recovered, custody) = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+            );
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -102,18 +104,17 @@ impl PiControlHost<'_> {
         let Some(provider) = self.root_provider.lock().await.clone() else {
             return Ok(None);
         };
-        let owner = pi_owner::PiOwnerConfig::load(
-            &self.resources.private_state_root,
-            self.directory,
-            &self.work,
-        )?;
+        let owner =
+            pi_owner::PiOwnerConfig::load(&self.resources.data, self.directory, &self.work)?;
         self.runtime
             .verify_owner_with_native_work(&owner, &self.work)?;
         let task = owner.policy().root_task;
         let effect = acyclic_harness::effect_host::task_effect_id(
             task,
             pi_root_inputs::preparation_operation(task, &self.work)?,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+            )),
         )?;
         provider
             .observe_allocation_with_native_work(
@@ -232,7 +233,14 @@ impl PiControlHost<'_> {
             let key = self
                 .work
                 .display(&format_args!("acyclic.pi/control/{task}/{operation}"))?;
-            host.resume_workflow(task, wait.revision, input.0, acyclic_harness::IdempotencyKey::new(key.0)?, None, Some(&self.work))
+            host.resume_workflow(
+                task,
+                wait.revision,
+                input.0,
+                acyclic_harness::IdempotencyKey::new(key.0)?,
+                None,
+                Some(&self.work),
+            )
             .await?;
             drop(key.1);
         }
@@ -260,12 +268,8 @@ impl PiControlHost<'_> {
         let task = context
             .durable_task_id()
             .ok_or_else(|| boundary("Pi command has no original task"))?;
-        let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
-            &self.resources.private_state_root,
-            self.directory,
-            work,
-        )?
-        .into_native_shared(work)?;
+        let owner = pi_owner::PiOwnerConfig::load(&self.resources.data, self.directory, work)?
+            .into_native_shared(work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task
             && command.operation_id == pi_root_inputs::preparation_operation(task, work)?
@@ -274,7 +278,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.private_state_root,
+                &self.resources.data,
                 self.directory,
                 &self.runtime,
                 &self.filesystem,
@@ -288,10 +292,21 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
+                .journal_owner(
+                    task,
+                    &fence,
+                    Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                        work,
+                    )?),
+                )
                 .await?;
             journal_owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    )),
+                )
                 .await?;
             let expected = pi_root_provider::guarded_pi_value(
                 &preparation.plan,
@@ -346,7 +361,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.private_state_root,
+                &self.resources.data,
                 self.directory,
                 &self.runtime,
                 &self.filesystem,
@@ -360,10 +375,21 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
+                .journal_owner(
+                    task,
+                    &fence,
+                    Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                        work,
+                    )?),
+                )
                 .await?;
             journal_owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    )),
+                )
                 .await?;
             pi_root_provider::bind_root_output_context_with_native_work(
                 context,

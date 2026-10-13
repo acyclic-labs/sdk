@@ -7,23 +7,28 @@ use crate::{
 use futures::FutureExt as _;
 use serde_json::json;
 
-struct Executor;
-impl ToolExecutor for Executor {
-    fn execute<'a>(
-        &'a self,
-        _: ToolInvocation,
-        _context: Option<crate::runtime::ToolContext>,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
-        async { Ok(ToolResult { value: Value::Null }) }.boxed()
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _: ToolInvocation,
-        _context: Option<crate::runtime::ToolContext>,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        async { Ok(None) }.boxed()
-    }
+pub(super) fn file(bytes: &[u8]) -> Result<crate::conversation::FileRef> {
+    use crate::{
+        AgentId,
+        conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
+    FileRef::new(
+        VolumeRef::new(
+            ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([11; 16])),
+            &mut None,
+        )?,
+        "file.txt".into(),
+        "generation-1".into(),
+        FileDescriptor::from_bytes(bytes, "text/plain", &mut None)?,
+        "file.txt".into(),
+        &mut None,
+    )
 }
+
 #[test]
 fn model_tool_operation_identity_is_stable_and_scoped_to_parent_step_and_call() {
     let parent = OperationId::from_bytes([7; 16]);
@@ -61,7 +66,7 @@ fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
                         output_schema: json!({}),
                         projection_schema: crate::tool::json_projection_schema(json!({})),
                     },
-                    executor: Arc::new(Executor),
+                    executor: files::read_file()?.executor,
                     projection: Arc::new(JsonToolProjection),
                 },
                 None,
@@ -115,73 +120,48 @@ fn projection_contract_is_required_validated_and_pinned() -> Result<()> {
     let definition = ToolDefinition {
         name: "example.result".into(),
         revision: "1".into(),
-        description: "Keep a structured result and project text".into(),
-        input_schema: json!({"type": "null"}),
-        output_schema: json!({"type": "object", "required": ["count"],
-                "properties": {"count": {"type": "integer"}}, "additionalProperties": false}),
-        projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
+        description: "Structured result with text projection".into(),
+        input_schema: json!({"type":"null"}),
+        output_schema: json!({"type":"object","required":["count"],"properties":{"count":{"type":"integer"}},"additionalProperties":false}),
+        projection_schema: json_projection_schema(json!({"type":"string"})),
     };
     definition.validate(&mut None)?;
-    let permissive = ToolDefinition {
-        projection_schema: json!({}),
-        ..definition.clone()
-    };
-    assert!(
-        permissive
-            .validate_projection(&json!("old bare projection"), Limits::default(), None)
-            .is_err()
-    );
-    assert!(
-        permissive
-            .validate_projection(
-                &json!({"kind":"parts","parts":[
-                    {"kind":"tool_call","call_id":"nested","name":"nested","arguments":{}}
-                ]}),
-                Limits::default(),
-                None
-            )
-            .is_err()
-    );
-    crate::executor::validate_json_schema_value(
-        &definition.output_schema,
-        &json!({"count": 2}),
-        "result",
-        &mut None,
-    )?;
-    crate::executor::validate_json_schema_value(
-        &definition.projection_schema,
-        &json!({"kind":"json","value":"two"}),
-        "projection",
-        &mut None,
-    )?;
-    assert!(
-        crate::executor::validate_json_schema_value(
-            &definition.output_schema,
-            &json!("two"),
-            "result",
-            &mut None
-        )
-        .is_err()
-    );
-    assert!(
-        crate::executor::validate_json_schema_value(
-            &definition.projection_schema,
-            &json!({"count": 2}),
-            "projection",
-            &mut None
-        )
-        .is_err()
-    );
     let mut changed = definition.clone();
-    changed.projection_schema = json!({"type": "integer"});
+    changed.projection_schema = json!({});
+    for value in [
+        json!("old bare projection"),
+        json!({"kind":"parts","parts":[{"kind":"tool_call","call_id":"nested","name":"nested","arguments":{}}]}),
+    ] {
+        assert!(
+            changed
+                .validate_projection(&value, Limits::default(), None)
+                .is_err()
+        );
+    }
+    for (schema, value, valid) in [
+        (&definition.output_schema, json!({"count":2}), true),
+        (
+            &definition.projection_schema,
+            json!({"kind":"json","value":"two"}),
+            true,
+        ),
+        (&definition.output_schema, json!("two"), false),
+        (&definition.projection_schema, json!({"count":2}), false),
+    ] {
+        assert_eq!(
+            crate::executor::validate_json_schema_value(schema, &value, "result", &mut None)
+                .is_ok(),
+            valid
+        );
+    }
+    changed.projection_schema = json!({"type":"integer"});
     assert_ne!(definition.digest()?, changed.digest()?);
-    changed.projection_schema = json!({"type": "not-a-schema-type"});
+    changed.projection_schema = json!({"type":"not-a-schema-type"});
     assert!(changed.validate(&mut None).is_err());
-    let mut missing =
-        serde_json::to_value(definition).map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut missing = json!(definition);
     missing
         .as_object_mut()
-        .expect("definition object")
+        .expect("definition")
         .remove("projection_schema");
     assert!(serde_json::from_value::<ToolDefinition>(missing).is_err());
     Ok(())
@@ -242,7 +222,7 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
     };
     let tool = Tool {
         definition,
-        executor: Arc::new(Executor),
+        executor: files::read_file()?.executor,
         projection: Arc::new(JsonToolProjection),
     };
     let mut registry = ToolRegistry::default();

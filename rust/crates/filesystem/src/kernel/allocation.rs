@@ -66,6 +66,9 @@ impl LogicalVecCapacity {
         field_guard: &mut KernelOwnedAllocation,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
+        if self.logical_bytes == 0 && matches!(&*field_guard, KernelOwnedAllocation::Standalone) {
+            *field_guard = accounting.claim_owned(0, 0)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let original = matches!(&*field_guard, KernelOwnedAllocation::NativeOriginal(_));
         self.ensure_for_push_using(

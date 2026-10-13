@@ -1,5 +1,6 @@
 //! Generated native tool contracts from their actual Rust argument/result types.
 
+use super::edit::{charge, invalid, reserve_string};
 use crate::{Error, Result};
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
@@ -109,24 +110,24 @@ pub(crate) fn summary_reference(
     work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
     use std::fmt::Write as _;
-    let mut allocation = super::edit::AlgorithmWork::new(work, std::mem::size_of::<String>())?;
+    let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
     let mut text = String::new();
-    allocation.reserve_string(&mut text, maximum)?;
+    reserve_string(&mut allocation, &mut text, maximum)?;
     struct FixedText<'a> {
         text: &'a mut String,
-        work: &'a super::edit::AlgorithmWork,
+        work: &'a crate::NativeCustody,
         denial: Option<Error>,
     }
     impl std::fmt::Write for FixedText<'_> {
         fn write_str(&mut self, value: &str) -> std::fmt::Result {
             if value.len() > self.text.capacity() - self.text.len() {
-                self.denial = Some(
-                    self.work
-                        .invalid("file summary exceeds its preclaimed capacity"),
-                );
+                self.denial = Some(invalid(
+                    self.work,
+                    "file summary exceeds its preclaimed capacity",
+                ));
                 return Err(std::fmt::Error);
             }
-            if let Err(error) = self.work.copy(value.len()) {
+            if let Err(error) = charge(self.work, (value.len()) as u64, 0) {
                 self.denial = Some(error);
                 return Err(std::fmt::Error);
             }
@@ -143,7 +144,7 @@ pub(crate) fn summary_reference(
         return Err(writer
             .denial
             .take()
-            .unwrap_or_else(|| allocation.invalid("file summary formatting failed")));
+            .unwrap_or_else(|| invalid(&allocation, "file summary formatting failed")));
     }
     drop(writer);
     project_reference(file, &text, work)
@@ -153,39 +154,17 @@ pub(crate) fn summary_reference(
 mod tests {
     use super::*;
     use crate::executor::compile_json_schema;
-    use crate::{
-        AgentId,
-        conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-        resources::ProviderRef,
-        tool::{
-            ToolInvocation, ToolProjection, ToolResult,
-            files::{self, FileResult, FileResultProjection, ReadFileInput, ReadFileProjection},
-        },
+    use crate::tool::{
+        ToolInvocation, ToolProjection, ToolResult,
+        files::{self, FileProjection, FileResult, ReadFileInput},
     };
     use serde_json::json;
-
-    fn file() -> Result<FileRef> {
-        FileRef::new(
-            VolumeRef::new(
-                ProviderRef::new("schema".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(AgentId::from_bytes([11; 16])),
-                &mut None,
-            )?,
-            "file.txt".into(),
-            "pinned-1".into(),
-            FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
-            "file.txt".into(),
-            &mut None,
-        )
-    }
 
     #[test]
     fn existing_file_results_support_reference_projection_without_changing_canonical_values()
     -> Result<()> {
         use crate::model::{FileProjectionPolicy, ModelDataPart, ToolResultContent};
-        let file = file()?;
+        let file = crate::tool::tests::file(b"exact")?;
         let invocation = ToolInvocation {
             operation_id: crate::OperationId::new(),
             call_id: "file-projection".into(),
@@ -201,12 +180,12 @@ mod tests {
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             for (projector, result, schema) in [
                 (
-                    &FileResultProjection(mode) as &dyn ToolProjection,
+                    &FileProjection::Publication(mode) as &dyn ToolProjection,
                     &published,
                     mode.schema::<FileResult>()?,
                 ),
                 (
-                    &ReadFileProjection(mode) as &dyn ToolProjection,
+                    &FileProjection::Read(mode) as &dyn ToolProjection,
                     &read,
                     mode.schema::<String>()?,
                 ),
@@ -235,7 +214,7 @@ mod tests {
             }
         }
         assert!(
-            ReadFileProjection(ProjectionMode::Reference)
+            FileProjection::Read(ProjectionMode::Reference)
                 .project(
                     &invocation,
                     &ToolResult {
@@ -250,7 +229,7 @@ mod tests {
 
     #[test]
     fn real_nested_file_schemas_compile_and_keep_refs_at_the_complete_root() -> Result<()> {
-        let file = file()?;
+        let file = crate::tool::tests::file(b"exact")?;
         let result = FileResult { file: file.clone() };
         let canonical = json!(result);
         let input = compile_json_schema(&input::<ReadFileInput>()?, "read", &mut None)?;
@@ -297,7 +276,7 @@ mod tests {
 
     #[test]
     fn file_schemas_reject_empty_edits_and_patches() -> Result<()> {
-        let file = file()?;
+        let file = crate::tool::tests::file(b"exact")?;
         let edit = files::edit_file()?;
         let patch = files::patch_file(8192, 8)?;
         for (schema, value) in [
