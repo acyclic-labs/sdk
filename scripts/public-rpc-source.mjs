@@ -49,7 +49,6 @@ export function createSourceInspector(root, read = path => {
     const [, family, version, serviceName] = service.typeName.split(".");
     const objects = family === "objects";
     const stream = family === "stream";
-    const deliveryAck = stream && rpc.name === "AcknowledgeDelivery";
     if ((objects || stream) && version !== "v1") throw new Error("unsupported current contract");
     const unified = family === "actors" || family === "workers";
     const rustBase = `rust/crates/${family}/src/`;
@@ -61,7 +60,7 @@ export function createSourceInspector(root, read = path => {
       if (contracts.length !== 1 || contracts[0] !== `pub mod ${version};`) throw new Error("Objects must expose one current contract module");
     }
     const rustRoot = source(`${rustBase}${objects ? "v1/mod.rs" : "lib.rs"}`);
-    const grpc = source(`${rustBase}${objects ? "v1/" : ""}grpc.rs`);
+    const grpc = source(`${rustBase}${objects ? "v1/grpc.rs" : stream ? "grpc/client.rs" : "grpc.rs"}`);
     const http = source(`${rustBase}${objects ? "v1/" : ""}http.rs`);
     // Actors' tonic declarations are generated in Cargo OUT_DIR, so the clean
     // checkout has no stable generated .rs path to inspect. The checked-in
@@ -81,17 +80,22 @@ export function createSourceInspector(root, read = path => {
     const workersClient = family === "workers" ? source(`${rustBase}client_binding.rs`) : "";
     const module = name => new RegExp(`^pub mod ${name};`, "m").test(rustRoot);
     const rustGrpc = module("grpc") && (family === "actors"
-      ? new RegExp(`\\boperation!\\(\\s*${rustName}\\s*,`).test(actorsClient)
+      ? actorsClient.includes("operations!(client_operations)") &&
+        new RegExp(`\\("${rpc.name}",\\s*${rustName},`).test(actorsClient)
       : family === "workers"
       ? grpc.includes("pub type Client = wire::workers_service_client::WorkersServiceClient<") &&
         new RegExp(`\\("${rpc.name}",\\s*${rustName},`).test(workersClient) &&
         workersClient.includes("client.$method(request(")
       : objects || stream
-      ? rustMethod(rustImpl(grpc, objects ? "impl ObjectsProvider for GrpcObjects" : deliveryAck ? "impl Client" : "impl StreamProvider for Client"), rustName)
+      ? objects
+        ? grpc.includes("impl ObjectsProvider for GrpcObjects") &&
+          (rustMethod(grpc, rustName) || new RegExp(`^${rustName}\\(\\w+\\) ->`, "m").test(grpc))
+        : rustMethod(rustImpl(grpc, "impl StreamProvider for Client"), rustName)
       : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
-    const rustHttp = module("http") && rustMethod(objects || stream
-      ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : deliveryAck ? "impl HttpStream" : "impl StreamProvider for HttpStream") : http, rustName);
+    const rustHttp = module("http") && (rustMethod(objects || stream
+      ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName)
+      || (unified && http.includes("operations! {") && new RegExp(`\\(${rustName},\\s*\\d+,`).test(http)));
     const grpcPath = `${tsBase}${objects ? "v1-grpc" : "grpc"}.ts`;
     const typescriptGrpcNodeBun = family === "actors"
       ? semanticOperation &&
@@ -99,7 +103,7 @@ export function createSourceInspector(root, read = path => {
       : family === "workers"
       ? semanticOperation && workersBinding.includes("function loadNative()") &&
         workersBinding.includes("module.WorkersClient.connectResult(config,") &&
-        client.includes("export class WorkersClient") && exported(grpcPath, "./client.js")
+        client.includes("export class WorkersClient") && exported(`${tsBase}index.ts`, "./client.js")
       : factory(grpcPath, objects ? "createObjectsV1GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
     // Unified clients use gRPC-Web in browsers; their compatibility aliases do
     // not expose the retired raw HTTP implementation. Inventory both honestly.
@@ -107,7 +111,9 @@ export function createSourceInspector(root, read = path => {
       ? false
       : objects
       ? method(`${tsBase}v1.ts`, "ObjectsV1Provider", operation) && method(`${tsBase}v1-http.ts`, "HttpObjectsV1", "invoke") && source(`${tsBase}v1-http.ts`).includes("extends ObjectsV1Provider")
-      : method(`${tsBase}http.ts`, stream ? "HttpStreamProvider" : `Http${family[0].toUpperCase()}${family.slice(1)}Client`, operation);
+      : method(`${tsBase}http.ts`, "HttpStreamProvider", operation) ||
+        (operation === "children" && method(`${tsBase}client.ts`, "StreamClient", "children") &&
+          method(`${tsBase}http.ts`, "HttpStreamProvider", "childrenPage"));
     const typescriptGrpcWeb = semanticOperation && (family === "actors"
       ? client.includes("function wasmBinding()") && actorsClient.includes("tonic_web_wasm_client::Client::new_with_options(") &&
         source("rust/crates/actors-wasm/src/lib.rs").includes("pub struct ActorsClient")
@@ -116,9 +122,9 @@ export function createSourceInspector(root, read = path => {
         new RegExp(`\\("${rpc.name}",\\s*${rustName},`).test(workersClient));
     const manifestText = source(`typescript/packages/${family}/package.json`);
     const manifest = manifestText ? JSON.parse(manifestText) : {};
-    const typescriptPackageExported = family === "actors"
+    const typescriptPackageExported = unified
       ? manifest.exports?.["."]?.default === "./dist/index.js" &&
-        manifest.exports?.["./client"]?.default === "./dist/client.js" &&
+        (family === "workers" || manifest.exports?.["./client"]?.default === "./dist/client.js") &&
         manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
         exported(`${tsBase}index.ts`, "./client.js")
       : manifest.exports?.["."]?.default === "./dist/index.js" &&

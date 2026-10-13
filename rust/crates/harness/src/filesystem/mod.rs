@@ -159,7 +159,6 @@ pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectControll
 
 #[cfg(not(target_arch = "wasm32"))]
 mod source_publication;
-#[cfg(not(target_arch = "wasm32"))]
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(

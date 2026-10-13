@@ -14,7 +14,6 @@ const objects = {
   CompleteMultipart: "multipart/complete", AbortMultipart: "multipart/abort",
 };
 const stream = {
-  AcknowledgeDelivery: "delivery/acknowledge",
   InspectIdempotency: "idempotency/inspect", Append: "append", Tail: "tail", Fork: "fork",
   Read: "read", Follow: "tail + read (polling)", Children: "children", ChildrenPage: "children/page",
   Commit: "commit", ReadCommit: "commits/read",
