@@ -228,18 +228,6 @@ pub(in crate::native_mount::materialize) fn remove_restore_witness(
     name: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
-    {
-        #[cfg(unix)]
-        {
-            parent.remove(name, None, work)
-        }
-        #[cfg(windows)]
-        {
-            crate::native_host::with_wide_path(name, work, |path, work| {
-                parent.remove(path, None, work)
-            })
-        }
-    }
-    .map_err(restore_demand_error)?;
+    remove_entry(parent, name, work).map_err(restore_demand_error)?;
     crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)
 }
