@@ -209,8 +209,7 @@ async fn context_discard_bounds_bucket_bytes_before_deserialization() {
 
     assert!(matches!(
         WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 2).await,
-        Err(LocalCoreStateStoreError::ContextTransaction(message))
-            if message.contains("exceeds its declared bound")
+        Err(LocalCoreStateStoreError::Integrity)
     ));
 }
 
