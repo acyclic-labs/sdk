@@ -370,7 +370,7 @@ async fn default_guarded_fork_preserves_owner_rejection_and_rejects_managed_perm
         };
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
         let failure = store
-            .fork_workspace(fork.clone(), permit, &mut work, Some(&mut guard))
+            .fork_workspace(fork.clone(), permit, &mut work, Some(&mut &mut guard))
             .await
             .unwrap_err();
         let failure = failure.into_error(crate::FsError::from);
