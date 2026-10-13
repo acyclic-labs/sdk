@@ -36,17 +36,6 @@ pub struct DirectoryRecordPage {
     pub has_more: bool,
 }
 
-/// One bounded directory binding page requested from a [`PinnedReader`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DirectoryPageRequest {
-    /// Exact directory namespace path.
-    pub path: NamespacePath,
-    /// Exclusive canonical name cursor.
-    pub after: Option<LogicalName>,
-    /// Maximum entries returned for this page.
-    pub maximum_entries: u32,
-}
-
 /// One present no-follow path result with authenticated metadata decoded in
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PathMetadataLookup {

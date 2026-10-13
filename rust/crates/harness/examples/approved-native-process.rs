@@ -1,5 +1,4 @@
 //! Public consumer: explicitly approved native execution and receipt-only recovery.
-use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, PublicationPermit, WorkBudget};
 use acyclic_harness::{
@@ -39,131 +38,13 @@ use acyclic_stream::{MemoryStream, StreamProvider};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
-struct Machine {
-    identity: MachineIdentity,
-    schema: Value,
-}
-impl ResumableMachine for Machine {
-    fn identity(&self) -> &MachineIdentity {
-        &self.identity
-    }
-    fn state_schema(&self) -> &Value {
-        &self.schema
-    }
-    fn initialize(&self, input: &Value) -> Result<Value> {
-        Ok(input.clone())
-    }
-    fn transition(&self, state: &Value, _: &Value) -> Result<MachineTransition> {
-        Ok(MachineTransition {
-            state: state.clone(),
-            commands: vec![],
-            status: MachineStatus::Suspended,
-        })
-    }
-}
-
 type Files<A = acyclic_fs::MemoryAuthorityBackend, O = acyclic_fs::MemoryObjectBackend> =
     FilesystemHost<A, O>;
 type Runtime<P, A = acyclic_fs::MemoryAuthorityBackend, O = acyclic_fs::MemoryObjectBackend> =
     FilesystemTaskRuntime<P, A, O>;
 
-async fn runtime<P, A, O>(
-    stream: std::sync::Arc<P>,
-    files: Arc<Files<A, O>>,
-    volume: VolumeRef,
-    issuer: &AuthorityIssuer,
-    scope: &Scope,
-) -> Result<Runtime<P, A, O>>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let machine = Arc::new(Machine {
-        identity: MachineIdentity {
-            name: "example.native".into(),
-            version: "1".into(),
-            digest: [7; 32],
-        },
-        schema: json!({"type":"integer"}),
-    });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        machine.clone(),
-        json!({"type":"integer"}),
-        json!({"type":"object"}),
-    )?;
-    let identity = definition.identity().clone();
-    let machine_identity = machine.identity.clone();
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(machine, &mut None)?;
-    let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
-    let runtime = Runtime::open(
-        stream,
-        files,
-        &volume,
-        &issuer.verifier(&mut None)?,
-        scope,
-        &runtime_scope,
-        &tasks,
-        &machines,
-        &Default::default(),
-        SessionLimits {
-            active_tasks: 1,
-            total_tasks: 1,
-            depth: 0,
-            model_steps: 1,
-        },
-        1,
-        1_000_000,
-        Arc::new(acyclic_stream::SystemUnixMillisClock),
-        None,
-        &[],
-        &Default::default(),
-        None,
-    )
-    .await?;
-    runtime
-        .task_host()
-        .admit(TaskAdmissionRecord {
-            resource_proofs: Vec::new(),
-            operation_id: OperationId::from_bytes([3; 16]),
-            task: identity,
-            machine: machine_identity,
-            input: json!(0),
-            input_schema: json!({"type":"integer"}),
-            output_schema: json!({"type":"object"}),
-            parent: None,
-            grants: runtime_scope.grants().clone(),
-            limits: runtime_scope.limits(),
-            run_limits: runtime_scope.run_limits(),
-            policy: None,
-            extensions: None,
-            execution: None,
-        })
-        .await?;
-    Ok(runtime)
-}
-
 async fn run(mcp: Option<&'static str>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     run_on(mcp, Arc::new(MemoryStream::default()), None, false).await
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Restart {
-    task: TaskId,
-    fence: LeaseFence,
-    scope: Scope,
-    command: OperationId,
-    approval: InteractionId,
-    plan: TaskEffectPlan,
-    results_volume: VolumeRef,
-    destination: VolumeRef,
-    request: NativeProcessRequest,
-    first: Option<EffectStatus>,
-    applied: bool,
 }
 
 struct Evidence<A, O> {
@@ -171,12 +52,6 @@ struct Evidence<A, O> {
     directory: tempfile::TempDir,
     _preparation_directory: tempfile::TempDir,
     files: std::sync::Weak<Files<A, O>>,
-}
-
-struct Recovery<P> {
-    owner: Arc<TaskJournalOwner<P>>,
-    effects: Arc<ConversationEffectHost<P>>,
-    content: Arc<dyn ContentResidencyVerifier>,
 }
 
 fn issuer() -> AuthorityIssuer {
@@ -212,7 +87,7 @@ async fn run_on<P: StreamProvider>(
     if evidence.directory.path() != evidence.restart.request.cwd {
         return Err("restart metadata changed the owned native directory".into());
     }
-    recover_on(
+    recovery::run(
         stream,
         filesystem,
         &evidence.restart,
@@ -321,7 +196,7 @@ where
             None,
         )
         .await?;
-    let runtime = runtime(
+    let runtime = task::open(
         stream.clone(),
         files.clone(),
         results_volume.clone(),
@@ -591,11 +466,9 @@ where
     if mcp == Some("tools/call") && restart_path.is_none() {
         model_tool::run(
             model_tool::Approved {
-                recovery: Recovery {
-                    owner: owner.clone(),
-                    effects: effects.clone(),
-                    content: content.clone(),
-                },
+                owner: owner.clone(),
+                effects: effects.clone(),
+                content: content.clone(),
                 task: task_id,
                 command,
                 plan: plan.clone(),
@@ -608,7 +481,6 @@ where
             approvals.clone(),
             false,
             !lost_response && receipt_fault.is_none(),
-            receipt_fault.is_some(),
         )
         .await?;
     }
@@ -644,172 +516,6 @@ where
     })
 }
 
-async fn recover_on<P, A, O>(
-    stream: std::sync::Arc<P>,
-    filesystem: Fs<A, O>,
-    seed: &Restart,
-    receipt_fault: Option<(&str, bool)>,
-    lost_response: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let issuer = issuer();
-    let files = FilesystemHost::new(filesystem, seed.destination.provider(), None)?;
-    let runtime = runtime(
-        stream.clone(),
-        files.clone(),
-        seed.results_volume.clone(),
-        &issuer,
-        &seed.scope,
-    )
-    .await?;
-    let Recovery {
-        owner,
-        effects,
-        content,
-    } = recovered_effects(stream.clone(), files.clone(), &runtime, seed, &issuer).await?;
-    let recovered_status = effects
-        .reconcile_task_effect(&owner, seed.command, &seed.plan, None)
-        .await
-        .map(|result| result.0)?;
-    verify_recovered_status(&recovered_status, seed.first.as_ref(), receipt_fault)?;
-    let mcp = seed.request.mcp_stdio.is_some();
-    if seed
-        .request
-        .mcp_stdio
-        .as_ref()
-        .is_some_and(|request| request.method == "tools/call")
-        && (receipt_fault.is_some() || seed.first.is_some())
-    {
-        let journal = execution_journal(
-            stream.clone(),
-            files.clone(),
-            &seed.results_volume,
-            &issuer,
-            &seed.scope,
-        )?;
-        model_tool::run(
-            model_tool::Approved {
-                recovery: Recovery {
-                    owner: owner.clone(),
-                    effects: effects.clone(),
-                    content: content.clone(),
-                },
-                task: seed.task,
-                command: seed.command,
-                plan: seed.plan.clone(),
-                request: seed.request.clone(),
-            },
-            runtime
-                .harness()
-                .durable_context(
-                    seed.task,
-                    OperationId::from_bytes(seed.task.into_bytes()),
-                    None,
-                )
-                .await?,
-            journal,
-            true,
-            matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
-            receipt_fault.is_some(),
-        )
-        .await?;
-    }
-    if matches!(recovered_status, EffectStatus::Succeeded { .. }) {
-        verify_stored_result(
-            content.as_ref(),
-            &seed.request,
-            &recovered_status,
-            lost_response,
-        )
-        .await?;
-    }
-    if effects
-        .run_task_effect(&owner, seed.command, &seed.plan, None)
-        .await
-        .map(|result| result.0)?
-        != recovered_status
-        || seed.request.cwd.join("destination/output.txt").exists()
-    {
-        return Err("receipt recovery repeated native execution".into());
-    }
-    if mcp {
-        verify_mcp_calls(&seed.request, seed.applied)?;
-    }
-    verify_publication(&files, &seed.destination, seed.applied && !lost_response).await?;
-    if receipt_fault.is_none() && !lost_response {
-        println!(
-            "approved {} execution, SDK publication and receipt-only recovery passed",
-            if mcp { "MCP stdio" } else { "native" }
-        );
-    }
-    Ok(())
-}
-
-async fn recovered_effects<P, A, O>(
-    stream: std::sync::Arc<P>,
-    files: Arc<Files<A, O>>,
-    runtime: &Runtime<P, A, O>,
-    seed: &Restart,
-    issuer: &AuthorityIssuer,
-) -> Result<Recovery<P>>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let owner = Arc::new(
-        runtime
-            .task_host()
-            .journal_owner(seed.task, &seed.fence, None)
-            .await?,
-    );
-    let authority = recovered_authority(
-        stream.clone(),
-        files,
-        &seed.results_volume,
-        issuer,
-        &seed.scope,
-    )?;
-    let content = authority.content.clone();
-    let recovered = Arc::new(
-        NativeProcessProvider::<P, A, O>::new(
-            owner.clone(),
-            seed.command,
-            seed.plan.clone(),
-            None,
-            seed.approval,
-            authority,
-        )
-        .await?,
-    );
-    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
-    registry.register(recovered, None)?;
-    let effects = Arc::new(ConversationEffectHost::new(
-        stream,
-        issuer
-            .verifier(&mut None)
-            .expect("verifier copy")
-            .audience()
-            .clone(),
-        issuer.clone(),
-        seed.scope.clone(),
-        SchemaRegistry::new(),
-        content.clone(),
-        registry,
-        None,
-        None,
-    )?);
-    Ok(Recovery {
-        owner,
-        effects,
-        content,
-    })
-}
-
 fn execution_journal<P, A, O>(
     stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
@@ -832,41 +538,6 @@ where
         1_000_000,
         None,
     )?))
-}
-
-fn recovered_authority<P, A, O>(
-    stream: std::sync::Arc<P>,
-    files: Arc<Files<A, O>>,
-    volume: &VolumeRef,
-    issuer: &AuthorityIssuer,
-    scope: &Scope,
-) -> Result<NativeProcessAuthority>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let content: Arc<dyn ContentResidencyVerifier> = FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000,
-        None,
-    )?;
-    Ok(NativeProcessAuthority {
-        verifier: issuer.verifier(&mut None)?,
-        schemas: SchemaRegistry::default(),
-        content,
-        results: FilesystemContentPublisher::new(
-            files.clone(),
-            volume,
-            &issuer.verifier(&mut None)?,
-            scope,
-            1_000_000,
-            None,
-        )?,
-        approvals: execution_journal(stream, files, volume, issuer, scope)?,
-    })
 }
 
 async fn verify_publication<A, O>(
@@ -1005,29 +676,6 @@ async fn verify_stored_result(
     Ok(())
 }
 
-fn verify_recovered_status(
-    recovered: &EffectStatus,
-    first: Option<&EffectStatus>,
-    receipt_fault: Option<(&str, bool)>,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    if let Some((kind, lost_reply)) = receipt_fault {
-        if kind == "observed" && lost_reply {
-            if !matches!(recovered, EffectStatus::Succeeded { .. }) {
-                return Err("committed observation was not recovered".into());
-            }
-        } else if *recovered != EffectStatus::Indeterminate {
-            return Err("unknown MCP outcome became authoritative".into());
-        }
-    } else if first.is_none() {
-        if *recovered != EffectStatus::Indeterminate {
-            return Err("launch without an observation became authoritative".into());
-        }
-    } else if Some(recovered) != first {
-        return Err("receipt recovery changed the observed result".into());
-    }
-    Ok(())
-}
-
 fn verify_mcp_calls(
     request: &NativeProcessRequest,
     applied: bool,
@@ -1071,6 +719,11 @@ mod faults;
 mod mcp_peer;
 #[path = "approved-native-process/model_tool.rs"]
 mod model_tool;
+#[path = "approved-native-process/recovery.rs"]
+mod recovery;
+#[path = "approved-native-process/task.rs"]
+mod task;
+use recovery::Restart;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {

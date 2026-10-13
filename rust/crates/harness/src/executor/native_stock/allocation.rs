@@ -13,6 +13,7 @@ pub(crate) fn stock_boundary(
     let _ = io;
     match code {
         crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
+        crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
         crate::wire::ErrorCode::Storage => Error::Storage(reason.into()),
         crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
@@ -51,32 +52,12 @@ pub(crate) fn stock_vec_push<T>(
     value: T,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let size = std::mem::size_of::<T>();
-        if values.len() == values.capacity() && size != 0 {
-            let before = values.capacity();
-            io.preflight(acyclic_fs::WorkCounters {
-                allocation_operations: 1,
-                ..Default::default()
-            })?;
-            io.retain_owned(size as u64)?;
-            io.allocation_attempt(size as u64)?;
-            values.try_reserve_exact(1).map_err(Error::Allocation)?;
-            let extra = (values.capacity() - before - 1)
-                .checked_mul(size)
-                .ok_or_else(|| {
-                    stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Storage,
-                        "stock vector capacity overflow",
-                    )
-                })?;
-            io.retain_owned(extra as u64)?;
+    with_history_io(io, |work| {
+        if let Some(work) = work.as_deref_mut() {
+            crate::store::history::reserve(values, values.len() + 1, work)?;
         }
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
+        Ok::<_, Error>(())
+    })?;
     values.push(value);
     Ok(())
 }

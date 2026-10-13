@@ -183,24 +183,27 @@ impl Executor for StockExecutor {
         native_execution_supported(self, context, journal, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.claim(
-                std::mem::size_of::<TurnOutput>() as u64,
-                0,
-                acyclic_fs::WorkCounters::default(),
-            )?)?;
-            let output = {
-                let session = native_session(self, context, input.operation_id, &io, None);
-                session
-                    .execute_progress(input, journal)
-                    .await?
-                    .into_output()?
+            let session = StockExecution {
+                io: Some(&io),
+                context: Some((context, input.operation_id)),
+                ..StockExecution::ordinary(self)
             };
-            let retained = native_size_add(
-                std::mem::size_of::<TurnOutput>() as u64,
-                native_output_payload_bytes(&output)?,
-            )?;
-            work.remaining()?;
-            Ok((output, io.into_native_custody(retained)?))
+            native_result(
+                &io,
+                async {
+                    session
+                        .execute_progress(input, journal)
+                        .await?
+                        .into_output()
+                },
+                |output| {
+                    native_size_add(
+                        std::mem::size_of::<TurnOutput>() as u64,
+                        native_output_payload_bytes(output)?,
+                    )
+                },
+            )
+            .await
         })
     }
 }

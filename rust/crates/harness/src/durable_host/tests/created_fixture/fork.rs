@@ -224,10 +224,9 @@ impl CreationFixture {
     ) -> Result<(
         TaskResourcePreparation,
         crate::distributed::WorkLease,
-        crate::filesystem::InvocationCancellation,
+        acyclic_fs::CancellationToken,
     )> {
-        let invocation =
-            crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
+        let invocation = acyclic_fs::CancellationToken::new();
         let admission = self.admission(
             83,
             serde_json::to_value(request).map_err(|error| Error::Invalid(error.to_string()))?,
@@ -249,7 +248,7 @@ impl CreationFixture {
                     None,
                 )
                 .await?
-                .with_invocation_cancellation(&invocation.0),
+                .with_invocation_cancellation(&invocation),
         );
         Ok((
             owner

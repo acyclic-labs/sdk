@@ -1,84 +1,5 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    pub(super) async fn list_directory_page(
-        &self,
-        request: DirectoryPageRequest,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<DirectoryPage> {
-        list_directory_page(
-            &self.volume,
-            &self.root,
-            &request.path,
-            request.after.as_ref(),
-            request.maximum_entries,
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    /// Lists ordered directory binding pages with at most `concurrency`
-    pub async fn list_directory_pages(
-        &self,
-        requests: &[DirectoryPageRequest],
-        concurrency: usize,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Vec<DirectoryPage>> {
-        if concurrency == 0
-            || requests.len()
-                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
-                    .unwrap_or(usize::MAX)
-        {
-            return Err(OperationFailure::before_work(FsError::Path(
-                PathLookupError::TooManyPaths,
-            )));
-        }
-        if budget != WorkBudget::UNBOUNDED {
-            let mut work = WorkCounters::default();
-            let mut ordered = Vec::new();
-            ordered
-                .try_reserve_exact(requests.len())
-                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
-            for request in requests.iter().cloned() {
-                let receipt = self
-                    .list_directory_page(request, remaining(work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, receipt.work)?;
-                ordered.push(receipt.value);
-            }
-            return Ok(OperationReceipt {
-                value: ordered,
-                work,
-            });
-        }
-        let results = stream::iter(
-            requests
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, request)| {
-                    let reader = self.clone();
-                    async move {
-                        (
-                            index,
-                            reader
-                                .list_directory_page(request, budget, cancellation)
-                                .await,
-                        )
-                    }
-                }),
-        )
-        .buffer_unordered(concurrency.min(requests.len().max(1)))
-        .collect::<Vec<_>>()
-        .await;
-        order_batch_results(results, budget)
-    }
-}
-
 pub(super) async fn list_directory_to_file_root_with_accounting<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -147,34 +68,6 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
     };
     readonly_cleanup_standalone(accounting, before, retained)?;
     result
-}
-
-pub(super) async fn list_directory_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    volume: &Volume<A, O>,
-    root: &GenerationRoot,
-    path: &NamespacePath,
-    after: Option<&LogicalName>,
-    maximum_entries: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> FsResult<DirectoryPage> {
-    let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = list_directory_to_file_root_with_accounting(
-        volume,
-        root,
-        path,
-        after,
-        maximum_entries,
-        &mut accounting,
-        cancellation,
-    )
-    .await
-    .map(|(mut page, allocation)| {
-        drop(allocation);
-        page.work = accounting.spent();
-        page
-    });
-    measured(result, &accounting)
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
