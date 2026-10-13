@@ -17,8 +17,6 @@ mod types;
 pub use types::*;
 mod protocol;
 pub use protocol::*;
-mod inspection;
-pub use inspection::*;
 mod memory;
 pub use memory::*;
 

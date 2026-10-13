@@ -380,9 +380,15 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
         })
         .await?;
     let mut state = stream.state.write().await;
-    let index = *state
-        .replays
-        .get(key.as_bytes())
+    let index = state
+        .retained
+        .iter()
+        .position(|entry| {
+            entry
+                .replay
+                .as_ref()
+                .is_some_and(|stored| stored.as_ref() == key.as_bytes())
+        })
         .ok_or(StreamError::Unavailable)?;
     let replay = state
         .retained
@@ -478,9 +484,14 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
         .await?;
     assert!(decode(&stream.encode_state().await).is_some());
     let mut state = stream.state.write().await;
-    let index = *state
-        .commits
-        .get(&receipt.commit_id)
+    let index = state
+        .retained
+        .iter()
+        .position(|entry| {
+            entry
+                .envelope()
+                .is_some_and(|envelope| envelope.commit_id == receipt.commit_id)
+        })
         .ok_or(StreamError::Unavailable)?;
     let envelope = state
         .retained

@@ -103,7 +103,6 @@ fn rejects_a_replaced_directory_before_capture_admission() -> Result<(), Box<dyn
             &root,
             &test_host_path(Path::new("current")),
             &expected,
-            &CancellationToken::new(),
             &scope.native,
         ),
         Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))

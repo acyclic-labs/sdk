@@ -1,7 +1,6 @@
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
-use crate::cancellation::CancellationToken;
 use crate::memory::MemoryObjectStore;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
@@ -11,10 +10,7 @@ use crate::storage::{
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Deterministic conformance backend that returns independently owned read
-/// buffers. The production memory backend intentionally shares immutable
-/// byte buffers; this backend proves kernels correctly admit the more expensive
-/// ownership contract required of remote and native adapters.
+/// Conformance backend with independently owned read buffers.
 #[derive(Default)]
 pub(crate) struct OwnedReadObjectStore {
     pub(crate) inner: MemoryObjectStore,
@@ -79,26 +75,9 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         object_id: ObjectId,
         bytes: OwnedBytes,
         context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            cancellation
-                .check()
-                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+    ) -> Result<(), ObjectStoreError> {
+        ordinary(context)?;
+        self.inner.put(object_id, bytes, context).await
     }
 
     async fn read(
@@ -106,45 +85,26 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         object_id: ObjectId,
         maximum_bytes: u64,
         context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        ordinary(context)?;
         let budget = context.read_budget()?;
-        let cancellation = context.cancellation;
-        let result = async {
-            cancellation
-                .check()
-                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-            Self::own_read(
-                &{
-                    let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                    let __object_result = AsyncObjectStore::read(
-                        &self.inner,
-                        object_id,
-                        maximum_bytes,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_work.receipt(__object_result)
-                }?,
-                budget,
-            )
-        }
-        .await;
-        context.accept(result)
+        let mut backend = crate::AuthorityWork::new(budget, context.cancellation);
+        let result = self
+            .inner
+            .read(object_id, maximum_bytes, &mut backend)
+            .await;
+        let owned = backend
+            .receipt(result)
+            .and_then(|receipt| Self::own_read(&receipt, budget));
+        context.accept(owned)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
         context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        ordinary(context)?;
         crate::async_storage::read_many_sequential(self, requests, context).await
     }
 
@@ -152,25 +112,18 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         &self,
         object_id: ObjectId,
         context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            cancellation
-                .check()
-                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+    ) -> Result<bool, ObjectStoreError> {
+        ordinary(context)?;
+        self.inner.contains(object_id, context).await
     }
+}
+
+fn ordinary(context: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+    if context.is_native() {
+        return Err(ObjectStoreError::NativeUnavailable);
+    }
+    context
+        .cancellation
+        .check()
+        .map_err(|_| ObjectStoreError::Cancelled)
 }

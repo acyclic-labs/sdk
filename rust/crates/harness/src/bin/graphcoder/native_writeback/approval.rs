@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::runtime::{DurableTaskHost as _, TaskStateProvider};
+use acyclic_harness::runtime::TaskStateProvider;
 impl NativeSession {
     pub(super) async fn publication_binding<'a>(
         &'a self,
@@ -57,7 +57,11 @@ impl NativeSession {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner(binding.caller, &(LeaseFence::from(&request.caller_lease.reservation)), None)
+            .journal_owner(
+                binding.caller,
+                &(LeaseFence::from(&request.caller_lease.reservation)),
+                None,
+            )
             .await?;
         let admission = self
             .runtime
@@ -134,7 +138,8 @@ impl NativeSession {
             };
             result.publication = Some(journal);
         }
-        if let Some((ticket, resolution)) = interactions.read(interaction_id(binding)).await? {
+        if let Some((ticket, resolution)) = interactions.read(interaction_id(binding), None).await?
+        {
             let digest = result.action_digest.ok_or_else(|| {
                 Error::Conflict("approval lacks the original publication journal".into())
             })?;
@@ -149,7 +154,7 @@ impl NativeSession {
                 ));
             }
             let original = interactions
-                .read_request(interaction_id(binding))
+                .read_request(interaction_id(binding), None)
                 .await?
                 .ok_or_else(|| Error::Storage("publication approval request is missing".into()))?;
             if !matches!(original, Interaction::Approval { operation_id, action_digest, .. }

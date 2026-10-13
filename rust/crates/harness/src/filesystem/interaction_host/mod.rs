@@ -38,60 +38,60 @@ pub struct FilesystemInteractionHost<P, A, O> {
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
 where
     P: StreamProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn inspect<'a>(
-        &'a self,
+    async fn inspect(
+        &self,
         scope: Scope,
         id: InteractionId,
-    ) -> BoxFuture<'a, Result<Option<(InteractionTicket, Option<InteractionResolution>)>>> {
-        Box::pin(async move {
-            self.verifier.verify(&scope, &mut None)?;
-            let result = self.read(id, None).await?;
-            if let Some((ticket, _)) = &result
-                && !scope.capabilities().contains(&ticket.viewer_grant())
-                && !scope.capabilities().contains(&ticket.responder_grant())
-            {
-                return Err(Error::Unauthorized(
-                    "scope lacks interaction view grant".into(),
-                ));
-            }
-            Ok(result)
-        })
+    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
+        self.verifier.verify(&scope, &mut None)?;
+        let result = self.read(id, None).await?;
+        if let Some((ticket, _)) = &result
+            && !scope.capabilities().contains(&ticket.viewer_grant())
+            && !scope.capabilities().contains(&ticket.responder_grant())
+        {
+            return Err(Error::Unauthorized(
+                "scope lacks interaction view grant".into(),
+            ));
+        }
+        Ok(result)
     }
 
-    fn resolve_answer<'a>(
-        &'a self,
+    async fn resolve_answer(
+        &self,
         operation_id: OperationId,
         scope: Scope,
         id: InteractionId,
         expected_version: u64,
         response: InteractionResponse,
-    ) -> BoxFuture<'a, Result<ResolutionReceipt>> {
-        Box::pin(FilesystemInteractionHost::resolve_answer(
+    ) -> Result<ResolutionReceipt> {
+        FilesystemInteractionHost::resolve_answer(
             self,
             operation_id,
             scope,
             id,
             expected_version,
             response,
-        ))
+        ).await
     }
 
-    fn resolve_approval<'a>(
-        &'a self,
+    async fn resolve_approval(
+        &self,
         operation_id: OperationId,
         scope: Scope,
         id: InteractionId,
         expected_version: u64,
         approved: bool,
         reason: Option<String>,
-    ) -> BoxFuture<'a, Result<ResolutionReceipt>> {
-        Box::pin(FilesystemInteractionHost::resolve_approval(
+    ) -> Result<ResolutionReceipt> {
+        FilesystemInteractionHost::resolve_approval(
             self,
             operation_id,
             scope,
@@ -99,7 +99,7 @@ where
             expected_version,
             approved,
             reason,
-        ))
+        ).await
     }
 }
 

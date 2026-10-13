@@ -171,23 +171,9 @@ pub(super) fn capture_vec<T>(
     count: usize,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<T>, CaptureError> {
-    let bytes = count
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
-    capture_allocate(meter, bytes as u64)?;
-    let mut retained = bytes as u64;
-    let mut values = Vec::new();
-    let reserved = values.try_reserve_exact(count);
-    let actual = values
-        .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
-    // Reconcile completed capacity before any late refusal; the scope retires failed payloads.
-    let reconciled =
-        meter.with_original_leaf(|work| work.reconcile_native_allocation(&mut retained, actual));
-    reserved.map_err(CaptureError::from)?;
-    reconciled.map_err(capture_demand_error)?;
-    Ok(values)
+    crate::native_host::buffer(count, &mut meter.clone())
+        .map(|(values, _allocation)| values)
+        .map_err(capture_demand_error)
 }
 
 pub(super) fn capture_reserve<T>(

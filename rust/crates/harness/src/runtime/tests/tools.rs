@@ -81,12 +81,14 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         )
         .expect("native policy source ledger");
         struct OpaqueCommandRouter;
+        #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
         impl InteractionRouter for OpaqueCommandRouter {
-            fn route<'a>(
-                &'a self,
+            async fn route(
+                &self,
                 _: OperationId,
                 _: Interaction,
-            ) -> BoxFuture<'a, Result<InteractionOutcome>> {
+            ) -> Result<InteractionOutcome> {
                 panic!("ordinary command route must not run");
             }
         }

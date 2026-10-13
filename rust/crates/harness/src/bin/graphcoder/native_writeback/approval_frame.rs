@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_harness::runtime::TaskStateProvider;
 use prost::Message as _;
 impl NativeSession {
     pub(super) async fn publication_approval_frame(
@@ -9,10 +8,7 @@ impl NativeSession {
     ) -> Result<String> {
         self.runtime
             .task_host()
-            .verify_dispatch_owner(
-                binding.caller,
-                LeaseFence::from(&binding.caller_lease.reservation),
-            )
+            .verify_dispatch_owner(binding.caller, &LeaseFence::from(&binding.caller_lease.reservation), None)?
             .await?;
         let issuer = AuthorityIssuer::new(
             &binding.owner.issuer,
