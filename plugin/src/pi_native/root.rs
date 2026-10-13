@@ -412,7 +412,7 @@ pub(crate) async fn native_root<'a>(
     })?;
     if session.volume() != &binding.scratch.volume
         || session.path() != intent.session_path
-        || bindings[0].generation.as_resource().key() != session_generation
+        || scratch.generation.as_resource().key() != session_generation
         || session.descriptor().byte_length() > intent.maximum_bytes
     {
         return Err(Error::NativeBoundary {

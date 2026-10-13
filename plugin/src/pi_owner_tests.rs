@@ -310,9 +310,9 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
             0..=2 => {
                 *value.pointer_mut("/version").unwrap() = json!([0, 4, 5].get(mutation).unwrap())
             }
-            3 => value.pointer("/key").unwrap() = json!(vec![0u8; 32]),
+            3 => *value.pointer_mut("/key").unwrap() = json!(vec![0u8; 32]),
             4 => *value.pointer_mut("/policy/concurrency").unwrap() = json!(0),
-            5 => value.pointer("/policy/maximum_payload_bytes").unwrap() = json!(65_537),
+            5 => *value.pointer_mut("/policy/maximum_payload_bytes").unwrap() = json!(65_537),
             6 => {
                 value.as_object_mut().unwrap().remove("version");
             }

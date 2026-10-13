@@ -858,7 +858,7 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
         .unwrap();
     for mutation in 0..6 {
         let mut candidate = snapshot;
-        let mut volume = &*fixture.request.binding.project_volumes.get(key).unwrap();
+        let mut volume = fixture.request.binding.project_volumes.get(key).unwrap();
         let mut budget = allocation_budget();
         if mutation == 1 {
             candidate.workspace_id = acyclic_fs::WorkspaceId::from_bytes([130; 16]);

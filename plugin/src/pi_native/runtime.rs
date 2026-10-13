@@ -498,7 +498,8 @@ impl Serialize for PiNativeArgv<'_> {
                     remaining = tail;
                 }
             }
-            let length = tools.len() - remaining.len();
+            let unused = remaining.len();
+            let length = tools.len() - unused;
             sequence.serialize_element("--tools")?;
             sequence.serialize_element(
                 std::str::from_utf8(tools.get(..length).ok_or_else(|| {

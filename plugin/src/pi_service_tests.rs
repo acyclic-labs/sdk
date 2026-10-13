@@ -560,7 +560,7 @@ fn scoped_response_reuses_original_identity_and_exhausted_quota() {
             &response.0
         };
         assert_eq!(
-            body.pointer("/files").unwrap(),
+            *body.pointer("/files").unwrap(),
             json!(["selected/a", "selected/b"])
         );
         assert_eq!(body.pointer("/operation").unwrap(), "sdk-original");

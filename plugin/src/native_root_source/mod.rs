@@ -127,7 +127,7 @@ mod tests {
             panic!("actual project creator fixture");
         };
         let (key, path) = paths.first_key_value().unwrap();
-        let created = &*fixture.root_allocation.roots.get(key).unwrap();
+        let created = fixture.root_allocation.roots.get(key).unwrap();
         (
             Path::new(path),
             SourceReference {
@@ -173,7 +173,7 @@ mod tests {
             .await?;
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
-        let created = &*fixture.root_allocation.roots.get(key).unwrap();
+        let created = fixture.root_allocation.roots.get(key).unwrap();
         if created.repository_workspace_id
             != fixture.root_handle.workspace.workspace().id().into_bytes()
         {
