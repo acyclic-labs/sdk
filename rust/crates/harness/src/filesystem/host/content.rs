@@ -23,21 +23,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if expected_generation.is_some() {
             crate::tool::edit::validate_edit_bound(maximum_bytes)?;
         }
-        self.put_content_impl(
-            volume,
-            grant,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            maximum_bytes,
-            key,
-            None,
-            expected_generation,
-            io,
-            None,
-            None,
-        )
+        self.put_content_impl(volume, grant, path, bytes, media_type, display_name, maximum_bytes, key, None, expected_generation, io)
         .await
     }
 
@@ -128,7 +114,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
         let Some(original) =
-            fork_preparer_io::operation_generation(self, &workspace, key, io).await?
+            (self).operation_generation(&workspace, key, io).await?
         else {
             return Ok(None);
         };
@@ -254,21 +240,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
-        self.put_content_impl(
-            volume,
-            grant,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            maximum_bytes,
-            key,
-            Some(class),
-            None,
-            io,
-            None,
-            None,
-        )
+        self.put_content_impl(volume, grant, path, bytes, media_type, display_name, maximum_bytes, key, Some(class), None, io)
         .await
     }
 

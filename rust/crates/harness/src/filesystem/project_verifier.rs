@@ -68,8 +68,8 @@ where
                 self.host.provider.clone(),
                 &receipt.target_project.storage_name(&mut None)?,
             )?;
-            let source_workspace = self.host.open(&source).await?;
-            let target_workspace = self.host.open(&target).await?;
+            let source_workspace = self.host.open(&source, None).await?;
+            let target_workspace = self.host.open(&target, None).await?;
             if receipt.provider_proof.format != FILESYSTEM_JOIN_PROOF_FORMAT {
                 return Err(Error::Invalid(
                     "merge receipt has an unsupported provider proof".into(),
@@ -80,15 +80,15 @@ where
                     .map_err(|error| Error::Invalid(error.to_string()))?;
             let source_generation = self
                 .host
-                .generation(&source_workspace, &receipt.source_generation)
+                .generation(&source_workspace, &receipt.source_generation, None)
                 .await?;
             let expected = self
                 .host
-                .generation(&target_workspace, &receipt.expected_target_generation)
+                .generation(&target_workspace, &receipt.expected_target_generation, None)
                 .await?;
             let result = self
                 .host
-                .generation(&target_workspace, &receipt.result_generation)
+                .generation(&target_workspace, &receipt.result_generation, None)
                 .await?;
             if witness.source_workspace != source_workspace.id().volume_id()
                 || witness.target_workspace != target_workspace.id().volume_id()

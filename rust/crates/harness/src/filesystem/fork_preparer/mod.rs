@@ -37,7 +37,8 @@ use references::add_summary_readers;
 pub(super) use references::require_reference_donor;
 pub(crate) mod bounded_io;
 pub(crate) use bounded_io::PreparationIo;
-pub use created_access::{FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
+pub(in crate::filesystem) use created_access::CreatedProvenance;
+pub use created_access::FilesystemResourceCreationProvider;
 
 const MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;

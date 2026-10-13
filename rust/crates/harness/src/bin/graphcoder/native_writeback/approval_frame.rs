@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider as _;
 use prost::Message as _;
 impl NativeSession {
     pub(super) async fn publication_approval_frame(

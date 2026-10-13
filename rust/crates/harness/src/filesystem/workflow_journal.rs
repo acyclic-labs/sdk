@@ -704,9 +704,7 @@ where
         let grant = crate::executor::with_history_io(io, |work| ContentGrant::verify(
             &self.verifier, &self.scope, &self.volume, VolumeOperation::Write, maximum, work))?;
         _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
-        self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json",
-            if transition.is_some() { "transition.json" } else { "admission.json" },
-            self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io, None, None).await
+        self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json", if transition.is_some() { "transition.json" } else { "admission.json" }, self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io).await
     }
 
     async fn append_reference(

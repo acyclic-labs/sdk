@@ -35,9 +35,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 "project source lacks this graph's authenticated creator",
             ));
         }
-        if self.native_source(&snapshot.project).is_some() && snapshot.native_snapshot.is_none() {
+        if snapshot.native_snapshot.is_some() {
             return Err(reject(
-                "bound lazy project requires its original native snapshot",
+                "native source has no original provider binding",
             ));
         }
         if io.is_none() {
@@ -83,37 +83,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 .ok_or_else(|| io.invalid("source reference custody underflows"))?,
         )?;
         let reference = (reference, hold);
-        let opened = fork_preparer_io::open(&self.host, &reference.0, io).await?;
+        let opened = (&self.host).open(&reference.0, Some(io)).await?;
         if io.original_native_work().is_none() {
             io.retain_owned(opened.name().as_str().len() as u64)?;
         }
         let selected =
-            fork_preparer_io::generation(&self.host, &opened, &snapshot.generation, io).await?;
+            (&self.host).generation(&opened, &snapshot.generation, Some(io)).await?;
         let generation = selected.id();
         drop(selected);
-        if let Some(value) = &snapshot.native_snapshot {
-            let lazy = self
-                .native_source(&snapshot.project)
-                .ok_or_else(|| reject("native source has no original provider binding"))?;
-            if lazy.backing.workspace_id() != opened.id() {
-                return Err(reject("native source names another original workspace"));
-            }
-            let (frozen, _frozen) = source_snapshot(
-                value,
-                JsonBounds {
-                    maximum_bytes: context.maximum_bytes,
-                    maximum_items: context.maximum_work,
-                    maximum_depth: 32,
-                },
-                io,
-            )?;
-            if frozen.workspace_id != opened.id() || frozen.authored_generation != generation {
-                return Err(reject(
-                    "native capture does not match the selected generation",
-                ));
-            }
-            lazy.backing.validate(frozen, io)?.await?;
-        }
         check()?;
         io.remaining()?;
         Ok(())

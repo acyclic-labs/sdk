@@ -172,7 +172,7 @@ async fn restored_original_target_cannot_rebase_over_a_concurrent_user_write() -
     let inspected = controller
         .prepare_project_import(&fixture.source, &fixture.source_generation, None)
         .await?;
-    let target = fixture.host.generation_ref_id(inspected.target_head())?;
+    let target = fixture.host.generation_ref_id(inspected.target_head(), None)?;
     let project = workspace_ref(
         fixture.project.provider().clone(),
         &fixture.project.storage_name(&mut None)?,
@@ -207,13 +207,13 @@ async fn restored_original_target_cannot_rebase_over_a_concurrent_user_write() -
     assert_eq!(
         fixture
             .host
-            .read(&project, Some(&user_generation), "/value.txt", 64)
+            .read(&project, Some(&user_generation), "/value.txt", 64, None)
             .await?
             .as_ref(),
         b"concurrent user"
     );
     assert_eq!(
-        fixture.host.resolve(&project).await?.generation,
+        fixture.host.resolve(&project, None).await?.generation,
         user_generation
     );
     Ok(())
@@ -233,7 +233,7 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
     let inspected = controller
         .prepare_project_import(&fixture.source, &fixture.source_generation, None)
         .await?;
-    let target = fixture.host.generation_ref_id(inspected.target_head())?;
+    let target = fixture.host.generation_ref_id(inspected.target_head(), None)?;
     let effect = OperationId::from_bytes([21; 16]);
     let first = controller
         .apply_project_merge(&inspected, effect, BTreeMap::new())
@@ -244,7 +244,7 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
             "expected real Filesystem publication".into(),
         ));
     };
-    let result = fixture.host.generation_ref_id(first.generation.id())?;
+    let result = fixture.host.generation_ref_id(first.generation.id(), None)?;
     let restored = controller
         .prepare_project_import(&fixture.source, &fixture.source_generation, Some(&target))
         .await?;
@@ -258,14 +258,14 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
         ));
     };
     assert_eq!(
-        fixture.host.generation_ref_id(retried.generation.id())?,
+        fixture.host.generation_ref_id(retried.generation.id(), None)?,
         result
     );
     let project = workspace_ref(
         fixture.project.provider().clone(),
         &fixture.project.storage_name(&mut None)?,
     )?;
-    assert_eq!(fixture.host.resolve(&project).await?.generation, result);
+    assert_eq!(fixture.host.resolve(&project, None).await?.generation, result);
     Ok(())
 }
 
@@ -299,14 +299,14 @@ async fn restored_plan_requires_original_signed_source_read_grant() -> Result<()
         fixture.project.provider().clone(),
         &fixture.project.storage_name(&mut None)?,
     )?;
-    let target = fixture.host.resolve(&project).await?.generation;
+    let target = fixture.host.resolve(&project, None).await?.generation;
     assert!(matches!(
         controller
             .prepare_project_import(&fixture.source, &fixture.source_generation, Some(&target))
             .await,
         Err(Error::Unauthorized(_))
     ));
-    assert_eq!(fixture.host.resolve(&project).await?.generation, target);
+    assert_eq!(fixture.host.resolve(&project, None).await?.generation, target);
     Ok(())
 }
 
@@ -465,7 +465,7 @@ async fn merge_plan(
         source_project: fixture.source.clone(),
         source_generation: fixture.source_generation.clone(),
         target_project: fixture.project.clone(),
-        expected_target_generation: fixture.host.generation_ref_id(inspected.target_head())?,
+        expected_target_generation: fixture.host.generation_ref_id(inspected.target_head(), None)?,
         authorized_source: None,
         notice: ConversationMessage {
             id: uuid::Uuid::from_bytes([30; 16]),
@@ -853,7 +853,7 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
         &fixture.project,
         None,
     )?;
-    assert!(fixture.host.resolve(&child_workspace).await.is_err());
+    assert!(fixture.host.resolve(&child_workspace, None).await.is_err());
     let projected = controller
         .inherited_reference_grants(
             fixture.parent.reducer(),
@@ -868,7 +868,7 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
         )
         .await?
         .0;
-    assert!(fixture.host.resolve(&child_workspace).await.is_err());
+    assert!(fixture.host.resolve(&child_workspace, None).await.is_err());
     assert_eq!(projected.len(), 3);
     let member = projected
         .iter()
@@ -1059,14 +1059,14 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
                 required: true,
                 revision: crate::fork::ResourceRevision::Project {
                     volume: fixture.project.clone(),
-                    generation: fixture.host.resolve(&project).await?.generation,
+                    generation: fixture.host.resolve(&project, None).await?.generation,
                 },
             },
             crate::fork::ForkSelection {
                 required: true,
                 revision: crate::fork::ResourceRevision::PrivateVolume {
                     volume: fixture.private.clone(),
-                    generation: fixture.host.resolve(&private).await?.generation,
+                    generation: fixture.host.resolve(&private, None).await?.generation,
                     paths: Vec::new(),
                 },
             },

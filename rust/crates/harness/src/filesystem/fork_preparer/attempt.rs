@@ -271,7 +271,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     pub(super) async fn reconcile(&self, request: &ForkRequest) -> Result<Option<ForkReport>> {
         let host = &self.preparer.host;
         let journal = preparation_journal(&host.provider, request.operation_id, self.io)?;
-        match bounded_io::resolve(host, &journal, self.io).await {
+        match (host).resolve(&journal, self.io).await {
             Ok(_) => {}
             Err(error) if journal_absent(&error) => return Ok(None),
             Err(error) => return Err(error),

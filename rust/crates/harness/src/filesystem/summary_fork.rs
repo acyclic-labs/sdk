@@ -237,17 +237,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<GenerationRef> {
-    let generation = fsio::apply_generation_task_guarded(
-        controller.host,
-        workspace,
-        Some(expected),
-        mutations,
-        key,
-        io,
-        preparation.map(Arc::as_ref),
-        #[cfg(not(target_arch = "wasm32"))]
-        preparation,
-    )
+    let generation = (controller.host).apply_generation(workspace, Some(expected), mutations, key, io, preparation.map(Arc::as_ref))
     .await?;
     fsio::retain(&generation, io).await?;
     fsio::generation_ref(&controller.host.provider, generation.id(), io)
@@ -259,7 +249,7 @@ async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
 ) -> Result<Option<GenerationRef>> {
-    match fsio::operation_generation(controller.host, workspace, key, io).await? {
+    match (controller.host).operation_generation(workspace, key, io).await? {
         Some(generation) => {
             fsio::retain(&generation, io).await?;
             Ok(Some(fsio::generation_ref(
@@ -412,7 +402,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let workspace = fsio::content_workspace(&self.host.provider, child_private, io)?;
         let payload_generation = original_generation(self, &workspace, &keys[0], io).await?;
         let context_generation = original_generation(self, &workspace, &keys[1], io).await?;
-        let head = fsio::resolve(self.host, &workspace, io).await?.generation;
+        let head = (self.host).resolve(&workspace, io).await?.generation;
         if &head != initial_generation
             && payload_generation.as_ref() != Some(&head)
             && context_generation.as_ref() != Some(&head)
@@ -424,9 +414,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let payload_generation = if payloads.is_empty() {
             match io {
                 Some(io) => {
-                    let target = fsio::open(self.host, &workspace, io).await?;
+                    let target = (self.host).open(&workspace, Some(io)).await?;
                     let generation =
-                        fsio::generation(self.host, &target, initial_generation, io).await?;
+                        (self.host).generation(&target, initial_generation, Some(io)).await?;
                     fsio::retain(&generation, Some(io)).await?;
                     initial_generation.clone_with_io(io)?
                 }

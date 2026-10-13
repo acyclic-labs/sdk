@@ -1,7 +1,7 @@
 //! Finite work and owned-byte limits for filesystem preparation.
 use super::*;
 use crate::conversation::FileRef;
-use acyclic_fs::kernel::{allocation::AllocationLedger, KernelAccounting, KernelOwnedAllocation};
+use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
 use acyclic_fs::{
     CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError,
 };
@@ -20,12 +20,8 @@ pub(crate) use quota::native_decoded;
 pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub(crate) use records::{PreparationRecord, UploadRecord, preparation_slot_bytes};
 use records::{decode_allowance_error, decode_allowance_with_code};
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::filesystem) use sdk::publish_native;
 pub(in crate::filesystem) use sdk::{
-    apply_generation, apply_generation_task_guarded, content_workspace, create, fork, generation,
-    generation_ref, mutation, open, operation_generation, operation_key, publish_generation, read,
-    resolve, retain, volume_storage_name,
+    content_workspace, create, generation_ref, operation_key, retain, volume_storage_name,
 };
 
 /// Work and retained ownership for one preparation attempt.

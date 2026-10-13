@@ -1,5 +1,5 @@
 //! Authenticated same-graph source selection over the original Filesystem.
-use super::{FilesystemHost, PreparationIo, fork_preparer::FilesystemRootBootstrapAllocation};
+use super::{FilesystemHost, PreparationIo};
 use crate::{
     Error, Result, TaskId,
     conversation::{VolumeClass, VolumeRef},
@@ -10,23 +10,19 @@ use crate::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
     },
 };
-use acyclic_fs::demand::DemandSource;
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore,
+    AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef,
     WorkBudget, WorkCounters,
 };
 use std::sync::Arc;
 
-mod lazy;
 mod verify;
-pub use lazy::FsRootNativeSource;
 
 /// Creator-only project selection within one configured service graph.
 pub struct FsRootProjectSourceProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Authority,
     graph_root: TaskId,
-    bootstrap: Option<Arc<FilesystemRootBootstrapAllocation<A, O>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -39,40 +35,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         host: Arc<FilesystemHost<A, O>>,
         owner: &Authority,
         graph_root: TaskId,
-        bootstrap: Option<Arc<FilesystemRootBootstrapAllocation<A, O>>>,
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
         with_history_io(io, |work| host.provider.validate(work))?;
-        if let Some(proof) = &bootstrap {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let work = io.and_then(PreparationIo::original_native_work).ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "Root bootstrap proof requires its original configured native ledger",
-                })?;
-                work.remaining()?;
-                if proof.owner() != owner
-                    || proof.witness.0.original_task() != graph_root
-                    || proof.request.volume.class() != VolumeClass::Project
-                    || !Arc::ptr_eq(&proof.host, &host)
-                {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "Root bootstrap proof differs from this configured service",
-                    });
-                }
-                if !proof.matches_native_work(work) {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "Root bootstrap proof requires its original configured native ledger",
-                    });
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            return Err(Error::Unsupported(
-                "Root bootstrap proof requires original native work".into(),
-            ));
-        }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let owner = with_history_io(io, |work| match work.as_deref_mut() {
@@ -100,15 +65,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             host,
             owner,
             graph_root,
-            bootstrap,
             #[cfg(not(target_arch = "wasm32"))]
             _native_custody,
         }))
-    }
-    fn native_source(&self, project: &VolumeRef) -> Option<&Arc<FsRootNativeSource<A, O>>> {
-        self.bootstrap
-            .as_ref()
-            .filter(|proof| &proof.request.volume == project)
-            .and_then(|proof| proof.native_source.as_ref())
     }
 }

@@ -89,7 +89,7 @@ async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix
                 let callback = PreparationIo::from_budget(budget, cancellation)
                     .map_err(OperationFailure::before_work)?;
                 let result = async {
-                    let _checked = open(&host, &initial.workspace, &callback).await?;
+                    let _checked = host.open(&initial.workspace, Some(&callback)).await?;
                     Err(Error::Indeterminate(crate::OperationId::from_bytes(
                         [113; 16],
                     )))
@@ -104,7 +104,7 @@ async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix
         matches!(denied, Err(Error::Indeterminate(id)) if id == crate::OperationId::from_bytes([113; 16]))
     );
     assert_eq!(
-        host.resolve(&initial.workspace).await?.generation,
+        host.resolve(&initial.workspace, None).await?.generation,
         initial.generation
     );
     let accepted_io = PreparationIo::from_budget(
@@ -125,7 +125,10 @@ async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix
             async move {
                 let callback = PreparationIo::from_budget(budget, cancellation)
                     .map_err(OperationFailure::before_work)?;
-                let result = open(&host, &initial.workspace, &callback).await.map(|_| ());
+                let result = host
+                    .open(&initial.workspace, Some(&callback))
+                    .await
+                    .map(|_| ());
                 callback.finish(result)
             }
         },
@@ -136,7 +139,8 @@ async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix
             &initial.workspace,
             Some(&host.generation_ref_id(accepted.id())?),
             "/file",
-            32
+            32,
+            None
         )
         .await?
         .as_ref(),
@@ -228,8 +232,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         &mut None,
     )?;
     assert!(matches!(
-        fork(
-            &host,
+        host.fork_volume_pinned(
             &source,
             &caller_read,
             &selected_generation,
@@ -243,10 +246,9 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         Err(Error::Unauthorized(_))
     ));
     let denied_ref = workspace_ref(provider.clone(), &denied_child.storage_name(&mut None)?)?;
-    assert!(host.resolve(&denied_ref).await.is_err());
+    assert!(host.resolve(&denied_ref, None).await.is_err());
     assert!(
-        fork(
-            &host,
+        host.fork_volume_pinned(
             &source,
             &selected_read,
             &wrong_generation,
@@ -259,7 +261,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         .await
         .is_err()
     );
-    assert!(host.resolve(&denied_ref).await.is_err());
+    assert!(host.resolve(&denied_ref, None).await.is_err());
     let later_generation = host
         .apply(
             &initial.workspace,
@@ -271,24 +273,25 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             &IdempotencyKey::new("later-generation")?,
         )
         .await?;
-    let forked = fork(
-        &host,
-        &source,
-        &selected_read,
-        &selected_generation,
-        &child,
-        None,
-        &IdempotencyKey::new("pinned-selected-fork")?,
-        None,
-        None,
-    )
-    .await?;
+    let forked = host
+        .fork_volume_pinned(
+            &source,
+            &selected_read,
+            &selected_generation,
+            &child,
+            None,
+            &IdempotencyKey::new("pinned-selected-fork")?,
+            None,
+            None,
+        )
+        .await?;
     assert_eq!(
         host.read(
             &forked.workspace,
             Some(&forked.generation),
             "/value.txt",
-            32
+            32,
+            None
         )
         .await?
         .as_ref(),
@@ -305,11 +308,11 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
     )
     .await?;
     assert_eq!(
-        host.resolve(&initial.workspace).await?.generation,
+        host.resolve(&initial.workspace, None).await?.generation,
         later_generation
     );
     assert_eq!(
-        host.read(&initial.workspace, None, "/value.txt", 32)
+        host.read(&initial.workspace, None, "/value.txt", 32, None)
             .await?
             .as_ref(),
         b"later"
@@ -319,7 +322,8 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             &initial.workspace,
             Some(&selected_generation),
             "/value.txt",
-            32
+            32,
+            None
         )
         .await?
         .as_ref(),

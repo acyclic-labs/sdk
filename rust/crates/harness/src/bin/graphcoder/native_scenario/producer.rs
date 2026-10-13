@@ -340,7 +340,6 @@ impl Producer {
                 &self.config.owner.authority,
                 graph_root,
                 None,
-                None,
             )?;
             let service_issuer = AuthorityIssuer::new(
                 &self.config.owner.issuer,
@@ -663,7 +662,7 @@ impl Producer {
             .resolve(&workspace_ref(
                 self.config.filesystem_provider.clone(),
                 &volume.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?
             .generation)
     }

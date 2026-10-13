@@ -210,7 +210,6 @@ pub(super) async fn runtime(
             &config.owner.authority,
             graph_root,
             None,
-            None,
         )?;
         source.with_project_source_policy(issuer, policy)?;
     }

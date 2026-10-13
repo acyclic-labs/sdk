@@ -40,7 +40,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-        let observation = self.resolve(&workspace).await?;
+        let observation = self.resolve(&workspace, None).await?;
         let generation = expected_generation.unwrap_or(&observation.generation);
         self.retain_generation(&workspace, generation).await?;
         let requested = if path.is_empty() {
@@ -123,10 +123,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_ref =
             fork_preparer_io::content_workspace(&self.provider, volume, Some(&scratch))?;
         guard().await?;
-        let workspace = fork_preparer_io::open(self, &workspace_ref, &scratch).await?;
+        let workspace = (self).open(&workspace_ref, Some(&scratch)).await?;
         guard().await?;
         let generation = if let Some(expected) = expected_generation {
-            fork_preparer_io::generation(self, &workspace, expected, &scratch).await?
+            (self).generation(&workspace, expected, Some(&scratch)).await?
         } else {
             workspace
                 .head(work, work.cancellation())
@@ -221,7 +221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-        let observation = self.resolve(&workspace).await?;
+        let observation = self.resolve(&workspace, None).await?;
         let generation = expected_generation.unwrap_or(&observation.generation);
         self.retain_generation(&workspace, generation).await?;
         let bytes = self
@@ -229,16 +229,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &workspace,
                 Some(generation),
                 &format!("/{}", path),
-                maximum_bytes,
-            )
+                maximum_bytes, None)
             .await?;
         let metadata = self
             .read(
                 &workspace,
                 Some(generation),
                 &content_metadata_path_io(path, true, None)?,
-                u64::MAX,
-            )
+                u64::MAX, None)
             .await;
         let (descriptor, display_name) = match metadata {
             Ok(metadata) => {
@@ -307,8 +305,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let reference = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
         let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
-        let workspace = fork_preparer_io::open(self, &reference, io).await?;
-        let pinned = fork_preparer_io::generation(self, &workspace, generation, io).await?;
+        let workspace = (self).open(&reference, Some(io)).await?;
+        let pinned = (self).generation(&workspace, generation, Some(io)).await?;
         fork_preparer_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)

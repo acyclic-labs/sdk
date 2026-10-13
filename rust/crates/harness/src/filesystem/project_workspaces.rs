@@ -131,8 +131,8 @@ where
                 .controller()
                 .prepare_project_import(source_project, source_generation, None)
                 .await?;
-            let source_generation = self.host.generation_ref_id(plan.source_head())?;
-            let target = self.host.generation_ref_id(plan.target_head())?;
+            let source_generation = self.host.generation_ref_id(plan.source_head(), None)?;
+            let target = self.host.generation_ref_id(plan.target_head(), None)?;
             Ok(Box::new(FilesystemProjectJoinPlan {
                 binding: self.clone(),
                 plan,
@@ -226,10 +226,10 @@ where
                     })
                 }
                 JoinOutcome::NoChanges(generation) => Ok(ProjectJoinOutcome::NoChanges(
-                    self.binding.host.generation_ref_id(generation.id())?,
+                    self.binding.host.generation_ref_id(generation.id(), None)?,
                 )),
                 JoinOutcome::StaleTarget(generation) => Ok(ProjectJoinOutcome::StaleTarget(
-                    self.binding.host.generation_ref_id(generation.id())?,
+                    self.binding.host.generation_ref_id(generation.id(), None)?,
                 )),
                 JoinOutcome::Conflicted {
                     conflicts,

@@ -61,7 +61,7 @@ pub(crate) use fork_preparer::bounded_io::{
 };
 mod summary_fork;
 pub use fork_preparer::{
-    FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation,
+    FilesystemForkPreparer, FilesystemResourceCreationProvider,
 };
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
@@ -79,7 +79,7 @@ pub use host::{
 };
 pub use text_tools::ExactTextReplacement;
 mod root_source;
-pub use root_source::{FsRootNativeSource, FsRootProjectSourceProvider};
+pub use root_source::FsRootProjectSourceProvider;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -162,7 +162,6 @@ pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectControll
 #[cfg(not(target_arch = "wasm32"))]
 mod source_publication;
 #[cfg(not(target_arch = "wasm32"))]
-use source_publication::SourcePublicationFailureSlot;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
@@ -197,35 +196,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&GenerationRef>,
         io: Option<&fork_preparer_io::PreparationIo>,
-        publication_lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
-        root_allocation: Option<&fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
     ) -> Result<FileRef>
     where
         A: 'static,
         O: 'static,
     {
-        if root_allocation.is_some_and(|allocation| &allocation.request.volume != volume) {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "Root publication allocation names another original volume",
-            ));
-        }
-        #[cfg(target_arch = "wasm32")]
-        if publication_lease.is_some() {
-            return Err(Error::Unsupported(
-                "Root publication lease is native-platform only".into(),
-            ));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(lease) = publication_lease {
-            match io {
-                Some(io) => lease.verify(Some(io))?.await?,
-                None => lease.verify(None)?.await?,
-            }
-        }
         grant.require(volume, VolumeOperation::Write, io)?;
-        let publication_permit = acyclic_fs::PublicationPermit::Unrestricted;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
             return Err(stock_boundary(
                 io,
@@ -308,14 +284,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 expected_generation,
             ))?),
         };
-        let reconcile_source = root_allocation.is_some();
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
-        let prior = if reconcile_source {
-            None
-        } else {
+        let prior = {
             let opened = match io {
-                Some(io) => fork_preparer_io::open(self, &workspace, io).await?,
-                None => self.open(&workspace).await?,
+                Some(io) => (self).open(&workspace, Some(io)).await?,
+                None => self.open(&workspace, None).await?,
             };
             match io {
                 Some(io) => {
@@ -368,7 +341,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         };
         if let Some(prior) = prior {
-            let generation = fork_preparer_io::generation_ref(&self.provider, prior.id(), io)?;
+            let generation = (self).generation_ref_id(prior.id(), io)?;
             match io {
                 Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
                 None => self.retain_generation(&workspace, &generation).await?,
@@ -402,8 +375,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         &workspace,
                         Some(&generation),
                         &format!("/{metadata_path}"),
-                        metadata_bytes.len() as u64,
-                    )
+                        metadata_bytes.len() as u64, None)
                     .await?
                 }
             };
@@ -476,146 +448,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })?,
             bytes: receipt_bytes,
         });
-        let publication = async {
-            let generation = match io {
-                Some(io) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(lease) = publication_lease {
-                        if io.original_native_work().is_some() {
-                            let lease = Arc::clone(lease);
-                            let mut before_publication =
-                                move |original: &acyclic_fs::NativeMaterializationWork| {
-                                    let lease = Arc::clone(&lease);
-                                    let original = original.clone();
-                                    async move {
-                                        let io = PreparationIo::from_native_work(&original)?;
-                                        lease.verify(Some(&io))?.await
-                                    }
-                                };
-                            fork_preparer_io::publish_native(
-                                self,
-                                &workspace,
-                                expected_generation,
-                                &mutations,
-                                idempotency_key,
-                                io,
-                                &mut before_publication,
-                            )
-                            .await?
-                        } else {
-                            let mut before_publication = |budget| async move {
-                                let callback =
-                                    PreparationIo::from_budget(budget, io.cancellation())
-                                        .map_err(acyclic_fs::OperationFailure::before_work)?;
-                                let result = match lease.verify(Some(&callback)) {
-                                    Ok(future) => future.await,
-                                    Err(error) => Err(error),
-                                };
-                                callback.finish(result)
-                            };
-                            fork_preparer_io::publish_generation(
-                                self,
-                                &workspace,
-                                expected_generation,
-                                &mutations,
-                                idempotency_key,
-                                Some(io),
-                                &mut before_publication,
-                            )
-                            .await?
-                        }
-                    } else {
-                        fork_preparer_io::apply_generation(
-                            self,
-                            &workspace,
-                            expected_generation,
-                            &mutations,
-                            idempotency_key,
-                            io,
-                        )
-                        .await?
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    fork_preparer_io::apply_generation(
-                        self,
-                        &workspace,
-                        expected_generation,
-                        &mutations,
-                        idempotency_key,
-                        io,
-                    )
-                    .await?
-                }
-                None => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(lease) = publication_lease {
-                        let mut before_publication = || async { lease.verify(None)?.await };
-                        self.apply_generation_guarded(
-                            &workspace,
-                            expected_generation,
-                            &mutations,
-                            idempotency_key,
-                            &mut before_publication,
-                        )
-                        .await?
-                    } else {
-                        self.apply_generation(
-                            &workspace,
-                            expected_generation,
-                            &mutations,
-                            idempotency_key,
-                        )
-                        .await?
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    self.apply_generation(
-                        &workspace,
-                        expected_generation,
-                        &mutations,
-                        idempotency_key,
-                    )
-                    .await?
-                }
-            };
-            Ok::<_, Error>(generation)
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let (generation, source_snapshot) = if let Some(allocation) = root_allocation {
-            let failure_slot = SourcePublicationFailureSlot::prepare(io)?;
-            let (generation, snapshot) = allocation
-                .publish_lazy_candidate_with_io(&mutations, idempotency_key, publication_permit, io)
-                .await?;
-            (generation, Some((snapshot, failure_slot)))
-        } else {
-            (publication.await?, None)
-        };
-        #[cfg(target_arch = "wasm32")]
-        let generation = {
-            let _ = publication_permit;
-            publication.await?
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let root_retained = if let Some((snapshot, failure_slot)) = source_snapshot {
-            let retention = fork_preparer_io::retain(&generation, io).await;
-            match (snapshot, retention) {
-                (Ok(_), Ok(())) => failure_slot.discard(io)?,
-                (Err(source), retention) => {
-                    return Err(failure_slot.finish(generation.id(), source, retention.err()));
-                }
-                (Ok(_), Err(source)) => {
-                    return Err(failure_slot.finish(generation.id(), Error::from(source), None));
-                }
-            }
-            true
-        } else {
-            false
-        };
-        #[cfg(target_arch = "wasm32")]
-        let root_retained = false;
+        let generation = self.apply_generation(
+            &workspace, expected_generation, &mutations, idempotency_key, io, None,
+        ).await?;
         let generation_reference =
-            fork_preparer_io::generation_ref(&self.provider, generation.id(), io)?;
+            (self).generation_ref_id(generation.id(), io)?;
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
-        if !root_retained {
+        {
             match io {
                 Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
                 None => {
@@ -684,8 +523,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 })?;
             let path_custody = rendered.1;
             let path = rendered.0;
-            let opened = fork_preparer_io::open(self, &workspace, io).await?;
-            let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
+            let opened = (self).open(&workspace, Some(io)).await?;
+            let pinned = (self).generation(&opened, &generation, Some(io)).await?;
             let bytes = pinned
                 .read(&path, maximum_bytes, original, io.cancellation())
                 .await
@@ -738,8 +577,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let path = format!("/{}", reference.path());
         let bytes = match io {
             Some(io) => {
-                let opened = fork_preparer_io::open(self, &workspace, io).await?;
-                let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
+                let opened = (self).open(&workspace, Some(io)).await?;
+                let pinned = (self).generation(&opened, &generation, Some(io)).await?;
                 let bytes = io.receive(
                     pinned
                         .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
@@ -757,7 +596,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 bytes
             }
             None => {
-                self.read(&workspace, Some(&generation), &path, maximum_bytes)
+                self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
                     .await?
             }
         };

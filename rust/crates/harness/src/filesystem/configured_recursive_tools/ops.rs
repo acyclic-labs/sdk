@@ -94,7 +94,7 @@ where
         reference_hold = io
             .map(|io| io.guard_owned(reference.logical_owned_bytes()?))
             .transpose()?;
-        let observed = fsio::resolve(&self.filesystem, &reference, io).await?;
+        let observed = (&self.filesystem).resolve(&reference, io).await?;
         let workspace_hold = io
             .map(|io| io.guard_owned(observed.workspace.logical_owned_bytes()?))
             .transpose()?;

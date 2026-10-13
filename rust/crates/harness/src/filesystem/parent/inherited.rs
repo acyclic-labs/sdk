@@ -456,11 +456,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let workspace =
             fork_preparer_io::content_workspace(&self.host.provider, child_private, io)?;
         let committed = if let Some(prior) =
-            fork_preparer_io::operation_generation(self.host, &workspace, idempotency_key, io)
+            (self.host).operation_generation(&workspace, idempotency_key, io)
                 .await?
         {
             let original = fork_preparer_io::generation_ref(&self.host.provider, prior.id(), io)?;
-            let head = fork_preparer_io::resolve(self.host, &workspace, io)
+            let head = (self.host).resolve(&workspace, io)
                 .await?
                 .generation;
             if head != original {
@@ -468,7 +468,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 for key in continuation_keys {
                     crate::model::charge_items(io, 1)?;
                     if let Some(generation) =
-                        fork_preparer_io::operation_generation(self.host, &workspace, key, io)
+                        (self.host).operation_generation(&workspace, key, io)
                             .await?
                         && fork_preparer_io::generation_ref(
                             &self.host.provider,
@@ -490,7 +490,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
             prior
         } else {
-            let initial = fork_preparer_io::resolve(self.host, &workspace, io)
+            let initial = (self.host).resolve(&workspace, io)
                 .await?
                 .generation;
             if &initial != initial_generation {
@@ -500,11 +500,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     "child private volume is not fresh",
                 ));
             }
-            fork_preparer_io::apply_generation_task_guarded(
-                self.host,
-                &workspace,
-                Some(&initial),
-                &[
+            (self.host).apply_generation(&workspace, Some(&initial), &[
                     WorkspaceMutation::CreateDirectory {
                         path: stock_string_copy("/.system/inherited-conversation", io)?,
                     },
@@ -514,13 +510,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         })?,
                         bytes: bytes.clone(),
                     },
-                ],
-                idempotency_key,
-                io,
-                preparation,
-                #[cfg(not(target_arch = "wasm32"))]
-                native_creation_guard,
-            )
+                ], idempotency_key, io, preparation)
             .await?
         };
         let generation = fork_preparer_io::generation_ref(&self.host.provider, committed.id(), io)?;

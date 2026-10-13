@@ -14,10 +14,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         self.host
             .fork_volume_pinned(
                 &self.project,
+                &ContentGrant::verify(&self.verifier, &self.scope, &self.project, VolumeOperation::Read, u64::MAX, &mut None)?,
                 source_generation,
                 child,
                 None,
                 idempotency_key,
+                None,
+                None,
             )
             .await
     }
@@ -198,15 +201,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             fork_preparer_io::content_workspace(&self.host.provider, source, Some(&io))?;
         let target_ref =
             fork_preparer_io::content_workspace(&self.host.provider, &self.project, Some(&io))?;
-        let source_workspace = fork_preparer_io::open(self.host, &source_ref, &io).await?;
+        let source_workspace = (self.host).open(&source_ref, Some(&io)).await?;
         guard().await?;
-        let target_workspace = fork_preparer_io::open(self.host, &target_ref, &io).await?;
+        let target_workspace = (self.host).open(&target_ref, Some(&io)).await?;
         guard().await?;
         let source_generation =
-            fork_preparer_io::generation(self.host, &source_workspace, generation, &io).await?;
+            (self.host).generation(&source_workspace, generation, Some(&io)).await?;
         guard().await?;
         let target_generation = if let Some(target) = selected_target {
-            fork_preparer_io::generation(self.host, &target_workspace, target, &io).await?
+            (self.host).generation(&target_workspace, target, Some(&io)).await?
         } else {
             io.remaining()?;
             io.sdk(target_workspace.head(&io, io.cancellation()).await)?
