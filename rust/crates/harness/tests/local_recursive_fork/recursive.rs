@@ -260,7 +260,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                             .resolve(&workspace_ref(
                                 provider.clone(),
                                 &private.storage_name(&mut None)?,
-                            )?)
+                            )?, None)
                             .await?
                             .generation,
                         paths: Vec::new(),
@@ -635,7 +635,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             .resolve(&workspace_ref(
                 provider.clone(),
                 &child_project.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?;
         let child_generation = host
             .apply(
@@ -698,7 +698,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                         .resolve(&workspace_ref(
                             provider.clone(),
                             &(child_project).storage_name(&mut None)?,
-                        )?)
+                        )?, None)
                         .await?
                         .generation,
                 )
@@ -740,7 +740,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     &project_head.workspace,
                     None,
                     &format!("/level-{level}.txt"),
-                    1_024
+                    1_024, None
                 )
                 .await?
                 .as_ref(),
@@ -896,10 +896,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         .resolve(&workspace_ref(
             provider,
             &merge_parent_project.storage_name(&mut None)?,
-        )?)
+        )?, None)
         .await?;
     assert_eq!(
-        host.read(&merged_project.workspace, None, "/level-3.txt", 1_024)
+        host.read(&merged_project.workspace, None, "/level-3.txt", 1_024, None)
             .await?
             .as_ref(),
         b"project child 3",
@@ -909,7 +909,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             &merged_project.workspace,
             None,
             "/messages/child-3.txt",
-            1_024
+            1_024, None
         )
         .await
         .is_err(),

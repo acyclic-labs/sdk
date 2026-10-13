@@ -157,7 +157,7 @@ where
                 volume.storage_name(&mut None)?.into_bytes(),
                 None,
             )?;
-            match files.resolve(&reference).await {
+            match files.resolve(&reference, None).await {
                 Ok(_) => (),
                 Err(Error::NotFound(_)) => {
                     files.create_volume(volume).await?;

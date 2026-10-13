@@ -743,10 +743,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     ));
     let selected_generation = fixture
         .filesystem
-        .resolve(&crate::filesystem::workspace_ref(
-            project.provider().clone(),
-            &project.storage_name(&mut None)?,
-        )?)
+        .resolve(
+            &crate::filesystem::workspace_ref(
+                project.provider().clone(),
+                &project.storage_name(&mut None)?,
+            )?,
+            None,
+        )
         .await?
         .generation;
     let inspection = runtime.inspect_source(task, task).await?;
@@ -841,10 +844,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                     volume: fixture.volume.clone(),
                     generation: fixture
                         .filesystem
-                        .resolve(&crate::filesystem::workspace_ref(
-                            project.provider().clone(),
-                            &fixture.volume.storage_name(&mut None)?,
-                        )?)
+                        .resolve(
+                            &crate::filesystem::workspace_ref(
+                                project.provider().clone(),
+                                &fixture.volume.storage_name(&mut None)?,
+                            )?,
+                            None,
+                        )
                         .await?
                         .generation,
                     paths: Vec::new(),
@@ -916,7 +922,8 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                 )?,
                 None,
                 "/src/a.txt",
-                128
+                128,
+                None
             )
             .await?
             .as_ref(),

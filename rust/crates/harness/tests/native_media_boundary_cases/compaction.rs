@@ -352,7 +352,7 @@ where
                                 .resolve(&workspace_ref(
                                     volume.provider().clone(),
                                     &volume.storage_name(&mut None)?,
-                                )?)
+                                )?, None)
                                 .await?
                                 .generation,
                             paths: Vec::new(),

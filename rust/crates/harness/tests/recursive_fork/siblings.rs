@@ -188,7 +188,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         siblings.push(child);
     }
     assert_eq!(
-        host.resolve(&root_head.workspace).await?.generation,
+        host.resolve(&root_head.workspace, None).await?.generation,
         root_head.generation
     );
     let unpublished = Authority {
@@ -206,7 +206,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                     .resolve(&workspace_ref(
                         provider.clone(),
                         &(siblings[0]).storage_name(&mut None)?
-                    )?)
+                    )?, None)
                     .await?
                     .generation
             )
@@ -225,7 +225,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                     .resolve(&workspace_ref(
                         provider.clone(),
                         &(siblings[0]).storage_name(&mut None)?
-                    )?)
+                    )?, None)
                     .await?
                     .generation
             )
@@ -233,7 +233,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             .is_err()
     );
     assert_eq!(
-        host.resolve(&root_head.workspace).await?.generation,
+        host.resolve(&root_head.workspace, None).await?.generation,
         root_head.generation
     );
     let first = controller
@@ -243,7 +243,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 .resolve(&workspace_ref(
                     provider.clone(),
                     &(siblings[0]).storage_name(&mut None)?,
-                )?)
+                )?, None)
                 .await?
                 .generation,
             None,
@@ -256,7 +256,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 .resolve(&workspace_ref(
                     provider.clone(),
                     &(siblings[1]).storage_name(&mut None)?,
-                )?)
+                )?, None)
                 .await?
                 .generation,
             None,
@@ -285,7 +285,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 .resolve(&workspace_ref(
                     provider.clone(),
                     &(siblings[1]).storage_name(&mut None)?,
-                )?)
+                )?, None)
                 .await?
                 .generation,
             None,
@@ -320,7 +320,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             .is_err()
     );
     assert_eq!(
-        host.read(&root_head.workspace, None, "/shared.txt", 32)
+        host.read(&root_head.workspace, None, "/shared.txt", 32, None)
             .await?,
         acyclic_stream::OwnedBytes::from(b"sibling 1".to_vec()),
     );
@@ -391,7 +391,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .verify(&receipt)
         .await?;
     assert_eq!(
-        host.read(&root_head.workspace, None, "/shared.txt", 32)
+        host.read(&root_head.workspace, None, "/shared.txt", 32, None)
             .await?,
         acyclic_stream::OwnedBytes::from(b"sibling 2".to_vec()),
     );

@@ -103,7 +103,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             .resolve(&workspace_ref(
                 provider.clone(),
                 &private.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?
             .generation;
         let parent_read = ContentGrant::verify(
@@ -377,7 +377,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     &forked.workspace,
                     Some(&forked.generation),
                     "/marker.txt",
-                    1_024
+                    1_024, None
                 )
                 .await?,
                 acyclic_stream::OwnedBytes::from(format!("level {}", level - 1).into_bytes()),
@@ -958,7 +958,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 .resolve(&workspace_ref(
                     provider.clone(),
                     &(project).storage_name(&mut None)?,
-                )?)
+                )?, None)
                 .await?
                 .generation,
         )
@@ -1004,7 +1004,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &parent_project_workspace,
             None,
             "/messages/current.txt",
-            1_024
+            1_024, None
         )
         .await
         .is_err()
