@@ -97,14 +97,11 @@ impl ProjectionCore {
                     "FUSE invalidation previously failed",
                 ));
             }
-            let condition = if state.invalidation.is_pending(target) {
-                &self.invalidation
-            } else if target.is_some_and(|target| state.page_stores.precede(target)) {
-                &self.page_stored
-            } else {
+            if !state.invalidation.is_pending(target) {
                 return Ok(());
-            };
-            state = condition
+            }
+            state = self
+                .invalidation
                 .wait_timeout(state, Duration::from_millis(10))
                 .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?
                 .0;
@@ -177,107 +174,109 @@ impl InvalidationQueue {
     }
 }
 
-pub(super) fn stale_kernel_items(
-    by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_path: &HashMap<FuseOwned<MountPath>, u64>,
-    unchanged_since: impl Fn(
-        &MountPath,
-        Option<crate::FileId>,
-        ViewStamp,
-    ) -> Result<bool, NativeMountError>,
-    through: ViewStamp,
-    work: &crate::NativeMaterializationWork,
-) -> Result<FuseOwned<Vec<KernelCacheItem>>, NativeMountError> {
-    enum Action {
-        Inode(u64),
-        Negative { inode: u64, item: usize },
-        Binding { inode: u64, index: usize },
-    }
-    let mut items = fuse_vec(0, work)?;
-    let mut actions = fuse_vec(0, work)?;
-    for (inode, entry) in by_inode.iter() {
-        work.charge(Items.delta(1))?;
-        let file_id = entry.lookup.node.file_id;
-        let anchor = entry.anchor();
-        if let Some(held) = entry.kernel
-            && !unchanged_since(anchor, Some(file_id), held)?
-        {
-            fuse_reserve(&mut items, 1, work)?;
-            fuse_reserve(&mut actions, 1, work)?;
-            items.push(KernelCacheItem::Inode(*inode));
-            actions.push(Action::Inode(*inode));
+impl ProjectionState {
+    fn stale_kernel_items(
+        &mut self,
+        source: &dyn MountFilesystem,
+        through: ViewStamp,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FuseOwned<Vec<KernelCacheItem>>, NativeMountError> {
+        enum Action {
+            Inode(u64),
+            Negative { inode: u64, item: usize },
+            Binding { inode: u64, index: usize },
         }
-        for (name, held) in &entry.negative_children {
+        let mut items = fuse_vec(0, work)?;
+        let mut actions = fuse_vec(0, work)?;
+        for (inode, entry) in &self.by_inode {
             work.charge(Items.delta(1))?;
-            let path = fuse_child_path(anchor, name, work)?;
-            if !unchanged_since(&path, None, *held)? {
-                let name = fuse_copy_bytes(name, work)?;
+            let file_id = entry.lookup.node.file_id;
+            let anchor = entry.anchor();
+            if let Some(held) = entry.kernel
+                && !source.unchanged_since_with_meter(anchor, Some(file_id), held, work)?
+            {
                 fuse_reserve(&mut items, 1, work)?;
                 fuse_reserve(&mut actions, 1, work)?;
-                actions.push(Action::Negative {
-                    inode: *inode,
-                    item: items.len(),
-                });
-                items.push(KernelCacheItem::Entry {
-                    parent: *inode,
-                    name,
-                });
+                items.push(KernelCacheItem::Inode(*inode));
+                actions.push(Action::Inode(*inode));
             }
-        }
-        for (index, binding) in entry.bindings.iter().enumerate() {
-            work.charge(Items.delta(1))?;
-            if let Some(held) = binding.kernel
-                && !unchanged_since(&binding.path, Some(file_id), held)?
-            {
-                if let Some(parent) = fuse_parent(&binding.path, work)?
-                    && let Some(parent_inode) = inode_by_path.get(&*parent).copied()
-                {
-                    let name = fuse_copy_bytes(
-                        binding.path.components().last().ok_or(libc::ESTALE)?,
-                        work,
-                    )?;
+            for (name, held) in &entry.negative_children {
+                work.charge(Items.delta(1))?;
+                let path = fuse_child_path(anchor, name, work)?;
+                if !source.unchanged_since_with_meter(&path, None, *held, work)? {
+                    let name = fuse_copy_bytes(name, work)?;
                     fuse_reserve(&mut items, 1, work)?;
+                    fuse_reserve(&mut actions, 1, work)?;
+                    actions.push(Action::Negative {
+                        inode: *inode,
+                        item: items.len(),
+                    });
                     items.push(KernelCacheItem::Entry {
-                        parent: parent_inode,
+                        parent: *inode,
                         name,
                     });
                 }
-                fuse_reserve(&mut actions, 1, work)?;
-                actions.push(Action::Binding {
-                    inode: *inode,
-                    index,
-                });
+            }
+            for (index, binding) in entry.bindings.iter().enumerate() {
+                work.charge(Items.delta(1))?;
+                if let Some(held) = binding.kernel
+                    && !source.unchanged_since_with_meter(
+                        &binding.path,
+                        Some(file_id),
+                        held,
+                        work,
+                    )?
+                {
+                    if let Some(parent) = fuse_parent(&binding.path, work)?
+                        && let Some(parent_inode) = self.inode_by_path.get(&*parent).copied()
+                    {
+                        let name = fuse_copy_bytes(
+                            binding.path.components().last().ok_or(libc::ESTALE)?,
+                            work,
+                        )?;
+                        fuse_reserve(&mut items, 1, work)?;
+                        items.push(KernelCacheItem::Entry {
+                            parent: parent_inode,
+                            name,
+                        });
+                    }
+                    fuse_reserve(&mut actions, 1, work)?;
+                    actions.push(Action::Binding {
+                        inode: *inode,
+                        index,
+                    });
+                }
             }
         }
-    }
-    for action in actions.iter() {
-        match action {
-            Action::Inode(inode) => {
-                by_inode
-                    .get_mut(inode)
-                    .expect("planned inode remains locked")
-                    .kernel = Some(through)
-            }
-            Action::Binding { inode, index } => {
-                by_inode
-                    .get_mut(inode)
-                    .expect("planned binding remains locked")
-                    .bindings[*index]
-                    .kernel = None
-            }
-            Action::Negative { inode, item } => {
-                let KernelCacheItem::Entry { name, .. } = &items[*item] else {
-                    unreachable!("planned negative entry");
-                };
-                by_inode
-                    .get_mut(inode)
-                    .expect("planned directory remains locked")
-                    .negative_children
-                    .remove(name.as_slice());
+        for action in actions.iter() {
+            match action {
+                Action::Inode(inode) => {
+                    self.by_inode
+                        .get_mut(inode)
+                        .expect("planned inode remains locked")
+                        .kernel = Some(through)
+                }
+                Action::Binding { inode, index } => {
+                    self.by_inode
+                        .get_mut(inode)
+                        .expect("planned binding remains locked")
+                        .bindings[*index]
+                        .kernel = None
+                }
+                Action::Negative { inode, item } => {
+                    let KernelCacheItem::Entry { name, .. } = &items[*item] else {
+                        unreachable!("planned negative entry");
+                    };
+                    self.by_inode
+                        .get_mut(inode)
+                        .expect("planned directory remains locked")
+                        .negative_children
+                        .remove(name.as_slice());
+                }
             }
         }
+        Ok(items)
     }
-    Ok(items)
 }
 
 pub(super) struct FuseInvalidationBatch<'a> {
@@ -343,18 +342,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                 if let Some(through) = through
                     && state.invalidation.scanned < Some(through)
                 {
-                    let state = &mut *state;
-                    let items = stale_kernel_items(
-                        &mut state.by_inode,
-                        &state.inode_by_path,
-                        |path, file_id, stamp| {
-                            Ok(core
-                                .source
-                                .unchanged_since_with_meter(path, file_id, stamp, work)?)
-                        },
-                        through,
-                        work,
-                    )?;
+                    let items = state.stale_kernel_items(core.source.as_ref(), through, work)?;
                     state.invalidation.scanned = Some(through);
                     completed_through = Some(through);
                     items.map(Vec::into_iter)

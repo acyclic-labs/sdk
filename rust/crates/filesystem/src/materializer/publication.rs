@@ -245,7 +245,7 @@ where
         )?;
         let journal = MaterializationJournal {
             version: JOURNAL_VERSION,
-            revision: 0,
+            revision: 1,
             plan,
             root_identity: Some(actual.to_bytes()),
             preparation_identity: None,
@@ -263,8 +263,9 @@ where
             work: work.journal_work()?,
             custody: Some(custody),
         };
-        let (stored, journal) =
-            compare_next_journal::<_, NativeTreeMaterializationError>(&store, journal).await?;
+        let (stored, journal) = store
+            .compare_and_swap(request.operation_id, 0, journal)
+            .await?;
         if !stored {
             return Err(NativeWorkspacePublicationError::MismatchedJournal);
         }
@@ -293,7 +294,7 @@ where
         for edit in &journal.plan.edits {
             if let MaterializationEdit::Install { path, .. } = edit {
                 let relative = copy_string(path, &mut storage)?;
-                native_vec_push(&mut selections, relative, &mut storage)?;
+                push_buffer(&mut selections, relative, &mut storage)?;
             }
         }
         if !selections.is_empty() {
@@ -306,7 +307,7 @@ where
                 transfer_bytes: request.options.transfer_bytes,
             };
             journal = materializer
-                .stage_generation(to, &selections, &options, journal, before_effect)
+                .stage_generation(to, &selections, &options, journal, work, before_effect)
                 .await?;
         }
     }

@@ -17,13 +17,7 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
     }
     let budget: WorkBudget = serde_json::from_value(allowances)?;
     let created = fs
-        .create_workspace_with_operation(
-            "readonly-original-creation",
-            config,
-            operation,
-            budget,
-            &cancellation,
-        )
+        .create_workspace_with_operation::<_, (), WorkspaceError>("readonly-original-creation", config, operation, budget, &cancellation, None::<&mut ()>)
         .await?
         .value;
     let workspace = unbounded!(fs, open_workspace("readonly-original-creation"))?;
@@ -226,13 +220,13 @@ async fn native_guarded_creation_preserves_original_callback_error_and_prepared_
         }))
     };
     let failure = fs
-        .create_workspace_with_operation_guarded_with_native_work(
+        .create_workspace_with_operation(
             "native-guarded-creation-denied",
             VolumeConfig::portable(Lifecycle::Durable),
             IdempotencyKey::new().operation_id(),
             &original,
             &cancellation,
-            &mut deny,
+            Some(&mut crate::NativeAuthorityGuard(deny)),
         )
         .await
         .err()
@@ -270,14 +264,14 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
         )))
     };
     let failure = workspace
-        .fork_with_native_work(
+        .fork(
             "native-guarded-fork-denied",
             ForkOptions::from_generation(frozen, IdempotencyKey::new())
                 .inherit_paths(vec!["/selected".to_owned()]),
             crate::PublicationPermit::Unrestricted,
             &original,
             &cancellation,
-            &mut deny,
+            crate::NativeAuthorityGuard(deny),
         )
         .await
         .err()
@@ -322,13 +316,13 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
     let mut allow =
         |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
     let failed = workspace
-        .fork_with_native_work(
+        .fork(
             "native-fork-reserved-destination",
             ForkOptions::from_generation(frozen, IdempotencyKey::new()),
             permit,
             &original,
             &cancellation,
-            &mut allow,
+            crate::NativeAuthorityGuard(allow),
         )
         .await
         .err()

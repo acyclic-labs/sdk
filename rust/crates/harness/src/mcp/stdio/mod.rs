@@ -1,7 +1,9 @@
 //! Bounded newline protocol for an already approved native process exchange.
 
+#[cfg(test)]
+use super::PROTOCOL_VERSION;
 use super::{
-    PROTOCOL_VERSION, charge, error,
+    charge, error,
     rpc::{Envelope, initialization, notification, rpc_result},
 };
 use crate::{Error, NativeCustody, NativeWork, OperationId, Result, wire::ErrorCode};
@@ -12,7 +14,7 @@ use serde_json::Value;
 use serde_json::json;
 
 mod request;
-pub use request::{McpStdioMethod, McpStdioRequest};
+pub use request::McpStdioRequest;
 mod exchange;
 pub use exchange::McpStdioExchange;
 mod codec;

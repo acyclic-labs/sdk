@@ -17,7 +17,6 @@ async fn promotion_cancellation_does_not_install_a_partial_candidate() {
     ])));
     let root = attach(
         &fs,
-        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -40,11 +39,10 @@ async fn promotion_cancellation_does_not_install_a_partial_candidate() {
         .await
         .unwrap();
     let cancel = CancellationToken::new();
-    source.cancel_next_range();
+    source.counts.cancel_range.store(true, Ordering::Relaxed);
     assert!(
         root.stage_into_checkout(
             &mut checkout,
-            None,
             "/file.txt",
             id,
             u64::MAX,
@@ -69,14 +67,9 @@ async fn dirty_candidate_keeps_unpublished_files_and_shared_aliases_until_public
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::from_static(b"shared"));
     source.node.link_count = Some(2);
-    let root = attach(
-        &fs,
-        "root",
-        Arc::new(source),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
+    let root = attach(&fs, Arc::new(source), MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
     let head = root.head(accounting!()).await.unwrap().id();
     let mut checkout = root
         .workspace()
@@ -108,13 +101,13 @@ async fn dirty_candidate_keeps_unpublished_files_and_shared_aliases_until_public
             .await
             .unwrap();
         assert!(
-            root.stage_into_checkout(&mut checkout, None, path, id, 64, accounting!())
+            root.stage_into_checkout(&mut checkout, path, id, 64, accounting!())
                 .await
                 .unwrap()
         );
         assert!(
             !root
-                .stage_into_checkout(&mut checkout, None, path, id, 64, accounting!())
+                .stage_into_checkout(&mut checkout, path, id, 64, accounting!())
                 .await
                 .unwrap()
         );
@@ -162,7 +155,6 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -227,7 +219,6 @@ async fn replacement_directory_hides_old_source_children() {
     std::fs::write(directory.path().join("d/obsolete"), b"source").unwrap();
     let root = attach(
         &Fs::memory(),
-        "root",
         native_source(directory.path(), crate::model::FilesystemProfile::Portable).await,
         MemoryLazyWorkspaceStore::default(),
     )
@@ -261,27 +252,11 @@ async fn replacement_directory_hides_old_source_children() {
     assert!(page.entries.is_empty());
 }
 
-#[tokio::test]
-async fn source_only_removal_does_not_change_the_authored_head() {
-    let root = attach(
-        &Fs::memory(),
-        "root",
-        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
-    let head = root.head(accounting!()).await.unwrap().id();
-    root.remove("/file.txt", None, accounting!()).await.unwrap();
-    assert_eq!(root.head(accounting!()).await.unwrap().id(), head);
-}
-
 #[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn mounted_whiteouts_follow_the_original_publication_decision() {
     let root = attach(
         &Fs::memory(),
-        "root",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -304,7 +279,17 @@ async fn mounted_whiteouts_follow_the_original_publication_decision() {
                 .await
                 .unwrap();
             checkout
-                .commit_even_if_clean(key.operation_id(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut allow_publication, None)
+                .commit_even_if_clean(
+                    key.operation_id(),
+                    None,
+                    None,
+                    None,
+                    crate::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                    &mut allow_publication,
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -334,7 +319,6 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         let released = fs.local_root_release_barrier().unwrap();
         let root = attach(
             &fs,
-            "root",
             Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
             crate::core_state::LocalCoreStateStore::new(&state_path),
         )
@@ -393,7 +377,17 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         .await
         .unwrap();
         checkout
-            .commit_even_if_clean(key.operation_id(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancel, &mut allow_publication, None)
+            .commit_even_if_clean(
+                key.operation_id(),
+                None,
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &cancel,
+                &mut allow_publication,
+                None,
+            )
             .await
             .unwrap();
         assert!(root.finish_mount_removals(accounting!()).await.unwrap());
@@ -409,7 +403,10 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
     }
     let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await.unwrap();
     let root = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .unwrap(),
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         crate::core_state::LocalCoreStateStore::new(&state_path),
         accounting!(),

@@ -38,9 +38,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation
-                .observer(work, work.cancellation())
-                .map_err(fs_error)?;
+            let mut checkout = observation.observer(work, work.cancellation())?;
             let file_id = checkout
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -117,7 +115,7 @@ where
             cancellation: self.cancellation.clone(),
             profile: self.profile,
             limits: self.limits,
-            _native_allocation: Some(allocation),
+            _native_allocation: allocation,
             native_callback_guard: self.native_callback_guard.clone(),
         });
         if let Err(error) = carrier.check(&cancellation, Some(&self.cancellation)) {
@@ -145,9 +143,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation
-                .observer(work, work.cancellation())
-                .map_err(fs_error)?;
+            let mut checkout = observation.observer(work, work.cancellation())?;
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, work, work.cancellation())
                 .await?
@@ -179,7 +175,7 @@ where
                 cancellation: self.cancellation.clone(),
                 profile: self.profile,
                 limits: self.limits,
-                _native_allocation: Some(allocation),
+                _native_allocation: allocation,
             });
             Ok((file, 0))
         })

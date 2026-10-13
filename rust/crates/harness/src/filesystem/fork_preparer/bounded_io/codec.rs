@@ -208,12 +208,12 @@ impl PreparationIo {
             Schema::None,
             &mut |charge| self.codec_charge(charge, false),
         )?;
-        crate::executor::json::validate_json_byte_bound_native_trusted(
+        crate::executor::json::count_json_bytes_trusted(
             value,
             bounds,
-            crate::wire::ErrorCode::Invalid,
+            Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| self.codec_charge(charge, false),
-        )
+        ).map(|_| ())
     }
 
     #[cfg(not(target_arch = "wasm32"))]

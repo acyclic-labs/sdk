@@ -238,25 +238,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         }
         let model = crate::model::clone_model(model, io)?;
         let context = context.copy(io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let compaction = match (io, compaction) {
-            (Some(io), crate::context::CompactionPolicy::Threshold(policy)) => {
-                let (retention, custody) = crate::context::clone_retention_native(
-                    &policy.retention,
-                    io.original_native_work()
-                        .expect("configuration checked original work"),
-                )?;
-                io.absorb_native_custody(custody)?;
-                crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
-                    response_reserve_tokens: policy.response_reserve_tokens,
-                    recent_tokens: policy.recent_tokens,
-                    retention,
-                })
-            }
-            _ => compaction.clone(),
-        };
-        #[cfg(target_arch = "wasm32")]
-        let compaction = compaction.clone();
+        let compaction = compaction.copy(io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = io
             .map(|io| {

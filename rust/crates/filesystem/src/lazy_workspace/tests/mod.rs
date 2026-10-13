@@ -15,13 +15,12 @@ async fn attach<
     S: LazyWorkspaceStore,
 >(
     fs: &Fs<A, O>,
-    name: &str,
     source: Arc<D>,
     store: S,
 ) -> Result<LazyWorkspace<A, O, D, S>, LazyWorkspaceError> {
     LazyWorkspace::attach(
         fs,
-        name,
+        "root",
         source,
         store,
         VolumeConfig::portable(if fs.capabilities().durable {
@@ -112,17 +111,6 @@ impl CountingSource {
             .cloned()
             .ok_or(DemandError::StaleSource)
     }
-    fn with_directory_entries(mut self, entries: usize) -> Self {
-        self.directory_entries = entries;
-        self
-    }
-    fn cancel_next_page(&self) {
-        self.cancel_on_page.store(true, Ordering::Relaxed);
-    }
-    #[cfg(feature = "native-mount")]
-    fn cancel_next_range(&self) {
-        self.counts.cancel_range.store(true, Ordering::Relaxed);
-    }
 }
 struct PinnedFile {
     bytes: Bytes,
@@ -154,14 +142,11 @@ impl DemandFile for PinnedFile {
             source_bytes_read: (end - start) as u64,
             ..WorkCounters::UNCHARGED
         };
-        ctx.admit(read)
-            .map_err(DemandError::from)?;
-        let mut out = Owned::<Vec<u8>>::allocate(end - start, ctx)
-            .map_err(DemandError::from)?;
+        ctx.admit(read).map_err(DemandError::from)?;
+        let mut out = Owned::<Vec<u8>>::allocate(end - start, ctx).map_err(DemandError::from)?;
         self.counts.ranges.fetch_add(1, Ordering::Relaxed);
         out.value.extend_from_slice(&self.bytes[start..end]);
-        ctx.record_completed(read)
-            .map_err(DemandError::from)?;
+        ctx.record_completed(read).map_err(DemandError::from)?;
         let bytes = crate::kernel::owned_read_bytes((out.value, out.allocation).into())
             .map_err(DemandError::from)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -227,8 +212,8 @@ impl DemandSource for CountingSource {
                 ..WorkCounters::UNCHARGED
             })
             .map_err(DemandError::from)?;
-            let mut entries = Owned::allocate(self.directory_entries, &mut ctx)
-                .map_err(DemandError::from)?;
+            let mut entries =
+                Owned::allocate(self.directory_entries, &mut ctx).map_err(DemandError::from)?;
             for index in 0..self.directory_entries {
                 let name = if self.directory_entries == 1 {
                     "file.txt".to_owned()
@@ -247,12 +232,7 @@ impl DemandSource for CountingSource {
                 entries.bytes += name.logical_owned_bytes();
                 entries.value.push(SourceDirectoryEntry { name, node });
             }
-            SourceDirectoryPage::stateless(
-                entries,
-                None,
-                SourceVersion([4; 32]),
-                &mut ctx,
-            )
+            SourceDirectoryPage::stateless(entries, None, SourceVersion([4; 32]), &mut ctx)
         })();
         work.finish(result, &ctx)
     }
