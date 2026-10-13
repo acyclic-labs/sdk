@@ -62,12 +62,7 @@ impl<A, O> Fs<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
             let name = crate::WorkspaceName::new(name, original, cancellation)?;
-            let id = crate::WorkspaceId::derive(
-                self.inner.workspace_namespace,
-                &name,
-                original,
-                cancellation,
-            )?;
+            let id = self.workspace_id_for_name(&name, accounting, cancellation)?;
             return Ok((name, id));
         }
         let named = crate::WorkspaceName::new(name, accounting.remaining()?, cancellation);
@@ -78,18 +73,39 @@ impl<A, O> Fs<A, O> {
         merge_creation_backend_work(accounting, spent)?;
         let name = named.map_err(|failure| failure.error)?.value;
         accounting.claim_owned(name.retained_bytes(), 0)?;
+        let id = self.workspace_id_for_name(&name, accounting, cancellation)?;
+        Ok((name, id))
+    }
+
+    pub(super) fn workspace_id_for_name(
+        &self,
+        destination: &crate::WorkspaceName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::WorkspaceId, WorkspaceError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            return crate::WorkspaceId::derive(
+                self.inner.workspace_namespace,
+                destination,
+                original,
+                cancellation,
+            );
+        }
         let derived = crate::WorkspaceId::derive(
             self.inner.workspace_namespace,
-            &name,
+            destination,
             accounting.remaining()?,
             cancellation,
         );
-        let spent = match &derived {
+        let work = match &derived {
             Ok(receipt) => receipt.work,
             Err(failure) => *failure.work,
         };
-        merge_creation_backend_work(accounting, spent)?;
-        Ok((name, derived.map_err(|failure| failure.error)?.value))
+        merge_creation_backend_work(accounting, work)?;
+        derived
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
     }
 
     /// Derives the deployment-scoped stable identity for one canonical name.

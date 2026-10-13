@@ -27,24 +27,21 @@ impl HostRoot {
     }
     pub(crate) fn open_dir_held<W: NativeHostWork>(
         &self,
-        #[cfg(unix)] path: &Path,
-        #[cfg(windows)] path: &[u16],
+        path: &NativePath,
         work: &mut W,
     ) -> Result<Dir, W::Error> {
         directory_path(&self.directory, path, false, work)
     }
     pub(crate) fn read_dir_stats<W: NativeHostWork>(
         &self,
-        #[cfg(unix)] path: &Path,
-        #[cfg(windows)] path: &[u16],
+        path: &NativePath,
         work: &mut W,
     ) -> Result<(HostStatReader, W::Allocation), W::Error> {
         read_dir_held(&self.open_dir_held(path, work)?, work)
     }
     pub(crate) fn stat<W: NativeHostWork>(
         &self,
-        #[cfg(unix)] path: &Path,
-        #[cfg(windows)] path: &[u16],
+        path: &NativePath,
         work: &mut W,
     ) -> Result<HostStat, W::Error> {
         #[cfg(windows)]
@@ -90,8 +87,7 @@ impl HostRoot {
     }
     pub(crate) fn open_file<W: NativeHostWork>(
         &self,
-        #[cfg(unix)] path: &Path,
-        #[cfg(windows)] path: &[u16],
+        path: &NativePath,
         #[cfg(windows)] synchronization: nt::NTCREATEFILE_CREATE_OPTIONS,
         work: &mut W,
     ) -> Result<cap_std::fs::File, W::Error> {
@@ -187,48 +183,6 @@ impl HostRoot {
             keep_windows_created_file(&target, work)?;
         }
         Ok(cloned)
-    }
-    /// Atomically publishes a pinned source copy, preserving sparse data and COW when supported.
-    #[cfg(windows)]
-    pub async fn copy_file_from(
-        &self,
-        source_root: &HostRoot,
-        source: &Path,
-        destination: &Path,
-    ) -> io::Result<()> {
-        if destination
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-        {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        let name = destination
-            .file_name()
-            .ok_or(io::ErrorKind::InvalidInput)?
-            .to_os_string();
-        let parent = with_wide_path(
-            destination.parent().ok_or(io::ErrorKind::InvalidInput)?,
-            &mut ordinary_work(),
-            |path, work| self.open_dir_held(path, work),
-        )
-        .map_err(ordinary_error)?;
-        let source_root = HostRoot {
-            directory: source_root.directory.try_clone()?,
-            identity: source_root.identity,
-        };
-        let source = source.to_path_buf();
-        let staged = std::sync::Arc::new(
-            acyclic_native_runtime::run_blocking_io(
-                move || StagedWindowsFile::create(parent),
-                None,
-            )
-            .expect("unmetered task construction cannot fail")
-            .await??,
-        );
-        copy_windows_file(source_root, source, &staged).await?;
-        acyclic_native_runtime::run_blocking_io(move || staged.publish(&name), None)
-            .expect("unmetered task construction cannot fail")
-            .await?
     }
     #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
     pub(crate) fn open_linux_metadata_target<W: SourceDemandReadWork>(

@@ -258,9 +258,54 @@ fn require_volume_grant(
 }
 
 impl ToolExecutor for LocalListFilesTool {
-    fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
+    fn authorize(&self, scope: Option<&crate::runtime::RuntimeScope>, context: Option<&crate::runtime::ToolContext>, invocation: &crate::tool::ToolInvocation, work: crate::NativeWork<'_>) -> crate::Result<()> {
+let _ = (scope, context, invocation, work);
+let scope = context.map(|context| context.task().scope()).or(scope);
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+if let Some(work) = work {
+ let context = context.ok_or(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "tool requires its original native context" })?;
+ return {
+        self.supports_native_execution(work)?;
+        if context.operation_id() != invocation.operation_id
+            || context.call_id() != invocation.call_id
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "list_files tool context identity mismatch",
+            });
+        }
+        let maximum_path_bytes = context.effective_scope().limits().path_bytes;
+        for key in ["path", "after"] {
+            if invocation
+                .arguments
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.len() > maximum_path_bytes)
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "list_files path exceeds the effective scope path allowance",
+                });
+            }
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        if !io.contains_capability(
+            context.effective_scope().grants(),
+            &self.volume,
+            "volume:read:",
+        )? {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "scope lacks the original volume read capability",
+            });
+        }
+        Ok(())
+    };
+}
+
         require_volume_grant(scope, &self.volume, VolumeOperation::Read)
-    }
+
+}
 
     fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
@@ -353,49 +398,7 @@ impl ToolExecutor for LocalListFilesTool {
             .supports_native_directory_list(&self.volume, work)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn authorize_with_native_context(
-        &self,
-        context: &crate::runtime::ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.supports_native_execution(work)?;
-        if context.operation_id() != invocation.operation_id
-            || context.call_id() != invocation.call_id
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "list_files tool context identity mismatch",
-            });
-        }
-        let maximum_path_bytes = context.effective_scope().limits().path_bytes;
-        for key in ["path", "after"] {
-            if invocation
-                .arguments
-                .get(key)
-                .and_then(Value::as_str)
-                .is_some_and(|path| path.len() > maximum_path_bytes)
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "list_files path exceeds the effective scope path allowance",
-                });
-            }
-        }
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if !io.contains_capability(
-            context.effective_scope().grants(),
-            &self.volume,
-            "volume:read:",
-        )? {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "scope lacks the original volume read capability",
-            });
-        }
-        Ok(())
-    }
+
 
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(
@@ -404,7 +407,7 @@ impl ToolExecutor for LocalListFilesTool {
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
-        self.authorize_with_native_context(context, invocation, work)?;
+        self.authorize(None, Some(context), invocation, Some(work))?;
         crate::NativeFutureBundle::new(work, || self.native_execute(context, invocation, work))
     }
 
@@ -416,7 +419,7 @@ impl ToolExecutor for LocalListFilesTool {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
-        self.authorize_with_native_context(context, invocation, work)?;
+        self.authorize(None, Some(context), invocation, Some(work))?;
         crate::NativeFutureBundle::new(work, || async move {
             match self.native_observe(context, invocation, work).await? {
                 Some(mut output) => {

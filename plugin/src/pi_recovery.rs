@@ -239,7 +239,6 @@ where
                 != *preparation_definition
                     .as_ref()
                     .expect("retained preparation definition")
-                    .0
                     .identity()
                 || admission.0.parent != task.parent
                 || request.0.child.parent != task.parent
@@ -519,12 +518,12 @@ where
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::Root(retained))
             if original == retained =>
         {
-            original.validate(binding).map_err(Error::Invalid)?
+            original.validate(binding, work)?
         }
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::RootState(retained))
             if root_matches_state(original, retained) =>
         {
-            original.validate(binding).map_err(Error::Invalid)?
+            original.validate(binding, work)?
         }
         (PiTaskExecution::Child { .. }, PiTaskOrigin::Child(_)) => {}
         _ => {
@@ -636,7 +635,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
         std::borrow::Cow::Owned(value),
         bounds,
         std::mem::size_of::<T>() as u64,
-        acyclic_harness::wire::ErrorCode::Invalid,
+        Some(acyclic_harness::wire::ErrorCode::Invalid),
         schema,
         &mut |charge| {
             if let acyclic_harness::JsonCodecCharge::Admission {

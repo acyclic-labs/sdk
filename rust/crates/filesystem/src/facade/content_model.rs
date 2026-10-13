@@ -59,40 +59,6 @@ pub enum ContentChange<F> {
     },
 }
 
-/// One independent change that [`Checkout::apply_group`] may apply together
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GroupedChange {
-    /// Creates one regular file with the caller's fresh stable identity and
-    CreateFile {
-        /// New namespace path.
-        path: NamespacePath,
-        /// Exact cross-profile metadata.
-        metadata: Box<FileMetadata>,
-        /// Fresh stable identity the caller chose, as [`FileId::new`] mints.
-        file_id: FileId,
-        /// Complete initial bytes.
-        bytes: acyclic_stream::OwnedBytes,
-    },
-    /// Changes the content of one regular file by stable identity.
-    Content {
-        /// Existing regular-file identity.
-        file_id: FileId,
-        /// The content change.
-        change: ContentChange<FileId>,
-        /// Whether the change also stamps the file's content-change times.
-        times: ContentTimes,
-    },
-}
-
-/// What one successful [`GroupedChange`] produced.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GroupedOutcome {
-    /// The identity of the created file.
-    Created(FileId),
-    /// The content change applied.
-    Changed,
-}
-
 /// Whether a content change also records its time in the changed file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentTimes {

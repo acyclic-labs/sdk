@@ -559,7 +559,7 @@ pub(crate) async fn native_root<'a>(
     }
     let packet = acyclic_fs::materializer::NativeOwnedRootAllocation::new_with_native_work(
         operation,
-        &resources.private_state_root,
+        &resources.data,
         [
             relative(&options.root, &resources.data)?,
             relative(&operation_root.0, &resources.data)?,

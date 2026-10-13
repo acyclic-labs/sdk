@@ -312,7 +312,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
     let agent = AgentId::from_bytes([41; 16]);
     let private = VolumeRef::new(
         provider,
-        "scratch",
+        "scratch".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,

@@ -99,7 +99,7 @@ where
         if let Some(registration) = roots.get(root) {
             Arc::clone(registration)
         } else {
-            let (key, key_custody) = work.copy_path(root)?;
+            let (key, key_custody) = work.path(root, None)?;
             let slot_custody = work.claim(
                 std::mem::size_of::<SharedRootSlot>() as u64,
                 1,
@@ -155,17 +155,9 @@ where
         } else {
             let retained = retained.ok_or_else(|| rejection(MISSING_REFERENCE))?;
             if let Some(shared) = live {
-                shared
-                    .source
-                    .inner()
-                    .validate_root(
-                        root,
-                        expected,
-                        &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(
-                            work,
-                        ),
-                    )
-                    .map_err(native_source_error)?;
+                if shared.source.root_identity() != expected {
+                    return Err(rejection(ROOT_IDENTITY));
+                }
                 shared
                     .watcher
                     .lock()
@@ -227,16 +219,6 @@ where
         }
         Err(error) => return Err(native_watch_error(error)),
     }
-    let mut ownership = work.claim(
-        std::mem::size_of::<Mutex<NativeWatch>>() as u64,
-        1,
-        WorkCounters::UNCHARGED,
-    )?;
-    registration
-        .pending_raw_watcher
-        .as_mut()
-        .ok_or_else(|| rejection(MISSING_REFERENCE))?
-        .retain_owner_allocation(&mut ownership)?;
     let watcher = Arc::new(Mutex::new(
         registration
             .pending_raw_watcher
@@ -269,29 +251,20 @@ where
     .await
     .map_err(native_source_error)?;
     let excluded = native_reserved_paths(work)?;
-    let mut source =
-        FilteredDemandSource::new_with_native_work(source, excluded.0, excluded.1, work)?;
-    let mut ownership = work.claim(
-        std::mem::size_of::<LocalLazySource>() as u64,
-        1,
-        WorkCounters::UNCHARGED,
-    )?;
-    source.retain_owner_allocation(&mut ownership)?;
+    let source = source.exclude(excluded.0, work, work.cancellation())
+        .map_err(native_source_error)?;
+    drop(excluded.1);
     let source = Arc::new(source);
     registration.pending_source = Some(Arc::clone(&source));
     authenticate(work, &mut guard, expected).await?;
-    if source.inner().root_identity() != expected
+    if source.root_identity() != expected
         || source.reference().identity != reference.identity
     {
         return Err(rejection(ROOT_IDENTITY));
     }
     if matches!(admission, SharedRootAdmission::Resume(_)) {
-        source
-            .inner()
-            .invalidate(
-                &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work),
-            )
-            .map_err(native_source_error)?;
+        work.remaining()?;
+        source.invalidate();
     }
     let reference = Arc::clone(
         registration

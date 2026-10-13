@@ -248,14 +248,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     let parent = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     for id in [121, 122, 123] {
-        let child = runtime.harness().registered_child_admission(
-            OperationId::from_bytes([id; 16]),
-            "test.deadline",
-            "1",
-            json!({}),
-            parent,
-            &fixture.scope,
-        )?;
+        let child = runtime.harness().registered_admission(OperationId::from_bytes([id; 16]), "test.deadline", "1", json!({}), Some((parent, &fixture.scope)), None, None)?.0;
         assert!(matches!(
             runtime
                 .task_host()
@@ -282,14 +275,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
             .is_err()
     );
     assert!(runtime.children(parent, None, None, 0).await.is_err());
-    let child = runtime.harness().registered_child_admission(
-        OperationId::from_bytes([124; 16]),
-        "test.deadline",
-        "1",
-        json!({}),
-        parent,
-        &fixture.scope,
-    )?;
+    let child = runtime.harness().registered_admission(OperationId::from_bytes([124; 16]), "test.deadline", "1", json!({}), Some((parent, &fixture.scope)), None, None)?.0;
     assert!(matches!(
         runtime.task_host().admit_owned(child, fence).await?,
         Admission::Accepted(_)
@@ -455,13 +441,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         selected_context: None,
         max_steps: 1,
     };
-    assert!(execution.resolve_model_tools(&input, 0).await.is_err());
     let events = execution.model_step(&input, 0, &[]).await?;
     assert_eq!(events, execution.model_step(&input, 0, &[]).await?);
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
-    assert!(
-        matches!(execution.resolve_model_tools(&input, 0).await?, crate::executor::ExecutionProgress::Ready(messages) if messages.is_empty())
-    );
     let mut changed = input.clone();
     changed.operation_id = OperationId::from_bytes([131; 16]);
     assert!(matches!(

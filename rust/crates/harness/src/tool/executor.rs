@@ -2,22 +2,23 @@ use super::*;
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
-    /// Checks resource grants before replay, dispatch or reconciliation.
+    /// Checks grants and the original context before replay, dispatch or reconciliation.
     fn authorize(
         &self,
         _scope: Option<&crate::runtime::RuntimeScope>,
+        _context: Option<&crate::runtime::ToolContext>,
         _invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "tool executor has no native authorization producer",
+            });
+        }
+        let _ = work;
         Ok(())
-    }
-
-    /// Checks original task-bound resources before replay, dispatch or reconciliation.
-    fn authorize_with_context(
-        &self,
-        context: &crate::runtime::ToolContext,
-        invocation: &ToolInvocation,
-    ) -> Result<()> {
-        self.authorize(Some(context.task().scope()), invocation)
     }
 
     /// Executes an already admitted invocation.
@@ -59,20 +60,6 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "tool executor has no native producer",
-        })
-    }
-
-    /// Checks the same original context before native replay or dispatch.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn authorize_with_native_context(
-        &self,
-        _context: &crate::runtime::ToolContext,
-        _invocation: &ToolInvocation,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "tool executor has no native authorization producer",
         })
     }
 

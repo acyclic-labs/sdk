@@ -104,11 +104,8 @@ impl PiControlHost<'_> {
         let Some(provider) = self.root_provider.lock().await.clone() else {
             return Ok(None);
         };
-        let owner = pi_owner::PiOwnerConfig::load(
-            &self.resources.private_state_root,
-            self.directory,
-            &self.work,
-        )?;
+        let owner =
+            pi_owner::PiOwnerConfig::load(&self.resources.data, self.directory, &self.work)?;
         self.runtime
             .verify_owner_with_native_work(&owner, &self.work)?;
         let task = owner.policy().root_task;
@@ -236,7 +233,14 @@ impl PiControlHost<'_> {
             let key = self
                 .work
                 .display(&format_args!("acyclic.pi/control/{task}/{operation}"))?;
-            host.resume_workflow(task, wait.revision, input.0, acyclic_harness::IdempotencyKey::new(key.0)?, None, Some(&self.work))
+            host.resume_workflow(
+                task,
+                wait.revision,
+                input.0,
+                acyclic_harness::IdempotencyKey::new(key.0)?,
+                None,
+                Some(&self.work),
+            )
             .await?;
             drop(key.1);
         }
@@ -264,12 +268,8 @@ impl PiControlHost<'_> {
         let task = context
             .durable_task_id()
             .ok_or_else(|| boundary("Pi command has no original task"))?;
-        let owner = pi_owner::PiOwnerConfig::load(
-            &self.resources.private_state_root,
-            self.directory,
-            work,
-        )?
-        .into_native_shared(work)?;
+        let owner = pi_owner::PiOwnerConfig::load(&self.resources.data, self.directory, work)?
+            .into_native_shared(work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task
             && command.operation_id == pi_root_inputs::preparation_operation(task, work)?
@@ -278,7 +278,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.private_state_root,
+                &self.resources.data,
                 self.directory,
                 &self.runtime,
                 &self.filesystem,
@@ -361,7 +361,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.private_state_root,
+                &self.resources.data,
                 self.directory,
                 &self.runtime,
                 &self.filesystem,

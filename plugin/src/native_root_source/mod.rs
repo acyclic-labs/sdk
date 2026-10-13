@@ -9,7 +9,7 @@ use acyclic_harness::{Error as RootError, Result as RootResult};
 
 mod acquisition;
 pub(crate) use acquisition::{
-    acquire, acquire_with_native_work, native_source_error, native_watch_error, native_work_error,
+    acquire, acquire_with_native_work, native_watch_error, native_work_error,
     shutdown_pending_with_native_work,
 };
 
@@ -153,10 +153,12 @@ mod tests {
             .project_volumes
             .first_key_value()
             .unwrap();
-        fixture
-            .context
-            .verify_original_volume_read_with_native_work(&fixture.journal, project, work)
-            .await?;
+        fixture.journal.require_volume_grant(
+            project, acyclic_harness::conversation::VolumeOperation::Read,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )?;
         fixture
             .journal
             .verify(
@@ -193,7 +195,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(first.source.inner().root_identity(), expected);
+        assert_eq!(first.source.root_identity(), expected);
         assert_eq!(first.source.reference().identity, original.identity);
         assert!(first.source.reference().epoch > original.epoch);
         assert!(work.receipt().backend_read_operations > before.backend_read_operations);
@@ -216,7 +218,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(reopened.source.inner().root_identity(), expected);
+        assert_eq!(reopened.source.root_identity(), expected);
         assert_eq!(reopened.source.reference().identity, original.identity);
         assert!(reopened.source.reference().epoch > retained_epoch);
         assert!(close_native_watch(&reopened, &query).unwrap());
@@ -238,7 +240,7 @@ mod tests {
         assert!(close_native_watch(&physical, &work).unwrap());
         drop(physical);
         let held = work.live_allocation_bytes();
-        assert_eq!(source.inner().root_identity(), expected);
+        assert_eq!(source.root_identity(), expected);
         assert_eq!(source.reference().identity, original.identity);
         drop(source);
         assert!(work.live_allocation_bytes() < held);
@@ -379,7 +381,7 @@ mod tests {
             cause: acyclic_fs::NativeTreeMaterializationError::AllocationChanged { expected: old, actual },
             ..
         } if old == expected && actual != expected));
-        assert_eq!(physical.source.inner().root_identity(), expected);
+        assert_eq!(physical.source.root_identity(), expected);
         assert_eq!(physical.source.reference().identity, original.identity);
         assert!(close_native_watch(&physical, &work).unwrap());
     }
@@ -415,7 +417,7 @@ mod tests {
         assert!(prefix.allocation_operations > 1);
         registry.prune().await;
         let slot = registry.roots.lock().await.get(path).cloned().unwrap();
-        assert!(slot.lock().await.pending_watcher.is_some());
+        assert!(slot.state.lock().await.pending_watcher.is_some());
         assert_eq!(registry.live_roots().await, 0);
         let cleanup = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
         assert!(
@@ -426,7 +428,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let state = slot.lock().await;
+        let state = slot.state.lock().await;
         assert!(state.pending_raw_watcher.is_none());
         assert!(state.pending_watcher.is_none());
         assert!(state.pending_source.is_none());
@@ -632,7 +634,9 @@ mod tests {
                 cancellation.cancel();
                 // Fail in the genuine native source invalidation, not an
                 // invented error or a facade around the numeric poll API.
-                physical.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work)).map(|_| ())
+                work.cancellation().check().map_err(|_| acyclic_fs::DemandError::Cancelled)?;
+                physical.source.invalidate();
+                Ok(())
             }).map_err(native_watch_error)?;
             drop(observed);
             Ok(())

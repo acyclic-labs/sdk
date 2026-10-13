@@ -50,7 +50,7 @@ impl crate::pi_host::PiControlHost<'_> {
                 )
                 .await?;
             provider
-                .verify_created_source(owner, key, &original.0.1, work)
+                .verify_created_source(key, &original.0.1, work)
                 .await?;
             owner
                 .verify(

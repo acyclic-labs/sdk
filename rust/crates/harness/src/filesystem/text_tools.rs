@@ -3,7 +3,7 @@ use super::FilesystemHost;
 use crate::{
     Error, IdempotencyKey, Result,
     conversation::{ContentGrant, FileRef, VolumeOperation, is_internal_path},
-    tool::edit::{AlgorithmWork, exact_replace, validate_edit_bound},
+    tool::edit::{allocation, exact_replace, validate_edit_bound},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &replacement.old_text,
             &replacement.new_text,
             maximum_bytes,
-            &mut AlgorithmWork::new(None, 0)?,
+            &mut allocation(None, 0)?,
         )?;
         let generation = self.file_generation(source, None)?;
         self.put_content(

@@ -14,7 +14,12 @@ use acyclic_harness::{
 };
 use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path, sync::Arc};
+use std::{
+    fs,
+    io::{self, Read, Write},
+    path::Path,
+    sync::Arc,
+};
 
 #[path = "pi_owner_protection.rs"]
 mod protection;
@@ -402,15 +407,15 @@ impl PiOwnerConfig {
     }
 
     /// Atomically publishes once.
-    pub(crate) fn save_new_with_native_work(
+    pub(crate) fn save_new(
         &self,
-        root: &acyclic_fs::NativeHostPrivateStateRoot,
+        root: &Path,
         session: &Path,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         let authority = self.authority(work)?;
         drop(authority);
-        work.validate_private_state_directory(root, session)?;
+        let session = work.path(root, Some(session))?;
         let plain = super::pi_root_provider::guarded_pi_bytes(self, MAXIMUM_OWNER_BYTES, work)?;
         let plain = NativeOwnerPlaintext {
             bytes: plain.0,
@@ -434,40 +439,95 @@ impl PiOwnerConfig {
         })?;
         let digest = blake3::hash(&protected.bytes);
         let leaf = work.display(&format_args!(".pi-owner-{}.next", uuid::Uuid::new_v4()))?;
-        let temporary = work.path(session, Some(Path::new(&leaf.0)))?;
-        let destination = work.path(session, Some(Path::new(OWNER_FILE)))?;
-        work.publish_private_state_file_with_native_work(
-            root,
-            &temporary.0,
-            &destination.0,
-            &[
+        let temporary = work.path(&session.0, Some(Path::new(&leaf.0)))?;
+        let destination = work.path(&session.0, Some(Path::new(OWNER_FILE)))?;
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let result = (|| -> io::Result<()> {
+            let mut file = options.open(&temporary.0)?;
+            for bytes in [
                 OWNER_MAGIC.as_slice(),
                 digest.as_bytes().as_slice(),
                 protected.bytes.as_slice(),
-            ],
-        )
-        .map_err(acyclic_harness::Error::from)
+            ] {
+                file.write_all(bytes)?;
+            }
+            crate::sync_file(&file, acyclic_native_runtime::Durability::Full, None)?;
+            drop(file);
+            crate::durable_rename(
+                &temporary.0,
+                &destination.0,
+                acyclic_native_runtime::RenameMode::NoReplace,
+                None,
+            )
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary.0);
+        }
+        result.map_err(|error| Error::from(work.runtime_error(error)))
     }
 
     /// Reads the original protected credential record.
     pub(crate) fn load(
-        root: &acyclic_fs::NativeHostPrivateStateRoot,
+        root: &Path,
         session: &Path,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
-        work.validate_private_state_directory(root, session)?;
-        let path = work.path(session, Some(Path::new(OWNER_FILE)))?;
-        let mut file = work.open_state_file_with_native_work(
-            root,
-            &path.0,
-            acyclic_fs::NativeStateFileMode::Readonly,
-        )?;
-        file.validate_private_owner()?;
-        let bytes = file.read_owned(MAXIMUM_OWNER_BYTES as usize)?;
+        let session = work.path(root, Some(session))?;
+        let path = work.path(&session.0, Some(Path::new(OWNER_FILE)))?;
+        if !fs::symlink_metadata(&path.0)
+            .map_err(|error| Error::from(work.runtime_error(error)))?
+            .is_file()
+        {
+            return Err(native_invalid(
+                "Pi owner configuration is not a regular file",
+            ));
+        }
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = options
+            .open(&path.0)
+            .map_err(|error| Error::from(work.runtime_error(error)))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| Error::from(work.runtime_error(error)))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
+                return Err(native_invalid(
+                    "Pi owner configuration has public permissions",
+                ));
+            }
+        }
+        let length = metadata.len();
+        if !metadata.is_file() || length > MAXIMUM_OWNER_BYTES {
+            return Err(native_invalid(
+                "Pi owner configuration exceeds its byte bound",
+            ));
+        }
+        let custody = work.claim(length + 1, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let mut bytes = Vec::with_capacity(length as usize + 1);
+        file.take(length + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| Error::from(work.runtime_error(error)))?;
+        if bytes.len() as u64 != length {
+            return Err(native_invalid("Pi owner configuration changed during read"));
+        }
         let bytes = NativeOwnerPlaintext {
-            bytes: bytes.0,
-            _custody: bytes.1,
+            bytes,
+            _custody: custody,
         };
         let (magic, rest) = bytes
             .bytes

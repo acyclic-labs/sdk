@@ -6,7 +6,6 @@ use acyclic_harness::{
     Error as RootError, Outcome, TaskId,
     conversation::FileRef,
     filesystem::FilesystemHost,
-    runtime::{DurableTaskHost, task_id_for_admission},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 
@@ -36,31 +35,24 @@ impl SessionController {
         resources: &ServiceResources,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Self> {
-        let relative_directory = resources.private_session_data(&directory)?;
-        let mut loaded = crate::adapter_state::load_state_with_native_work(
-            &resources.private_state_root,
-            relative_directory,
-            work,
-        )?;
-        match &loaded.0.0.task_binding {
+        resources.private_session_data(&directory)?;
+        let (state, slots) = crate::adapter_state::load_state(&directory).map_err(RootError::Storage)?;
+        match &state.task_binding {
             PluginTaskBinding::HostManaged => {
                 let host = resources
                     .open_session_directory(directory)
                     .await
                     .map_err(RootError::Storage)?;
-                drop(loaded.0);
-                drop(loaded.1);
                 Ok(Self::HostManaged(Box::new(host)))
             }
             PluginTaskBinding::Pi(_) => {
-                let mut custody = work.claim(
+                let custody = work.claim(
                     std::mem::size_of::<PiSession>() as u64,
                     0,
                     acyclic_fs::WorkCounters::UNCHARGED,
                 )?;
                 let session =
-                    PiSession::open(directory, loaded.0.0, loaded.0.1, resources, work).await?;
-                custody.absorb(&mut loaded.1)?;
+                    PiSession::open(directory, state, slots, resources, work).await?;
                 Self::Pi(Box::new(session)).retain_original_input(custody)
             }
         }
@@ -191,7 +183,7 @@ impl PiSession {
         let owner = match &native {
             Some(native) => std::sync::Arc::clone(&native.protected),
             None => pi_owner::PiOwnerConfig::load(
-                &self.resources.private_state_root,
+                &self.resources.data,
                 &self.relative_directory,
                 work,
             )?
@@ -294,9 +286,9 @@ impl PiSession {
                 "Pi session directory differs from its original identity",
             ));
         }
-        let relative_directory = work.copy_path(relative_directory)?;
+        let relative_directory = work.path(relative_directory, None)?;
         let owner = pi_owner::PiOwnerConfig::load(
-            &resources.private_state_root,
+            &resources.data,
             &relative_directory.0,
             work,
         )?;
@@ -556,7 +548,7 @@ impl PiSession {
         let context = self
             .runtime
             .runtime
-            .task_context(caller, fence.clone())
+            .task_context_with_native_work(caller, &fence, &work)
             .await?;
         let command = pi_mail::prepare_send(
             &context,

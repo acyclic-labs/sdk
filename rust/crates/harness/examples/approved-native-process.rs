@@ -1,5 +1,4 @@
 //! Public consumer: explicitly approved native execution and receipt-only recovery.
-use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, PublicationPermit, WorkBudget};
 use acyclic_harness::{
@@ -18,17 +17,15 @@ use acyclic_harness::{
     effects::EffectRegistry,
     executor::ExecutionJournal,
     filesystem::{
-        FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-        FilesystemHost, FilesystemTaskRuntime, NATIVE_PROCESS_EFFECT_KIND, NativeProcessAuthority,
+        BorrowedNativeVolumeBinding, FilesystemContentPublisher, FilesystemContentVerifier,
+        FilesystemExecutionJournal, FilesystemHost, FilesystemTaskRuntime,
+        NATIVE_PROCESS_EFFECT_KIND, NativePreparationRoot, NativeProcessAuthority,
         NativeProcessProvider, NativeProcessRequest, NativeProcessResult, NativeProcessStopKind,
-        NativePreparationRoot, NativeViewManifest, NativeViewOptions, BorrowedNativeVolumeBinding,
-        NativeVolumeNamespace, NativeVolumeView, workspace_ref,
+        NativeViewManifest, NativeViewOptions, NativeVolumeNamespace, NativeVolumeView,
+        workspace_ref,
     },
     interaction::{Interaction, InteractionResponse},
-    mcp::{
-        PROTOCOL_VERSION,
-        stdio::McpStdioRequest,
-    },
+    mcp::{PROTOCOL_VERSION, stdio::McpStdioRequest},
     resources::ProviderRef,
     runtime::{RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
     scheduler::{LeaseFence, SessionLimits},
@@ -41,132 +38,13 @@ use acyclic_stream::{MemoryStream, StreamProvider};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
-struct Machine {
-    identity: MachineIdentity,
-    schema: Value,
-}
-impl ResumableMachine for Machine {
-    fn identity(&self) -> &MachineIdentity {
-        &self.identity
-    }
-    fn state_schema(&self) -> &Value {
-        &self.schema
-    }
-    fn initialize(&self, input: &Value) -> Result<Value> {
-        Ok(input.clone())
-    }
-    fn transition(&self, state: &Value, _: &Value) -> Result<MachineTransition> {
-        Ok(MachineTransition {
-            state: state.clone(),
-            commands: vec![],
-            status: MachineStatus::Suspended,
-        })
-    }
-}
-
 type Files<A = acyclic_fs::MemoryAuthorityBackend, O = acyclic_fs::MemoryObjectBackend> =
     FilesystemHost<A, O>;
 type Runtime<P, A = acyclic_fs::MemoryAuthorityBackend, O = acyclic_fs::MemoryObjectBackend> =
     FilesystemTaskRuntime<P, A, O>;
 
-async fn runtime<P, A, O>(
-    stream: std::sync::Arc<P>,
-    files: Arc<Files<A, O>>,
-    volume: VolumeRef,
-    issuer: &AuthorityIssuer,
-    scope: &Scope,
-) -> Result<Runtime<P, A, O>>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let machine = Arc::new(Machine {
-        identity: MachineIdentity {
-            name: "example.native".into(),
-            version: "1".into(),
-            digest: [7; 32],
-        },
-        schema: json!({"type":"integer"}),
-    });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        machine.clone(),
-        json!({"type":"integer"}),
-        json!({"type":"object"}),
-    )?;
-    let identity = definition.identity().clone();
-    let machine_identity = machine.identity.clone();
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(machine, &mut None)?;
-    let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
-    let runtime = Runtime::open(
-        stream,
-        files,
-        volume,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        runtime_scope.clone(),
-        tasks,
-        machines,
-        Default::default(),
-        SessionLimits {
-            active_tasks: 1,
-            total_tasks: 1,
-            depth: 0,
-            model_steps: 1,
-        },
-        1,
-        1_000_000,
-    )
-    .await?;
-    runtime
-        .task_host()
-        .admit(TaskAdmissionRecord {
-            resource_proofs: Vec::new(),
-            operation_id: OperationId::from_bytes([3; 16]),
-            task: identity,
-            machine: machine_identity,
-            input: json!(0),
-            input_schema: json!({"type":"integer"}),
-            output_schema: json!({"type":"object"}),
-            parent: None,
-            grants: runtime_scope.grants().clone(),
-            limits: runtime_scope.limits(),
-            run_limits: runtime_scope.run_limits(),
-            policy: None,
-            extensions: None,
-            execution: None,
-        })
-        .await?;
-    Ok(runtime)
-}
-
 async fn run(mcp: Option<&'static str>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    run_on(
-        mcp,
-        Arc::new(MemoryStream::default()),
-        None,
-        false,
-    )
-    .await
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Restart {
-    task: TaskId,
-    fence: LeaseFence,
-    scope: Scope,
-    command: OperationId,
-    approval: InteractionId,
-    plan: TaskEffectPlan,
-    results_volume: VolumeRef,
-    destination: VolumeRef,
-    request: NativeProcessRequest,
-    first: Option<EffectStatus>,
-    applied: bool,
+    run_on(mcp, Arc::new(MemoryStream::default()), None, false).await
 }
 
 struct Evidence<A, O> {
@@ -174,12 +52,6 @@ struct Evidence<A, O> {
     directory: tempfile::TempDir,
     _preparation_directory: tempfile::TempDir,
     files: std::sync::Weak<Files<A, O>>,
-}
-
-struct Recovery<P> {
-    owner: Arc<TaskJournalOwner<P>>,
-    effects: Arc<ConversationEffectHost<P>>,
-    content: Arc<dyn ContentResidencyVerifier>,
 }
 
 fn issuer() -> AuthorityIssuer {
@@ -215,7 +87,7 @@ async fn run_on<P: StreamProvider>(
     if evidence.directory.path() != evidence.restart.request.cwd {
         return Err("restart metadata changed the owned native directory".into());
     }
-    recover_on(
+    recovery::run(
         stream,
         filesystem,
         &evidence.restart,
@@ -225,10 +97,6 @@ async fn run_on<P: StreamProvider>(
     .await
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "self-contained public composition example with explicit capabilities and no private SDK helpers"
-)]
 async fn prepare_on<P, A, O>(
     mcp: Option<&'static str>,
     stream: std::sync::Arc<P>,
@@ -251,11 +119,12 @@ where
             name,
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
+            &mut None,
         )
     };
-    let source = volume("source")?;
-    let destination = volume("destination")?;
-    let results_volume = volume("results")?;
+    let source = volume("source".into())?;
+    let destination = volume("destination".into())?;
+    let results_volume = volume("results".into())?;
     let task_id = TaskId::from_bytes([3; 16]);
     let command = OperationId::from_bytes([4; 16]);
     let approval = InteractionId::from_bytes([5; 16]);
@@ -265,11 +134,11 @@ where
         "operation:observe".into(),
         "operation:cancel".into(),
         "task:spawn:example.native@1".into(),
-        source.capability(VolumeOperation::Read)?,
-        destination.capability(VolumeOperation::Read)?,
-        destination.capability(VolumeOperation::Write)?,
-        results_volume.capability(VolumeOperation::Read)?,
-        results_volume.capability(VolumeOperation::Write)?,
+        source.capability(VolumeOperation::Read, &mut None)?,
+        destination.capability(VolumeOperation::Read, &mut None)?,
+        destination.capability(VolumeOperation::Write, &mut None)?,
+        results_volume.capability(VolumeOperation::Read, &mut None)?,
+        results_volume.capability(VolumeOperation::Write, &mut None)?,
         "effect:plan".into(),
         "effect:run".into(),
         "effect:provider:example.native".into(),
@@ -284,16 +153,34 @@ where
             "tool:call:mcp.example.echo".into(),
         ]);
     }
-    let scope = issuer.issue("owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "owner",
+            &Capabilities::new(grants),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     for volume in [&source, &destination, &results_volume] {
         files.create_volume(volume).await?;
     }
-    let setup_scope = issuer.issue("setup", &Capabilities::new([source.capability(VolumeOperation::Write)?]), Some(agent), None, &mut None).expect("scope proof");
+    let setup_scope = issuer
+        .issue(
+            "setup",
+            &Capabilities::new([source.capability(VolumeOperation::Write, &mut None)?]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let setup = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
         &source,
         VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
     )?;
     files
         .put_content(
@@ -305,9 +192,11 @@ where
             "input.txt",
             128,
             &IdempotencyKey::new("example-source")?,
-         None, None)
+            None,
+            None,
+        )
         .await?;
-    let runtime = runtime(
+    let runtime = task::open(
         stream.clone(),
         files.clone(),
         results_volume.clone(),
@@ -317,37 +206,50 @@ where
     .await?;
     let WorkPull::Claimed(lease) = runtime
         .task_host()
-        .pull_work(&Worker {
-            id: "example-worker".into(),
-            available: Default::default(),
-            labels: BTreeMap::new(),
-        })
+        .pull_work(
+            &Worker {
+                id: "example-worker".into(),
+                available: Default::default(),
+                labels: BTreeMap::new(),
+            },
+            None,
+            &mut None,
+        )
         .await?
     else {
         return Err("missing task lease".into());
     };
-    runtime.task_host().start_task(&lease, None).await?;
-    let owner = Arc::new(
-        runtime
-            .task_host()
-            .journal_owner(task_id, LeaseFence::from(&lease.reservation))
-            .await?,
-    );
+    runtime.task_host().start_task(&lease, &mut None).await?;
     let mut conversation = StreamAggregate::open(
         &stream.clone(),
-        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer
+            .verifier(&mut None)
+            .expect("verifier copy")
+            .audience()
+            .clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(),
+        None,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
     .await?;
     conversation
-        .execute(Command {
-            operation_id: OperationId::from_bytes([8; 16]),
-            idempotency_key: IdempotencyKey::new("example-bind")?,
-            expected_revision: 0,
-            scope: scope.clone(),
-            causal_parent: None,
-            action: Action::BindConversation { agent },
-        }, #[cfg(feature = "filesystem")] None, &mut None)
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([8; 16]),
+                idempotency_key: IdempotencyKey::new("example-bind")?,
+                expected_revision: 0,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            },
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     let directory = if let Some(path) = restart_path {
         tempfile::tempdir_in(path.parent().ok_or("restart storage has no parent")?)?
@@ -360,16 +262,31 @@ where
             *value = json!(1_000_000);
         }
     }
-    let work_per_volume = serde_json::from_value(allowances)?;
+    let work_per_volume: WorkBudget = serde_json::from_value(allowances)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(work_per_volume, &cancellation)
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+    let fence = LeaseFence::from(&lease.reservation);
+    let owner = runtime
+        .task_host()
+        .journal_owner(task_id, &fence, Some(&io))
+        .await?
+        .into_native_shared(&work)?;
+    let context = runtime
+        .task_context_with_native_work(task_id, &fence, &work)
+        .await?;
     let preparation_directory = tempfile::tempdir_in(
-        directory.path().parent().ok_or("native root has no parent")?,
+        directory
+            .path()
+            .parent()
+            .ok_or("native root has no parent")?,
     )?;
     std::fs::create_dir(preparation_directory.path().join("target"))?;
     std::fs::create_dir(preparation_directory.path().join("backup"))?;
-    let allocation = NativePreparationRoot::witness(
-        directory.path().to_path_buf(), preparation_directory.path().to_path_buf(),
-        work_per_volume, &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|(error, _)| error)?.value;
+    let (allocation, _custody) =
+        NativePreparationRoot::witness(directory.path(), preparation_directory.path(), &work)?
+            .await?;
     let mut selections = Vec::new();
     for (volume, path, writable) in [
         (&source, "source", false),
@@ -378,40 +295,63 @@ where
         let generation = files
             .resolve(&workspace_ref(
                 volume.provider().clone(),
-                &volume.storage_name()?,
+                &volume.storage_name(&mut None)?,
             )?)
             .await?
             .generation;
         selections.push((volume, generation, path, writable));
     }
     let verifier = issuer.verifier(&mut None).expect("verifier copy");
-    let bindings = selections.iter().map(|(volume, generation, path, writable)| BorrowedNativeVolumeBinding {
-        host: &files, volume, generation, path, writable: *writable,
-        namespace: &NativeVolumeNamespace::MaterializedDirectory,
-        verifier: &verifier, scope: &scope, publication: PublicationPermit::Unrestricted,
-    }).collect();
+    let bindings = selections
+        .iter()
+        .map(
+            |(volume, generation, path, writable)| BorrowedNativeVolumeBinding {
+                host: &files,
+                volume,
+                generation,
+                path,
+                writable: *writable,
+                namespace: &NativeVolumeNamespace::MaterializedDirectory,
+                verifier: &verifier,
+                scope: &scope,
+                publication: PublicationPermit::Unrestricted,
+            },
+        )
+        .collect::<Vec<_>>();
     let view = Arc::new(
         NativeVolumeView::prepare(
             &owner,
-            allocation,
-            NativeViewOptions {
+            &[context.clone(), context],
+            &allocation,
+            &NativeViewOptions {
                 root: directory.path().to_path_buf(),
                 maximum_volumes: 2,
                 work_per_volume,
             },
-            bindings,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map_err(|(cause, _)| cause)?
-        .value,
+            &bindings,
+            &work,
+        )?
+        .await?,
     );
     let mut request = native_request(mcp, lost_response, view.manifest().clone())?;
     if restart_path.is_some() {
         request.timeout_ms = 30_000;
     }
-    let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
-    let results = FilesystemContentPublisher::new(files.clone(), &results_volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
+    let content = FilesystemContentVerifier::new(
+        files.clone(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        1_000_000,
+        None,
+    )?;
+    let results = FilesystemContentPublisher::new(
+        files.clone(),
+        &results_volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        1_000_000,
+        None,
+    )?;
     let request_ref = results
         .stage(
             command,
@@ -419,8 +359,10 @@ where
             &serde_json::to_vec(&request)?,
             "application/json",
             "request.json",
-        )
-        .await?;
+            None,
+        )?
+        .await?
+        .0;
     let result_schema = results
         .stage(
             command,
@@ -428,8 +370,10 @@ where
             b"{\"type\":\"object\"}",
             "application/schema+json",
             "schema.json",
-        )
-        .await?;
+            None,
+        )?
+        .await?
+        .0;
     let plan = TaskEffectPlan {
         provider: "example.native".into(),
         guarantee: EffectGuarantee::AtMostOnce,
@@ -447,12 +391,13 @@ where
     approvals
         .open_interaction(
             approval,
-            Interaction::approval(
+            &Interaction::approval(
                 "Run this exact example process".into(),
                 command,
                 request.approval_digest(task_id, command, None)?,
             )?,
-        )
+            None,
+        )?
         .await?;
     approvals
         .resolve_interaction(
@@ -464,32 +409,40 @@ where
             &scope,
         )
         .await?;
-    let authority = || NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
-    result_content: content.clone(),
-    results: results.clone(),
-    approvals: approvals.clone(), authority_custody: None, };
+    let authority = NativeProcessAuthority {
+        verifier: issuer.verifier(&mut None)?,
+        schemas: SchemaRegistry::default(),
+        content: content.clone(),
+        results: results.clone(),
+        approvals: approvals.clone(),
+    };
     let process = Arc::new(
         NativeProcessProvider::new(
             owner.clone(),
             command,
             plan.clone(),
-            view.clone(),
+            Some(view.clone()),
             approval,
-            authority(),
+            authority,
         )
         .await?,
     );
     let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
-    registry.register(process.clone())?;
+    registry.register(process.clone(), None)?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream.clone(),
-        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer
+            .verifier(&mut None)
+            .expect("verifier copy")
+            .audience()
+            .clone(),
         issuer.clone(),
         scope.clone(),
         SchemaRegistry::new(),
         content.clone(),
         registry,
-        None, None,
+        None,
+        None,
     )?);
     let mut restart = Restart {
         task: task_id,
@@ -513,11 +466,9 @@ where
     if mcp == Some("tools/call") && restart_path.is_none() {
         model_tool::run(
             model_tool::Approved {
-                recovery: Recovery {
-                    owner: owner.clone(),
-                    effects: effects.clone(),
-                    content: content.clone(),
-                },
+                owner: owner.clone(),
+                effects: effects.clone(),
+                content: content.clone(),
                 task: task_id,
                 command,
                 plan: plan.clone(),
@@ -530,14 +481,16 @@ where
             approvals.clone(),
             false,
             !lost_response && receipt_fault.is_none(),
-            receipt_fault.is_some(),
         )
         .await?;
     }
     let status = if mcp == Some("tools/call") && receipt_fault.is_some() {
         None
     } else {
-        let first = effects.run_task_effect(&owner, command, &plan, None).await.map(|result| result.0);
+        let first = effects
+            .run_task_effect(&owner, command, &plan, None)
+            .await
+            .map(|result| result.0);
         verify_first_result(
             first,
             content.as_ref(),
@@ -563,163 +516,6 @@ where
     })
 }
 
-async fn recover_on<P, A, O>(
-    stream: std::sync::Arc<P>,
-    filesystem: Fs<A, O>,
-    seed: &Restart,
-    receipt_fault: Option<(&str, bool)>,
-    lost_response: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let issuer = issuer();
-    let files = FilesystemHost::new(
-        filesystem,
-        seed.destination.provider(), None,
-    )?;
-    let runtime = runtime(
-        stream.clone(),
-        files.clone(),
-        seed.results_volume.clone(),
-        &issuer,
-        &seed.scope,
-    )
-    .await?;
-    let Recovery {
-        owner,
-        effects,
-        content,
-    } = recovered_effects(stream.clone(), files.clone(), &runtime, seed, &issuer).await?;
-    let recovered_status = effects
-        .reconcile_task_effect(&owner, seed.command, &seed.plan, None)
-        .await.map(|result| result.0)?;
-    verify_recovered_status(&recovered_status, seed.first.as_ref(), receipt_fault)?;
-    let mcp = seed.request.mcp_stdio.is_some();
-    if seed
-        .request
-        .mcp_stdio
-        .as_ref()
-        .is_some_and(|request| request.method == "tools/call")
-        && (receipt_fault.is_some() || seed.first.is_some())
-    {
-        let journal = execution_journal(
-            stream.clone(),
-            files.clone(),
-            &seed.results_volume,
-            &issuer,
-            &seed.scope,
-        )?;
-        model_tool::run(
-            model_tool::Approved {
-                recovery: Recovery {
-                    owner: owner.clone(),
-                    effects: effects.clone(),
-                    content: content.clone(),
-                },
-                task: seed.task,
-                command: seed.command,
-                plan: seed.plan.clone(),
-                request: seed.request.clone(),
-            },
-            runtime
-                .harness()
-                .durable_context(seed.task, OperationId::from_bytes(seed.task.into_bytes()), None)
-                .await?,
-            journal,
-            true,
-            matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
-            receipt_fault.is_some(),
-        )
-        .await?;
-    }
-    if matches!(recovered_status, EffectStatus::Succeeded { .. }) {
-        verify_stored_result(
-            content.as_ref(),
-            &seed.request,
-            &recovered_status,
-            lost_response,
-        )
-        .await?;
-    }
-    if effects
-        .run_task_effect(&owner, seed.command, &seed.plan, None)
-        .await.map(|result| result.0)?
-        != recovered_status
-        || seed.request.cwd.join("destination/output.txt").exists()
-    {
-        return Err("receipt recovery repeated native execution".into());
-    }
-    if mcp {
-        verify_mcp_calls(&seed.request, seed.applied)?;
-    }
-    verify_publication(&files, &seed.destination, seed.applied && !lost_response).await?;
-    if receipt_fault.is_none() && !lost_response {
-        println!(
-            "approved {} execution, SDK publication and receipt-only recovery passed",
-            if mcp { "MCP stdio" } else { "native" }
-        );
-    }
-    Ok(())
-}
-
-async fn recovered_effects<P, A, O>(
-    stream: std::sync::Arc<P>,
-    files: Arc<Files<A, O>>,
-    runtime: &Runtime<P, A, O>,
-    seed: &Restart,
-    issuer: &AuthorityIssuer,
-) -> Result<Recovery<P>>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let owner = Arc::new(
-        runtime
-            .task_host()
-            .journal_owner(seed.task, seed.fence.clone())
-            .await?,
-    );
-    let authority = recovered_authority(
-        stream.clone(),
-        files,
-        &seed.results_volume,
-        issuer,
-        &seed.scope,
-    )?;
-    let content = authority.content.clone();
-    let recovered = Arc::new(
-        NativeProcessProvider::<P>::recover(
-            owner.clone(),
-            seed.command,
-            seed.plan.clone(),
-            seed.approval,
-            authority,
-        )
-        .await?,
-    );
-    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
-    registry.register(recovered)?;
-    let effects = Arc::new(ConversationEffectHost::new(
-        stream,
-        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
-        issuer.clone(),
-        seed.scope.clone(),
-        SchemaRegistry::new(),
-        content.clone(),
-        registry,
-        None, None,
-    )?);
-    Ok(Recovery {
-        owner,
-        effects,
-        content,
-    })
-}
-
 fn execution_journal<P, A, O>(
     stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
@@ -736,29 +532,12 @@ where
         stream,
         files,
         &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
         &scope,
-        1_000_000, None,
+        1_000_000,
+        None,
     )?))
-}
-
-fn recovered_authority<P, A, O>(
-    stream: std::sync::Arc<P>,
-    files: Arc<Files<A, O>>,
-    volume: &VolumeRef,
-    issuer: &AuthorityIssuer,
-    scope: &Scope,
-) -> Result<NativeProcessAuthority>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let content: Arc<dyn ContentResidencyVerifier> = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
-    Ok(NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
-    content: content.clone(), result_content: content,
-    results: FilesystemContentPublisher::new(files.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?,
-    approvals: execution_journal(stream, files, volume, issuer, scope)?, authority_custody: None, })
 }
 
 async fn verify_publication<A, O>(
@@ -770,7 +549,10 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let reference = workspace_ref(destination.provider().clone(), &destination.storage_name()?)?;
+    let reference = workspace_ref(
+        destination.provider().clone(),
+        &destination.storage_name(&mut None)?,
+    )?;
     let published = files.read(&reference, None, "/output.txt", 128).await;
     if expected {
         if published?.as_ref() != b"public native consumer" {
@@ -814,22 +596,26 @@ fn native_request(
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
         standard_input: None,
-        mcp_stdio: if let Some(method) = mcp { Some(McpStdioRequest {
-            initialization: OperationId::from_bytes([31; 16]),
-            operation: OperationId::from_bytes([32; 16]),
-            method: method.into(),
-            params: match method {
-                "tools/call" => {
-                    json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}})
-                }
-                "tools/list" => json!({"cursor":"next"}),
-                "resources/list" | "resources/templates/list" | "prompts/list" => json!({}),
-                "resources/read" => json!({"uri":"example://content"}),
-                "prompts/get" => json!({"name":"example","arguments":{}}),
-                _ => return Err("unsupported MCP method".into()),
-            },
-            maximum_bytes: 4096,
-        }) } else { None },
+        mcp_stdio: if let Some(method) = mcp {
+            Some(McpStdioRequest {
+                initialization: OperationId::from_bytes([31; 16]),
+                operation: OperationId::from_bytes([32; 16]),
+                method: method.into(),
+                params: match method {
+                    "tools/call" => {
+                        json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}})
+                    }
+                    "tools/list" => json!({"cursor":"next"}),
+                    "resources/list" | "resources/templates/list" | "prompts/list" => json!({}),
+                    "resources/read" => json!({"uri":"example://content"}),
+                    "prompts/get" => json!({"name":"example","arguments":{}}),
+                    _ => return Err("unsupported MCP method".into()),
+                },
+                maximum_bytes: 4096,
+            })
+        } else {
+            None
+        },
         view,
     })
 }
@@ -875,9 +661,10 @@ async fn verify_stored_result(
     let EffectStatus::Succeeded { result } = status else {
         return Err(format!("unobserved native result: {status:?}").into());
     };
-    let output: NativeProcessResult = serde_json::from_slice(&content.read(result).await?)?;
+    let output: NativeProcessResult =
+        serde_json::from_slice(&content.read(result, 1_000_000, None)?.await?)?;
     if request.mcp_stdio.is_some() {
-        verify_mcp_result(request, &output, lost_response)?;
+        mcp_peer::verify_result(request, &output, lost_response)?;
     } else if !output.success
         || !output
             .stdout
@@ -885,29 +672,6 @@ async fn verify_stored_result(
             .any(|bytes| bytes == b"exact-token")
     {
         return Err("incorrect native result".into());
-    }
-    Ok(())
-}
-
-fn verify_recovered_status(
-    recovered: &EffectStatus,
-    first: Option<&EffectStatus>,
-    receipt_fault: Option<(&str, bool)>,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    if let Some((kind, lost_reply)) = receipt_fault {
-        if kind == "observed" && lost_reply {
-            if !matches!(recovered, EffectStatus::Succeeded { .. }) {
-                return Err("committed observation was not recovered".into());
-            }
-        } else if *recovered != EffectStatus::Indeterminate {
-            return Err("unknown MCP outcome became authoritative".into());
-        }
-    } else if first.is_none() {
-        if *recovered != EffectStatus::Indeterminate {
-            return Err("launch without an observation became authoritative".into());
-        }
-    } else if Some(recovered) != first {
-        return Err("receipt recovery changed the observed result".into());
     }
     Ok(())
 }
@@ -922,7 +686,8 @@ fn verify_mcp_calls(
             .mcp_stdio
             .as_ref()
             .ok_or("missing MCP descriptor")?
-            .method.as_str()
+            .method
+            .as_str()
         {
             "tools/call" => b"call\n",
             "tools/list" => b"list\n",
@@ -946,158 +711,19 @@ fn verify_mcp_calls(
     Ok(())
 }
 
-fn verify_mcp_result(
-    request: &NativeProcessRequest,
-    output: &NativeProcessResult,
-    lost_response: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    if lost_response {
-        if !output.stop.as_ref().is_some_and(|stop| {
-            stop.kind == NativeProcessStopKind::Timeout && stop.cleanup_completed
-        }) || !matches!(request.mcp_response(output), Err(acyclic_harness::Error::Indeterminate(operation)) if operation == OperationId::from_bytes([32; 16]))
-        {
-            return Err(
-                "lost MCP response became authoritative or cleanup was not confirmed".into(),
-            );
-        }
-    } else if request
-        .mcp_stdio
-        .as_ref()
-        .is_some_and(|request| request.method == "tools/list")
-    {
-        let page: rmcp::model::ListToolsResult =
-            serde_json::from_value(request.mcp_response(output)?)?;
-        if page.next_cursor.is_some()
-            || page.tools.len() != 1
-            || page.tools.first().is_none_or(|tool| {
-                tool.name != "echo"
-                    || tool.description.as_deref() != Some("héllo")
-                    || tool.input_schema.as_ref() != json!({"type":"object"}).as_object().unwrap()
-            })
-        {
-            return Err("incorrect MCP discovery page".into());
-        }
-    } else if let Some(descriptor) = request.mcp_stdio.as_ref().filter(|descriptor| !matches!(descriptor.method.as_str(), "tools/call" | "tools/list")) {
-        let value = request.mcp_response(output)?;
-        let expected = match descriptor.method.as_str() {
-            "resources/list" => json!({"resources":[{"uri":"example://content","name":"content"}]}),
-            "resources/templates/list" => json!({"resourceTemplates":[{"uriTemplate":"example://{name}","name":"named"}]}),
-            "resources/read" => json!({"contents":[{"uri":"example://content","text":"héllo"}]}),
-            "prompts/list" => json!({"prompts":[{"name":"example"}]}),
-            "prompts/get" => json!({"messages":[{"role":"user","content":{"type":"text","text":"héllo"}}]}),
-            _ => return Err("service selection changed".into()),
-        };
-        if value != expected { return Err("incorrect MCP resource/prompt result".into()); }
-    } else if request.mcp_response(output)?
-        != json!({
-            "content":[{"type":"text","text":"héllo"}],
-            "structuredContent":{"text":"héllo","sequence":u64::MAX}
-        })
-    {
-        return Err("incorrect MCP process result".into());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "approved-native-process/faults.rs"]
 mod faults;
 
+#[path = "approved-native-process/mcp_peer.rs"]
+mod mcp_peer;
 #[path = "approved-native-process/model_tool.rs"]
 mod model_tool;
-
-fn mcp_peer_result(
-    call: &Value,
-) -> std::result::Result<(Value, &'static [u8]), Box<dyn std::error::Error>> {
-    match call.get("method").and_then(Value::as_str) {
-        Some("tools/list") if call.get("params") == Some(&json!({"cursor":"next"})) => Ok((
-            json!({"tools":[{"name":"echo","description":"héllo","inputSchema":{"type":"object"}}]}),
-            b"list\n",
-        )),
-        Some("tools/call")
-            if call.pointer("/params/name").and_then(Value::as_str) == Some("echo")
-                && call.pointer("/params/arguments")
-                    == Some(&json!({"text":"héllo","sequence":u64::MAX})) =>
-        {
-            Ok((
-                json!({"content":[{"type":"text","text":"héllo"}],"structuredContent":call.pointer("/params/arguments")}),
-                b"call\n",
-            ))
-        }
-        Some("resources/list") if call.get("params") == Some(&json!({})) => Ok((json!({"resources":[{"uri":"example://content","name":"content"}]}), b"resources\n")),
-        Some("resources/templates/list") if call.get("params") == Some(&json!({})) => Ok((json!({"resourceTemplates":[{"uriTemplate":"example://{name}","name":"named"}]}), b"templates\n")),
-        Some("resources/read") if call.get("params") == Some(&json!({"uri":"example://content"})) => Ok((json!({"contents":[{"uri":"example://content","text":"héllo"}]}), b"read\n")),
-        Some("prompts/list") if call.get("params") == Some(&json!({})) => Ok((json!({"prompts":[{"name":"example"}]}), b"prompts\n")),
-        Some("prompts/get") if call.get("params") == Some(&json!({"name":"example","arguments":{}})) => Ok((json!({"messages":[{"role":"user","content":{"type":"text","text":"héllo"}}]}), b"prompt\n")),
-        _ => Err("incorrect pinned MCP request".into()),
-    }
-}
-
-fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    use bytes::BytesMut;
-    use rmcp::transport::async_rw::JsonRpcMessageCodec;
-    use std::io::{BufRead as _, Read as _, Write as _};
-    use tokio_util::codec::{Decoder as _, Encoder as _};
-    let maximum: u32 = std::env::var("MCP_MAX_BYTES")?.parse()?;
-    if maximum == 0 || std::env::var("APPROVED_TOKEN")? != "exact-token" {
-        return Err("invalid explicit server input".into());
-    }
-    let mut input = std::io::stdin().lock();
-    let mut codec = JsonRpcMessageCodec::<Value>::new_with_max_length(maximum as usize);
-    let mut read = || -> std::result::Result<Value, Box<dyn std::error::Error>> {
-        let mut line = Vec::new();
-        input
-            .by_ref()
-            .take(u64::from(maximum) + 1)
-            .read_until(b'\n', &mut line)?;
-        if line.len() > maximum as usize || !line.ends_with(b"\n") {
-            return Err("invalid bounded client frame".into());
-        }
-        codec
-            .decode(&mut BytesMut::from(line.as_slice()))?
-            .ok_or_else(|| "missing client message".into())
-    };
-    let write = |value: Value| -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let mut bytes = BytesMut::new();
-        JsonRpcMessageCodec::new().encode(value, &mut bytes)?;
-        std::io::stdout().write_all(&bytes)?;
-        std::io::stdout().flush()?;
-        Ok(())
-    };
-    let initialization = read()?;
-    if initialization.get("method").and_then(Value::as_str) != Some("initialize")
-        || initialization
-            .pointer("/params/protocolVersion")
-            .and_then(Value::as_str)
-            != Some(PROTOCOL_VERSION)
-    {
-        return Err("incorrect client initialization".into());
-    }
-    let initialization_id = initialization
-        .get("id")
-        .ok_or("missing initialization id")?;
-    write(json!({"jsonrpc":"2.0","id":initialization_id,"result":{
-        "protocolVersion":PROTOCOL_VERSION,"capabilities":{"tools":{}},
-        "serverInfo":{"name":"example.echo","version":"1"}}}))?;
-    if read()?.get("method").and_then(Value::as_str) != Some("notifications/initialized") {
-        return Err("tool called before initialized notification".into());
-    }
-    let call = read()?;
-    let (result, trace) = mcp_peer_result(&call)?;
-    std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("destination/calls.txt")?
-        .write_all(trace)?;
-    let operation = call.get("id").ok_or("missing tool operation")?;
-    if !lost_response {
-        write(json!({"jsonrpc":"2.0","id":operation,"result":result}))?;
-    }
-    let mut byte = [0];
-    let _ = input.read(&mut byte)?;
-    Ok(())
-}
+#[path = "approved-native-process/recovery.rs"]
+mod recovery;
+#[path = "approved-native-process/task.rs"]
+mod task;
+use recovery::Restart;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1114,7 +740,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if std::env::args()
         .any(|arg| arg == "--mcp-native-child" || arg == "--mcp-native-lost-response")
     {
-        return mcp_native_child(std::env::args().any(|arg| arg == "--mcp-native-lost-response"));
+        return mcp_peer::child(std::env::args().any(|arg| arg == "--mcp-native-lost-response"));
     }
     if std::env::args().any(|arg| arg == "--native-child") {
         std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
@@ -1125,7 +751,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         run(None).await?;
         run(Some("tools/call")).await?;
         run(Some("tools/list")).await?;
-        for method in ["resources/list", "resources/templates/list", "resources/read", "prompts/list", "prompts/get"] {
+        for method in [
+            "resources/list",
+            "resources/templates/list",
+            "resources/read",
+            "prompts/list",
+            "prompts/get",
+        ] {
             run(Some(method)).await?;
         }
         #[cfg(test)]

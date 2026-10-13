@@ -22,8 +22,8 @@ impl AgentHarness {
                     .scope
                     .allows_authority(&observed.grants, &observed.limits)
                 {
-                    return Err(task_workflow_error(
-                        native,
+                    return Err(crate::executor::stock_boundary(
+                        io,
                         crate::wire::ErrorCode::Unauthorized,
                         "runtime scope cannot widen ancestor authority",
                     ));
@@ -35,8 +35,8 @@ impl AgentHarness {
         })?;
         if !observed.resource_proofs.is_empty() {
             let state = self.state.as_ref().ok_or_else(|| {
-                task_workflow_error(
-                    native,
+                crate::executor::stock_boundary(
+                    io,
                     crate::wire::ErrorCode::Unsupported,
                     "resource-derived admission state is not bound",
                 )
@@ -52,8 +52,8 @@ impl AgentHarness {
                         )?
                         .await?;
                     if !custody.work().shares_allocation_context(work) {
-                        return Err(task_workflow_error(
-                            native,
+                        return Err(crate::executor::stock_boundary(
+                            io,
                             crate::wire::ErrorCode::Unauthorized,
                             "resumed scope differs from its original metadata ledger",
                         ));
@@ -76,8 +76,8 @@ impl AgentHarness {
                 .as_ref()
                 .is_none_or(|access| access.admission_digest != digest)
             {
-                return Err(task_workflow_error(
-                    native,
+                return Err(crate::executor::stock_boundary(
+                    io,
                     crate::wire::ErrorCode::Unauthorized,
                     "resource scope seal differs from observed admission",
                 ));
@@ -95,8 +95,8 @@ impl AgentHarness {
         if observed.policy != self.policy_identity
             || observed.extensions.as_ref() != self.scope.extensions()
         {
-            return Err(task_workflow_error(
-                native,
+            return Err(crate::executor::stock_boundary(
+                io,
                 crate::wire::ErrorCode::Conflict,
                 "retained admission changed owner bindings",
             ));
@@ -111,8 +111,8 @@ impl AgentHarness {
             _ => false,
         };
         if !matches {
-            return Err(task_workflow_error(
-                native,
+            return Err(crate::executor::stock_boundary(
+                io,
                 crate::wire::ErrorCode::Conflict,
                 "retained execution route differs from runtime",
             ));
@@ -172,6 +172,14 @@ impl AgentHarness {
 
     pub(super) fn assert_durable_policy_bindings(&self, work: Option<&NativeWork>) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native_io = work
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = native_io.as_ref();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io = None;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters::default())?;
         }
@@ -194,8 +202,8 @@ impl AgentHarness {
             if identity!(state, policy_identity, policy_identity_with_native_work).as_deref()
                 != self.policy_identity.as_ref()
             {
-                return Err(task_workflow_error(
-                    work,
+                return Err(crate::executor::stock_boundary(
+                    io,
                     crate::wire::ErrorCode::Conflict,
                     "durable provider binding changed",
                 ));
@@ -205,8 +213,8 @@ impl AgentHarness {
             && identity!(spawner, policy_identity, policy_identity_with_native_work).as_deref()
                 != self.policy_identity.as_ref()
         {
-            return Err(task_workflow_error(
-                work,
+            return Err(crate::executor::stock_boundary(
+                io,
                 crate::wire::ErrorCode::Conflict,
                 "durable provider binding changed",
             ));
@@ -245,8 +253,8 @@ impl AgentHarness {
                     None => false,
                 };
             if !matches_spawner {
-                return Err(task_workflow_error(
-                    work,
+                return Err(crate::executor::stock_boundary(
+                    io,
                     crate::wire::ErrorCode::Conflict,
                     "durable provider binding changed",
                 ));

@@ -120,6 +120,11 @@ pub(super) fn logical_path(
         bytes_copied: value.len() as u64,
         ..WorkCounters::default()
     })?;
-    acyclic_harness::conversation::validate_content_path(&value)?;
+    acyclic_harness::conversation::validate_content_path(
+        &value,
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
+    )?;
     Ok((value, custody))
 }

@@ -55,11 +55,8 @@ impl PiSession {
         if let Some(host) = &self.native {
             return Ok(host.clone());
         }
-        let protected = pi_owner::PiOwnerConfig::load(
-            &self.resources.private_state_root,
-            &self.relative_directory,
-            work,
-        )?;
+        let protected =
+            pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, work)?;
         let PluginTaskBinding::Pi(root) = &self.state.task_binding else {
             return Err(Error::Invalid(
                 "Pi native lifetime has no original root binding".to_owned(),
@@ -147,13 +144,9 @@ impl PiSession {
         }
         retain_first_failure(
             &mut failure,
-            self.slots.save_with_native_work(
-                &self.resources.private_state_root,
-                &self.relative_directory,
-                &self.state,
-                Survives::PowerLoss,
-                &work,
-            ),
+            self.slots
+                .save(&self.directory, &self.state, Survives::PowerLoss)
+                .map_err(Error::Storage),
         );
 
         for task in tasks {
@@ -235,13 +228,9 @@ impl PiSession {
         .await;
         retain_first_failure(
             &mut failure,
-            self.slots.save_with_native_work(
-                &self.resources.private_state_root,
-                &self.relative_directory,
-                &self.state,
-                Survives::PowerLoss,
-                &work,
-            ),
+            self.slots
+                .save(&self.directory, &self.state, Survives::PowerLoss)
+                .map_err(Error::Storage),
         );
         finish_native_drain(failure)
     }
@@ -482,13 +471,9 @@ impl PiSession {
             }
             retain_first_failure(
                 &mut failure,
-                self.slots.save_with_native_work(
-                    &self.resources.private_state_root,
-                    &self.relative_directory,
-                    &self.state,
-                    Survives::PowerLoss,
-                    &work,
-                ),
+                self.slots
+                    .save(&self.directory, &self.state, Survives::PowerLoss)
+                    .map_err(Error::Storage),
             );
         }
         if let Some(native) = &native {
@@ -515,13 +500,9 @@ impl PiSession {
             }
             retain_first_failure(
                 &mut failure,
-                self.slots.save_with_native_work(
-                    &self.resources.private_state_root,
-                    &self.relative_directory,
-                    &self.state,
-                    Survives::PowerLoss,
-                    &work,
-                ),
+                self.slots
+                    .save(&self.directory, &self.state, Survives::PowerLoss)
+                    .map_err(Error::Storage),
             );
         }
         finish_native_drain(failure)

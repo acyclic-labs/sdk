@@ -1491,7 +1491,7 @@ impl NativeWatch {
                     let (next, identity) = match crate::native_host::open_windows_directory(
                         &held,
                         &path[component_start..length],
-                        work,
+                        false, work,
                     ) {
                         Ok(observed) => observed,
                         Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),

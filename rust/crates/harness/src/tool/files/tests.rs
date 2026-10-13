@@ -1,100 +1,51 @@
 use super::*;
-
-use super::*;
-use crate::{
-    AgentId, Capabilities, OperationId,
-    conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
-    resources::ProviderRef,
-};
-
-fn file() -> Result<FileRef> {
-    FileRef::new(
-        VolumeRef::new(
-            ProviderRef::new(
-                "file-preflight".into(),
-                "filesystem".into(),
-                "1".into(),
-                &mut None,
-            )?,
-            "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
-            &mut None,
-        )?,
-        "source.txt".into(),
-        "generation-1".into(),
-        FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
-        "source.txt".into(),
-        &mut None,
-    )
-}
+use crate::{Capabilities, OperationId, conversation::Limits};
 
 #[test]
 fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
-    let file = file()?;
+    let file = crate::tool::tests::file(b"exact")?;
     let missing = RuntimeScope::new(Capabilities::default(), Limits::default())?;
-    let granted = RuntimeScope::new(
-        Capabilities::new([file.read_capability( &mut None)?]),
-        Limits::default(),
-    )?;
+    let grants = Capabilities::new([file.read_capability(&mut None)?]);
+    let granted = RuntimeScope::new(grants.clone(), Limits::default())?;
+    let mut invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "preflight".into(),
+        name: String::new(),
+        arguments: Value::Null,
+    };
     for (tool, arguments) in [
-        (
-            read_file()?,
-            serde_json::to_value(ReadFileInput { file: file.clone() })
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-        ),
+        (read_file()?, json!({"file":file})),
         (
             edit_file()?,
-            serde_json::to_value(EditFileInput {
-                file: file.clone(),
-                old_text: "exact".into(),
-                new_text: "changed".into(),
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+            json!({"file":file,"old_text":"exact","new_text":"changed"}),
         ),
         (
             patch_file(4096, 16)?,
-            serde_json::to_value(PatchFileInput {
-                file: file.clone(),
-                diff: "@@\n-exact\n+changed\n".into(),
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+            json!({"file":file,"diff":"@@\n-exact\n+changed\n"}),
         ),
     ] {
-        let invocation = ToolInvocation {
-            operation_id: OperationId::new(),
-            call_id: "preflight".into(),
-            name: tool.definition.name.clone(),
-            arguments,
-        };
-        assert!(matches!(
-            tool.executor.authorize(None, &invocation),
-            Err(Error::Unauthorized(_))
-        ));
-        assert!(matches!(
-            tool.executor.authorize(Some(&missing), &invocation),
-            Err(Error::Unauthorized(_))
-        ));
-        assert!(matches!(
-            tool.executor.authorize(Some(&granted), &invocation),
-            Err(Error::Unauthorized(_))
-        ));
+        invocation.name = tool.definition.name.clone();
+        invocation.arguments = arguments;
+        for scope in [None, Some(&missing), Some(&granted)] {
+            assert!(matches!(
+                tool.executor.authorize(scope, None, &invocation, None),
+                Err(Error::Unauthorized(_))
+            ));
+        }
     }
-    let invocation = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: "read".into(),
-        name: "acyclic.read_file".into(),
-        arguments: json!({"file":file}),
-    };
+    invocation.name = "acyclic.read_file".into();
+    invocation.arguments = json!({"file":file});
     let narrow = RuntimeScope::new(
-        Capabilities::new([file.read_capability( &mut None)?]),
+        grants,
         Limits {
             render_bytes: 4,
             ..Limits::default()
         },
     )?;
     assert!(matches!(
-        read_file()?.executor.authorize(Some(&narrow), &invocation),
+        read_file()?
+            .executor
+            .authorize(Some(&narrow), None, &invocation, None),
         Err(Error::Invalid(_))
     ));
     Ok(())
@@ -111,9 +62,13 @@ fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch()
         arguments: json!({"path":"../escape.txt","text":"body","media_type":"text/plain","display_name":"body"}),
     };
     assert!(matches!(
-        tool.executor.authorize(None, &invocation),
+        tool.executor.authorize(None, None, &invocation, None),
         Err(Error::Unauthorized(_))
     ));
-    assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
+    assert!(
+        tool.executor
+            .authorize(Some(&scope), None, &invocation, None)
+            .is_err()
+    );
     Ok(())
 }

@@ -26,10 +26,8 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
             acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
         )),
     )?;
-    context
-        .verify_original_volume_read_with_native_work(current_owner, project, work)
-        .await?;
-    if current_owner.task_id() != request.binding.task_id
+    if context.durable_task_id() != Some(request.binding.task_id)
+        || current_owner.task_id() != request.binding.task_id
         || preparation.command.operation_id
             != crate::pi_root_inputs::preparation_operation(request.binding.task_id, work)?
         || preparation.plan.provider != ROOT_ALLOCATION_PROVIDER
@@ -71,9 +69,6 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
             });
         }
     }
-    context
-        .verify_original_volume_read_with_native_work(current_owner, project, work)
-        .await?;
     current_owner
         .verify(
             false,
@@ -89,7 +84,6 @@ impl PiRootProvider {
     /// Verifies a created root against its original output and current readonly owner.
     pub(crate) async fn verify_created_source(
         &self,
-        current_read_owner: &TaskJournalOwner<LocalStream>,
         key: &str,
         expected_allocation: &PiRootAllocation,
         work: &NativeMaterializationWork,
@@ -97,23 +91,27 @@ impl PiRootProvider {
         work.admit(WorkCounters::UNCHARGED)?;
         let context = &self.preparation.context;
         let request = &self.preparation.request;
-        if current_read_owner.task_id() != request.binding.task_id
-            || context.durable_task_id() != Some(request.binding.task_id)
-        {
+        if context.durable_task_id() != Some(request.binding.task_id) {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "created root source differs from the original readonly task",
             });
         }
-        for volume in request.binding.project_volumes.values() {
-            context
-                .verify_original_volume_read_with_native_work(current_read_owner, volume, work)
-                .await?;
-        }
         if !request.binding.project_volumes.contains_key(key) {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "created source is not an originally selected root",
+            });
+        }
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let read = request.binding.project_volumes[key]
+            .capability(VolumeOperation::Read, &mut Some(&mut io))?;
+        if !context.scope().grants().contains(&read) {
+            return Err(Error::NativeBoundary {
+                code: ErrorCode::Unauthorized,
+                reason: "created source is outside the original task read scope",
             });
         }
         expected_allocation.validate(&request.binding)?;
@@ -151,13 +149,6 @@ impl PiRootProvider {
                 custody: None,
             });
         }
-        context
-            .verify_original_volume_read_with_native_work(
-                current_read_owner,
-                &request.binding.project_volumes[key],
-                work,
-            )
-            .await?;
         Ok(identity)
     }
 }
@@ -177,19 +168,18 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     project: &VolumeRef,
     snapshot: acyclic_fs::LazySnapshotRef,
     context: Arc<acyclic_harness::runtime::TaskContext>,
-    current_owner: &TaskJournalOwner<LocalStream>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    current_owner.require_volume_grant(
-        project,
-        VolumeOperation::Read,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )),
-    )?;
-    context
-        .verify_original_volume_read_with_native_work(current_owner, project, work)
-        .await?;
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
+    let read = project.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+    if !context.scope().grants().contains(&read) {
+        return Err(Error::NativeBoundary {
+            code: ErrorCode::Unauthorized,
+            reason: "root source is outside the original task read scope",
+        });
+    }
     let preparation = load_original_preparation_with_native_work(
         &owner,
         &filesystem,
@@ -313,11 +303,6 @@ pub(crate) async fn prove_root_project_source_with_native_work(
             "root source native identity or canonical binding differs",
         ));
     }
-    provider
-        .preparation
-        .context
-        .verify_original_volume_read_with_native_work(current_owner, project, work)
-        .await?;
     Ok(())
 }
 impl PiRootProvider {

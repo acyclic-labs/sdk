@@ -118,10 +118,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let records = work.path(authority, "/records", None)?;
         let epochs = work.path(authority, "/epochs", None)?;
         let retirement = work.path(authority, "/retirement", None)?;
-        let copying = WorkCounters {
-            bytes_copied: 64,
-            ..WorkCounters::UNCHARGED
-        };
+        let copying = codec_work(0, 64, 0);
         work.admit(copying)?;
         let mut identity = [0; 64];
         identity[..16].copy_from_slice(&authority.into_bytes());

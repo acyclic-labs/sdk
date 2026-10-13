@@ -8,8 +8,6 @@ use acyclic_fs::{CancellationToken, WorkBudget};
 
 use acyclic_stream::StreamPath;
 
-use bytes::Bytes;
-
 async fn publish(
     parent: &mut StreamAggregate<MemoryStream>,
     report: ForkReport,
