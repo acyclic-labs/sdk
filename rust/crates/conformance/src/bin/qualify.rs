@@ -23,11 +23,7 @@ use acyclic_fs::native_mount::{MountOptions, NativeMountKind, probe_native_mount
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
 use acyclic_objects::LocalObjectsLimits;
-use acyclic_objects::v1::{
-    ObjectsProvider,
-    local::LocalObjects,
-    wire,
-};
+use acyclic_objects::v1::{ObjectsProvider, local::LocalObjects, wire};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits};
 use bytes::Bytes;
 use futures::StreamExt as _;
@@ -222,9 +218,7 @@ async fn qualify_filesystem_cases(
 
 async fn qualify_native_case(root: &Path, started: Instant, budget: Duration) -> Case {
     let capability = probe_native_mount();
-    if capability.available()
-        && capability.kind != Some(NativeMountKind::MacOsNfs)
-    {
+    if capability.available() && capability.kind != Some(NativeMountKind::MacOsNfs) {
         let mut case = run_case(
             "filesystem/sqlite-wal-mount",
             started,
@@ -244,9 +238,10 @@ async fn qualify_native_case(root: &Path, started: Instant, budget: Duration) ->
             unsupported_reason: Some(if capability.kind == Some(NativeMountKind::MacOsNfs) {
                 "SQLite WAL declined on the macOS loopback NFS mount; the shared-memory WAL consumer is unsupported".into()
             } else {
-                capability.unavailable_reason.unwrap_or(
-                    "native mount is unavailable or read-only on this host",
-                ).to_owned()
+                capability
+                    .unavailable_reason
+                    .unwrap_or("native mount is unavailable or read-only on this host")
+                    .to_owned()
             }),
         }
     }
@@ -306,7 +301,8 @@ async fn stream_history(root: &Path, seed: u64) -> Result<(), String> {
         for (index, record) in observed.iter().enumerate() {
             let record = record.as_ref().map_err(|error| error.to_string())?;
             let offset = usize::try_from(from).map_err(|error| error.to_string())? + index;
-            if record.sequence != from + index as u64 || expected.get(offset) != Some(&record.value)
+            if record.sequence != from + index as u64
+                || expected.get(offset).map(Bytes::as_ref) != Some(record.value.as_ref())
             {
                 return Err(format!("step {step}: read differs from model at {offset}"));
             }
@@ -608,9 +604,15 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
     let fs = Box::pin(Fs::local(LocalOptions::new(&root)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(fs.create_workspace("consumer-history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-        .map_err(|error| error.to_string())?;
+    let workspace = Box::pin(fs.create_workspace(
+        "consumer-history",
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    ))
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
+    .map_err(|error| error.to_string())?;
     let mut rng = seed | 1;
     let mut expected = std::collections::BTreeMap::<String, Bytes>::new();
     for step in 0..64_u64 {
@@ -622,7 +624,21 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
             Box::pin(workspace.remove(&path))
                 .await
                 .map_err(|error| error.to_string())?;
-            if Box::pin(async { workspace.read(&path, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.is_ok() {
+            if Box::pin(async {
+                workspace
+                    .read(
+                        &path,
+                        64,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            })
+            .await
+            .is_ok()
+            {
                 return Err(format!("step {step}: removed path remains readable"));
             }
         } else {
@@ -631,10 +647,22 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
                 .await
                 .map_err(|error| error.to_string())?;
             expected.insert(path.clone(), value.clone());
-            if Box::pin(async { workspace.read(&path, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-                .await
-                .map_err(|error| error.to_string())?
-                != value
+            if Box::pin(async {
+                workspace
+                    .read(
+                        &path,
+                        64,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .as_ref()
+                != value.as_ref()
             {
                 return Err(format!("step {step}: written value differs from model"));
             }
@@ -646,17 +674,41 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
     expected.insert("/unicode-雪.txt".into(), Bytes::from_static(b"utf8 path"));
     drop(workspace);
     drop(fs);
-    let reopened = Box::pin(Fs::local(LocalOptions::new(&root)))
+    verify_reopened_history(&root, expected).await
+}
+
+async fn verify_reopened_history(
+    root: &Path,
+    expected: std::collections::BTreeMap<String, Bytes>,
+) -> Result<(), String> {
+    let reopened = Box::pin(Fs::local(LocalOptions::new(root)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(reopened.open_workspace("consumer-history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-        .map_err(|error| error.to_string())?;
+    let workspace = Box::pin(reopened.open_workspace(
+        "consumer-history",
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    ))
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
+    .map_err(|error| error.to_string())?;
     for (path, value) in expected {
-        let observed = Box::pin(async { workspace.read(&path, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-            .await
-            .map_err(|error| error.to_string())?;
-        if observed != value {
+        let observed = Box::pin(async {
+            workspace
+                .read(
+                    &path,
+                    64,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        if observed.as_ref() != value.as_ref() {
             return Err(format!("reopened path {path} differs from model"));
         }
     }
@@ -673,10 +725,19 @@ async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     }
     std::fs::write(root.join("wanted"), b"0123456789").map_err(|error| error.to_string())?;
-    let source =
-        NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&root).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| error.to_string())?;
+    let source = NativeDemandSource::open(
+        std::borrow::Cow::Owned(std::path::Path::new(&root).to_path_buf()),
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+        None,
+        None,
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
+    .map_err(|error| error.to_string())?;
     let wanted = PortablePath::parse("/wanted", VolumeLimits::default())
         .map_err(|error| error.to_string())?;
     let wanted = acyclic_fs::kernel::NamespacePath::from_portable(&wanted, VolumeLimits::default())
@@ -684,7 +745,12 @@ async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), String> {
     let cancellation = CancellationToken::new();
     let provider = &source;
     let looked_up = provider
-        .lookup(provider.reference(), &wanted, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .lookup(
+            provider.reference(),
+            &wanted,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(|error| error.to_string())?;
     if looked_up.work.source_path_components != 1
@@ -695,10 +761,18 @@ async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), String> {
     }
     let version = looked_up.value.ok_or("wanted path is absent")?.version;
     let range = provider
-        .read_range(provider.reference(), &wanted, version, 3, 4, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .read_range(
+            provider.reference(),
+            &wanted,
+            version,
+            3,
+            4,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(|error| error.to_string())?;
-    if range.value.as_ref() != b"3456"
+    if range.value.bytes().as_ref() != b"3456"
         || range.work.source_entries_visited != 0
         || range.work.source_bytes_read != 4
     {
@@ -798,13 +872,17 @@ async fn run_sqlite_child(mode: &str, path: &Path) -> Result<(), String> {
     let mut command =
         std::process::Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
     command.arg(mode).arg(path);
-    let output = acyclic_native_runtime::run_blocking_io(move || {
-        acyclic_native_runtime::process_output(
-            &mut command,
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )
-    }, None).expect("unmetered task construction cannot fail")
+    let output = acyclic_native_runtime::run_blocking_io(
+        move || {
+            acyclic_native_runtime::process_output(
+                &mut command,
+                std::time::Duration::from_secs(120),
+                8 * 1024 * 1024,
+            )
+        },
+        None,
+    )
+    .map_err(|error| error.to_string())?
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
@@ -824,9 +902,15 @@ async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<(), String> {
     let fs = Box::pin(Fs::local(LocalOptions::new(&store)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(fs.create_workspace("sqlite-wal", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-        .map_err(|error| error.to_string())?;
+    let workspace = Box::pin(fs.create_workspace(
+        "sqlite-wal",
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    ))
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
+    .map_err(|error| error.to_string())?;
     let mount = workspace
         .mount(&destination, MountOptions::read_write())
         .await
@@ -835,15 +919,37 @@ async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<(), String> {
     let detached = mount.unmount().await.map_err(|error| error.to_string());
     child?;
     detached?;
-    let body = Box::pin(async { workspace.read("/wal.db", 1024 * 1024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-        .await
-        .map_err(|error| error.to_string())?;
+    let body = Box::pin(async {
+        workspace
+            .read(
+                "/wal.db",
+                1024 * 1024,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
     if body.is_empty() {
         return Err("mounted SQLite database was not published".into());
     }
-    let wal = Box::pin(async { workspace.read("/wal.db-wal", 1024 * 1024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-        .await
-        .map_err(|error| error.to_string())?;
+    let wal = Box::pin(async {
+        workspace
+            .read(
+                "/wal.db-wal",
+                1024 * 1024,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
     if wal.is_empty() {
         return Err("committed SQLite WAL was not published".into());
     }

@@ -18,8 +18,8 @@ use acyclic_fs::model::{
     MutationMode, VolumeConfig,
 };
 use acyclic_fs::{
-    CancellationToken, LivePublicationObservation, GenerationId, LocalFs, LocalOptions, OperationId,
-    VolumeId, WorkCounters,
+    CancellationToken, GenerationId, LivePublicationObservation, LocalFs, LocalOptions,
+    OperationId, VolumeId, WorkCounters,
 };
 use acyclic_fs::{
     CaptureOptions, MaterializeOptions, capture_baseline, capture_root_identity,
@@ -608,7 +608,7 @@ fn source_probe(args: &[String]) -> Result<(), Failure> {
         "read_directory(/):  {:?}",
         mount_source
             .read_directory(&MountPath::root(), None, 16)
-            .map(|p| p.entries.len())
+            .map(|p| p.entries().len())
     );
     match mount_source.open_file(&readme) {
         Ok(file) => {
@@ -905,25 +905,36 @@ fn with_lazy_mount<T>(
                 .map_err(engine_err("open store"))?;
             let state = LocalCoreStateStore::open_owned(work.join("core-state"))
                 .map_err(engine_err("open core state"))?;
-            let demand = NativeDemandSource::open(std::borrow::Cow::Owned(source.to_path_buf()), profile, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(engine_err("open source"))?;
-            let workspace = LazyWorkspace:: attach (
-                    &engine,
-                    "mount-bench",
-                    Arc::new(demand),
-                    state,
-                    VolumeConfig::native(Lifecycle::Durable),
+            let demand = NativeDemandSource::open(
+                std::borrow::Cow::Owned(source.to_path_buf()),
+                profile,
+                VolumeLimits::default(),
+                None,
+                None,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map_err(engine_err("open source"))?;
+            let workspace = LazyWorkspace::attach(
+                &engine,
+                "mount-bench",
+                Arc::new(demand),
+                state,
+                VolumeConfig::native(Lifecycle::Durable),
                 acyclic_fs::OperationId::new(),
                 &mut acyclic_fs::kernel::KernelAccounting::Standalone {
                     allocations: Default::default(),
                     work: acyclic_fs::WorkCounters::UNCHARGED,
                     budget: acyclic_fs::WorkBudget::UNBOUNDED,
                     cancellation: &acyclic_fs::CancellationToken::new(),
-                }, )
-                .await
-                . map(|(lazy, _)| lazy)
-            . map_err(engine_err("attach source"))?;
+                },
+            )
+            .await
+            .map(|(lazy, _)| lazy)
+            .map_err(engine_err("attach source"))?;
             workspace
                 .mount(
                     &mount_dir,
@@ -968,8 +979,15 @@ fn with_workspace_mount<T>(
                 .await
                 .map_err(engine_err("open store"))?;
             let workspace = engine
-                .create_workspace_with_config("par-bench", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .create_workspace_with_config(
+                    "par-bench",
+                    VolumeConfig::native(Lifecycle::Durable),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(engine_err("create workspace"))?;
             workspace
                 .mount(
@@ -1213,7 +1231,7 @@ fn kernel_bench(args: &[String]) -> Result<(), Failure> {
                 .apply_authored_transaction(
                     vec![AuthoredMutation::CreateFile {
                         path: file_path(index)?,
-                        bytes: bytes::Bytes::new(),
+                        bytes: acyclic_stream::OwnedBytes::new(),
                         metadata: FileMetadata::default(),
                     }],
                     WorkCounters::UNBOUNDED,
@@ -1230,10 +1248,13 @@ fn kernel_bench(args: &[String]) -> Result<(), Failure> {
                 .ok_or("create returned no file identity")?;
             let created_at = Instant::now();
             checkout
-                .write_file_by_id(
+                .change_content(
                     file_id,
-                    0,
-                    payload.clone(),
+                    acyclic_fs::ContentChange::Write {
+                        offset: 0,
+                        bytes: payload.clone().into(),
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
                     WorkCounters::UNBOUNDED,
                     &cancel,
                 )
@@ -1263,7 +1284,23 @@ fn kernel_bench(args: &[String]) -> Result<(), Failure> {
         let lookup = started.elapsed();
         let started = Instant::now();
         checkout
-            .commit(OperationId::new(), WorkCounters::UNBOUNDED, &cancel)
+            .commit(
+                OperationId::new(),
+                None,
+                None,
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                WorkCounters::UNBOUNDED,
+                &cancel,
+                |_| async {
+                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                        acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::default(),
+                        },
+                    )
+                },
+            )
             .await
             .map_err(engine_err("commit"))?;
         let commit = started.elapsed();
@@ -1322,7 +1359,17 @@ fn par_bench(args: &[String]) -> Result<(), Failure> {
             })
             .collect::<Result<Vec<_>, Failure>>()?;
         for mut child in children {
-            let output = child.wait_with_output(std::time::Duration::from_secs(120).saturating_sub(started.elapsed()), 8 * 1024 * 1024, None, || Ok(()), |_| Ok(acyclic_native_runtime::ProcessInput::default()), None, None).map_err(|failure| failure.error)?;
+            let output = child
+                .wait_with_output(
+                    std::time::Duration::from_secs(120).saturating_sub(started.elapsed()),
+                    8 * 1024 * 1024,
+                    None,
+                    || Ok(()),
+                    |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+                    None,
+                    None,
+                )
+                .map_err(|failure| failure.error)?;
             if !output.status.success() {
                 return Err(format!(
                     "writer failed: {}",
@@ -1479,14 +1526,37 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
     };
 
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::default(), WorkCounters::UNBOUNDED, &cancel)
-        .await
-        .map_err(engine_err("baseline"))?
-        .value;
+    let receipt = capture_baseline(
+        &mut checkout,
+        &options,
+        &acyclic_fs::CapturePolicy::default(),
+        WorkCounters::UNBOUNDED,
+        &cancel,
+    )
+    .await
+    .map_err(engine_err("baseline"))?;
+    let baseline_work = receipt.work;
+    let receipt = receipt.value;
     let baseline_capture = started.elapsed();
     let started = Instant::now();
     checkout
-        .commit(OperationId::new(), WorkCounters::UNBOUNDED, &cancel)
+        .commit(
+            OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkCounters::UNBOUNDED,
+            &cancel,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::default(),
+                    },
+                )
+            },
+        )
         .await
         .map_err(engine_err("baseline commit"))?;
     let baseline_commit = started.elapsed();
@@ -1539,7 +1609,23 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
             capture_checkpoint.push(capture_started.elapsed());
         } else {
             checkout
-                .commit(OperationId::new(), WorkCounters::UNBOUNDED, &cancel)
+                .commit(
+                    OperationId::new(),
+                    None,
+                    None,
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    WorkCounters::UNBOUNDED,
+                    &cancel,
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                            acyclic_fs::OperationReceipt {
+                                value: (),
+                                work: WorkCounters::default(),
+                            },
+                        )
+                    },
+                )
                 .await
                 .map_err(engine_err("incremental commit"))?;
             capture_commit.push(capture_started.elapsed());
@@ -1560,7 +1646,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
                 "examinedPaths": receipt.examined_paths,
                 "changedPaths": receipt.changed_paths,
                 "stagedFileBytes": receipt.staged_file_bytes,
-                "work": receipt.work,
+                "work": baseline_work,
             },
             "eventArrival": summary(&mut event_latency),
             "capture": summary(&mut capture_only),
@@ -1685,10 +1771,17 @@ async fn capture_and_commit(
         maximum_extent_spans: 65_536,
     };
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::default(), WorkCounters::UNBOUNDED, &cancel)
-        .await
-        .map_err(engine_err("capture_baseline"))?
-        .value;
+    let receipt = capture_baseline(
+        &mut checkout,
+        &options,
+        &acyclic_fs::CapturePolicy::default(),
+        WorkCounters::UNBOUNDED,
+        &cancel,
+    )
+    .await
+    .map_err(engine_err("capture_baseline"))?;
+    let capture_work = receipt.work;
+    let receipt = receipt.value;
     println!(
         "capture_baseline: {:?} (examined {} paths, {} changed, {} bytes staged)",
         started.elapsed(),
@@ -1696,7 +1789,7 @@ async fn capture_and_commit(
         receipt.changed_paths,
         receipt.staged_file_bytes
     );
-    println!("capture_work: {:?}", receipt.work);
+    println!("capture_work: {capture_work:?}");
 
     let started = Instant::now();
     if std::env::var_os("QUAL_CHECKPOINT_ONLY").is_some() {
@@ -1709,7 +1802,23 @@ async fn capture_and_commit(
         return Ok((checkout.volume_id(), generation));
     }
     let commit = checkout
-        .commit(OperationId::new(), WorkCounters::UNBOUNDED, &cancel)
+        .commit(
+            OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkCounters::UNBOUNDED,
+            &cancel,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::default(),
+                    },
+                )
+            },
+        )
         .await
         .map_err(engine_err("commit"))?;
     println!("commit: {:?}", started.elapsed());
@@ -1767,8 +1876,9 @@ async fn materialize(
         &cancel,
     )
     .await
-    .map_err(engine_err("materialize_checkout"))?
-    .value;
+    .map_err(engine_err("materialize_checkout"))?;
+    let materialize_work = receipt.work;
+    let receipt = receipt.value;
     println!(
         "materialize: {:?} ({} files, {} dirs, {} symlinks, {} bytes written)",
         started.elapsed(),
@@ -1777,7 +1887,7 @@ async fn materialize(
         receipt.symbolic_links,
         receipt.written_bytes
     );
-    println!("materialize_work: {:?}", receipt.work);
+    println!("materialize_work: {materialize_work:?}");
     Ok(())
 }
 
