@@ -18,18 +18,17 @@ async fn b08_one_intent_keeps_recipient_and_payload() -> Result<()> {
     let sender = TaskId::from_bytes([1; 16]);
     let recipient = TaskId::from_bytes([2; 16]);
     let message = OperationId::from_bytes([4; 16]);
-    let payload = f
-        .publisher
-        .stage(
-            message,
-            "body.json",
-            b"7",
-            "application/json",
-            "body.json",
-            None,
-        )?
-        .await?
-        .0;
+    let payload = crate::conversation::ContentPublisher::stage(
+        f.publisher.as_ref(),
+        message,
+        "body.json",
+        b"7",
+        "application/json",
+        "body.json",
+        None,
+    )?
+    .await?
+    .0;
     stream
         .commit_lose_ack
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -54,18 +53,17 @@ async fn b08_one_intent_keeps_recipient_and_payload() -> Result<()> {
             .await,
         Err(Error::Conflict(_))
     ));
-    let changed = f
-        .publisher
-        .stage(
-            message,
-            "changed.json",
-            b"8",
-            "application/json",
-            "changed.json",
-            None,
-        )?
-        .await?
-        .0;
+    let changed = crate::conversation::ContentPublisher::stage(
+        f.publisher.as_ref(),
+        message,
+        "changed.json",
+        b"8",
+        "application/json",
+        "changed.json",
+        None,
+    )?
+    .await?
+    .0;
     assert!(matches!(
         f.host.send(sender, recipient, message, changed).await,
         Err(Error::Conflict(_))
@@ -82,23 +80,21 @@ async fn b09_inbox_rejects_hostile_envelopes() -> Result<()> {
     }
     let recipient = TaskId::from_bytes([2; 16]);
     let message = OperationId::from_bytes([5; 16]);
-    let payload = f
-        .publisher
-        .stage(
-            message,
-            "body.json",
-            b"7",
-            "application/json",
-            "body.json",
-            None,
-        )?
-        .await?
-        .0;
+    let payload = crate::conversation::ContentPublisher::stage(
+        f.publisher.as_ref(),
+        message,
+        "body.json",
+        b"7",
+        "application/json",
+        "body.json",
+        None,
+    )?
+    .await?
+    .0;
     f.host
         .send(TaskId::from_bytes([1; 16]), recipient, message, payload)
         .await?;
-    let mailbox =
-        acyclic_stream::Stream::new(f.stream.clone(), format!("harness/v2/mail/{recipient}"))?;
+    let mailbox = f.host.mailbox(recipient)?;
     let records = mailbox.read(0, 1).await?.try_collect::<Vec<_>>().await?;
     let original: Value = crate::contract::json_from_slice(&records[0].value)
         .map_err(|error| Error::Invalid(error.to_string()))?;
