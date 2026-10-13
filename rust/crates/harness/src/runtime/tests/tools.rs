@@ -193,26 +193,26 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
 fn tool_approval_keeps_terminal_outcomes_distinct() {
     for (outcome, rejection) in [
         (
-            InteractionOutcome::Declined,
+            InteractionOutcome::Declined {},
             crate::InteractionRejection::Declined,
         ),
         (
-            InteractionOutcome::Cancelled,
+            InteractionOutcome::Cancelled {},
             crate::InteractionRejection::Cancelled,
         ),
         (
-            InteractionOutcome::Expired,
+            InteractionOutcome::Expired {},
             crate::InteractionRejection::Expired,
         ),
         (
-            InteractionOutcome::Denied,
+            InteractionOutcome::Denied {},
             crate::InteractionRejection::Denied,
         ),
     ] {
         assert!(matches!(check_tool_approval(outcome),
                 Err(Error::InteractionRejected(actual)) if actual == rejection));
     }
-    assert!(check_tool_approval(InteractionOutcome::Approved).is_ok());
+    assert!(check_tool_approval(InteractionOutcome::Approved {}).is_ok());
 }
 
 #[tokio::test]

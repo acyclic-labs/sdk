@@ -16,6 +16,8 @@ pub(super) async fn fixture(
     config: VolumeConfig,
     cancel: &CancellationToken,
 ) -> TestResult<(TestVolume, TestCheckout)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let volume = Fs::memory().create_volume(config, B, cancel).await?.value;
     let checkout = volume
         .checkout(GenerationSelector::Head, writable_pinned(), B, cancel)

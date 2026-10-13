@@ -14,7 +14,6 @@ fn budget() -> WorkBudget {
 }
 
 fn fixture_file(path: &Path) -> std::io::Result<std::fs::File> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]

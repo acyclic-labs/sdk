@@ -108,7 +108,7 @@ async fn approve(
         operation_id: operation,
         action_digest: crate::executor::json::canonical_json_digest(&("harness/mcp-oauth/v1", endpoint, url), u64::MAX, &mut None)?,
     }).await? {
-        InteractionOutcome::Approved => Ok(()),
+        InteractionOutcome::Approved {} => Ok(()),
         InteractionOutcome::Indeterminate { .. } => Err(Error::Indeterminate(operation)),
         _ => Err(Error::Unauthorized("MCP authorization was not approved".into())),
     }

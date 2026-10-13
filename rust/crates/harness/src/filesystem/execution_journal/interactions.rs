@@ -35,11 +35,11 @@ where
             {
                 let stored = match (&previous.outcome, &response) {
                     (
-                        InteractionOutcome::Approved,
+                        InteractionOutcome::Approved {},
                         InteractionResponse::Approval { approved: true, .. },
                     )
                     | (
-                        InteractionOutcome::Declined,
+                        InteractionOutcome::Declined {},
                         InteractionResponse::Approval {
                             approved: false, ..
                         },
@@ -98,11 +98,11 @@ where
                 .await?;
             let (outcome, detail) = match response {
                 InteractionResponse::Approval { approved: true, .. } => {
-                    (InteractionOutcome::Approved, Some(staged))
+                    (InteractionOutcome::Approved {}, Some(staged))
                 }
                 InteractionResponse::Approval {
                     approved: false, ..
-                } => (InteractionOutcome::Declined, Some(staged)),
+                } => (InteractionOutcome::Declined {}, Some(staged)),
                 _ => (
                     InteractionOutcome::Answered {
                         answer: Box::new(staged),

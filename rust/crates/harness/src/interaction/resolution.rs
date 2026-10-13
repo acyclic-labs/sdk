@@ -29,7 +29,7 @@ impl InteractionResolution {
                 || detail.descriptor().media_type() != "application/json"
                 || !matches!(
                     &self.outcome,
-                    InteractionOutcome::Approved | InteractionOutcome::Declined
+                    InteractionOutcome::Approved {} | InteractionOutcome::Declined {}
                 )
             {
                 return Err(Error::Invalid(
@@ -45,11 +45,11 @@ impl InteractionResolution {
                 }
                 Ok(())
             }
-            InteractionOutcome::Approved if ticket.kind == InteractionKind::Approval => Ok(()),
-            InteractionOutcome::Answered { .. } | InteractionOutcome::Approved => Err(
+            InteractionOutcome::Approved {} if ticket.kind == InteractionKind::Approval => Ok(()),
+            InteractionOutcome::Answered { .. } | InteractionOutcome::Approved {} => Err(
                 Error::Invalid("interaction resolution kind mismatch".into()),
             ),
-            InteractionOutcome::Expired if ticket.deadline_unix_ms.is_none() => {
+            InteractionOutcome::Expired {} if ticket.deadline_unix_ms.is_none() => {
                 Err(Error::Invalid("interaction has no expiry deadline".into()))
             }
             _ => Ok(()),

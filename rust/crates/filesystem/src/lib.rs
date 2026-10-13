@@ -56,6 +56,15 @@ pub(crate) fn descriptor_digest() -> String {
     blake3::hash(FILE_DESCRIPTOR_SET).to_hex().to_string()
 }
 
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn initialize_test_native_io() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        acyclic_native_runtime::initialize_native_io_services().expect("native I/O test services");
+    });
+}
+
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
 #[path = "tests/accounting/mod.rs"]
