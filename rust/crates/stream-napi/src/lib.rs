@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use acyclic_stream::{StreamProvider, StreamError, StreamPath, grpc, wire, wire_codec};
+use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire, wire_codec};
 use futures::StreamExt;
 use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
@@ -448,7 +448,9 @@ pub struct NativeStreamClient {
 
 impl NativeStreamClient {
     fn from_client(provider: grpc::Client) -> Self {
-        Self { provider: Arc::new(provider) }
+        Self {
+            provider: Arc::new(provider),
+        }
     }
 }
 
@@ -674,10 +676,12 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamSequenceResult> {
-        Ok(match children(&self.provider, request, cancellation).await {
-            Ok(values) => NativeStreamSequenceResult::success(values),
-            Err(error) => NativeStreamSequenceResult::failure(error),
-        })
+        Ok(
+            match children(&self.provider, request, cancellation).await {
+                Ok(values) => NativeStreamSequenceResult::success(values),
+                Err(error) => NativeStreamSequenceResult::failure(error),
+            },
+        )
     }
 }
 
@@ -691,7 +695,8 @@ async fn inspect_idempotency(
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async {
-            client.inspect_idempotency(key)
+            client
+                .inspect_idempotency(key)
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -712,7 +717,7 @@ async fn tail(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::TailRequest>(&request, "tail")?;
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path)
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path)
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async { stream.tail().await.map_err(|error| stream_error(&error)) },
@@ -749,8 +754,9 @@ async fn append(
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = wire_codec::append_from_wire(decode::<wire::AppendRequest>(&request, "append")?)
         .map_err(|error| stream_error(&error))?;
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path.to_string())
-        .map_err(|error| stream_error(&error))?;
+    let stream =
+        acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path.to_string())
+            .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async move {
             stream
@@ -771,8 +777,9 @@ async fn fork(
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = wire_codec::fork_from_wire(decode::<wire::ForkRequest>(&request, "fork")?)
         .map_err(|error| stream_error(&error))?;
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.source.to_string())
-        .map_err(|error| stream_error(&error))?;
+    let stream =
+        acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.source.to_string())
+            .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async move {
             stream
@@ -797,8 +804,9 @@ async fn read(
 ) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
     let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(&request, "read")?)
         .map_err(|error| stream_error(&error))?;
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path.to_string())
-        .map_err(|error| stream_error(&error))?;
+    let stream =
+        acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path.to_string())
+            .map_err(|error| stream_error(&error))?;
     let token = cancellation_state(cancellation);
     let records = stream.read(request.from, request.limit);
     let mut records = run_with_cancellation(
@@ -833,7 +841,7 @@ async fn open_follow(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
     let request = decode::<wire::FollowRequest>(&request, "follow")?;
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path)
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path)
         .map_err(|error| stream_error(&error))?;
     let records = run_with_cancellation(
         async move {
@@ -953,7 +961,8 @@ async fn read_commit(
         wire_codec::commit_id(&request.commit_id).map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async {
-            client.read_commit(commit_id)
+            client
+                .read_commit(commit_id)
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -987,7 +996,11 @@ mod tests {
             rustls::Error::General("native trust initialization failed".to_owned()),
         ));
         assert_eq!(metadata.code, "transport");
-        assert!(metadata.message.contains("native trust initialization failed"));
+        assert!(
+            metadata
+                .message
+                .contains("native trust initialization failed")
+        );
     }
 
     struct DropSentinel(Arc<AtomicBool>);
