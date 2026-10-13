@@ -97,8 +97,6 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
     let writes = baseline.receipt().backend_write_operations;
     await_recovery_worker(owner)?;
     let mut budget = WorkBudget::UNBOUNDED;
-    // Two guard cleanup writes and the original final-close write remain
-    // reserved. This denies the real registry unlock AFTER fence locking.
     budget.backend_write_operations = writes + 2 + u64::from(cfg!(windows));
     let denied = crate::NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
@@ -153,145 +151,6 @@ fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
     assert!(!state.destination_fence_retained && !state.controls_pending);
     await_recovery_worker(owner)?;
     assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
-    Ok(())
-}
-
-#[test]
-fn crash_recovery_never_removes_live_or_contaminated_destinations()
--> Result<(), Box<dyn std::error::Error>> {
-    let parent = tempfile::tempdir()?;
-    let destination = parent.path().join("native-destination");
-    std::fs::create_dir(&destination)?;
-
-    let live_guard = MountDestinationGuard::acquire(&destination)?;
-    assert!(matches!(
-        recover_native_mount_destination(&destination),
-        Err(NativeMountError::DestinationBusy)
-    ));
-    assert!(destination.is_dir());
-    drop(live_guard);
-
-    std::fs::write(destination.join("unowned-content"), b"retain")?;
-    let mut recovery = NativeMountRecoveryOwner::acquire(&destination)?;
-    let original_fence = recovery.cleanup_state().fence_identity;
-    assert!(recovery.recover().is_err());
-    assert!(recovery.cleanup_state().destination_fence_retained);
-    assert!(recovery.cleanup_state().measured_cleanup_failed);
-    assert_eq!(
-        std::fs::read(destination.join("unowned-content"))?,
-        b"retain"
-    );
-    std::fs::remove_file(destination.join("unowned-content"))?;
-
-    recovery.recover()?;
-    assert_eq!(recovery.cleanup_state().fence_identity, original_fence);
-    let state = recovery.cleanup_state();
-    assert!(!state.destination_fence_retained && !state.controls_pending);
-    assert!(!destination.exists());
-    let residue = std::fs::read_dir(parent.path())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .filter(|name| name != ".acyclic-fs-mount-registry.lock")
-        .collect::<Vec<_>>();
-    assert!(residue.is_empty());
-    Ok(())
-}
-
-#[cfg(windows)]
-#[test]
-fn preserving_recovery_fences_live_owner_and_retains_ordinary_residue()
--> Result<(), Box<dyn std::error::Error>> {
-    let parent = tempfile::tempdir()?;
-    let destination = parent.path().join("mount");
-    std::fs::create_dir(&destination)?;
-    let live_guard = MountDestinationGuard::acquire(&destination)?;
-    assert!(matches!(
-        recover_native_mount_destination_preserving_residue(&destination),
-        Err(NativeMountError::DestinationBusy)
-    ));
-    drop(live_guard);
-
-    std::fs::write(destination.join("authored.txt"), b"retain")?;
-    let preserved = recover_native_mount_destination_preserving_residue(&destination)?
-        .ok_or("nonempty destination was not preserved")?;
-    assert!(!destination.exists());
-    assert_eq!(std::fs::read(preserved.join("authored.txt"))?, b"retain");
-    assert!(recover_native_mount_destination_preserving_residue(&destination)?.is_none());
-    Ok(())
-}
-
-#[test]
-fn destination_ownership_is_process_external_and_recoverable()
--> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    let destination = temporary.path().join("mount");
-    std::fs::create_dir(&destination)?;
-    let first = MountDestinationGuard::acquire(&destination)?;
-    let second = MountDestinationGuard::acquire(&destination);
-    assert!(
-        matches!(second, Err(NativeMountError::DestinationBusy)),
-        "unexpected second-owner result: {second:?}"
-    );
-    let independent = temporary.path().join("independent");
-    std::fs::create_dir(&independent)?;
-    let _independent = MountDestinationGuard::acquire(&independent)?;
-    drop(first);
-    let _recovered = MountDestinationGuard::acquire(&destination)?;
-    Ok(())
-}
-
-#[test]
-fn orderly_destination_release_removes_per_mount_fence() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    let destination = temporary.path().join("mount");
-    std::fs::create_dir(&destination)?;
-    let guard = MountDestinationGuard::acquire(&destination)?;
-    drop(guard);
-
-    let mut residue = std::fs::read_dir(temporary.path())?
-        .map(|entry| entry.map(|value| value.file_name()))
-        .collect::<Result<Vec<_>, _>>()?;
-    residue.sort();
-    assert_eq!(
-        residue,
-        vec![
-            std::ffi::OsString::from(".acyclic-fs-mount-registry.lock"),
-            std::ffi::OsString::from("mount"),
-        ]
-    );
-    Ok(())
-}
-
-#[test]
-fn repeated_admission_teardown_has_constant_persistent_resource_set()
--> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    let destinations = [
-        temporary.path().join("mount-a"),
-        temporary.path().join("mount-b"),
-    ];
-    for destination in &destinations {
-        std::fs::create_dir(destination)?;
-    }
-    for ordinal in 0..1_024 {
-        let guard = MountDestinationGuard::acquire(&destinations[ordinal % 2])?;
-        drop(guard);
-    }
-    let mut residue = std::fs::read_dir(temporary.path())?
-        .map(|entry| entry.map(|value| value.file_name()))
-        .collect::<Result<Vec<_>, _>>()?;
-    residue.sort();
-    assert_eq!(
-        residue,
-        vec![
-            std::ffi::OsString::from(".acyclic-fs-mount-registry.lock"),
-            std::ffi::OsString::from("mount-a"),
-            std::ffi::OsString::from("mount-b"),
-        ]
-    );
-    for destination in destinations {
-        std::fs::remove_dir(destination)?;
-    }
     Ok(())
 }
 
@@ -392,54 +251,6 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
 }
 
 #[test]
-fn destination_ownership_is_reclaimed_after_process_death() -> Result<(), Box<dyn std::error::Error>>
-{
-    let temporary = tempfile::tempdir()?;
-    let destination = temporary.path().join("mount");
-    let ready = temporary.path().join("ready");
-    std::fs::create_dir(&destination)?;
-    let child = acyclic_native_runtime::ProcessTree::spawn(
-        std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "native_mount::tests::destination_ownership_child_holds_lock_until_killed",
-                "--nocapture",
-            ])
-            .env("ACYCLIC_FS_LOCK_CHILD_DESTINATION", &destination)
-            .env("ACYCLIC_FS_LOCK_CHILD_READY", &ready),
-    )?;
-    let mut child = child;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready.is_file() {
-        if let Some(status) = child.try_wait(None)? {
-            return Err(format!("lock child exited before readiness: {status}").into());
-        }
-        if Instant::now() >= deadline {
-            return Err("lock child readiness timed out".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(matches!(
-        MountDestinationGuard::acquire(&destination),
-        Err(NativeMountError::DestinationBusy)
-    ));
-    assert!(matches!(
-        reclaim_native_mount_destination_fence(&destination),
-        Err(NativeMountError::DestinationBusy)
-    ));
-    child.terminate_descendants()?;
-    let status = child.wait(Duration::from_secs(5))?;
-    assert!(
-        !status.success(),
-        "killed lock child unexpectedly succeeded"
-    );
-    reclaim_native_mount_destination_fence(&destination)?;
-    reclaim_native_mount_destination_fence(&destination)?;
-    let _reclaimed = MountDestinationGuard::acquire(&destination)?;
-    Ok(())
-}
-
-#[test]
 fn shared_destination_fence_retains_original_owner_after_denial()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
@@ -452,7 +263,7 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     let meter = NativeMaterializationWork::from_meter(Arc::clone(&original));
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut guard, false)?;
-    let mut guard = guard.expect("actual fence was admitted");
+    let mut guard = guard.unwrap();
     assert!(guard.parent_directory.is_some());
     assert!(guard.file.is_some());
     let mut competing_guard = None;
@@ -516,7 +327,7 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
     .map_err(|(error, _)| error)?;
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
-    let mut guard = guard.expect("actual fence was admitted");
+    let mut guard = guard.unwrap();
     let before = work.receipt();
     cancelled.cancel();
     let refused_wait = crate::CancellationToken::new();

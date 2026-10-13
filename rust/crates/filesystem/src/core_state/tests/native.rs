@@ -4,29 +4,20 @@ use crate::materializer::{NativeMaterializationWork, NativeTreeMaterializationEr
 use crate::workspace_context::{WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
 
 pub(super) fn finite_budget() -> crate::WorkBudget {
-    let mut budget = serde_json::to_value(crate::WorkBudget::UNBOUNDED).expect("budget encoding");
-    for value in budget
-        .as_object_mut()
-        .expect("all resource fields")
-        .values_mut()
-    {
+    let mut budget = serde_json::to_value(crate::WorkBudget::UNBOUNDED).unwrap();
+    for value in budget.as_object_mut().unwrap().values_mut() {
         *value = serde_json::Value::from(100_000_000_u64);
     }
-    serde_json::from_value(budget).expect("finite native budget")
+    serde_json::from_value(budget).unwrap()
 }
 
 fn lineage(id: WorkspaceId) -> WorkspaceLineageRecord {
-    let generation = crate::GenerationId::new(Digest::from_bytes([0xd1; 32]));
     WorkspaceLineageRecord {
-        version: 1,
-        revision: 1,
-        ready: true,
         workspace_id: id,
         workspace_name: "native-original".into(),
         parent_workspace_id: None,
         parent_workspace_name: None,
-        fork_generation: generation,
-        initial_generation: generation,
+        ..crash_lineage()
     }
 }
 
@@ -37,7 +28,7 @@ fn paid_lineage(
 ) -> (WorkspaceLineageRecord, crate::NativeAllocation) {
     let owned =
         native_records::clone_native_record_value(&RecordValue::Lineage(value.clone()), work, cxl)
-            .expect("actual original producer");
+            .unwrap();
     let parts = owned;
     match parts.0 {
         RecordValue::Lineage(value) => (value, parts.1),
@@ -288,41 +279,39 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(16))]
     #[test]
         fn ordinary_and_native_context_parent_transitions_survive_real_wal_restart(moves in proptest::collection::vec(0_u8..4, 1..12)) {
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
                 for native in [false, true] {
-                    let directory = tempfile::tempdir().expect("real canonical namespace");
+                    let directory = tempfile::tempdir().unwrap();
                     let parents = [1_u8, 2, 3].map(|byte| WorkspaceContextId::from_bytes([byte; 16]));
                     let child = WorkspaceContextId::from_bytes([4; 16]);
                     let sibling = WorkspaceContextId::from_bytes([5; 16]);
-                    let store = LocalCoreStateStore::open_owned(directory.path()).expect("real owner");
+                    let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
                     for parent in parents {
                         let mut root = context(parent, None, directory.path());
                         root.roots.clear();
-                        assert!(WorkspaceContextStore::compare_and_swap(&store, parent, 0, root).await.expect("root fixture"));
+                        assert!(WorkspaceContextStore::compare_and_swap(&store, parent, 0, root).await.unwrap());
                     }
                     let mut selected = context(child, Some(parents[0]), directory.path());
                     selected.roots.clear();
                     let mut other = context(sibling, Some(parents[1]), directory.path());
                     other.roots.clear();
-                    assert!(WorkspaceContextStore::compare_and_swap(&store, child, 0, selected.clone()).await.expect("child fixture"));
-                    assert!(WorkspaceContextStore::compare_and_swap(&store, sibling, 0, other).await.expect("sibling fixture"));
+                    assert!(WorkspaceContextStore::compare_and_swap(&store, child, 0, selected.clone()).await.unwrap());
+                    assert!(WorkspaceContextStore::compare_and_swap(&store, sibling, 0, other).await.unwrap());
                     let cancellation = crate::CancellationToken::new();
-                    let original = NativeMaterializationWork::new(finite_budget(), &cancellation).expect("finite original");
-                    let work = original.native_volume_work(finite_budget()).expect("original resource");
-                    // Always exercise last-child removal and an unaffected sibling;
-                    // generated suffixes then explore repeated moves and no-ops.
+                    let original = NativeMaterializationWork::new(finite_budget(), &cancellation).unwrap();
+                    let work = original.native_volume_work(finite_budget()).unwrap();
                     for destination in [1_u8, 3, 2, 0].iter().chain(moves.iter()) {
                         let previous = selected.revision;
                         selected.revision += 1;
                         selected.parent_context_id = parents.get(*destination as usize).copied();
                         if native {
-                            let packet = (selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("actual zero deep payload"));
+                            let packet = (selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap());
                             assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
                                 &store, child, previous, packet, &work, &cancellation,
-                            ).await.expect("original parent transition"));
+                            ).await.unwrap());
                         } else {
-                            assert!(WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone()).await.expect("ordinary parent transition"));
+                            assert!(WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone()).await.unwrap());
                         }
                         for parent in parents {
                             let mut expected = BTreeSet::new();
@@ -333,14 +322,14 @@ proptest::proptest! {
                     }
                     drop(store);
                     let reopened = LocalCoreStateStore::new(directory.path());
-                    assert_eq!(WorkspaceContextStore::load(&reopened, child).await.expect("reopened child"), Some(selected.clone()));
+                    assert_eq!(WorkspaceContextStore::load(&reopened, child).await.unwrap(), Some(selected.clone()));
                     for parent in parents {
                         let mut expected = BTreeSet::new();
                         if parent == parents[1] { expected.insert(sibling); }
                         if Some(parent) == selected.parent_context_id { expected.insert(child); }
                         assert_bucket(&reopened, parent, expected).await;
                     }
-                    work.receipt().verify(finite_budget()).expect("same finite original receipt");
+                    work.receipt().verify(finite_budget()).unwrap();
                 }
             });
         }

@@ -1,139 +1,5 @@
 use super::*;
 
-/// Number of recent puts that triggers the first grace-period sweep.
-const PUT_PRUNE_THRESHOLD: usize = 16_384;
-
-/// Time allowed for a put node to become reachable through a workspace CAS.
-pub(super) const LAZY_NODE_GRACE: Duration = if cfg!(test) {
-    Duration::ZERO
-} else {
-    Duration::from_secs(10 * 60)
-};
-
-#[derive(Debug)]
-pub(super) struct RecentPuts<K> {
-    put: Vec<(K, Instant)>,
-    prune_at: usize,
-    allocation: Option<crate::NativeAllocation>,
-}
-
-impl<K> Default for RecentPuts<K> {
-    fn default() -> Self {
-        Self {
-            put: Vec::new(),
-            prune_at: PUT_PRUNE_THRESHOLD,
-            allocation: None,
-        }
-    }
-}
-
-impl<K: Copy + Ord> RecentPuts<K> {
-    /// Records a put before persistence under collection's same lock.
-    pub(super) fn touch(
-        &mut self,
-        key: K,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let width = std::mem::size_of::<(K, Instant)>();
-        if self.put.len() >= self.prune_at {
-            work.admit(crate::WorkCounters {
-                items_examined: self.put.len() as u64,
-                bytes_copied: (self.put.len() * width) as u64,
-                ..Default::default()
-            })?;
-            let mut hole = false;
-            let mut moved = 0;
-            let visited = self.put.len();
-            self.put.retain(|(_, instant)| {
-                if instant.elapsed() >= LAZY_NODE_GRACE {
-                    hole = true;
-                    false
-                } else {
-                    moved += usize::from(hole);
-                    true
-                }
-            });
-            work.spent(crate::WorkCounters {
-                items_examined: visited as u64,
-                bytes_copied: (moved * width) as u64,
-                ..Default::default()
-            })?;
-            self.prune_at = PUT_PRUNE_THRESHOLD.max(self.put.len().saturating_mul(2));
-        }
-        let mut start = 0;
-        let mut end = self.put.len();
-        while start < end {
-            let index = start + (end - start) / 2;
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            match self.put[index].0.cmp(&key) {
-                std::cmp::Ordering::Less => start = index + 1,
-                std::cmp::Ordering::Greater => end = index,
-                std::cmp::Ordering::Equal => {
-                    self.put[index].1 = Instant::now();
-                    return Ok(());
-                }
-            }
-        }
-        if self.put.len() == self.put.capacity() {
-            let needed = self
-                .put
-                .capacity()
-                .checked_mul(2)
-                .and_then(|capacity| {
-                    self.put
-                        .len()
-                        .checked_add(1)
-                        .map(|length| capacity.max(length))
-                })
-                .ok_or(crate::NativeTreeMaterializationError::Work(
-                    crate::WorkError::Overflow,
-                ))?;
-            let mut replacement = (
-                Vec::new(),
-                work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-            );
-            reserve(&mut replacement.0, needed, work, &mut replacement.1)?;
-            work.charge(crate::WorkCounters {
-                bytes_copied: (self.put.len() * width) as u64,
-                ..Default::default()
-            })?;
-            replacement.0.extend(self.put.drain(..));
-            drop(std::mem::replace(&mut self.put, replacement.0));
-            // Both complete buffers remain funded until the old one is retired.
-            self.allocation = Some(replacement.1);
-        }
-        work.charge(crate::WorkCounters {
-            bytes_copied: ((self.put.len() - start) * width) as u64,
-            ..Default::default()
-        })?;
-        self.put.insert(start, (key, Instant::now()));
-        Ok(())
-    }
-
-    /// Allows collection only after a node's last put grace has elapsed.
-    pub(super) fn release(&mut self, key: &K) -> bool {
-        if self
-            .put
-            .iter()
-            .any(|(candidate, put)| candidate == key && put.elapsed() < LAZY_NODE_GRACE)
-        {
-            return false;
-        }
-        self.put.retain(|(candidate, _)| candidate != key);
-        true
-    }
-}
-
-/// Recent overlay and shadow puts retained across this store's clones.
-#[derive(Debug, Default)]
-pub(super) struct NodeRetention {
-    pub(super) overlays: Mutex<RecentPuts<LazyOverlayId>>,
-    pub(super) shadows: Mutex<RecentPuts<crate::LazyShadowId>>,
-}
-
 /// An immutable content-addressed lazy node.
 pub(super) trait LazyNode:
     crate::lazy_workspace::MemoryLazyNode + DeserializeOwned + Default + Send + 'static
@@ -142,7 +8,6 @@ pub(super) trait LazyNode:
     const FAMILY: &'static str;
 
     fn address(id: Self::Id) -> [u8; 32];
-    fn recent_puts(nodes: &NodeRetention) -> MutexGuard<'_, RecentPuts<Self::Id>>;
 }
 
 impl LazyNode for LazyOverlay {
@@ -152,13 +17,6 @@ impl LazyNode for LazyOverlay {
     fn address(id: Self::Id) -> [u8; 32] {
         id.into_bytes()
     }
-
-    fn recent_puts(nodes: &NodeRetention) -> MutexGuard<'_, RecentPuts<Self::Id>> {
-        nodes
-            .overlays
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
 }
 
 impl LazyNode for crate::LazyShadow {
@@ -167,10 +25,6 @@ impl LazyNode for crate::LazyShadow {
 
     fn address(id: Self::Id) -> [u8; 32] {
         id.into_bytes()
-    }
-
-    fn recent_puts(nodes: &NodeRetention) -> MutexGuard<'_, RecentPuts<Self::Id>> {
-        nodes.shadows.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -349,7 +203,6 @@ impl LocalCoreStateStore {
                     Err(LocalCoreStateStoreError::Integrity)
                 };
             }
-            T::recent_puts(&self.recent_puts).touch(id, &meter)?;
             self.materialization(meter.clone())
                 .transaction(move |namespace| {
                     let work = namespace
