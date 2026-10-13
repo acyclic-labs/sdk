@@ -53,8 +53,7 @@ pub(super) async fn read_sparse<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .ok_or(MountSourceError::Work(WorkError::Overflow))?;
     let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
     let mut spans =
-        crate::kernel::Owned::<Vec<super::super::MountSparseSpan>>::allocate(0, &mut accounting)
-            .map_err(fs_error)?;
+        crate::kernel::Owned::<Vec<super::super::MountSparseSpan>>::allocate(0, &mut accounting)?;
     let mut position = offset;
     while position < end {
         NativeDemandCarrier::Native(work).check(work.cancellation(), Some(lifetime))?;
@@ -64,8 +63,7 @@ pub(super) async fn read_sparse<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         })?;
         let Some(data) = file
             .seek(position, ExtentSeekTarget::Data, work, work.cancellation())
-            .await
-            .map_err(fs_error)?
+            .await?
         else {
             break;
         };
@@ -74,8 +72,7 @@ pub(super) async fn read_sparse<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         let hole = file
             .seek(data, ExtentSeekTarget::Hole, work, work.cancellation())
-            .await
-            .map_err(fs_error)?
+            .await?
             .unwrap_or(end)
             .min(end);
         if data < position || hole <= data {
@@ -90,11 +87,8 @@ pub(super) async fn read_sparse<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 work,
                 work.cancellation(),
             )
-            .await
-            .map_err(fs_error)?;
-        spans
-            .ensure_for_push(length as usize, &mut accounting)
-            .map_err(fs_error)?;
+            .await?;
+        spans.ensure_for_push(length as usize, &mut accounting)?;
         accounting.charge(crate::WorkCounters {
             bytes_copied: std::mem::size_of::<super::super::MountSparseSpan>() as u64,
             ..crate::WorkCounters::UNCHARGED

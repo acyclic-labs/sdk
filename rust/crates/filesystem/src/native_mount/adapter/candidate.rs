@@ -53,8 +53,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
             &native,
             cancellation,
         )
-        .await
-        .map_err(fs_error)?;
+        .await?;
     let mut inputs = InputBuffers::new(carrier)?;
     let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) = allocation else {
         unreachable!("native candidate diff");
@@ -96,11 +95,9 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
                 .clone_namespace(&path.components()[..length], base.volume_config().limits)?;
             for checkout in [base, candidate] {
                 if let Some(record) = checkout
-                    .inspector(&native, cancellation)
-                    .map_err(fs_error)?
+                    .inspector(&native, cancellation)?
                     .lookup_no_follow(&prefix, &native, cancellation)
-                    .await
-                    .map_err(fs_error)?
+                    .await?
                     .record
                 {
                     let mut relevant = false;

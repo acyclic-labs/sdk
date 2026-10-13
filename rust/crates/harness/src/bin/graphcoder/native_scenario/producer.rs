@@ -31,9 +31,8 @@ impl Producer {
             .runtime
             .task_context_with_native_work(caller.task, &fence, &work)
             .await?;
-        let guards = [context
-            .volume_callback_guard(&owner, &work)
-            .await?];
+        context.verify_volume_owner(&owner, &work).await?;
+        let guards = [Arc::clone(&context)];
         let namespace = self.root.join("native-command-view");
         let preparation = self.root.join("native-command-preparation");
         for directory in [
@@ -353,7 +352,7 @@ impl Producer {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
                 self.files.clone(),
                 &self.config.owner.authority,
-                graph_root,
+                graph_root, None,
                 None,
             )?;
             let service_issuer = AuthorityIssuer::new(
@@ -373,7 +372,7 @@ impl Producer {
                     .authorize_project_source(
                         &context,
                         &service_issuer,
-                        &policy,
+                        policy.as_ref(),
                         source_task,
                         operation,
                         acyclic_harness::source_authorization::ProjectSourceSnapshot {

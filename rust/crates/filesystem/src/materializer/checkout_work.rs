@@ -11,7 +11,8 @@ impl NativeMaterializationWork {
     pub(crate) fn checkout_control_sink(
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError>
+    {
         self.state
             .checkout_control_sink(producer)
             .ok_or(NativeTreeMaterializationError::InvalidLayout)
@@ -20,7 +21,8 @@ impl NativeMaterializationWork {
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
         header: &mut NativeAllocation,
-    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError>
+    {
         self.state
             .register_native_checkout_control(self, producer, header)
     }
@@ -36,7 +38,6 @@ impl NativeMaterializationWork {
         Ok(NativeAllocation {
             meter: self.allocation_work(),
             bytes,
-            capture: None,
         })
     }
     pub(crate) fn allocations<T, E: From<NativeTreeMaterializationError>>(
@@ -48,7 +49,6 @@ impl NativeMaterializationWork {
             &crate::CancellationToken,
         ) -> Result<T, E>,
     ) -> Result<(T, NativeAllocation), E> {
-        // Returned values may lock the ledger when dropped.
         let (result, bytes) = self
             .state(|state| {
                 state
@@ -83,7 +83,6 @@ impl NativeMaterializationWork {
                 NativeAllocation {
                     meter: self.allocation_work(),
                     bytes,
-                    capture: None,
                 },
             )
         })

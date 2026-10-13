@@ -76,7 +76,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 paths.copy(&paths.current, &paths.previous)?;
                 paths.sync()?;
                 let host = crate::native_host::PreparedMaterializationRecord::prepare(
-                    &paths.directory,
+                    paths.directory(),
                     Path::new(
                         paths
                             .current
