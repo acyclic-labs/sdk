@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Derives a stable child operation/message identity from one admitted operation
 /// and a local role label without duplicating UUID bit manipulation in hosts.
 #[wasm_bindgen(js_name = deriveOperationUuid)]
@@ -42,25 +41,6 @@ pub fn uuid_from_digest_half(digest: &[u8], second: bool) -> Result<String, JsVa
         return Err(JsValue::from_str("derived identity cannot be nil"));
     }
     Ok(identity.to_string())
-}
-
-/// Binds the exact native request without rounding its filesystem work counters
-/// through JavaScript numbers. This performs no native dispatch or path lookup.
-#[cfg(feature = "filesystem")]
-#[wasm_bindgen(js_name = nativeProcessApprovalDigest)]
-pub fn native_process_approval_digest(
-    task: &str,
-    command: &str,
-    request_json: &str,
-) -> Result<Vec<u8>, JsValue> {
-    let task = crate::TaskId::parse(task).map_err(js_error)?;
-    let command = crate::OperationId::parse(command).map_err(js_error)?;
-    let request: crate::filesystem::NativeProcessRequest = serde_json::from_str(request_json)
-        .map_err(|error| js_error(crate::Error::Invalid(error.to_string())))?;
-    request
-        .approval_digest(task, command, None)
-        .map(|digest| digest.to_vec())
-        .map_err(js_error)
 }
 
 /// Returns the one Rust UUID spelling accepted for a conversation identity.

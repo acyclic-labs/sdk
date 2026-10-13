@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Validates a protobuf handshake; returns encoded `Error` bytes, or empty on success.
 #[wasm_bindgen(js_name = validateWireHandshake)]
 pub fn validate_wire_handshake(request: Vec<u8>, response: Vec<u8>) -> Vec<u8> {
@@ -76,4 +75,20 @@ pub(super) fn validate_wire(validate: impl FnOnce() -> crate::Result<()>) -> Vec
         |error| crate::encode_error(&error).encode_to_vec(),
         |_| Vec::new(),
     )
+}
+
+/// Decodes one canonical event payload using the native event union.
+#[wasm_bindgen(js_name = decodeEventPayload)]
+pub fn decode_event_payload(
+    event_type: String,
+    canonical_payload_json: Vec<u8>,
+) -> Result<JsValue, JsValue> {
+    to_js(&decode_payload_wire(&event_type, &canonical_payload_json).map_err(js_error)?)
+}
+
+#[wasm_bindgen(js_name = decodeAggregateKind)]
+pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
+    let kind =
+        crate::wire_codec::decode_aggregate_kind(value, crate::Error::Invalid).map_err(js_error)?;
+    to_js(&kind)
 }
