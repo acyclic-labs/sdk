@@ -7,7 +7,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner(task_id, &fence, false).await })
+        Box::pin(async move { self.verify_owner(task_id, &fence, false, &mut None).await })
     }
 
     fn verify_execution_owner<'a>(
@@ -15,7 +15,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner(task_id, &fence, true).await })
+        Box::pin(async move { self.verify_owner(task_id, &fence, true, &mut None).await })
     }
 
     fn claim_model_dispatch<'a>(
@@ -518,7 +518,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             let stream = self.timer_stream(task_id)?;
             loop {
                 let (tail, found) = self
-                    .timer_state(task_id, operation_id, deadline_unix_ms)
+                    .timer_state(task_id, operation_id, deadline_unix_ms, &mut None)
                     .await?;
                 if found {
                     break;

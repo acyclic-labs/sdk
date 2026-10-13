@@ -91,7 +91,7 @@ fn worker_key(
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
     )?;
-    IdempotencyKey::new(crate::contract::preparation_format(format_args!(
+    IdempotencyKey::new(crate::executor::preparation_format(format_args!(
         "task-worker:{kind}:{operation}:{}:{revision}",
         blake3::Hash::from_bytes(digest).to_hex()
     ), work)?)
@@ -133,6 +133,14 @@ pub struct TaskVolumeSnapshot {
     pub generation: crate::resources::GenerationRef,
 }
 
+/// Canonical root binding and its single publication choice.
+#[cfg(feature = "filesystem")]
+pub struct RootBootstrapBindingWitness {
+    proof: std::sync::OnceLock<(crate::store::VerifiedRootBinding, crate::NativeCustody)>,
+    gate: Mutex<()>,
+    pending: std::sync::OnceLock<(OperationId, [u8; 32], [u8; 32])>,
+}
+
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
 /// Journal constructors use this binding to atomically fence their publications.
 #[cfg(feature = "filesystem")]
@@ -141,6 +149,8 @@ pub struct TaskJournalOwner<P> {
     fence: crate::scheduler::LeaseFence,
     workflow: crate::workflow::WorkflowAdmission,
     workflow_output: Option<Value>,
+    root_binding: Option<Arc<RootBootstrapBindingWitness>>,
+    created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     pub(crate) admission: Arc<TaskAdmissionRecord>,
     pub(crate) invocation_stop: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -160,6 +170,11 @@ mod timer;
 mod workflow;
 #[cfg(feature = "filesystem")]
 mod tool_workflow;
+#[cfg(feature = "filesystem")]
+mod root_binding;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for TimerEvent {}

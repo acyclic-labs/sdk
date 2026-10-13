@@ -236,7 +236,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.host
             .suspend_workflow_command_guarded(
                 self.task_id(),
-                self.fence.clone(),
+                &self.fence,
                 revision,
                 Some(command),
                 Some((execution, tail)),
@@ -573,7 +573,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let encoded_fence = crate::store::history::canonical_bytes_for_bounds_with_work(
             &self.fence,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_depth: 256,

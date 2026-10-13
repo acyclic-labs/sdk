@@ -1821,9 +1821,8 @@ where
                 })
         } else {
             self.host
-                .observe_task(task)
+                .outcome(task)
                 .await?
-                .outcome
                 .is_some_and(|outcome| {
                     matches!(
                         outcome,
@@ -2223,12 +2222,11 @@ where
                     .await
             } else {
                 self.host
-                    .suspend_workflow(
+                    .suspend_workflow_command_guarded(
                         task,
                         fence,
                         revision,
                         Some(command),
-                        None,
                         None,
                         &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
                     )
@@ -2242,7 +2240,7 @@ where
                 .await
         } else {
             self.host
-                .suspend_workflow(task, &fence, revision, Some(command), None, None, &mut None)
+                .suspend_workflow_command_guarded(task, fence, revision, Some(command), None, &mut None)
                 .await
         }
     }
@@ -2330,18 +2328,17 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native wake input requires original observer",
                 })?;
-                let (wake, custody) = self
-                    .host
-                    .workflow_input_with_native_work(task, fence, work)
-                    .await?;
+                let local = PreparationIo::from_native_work(work)?;
+                let wake = self.host.workflow_input(task, fence, Some(&local)).await?;
+                let custody = local.take_native_custody(local.owned_bytes()?)?;
                 wake_custody = Some(custody);
                 wake
             } else {
                 wake_custody = None;
-                self.host.workflow_input(task, fence).await?
+                self.host.workflow_input(task, fence, None).await?
             };
             #[cfg(target_arch = "wasm32")]
-            let mut wake = self.host.workflow_input(task, fence).await?;
+            let mut wake = self.host.workflow_input(task, fence, None).await?;
             let mut advanced = 0;
             loop {
                 let revision = session.checkpoint().revision;
@@ -2453,11 +2450,10 @@ where
                         std::mem::take(value)
                     } else {
                         self.task_host()
-                            .suspend_workflow(
+                            .suspend_workflow_command_guarded(
                                 task,
                                 fence,
                                 revision,
-                                None,
                                 None,
                                 None,
                                 &mut observed::history(io)?
@@ -2469,11 +2465,10 @@ where
                     }
                 } else {
                     self.task_host()
-                        .suspend_workflow(
+                        .suspend_workflow_command_guarded(
                             task,
                             fence,
                             revision,
-                            None,
                             None,
                             None,
                             &mut observed::history(io)?
@@ -2701,7 +2696,7 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) => {
                     self.host
-                        .verify_native_command_result(task, fence, custody.work())
+                        .verify_owner(task, fence, false, &mut Some(&mut PreparationIo::from_native_work(custody.work())?.history_io()))
                         .await?;
                 }
                 _ => self.owner_observed(task, fence, false, io).await?,

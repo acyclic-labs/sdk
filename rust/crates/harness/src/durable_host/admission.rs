@@ -82,7 +82,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let parent = admission
             .parent
             .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-        self.verify_owner(parent, &fence, false).await?;
+        self.verify_owner(parent, &fence, false, &mut None).await?;
         self.admit_record(admission, Some(fence)).await
     }
 

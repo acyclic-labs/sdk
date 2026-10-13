@@ -107,7 +107,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         loop {
             if let Some(fence) = fence {
-                self.verify_owner(sender, fence, false).await?;
+                self.verify_owner(sender, fence, false, &mut None).await?;
             }
             match intent.bounds().await {
                 Ok(bounds) => {
