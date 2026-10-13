@@ -47,11 +47,19 @@ where
     for path in paths {
         let absolute = source.path(path, work)?;
         source.owner.verify(false, &mut Some(&mut io)).await?;
-        let mut parsed = source
-            .workspace
-            .workspace()
-            .namespace_path_with_native_work(&absolute.0, work, work.cancellation())?;
-        requested.2.absorb(&mut parsed.1)?;
+        let parsed = acyclic_fs::kernel::NamespacePath::parse_in_profile(
+            &absolute.0,
+            source.workspace.workspace().profile(),
+            source.workspace.workspace().limits(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work, cancellation: work.cancellation(),
+            },
+            work.cancellation(),
+        )?;
+        let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(mut custody) = parsed.1 else {
+            return Err(selected_invalid("selected path lost its original ledger"));
+        };
+        requested.2.absorb(&mut custody)?;
         requested.0.push(parsed.0);
     }
     let plan = source

@@ -176,30 +176,19 @@ where
         }
     }
 
-    /// Authenticates only the original selected Project READ before or after an SDK source boundary.
+    /// Authenticates the original selected Project READ on its original ledger.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn require_native_project_selection_with_native_work(
+    pub async fn require_project_selection(
         &self,
-        source: TaskId,
-        project: &VolumeRef,
-        generation: &GenerationRef,
-        frozen: Option<acyclic_fs::LazySnapshotRef>,
+        frozen: acyclic_fs::LazySnapshotRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        work.remaining()?;
-        if self.source.task_id() != source {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native source loan changed its authenticated source task",
-            });
-        }
         match &self.reader {
             SourceReader::Project(reader) => {
-                reader
-                    .require_native_project_selection_with_native_work(
-                        source, project, generation, frozen, work,
-                    )
-                    .await
+                let selected = reader.authorization();
+                reader.require_native_project_selection_with_native_work(
+                    self.source.task_id(), &selected.project, &selected.generation, Some(frozen), work,
+                ).await
             }
             SourceReader::Caller(_) => Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,

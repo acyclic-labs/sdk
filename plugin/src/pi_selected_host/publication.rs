@@ -62,7 +62,7 @@ impl PiControlHost<'_> {
                 .ok_or_else(|| denied("destination project is not mounted"))?;
             let permit = live
                 .view
-                .project_publication(volume)
+                .publication_permit(volume)
                 .ok_or_else(|| denied("destination lost its project publication permit"))?;
             (Some(mount), work, permit)
         } else {

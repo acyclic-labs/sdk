@@ -93,14 +93,8 @@ impl PiControlHost<'_> {
                 work,
             )
             .await?;
-        if let Some(view) = self.native()?.live_view(task) {
-            let mut observed = view
-                .inspect_project_snapshot_with_native_work(&inspection, snapshot, work)?
-                .await?;
-            if observed.1 != snapshot {
-                return Err(denied("inspection changed its authorized frozen source"));
-            }
-            project_cut.1.absorb(&mut observed.2)?;
+        if self.native()?.live_view(task).is_some() {
+            inspection.require_project_selection(snapshot, work).await?;
         } else if task != root {
             let mut custody = self
                 .native()?

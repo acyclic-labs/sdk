@@ -80,6 +80,13 @@ where
         &self.preparation.manifest
     }
 
+    /// Returns the original publication permit for an authorized writable volume.
+    pub fn publication_permit(&self, volume: &VolumeRef) -> Option<PublicationPermit> {
+        self.manifest().volumes.iter().zip(&self.volumes)
+            .find(|(mapping, _)| &mapping.volume == volume && mapping.writable)
+            .map(|(_, prepared)| prepared.publication)
+    }
+
     /// Rechecks the physical views and immutable source selections.
     pub async fn validate_for_dispatch(&self) -> Result<()> {
         for volume in &self.volumes {
