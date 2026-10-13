@@ -22,7 +22,7 @@ where
 {
     if let Some(io) = io { io.check_cancellation()?; }
     let Some(deadline) = deadline else { return future.await; };
-    if host.now_unix_millis() >= deadline {
+    if host.clock.now_unix_millis() >= deadline {
         host.expire_task_deadline(task, fence, &mut super::observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
         return Err(Error::Indeterminate(operation));
     }
@@ -38,7 +38,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if result.as_ref().is_err_and(|error| error.is_native_failure()) { return result; }
         if result.as_ref().is_ok_and(&has_native_failure) { return result; }
-        if host.now_unix_millis() < deadline { return result; }
+        if host.clock.now_unix_millis() < deadline { return result; }
     }
     host.expire_task_deadline(task, fence, &mut super::observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
     Err(Error::Indeterminate(operation))
@@ -67,7 +67,7 @@ where
     P: StreamProvider + 'static,
 {
     loop {
-        let now = host.now_unix_millis();
+        let now = host.clock.now_unix_millis();
         if now >= deadline {
             return Ok(());
         }
