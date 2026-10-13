@@ -27,7 +27,7 @@ async fn admission_content_keeps_original_published_bytes_until_last_alias() -> 
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
-    let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
+    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
     host.create_volume(&volume).await?;
     let issuer = issuer();
     let scope = issuer
@@ -50,13 +50,13 @@ async fn admission_content_keeps_original_published_bytes_until_last_alias() -> 
         65_536,
         None,
     )?;
-    let reader = Arc::new(FilesystemContentVerifier::new(
+    let reader = FilesystemContentVerifier::new(
         host,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         65_536,
         None,
-    )?);
+    )?;
     let request = Interaction::question(
         "original published prompt".into(),
         json!({"type": "string"}),

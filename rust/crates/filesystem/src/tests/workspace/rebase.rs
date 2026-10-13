@@ -8,7 +8,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     let child = fork_workspace(
         &parent,
         "filtered-rebase-child",
-        ForkOptions::from_generation(unbounded!(parent, head())?, IdempotencyKey::new()).empty(),
+        ForkOptions::from_generation(unbounded!(parent, head())?, IdempotencyKey::new()).inherit_paths(Vec::new()),
     )
     .await?;
     child.write_text("/local", "child").await?;
@@ -236,7 +236,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("main-ranges"))?;
-    main.write("/shared", OwnedBytes::from(vec![b'a'; 128]))
+    main.write("/shared", bytes::Bytes::from(vec![b'a'; 128]))
         .await?;
     let agent = fork_workspace(
         &main,
