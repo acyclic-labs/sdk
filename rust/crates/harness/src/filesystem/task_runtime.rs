@@ -1356,17 +1356,17 @@ where
             })
         };
         let operation = OperationId::from_bytes(task.into_bytes());
-        let purpose = if allow_settlement {
-            crate::runtime::NativeContextPurpose::Reconciliation { fence, mailbox }
+        let source = if allow_settlement {
+            crate::runtime::ContextSource::Reconciliation { work, fence, mailbox }
         } else {
-            crate::runtime::NativeContextPurpose::Dispatch { fence, mailbox }
+            crate::runtime::ContextSource::Dispatch { work, fence, mailbox }
         };
         let context = self
             .harness
             .open_durable_context(
                 task,
                 operation,
-                crate::runtime::ContextSource::Native { work, purpose },
+                source,
             )
             .await?;
         Ok(context)
