@@ -20,7 +20,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     let birth = &fixture.original_root_births.as_ref().unwrap()[0];
     let owner = fixture
         .host
-        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
+        .journal_owner(fixture.root, &((&fixture.root_lease.reservation).into()), None)
         .await?;
     let agent = owner
         .authenticated_binding_agent(&mut Some(
@@ -91,7 +91,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     creator.bind_root_bootstrap_allocation_with_native_work(Arc::clone(&token), &work)?;
     let root_context = owner.root_bootstrap_context(
         &admission,
-        token.witness.binding(),
+        &token.witness.0,
         &work,
     )
     .await?;

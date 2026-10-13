@@ -837,7 +837,7 @@ where
             io.preflight(hashed)?;
             io.charge(hashed)?;
         }
-        let id = crate::durable_host::task_interaction_id(task, operation);
+        let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
         let host = self.interaction_host(io)?;
         match host.read_request(id, io).await? {
             None => return Ok(false),
@@ -1322,7 +1322,7 @@ where
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        let owner = self.host.journal_owner(task, fence).await?;
+        let owner = self.host.journal_owner(task, &(fence), None).await?;
         let context = self
             .harness
             .durable_context(task, OperationId::from_bytes(task.into_bytes()))
@@ -1425,7 +1425,7 @@ where
     ) -> Result<Arc<crate::runtime::TaskContext>> {
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
             .await?;
         owner
             .verify(
@@ -1486,7 +1486,7 @@ where
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
             .await?;
         let journal = FilesystemExecutionJournal::for_task(
             owner,
@@ -1554,7 +1554,7 @@ where
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, fence).await?,
+            self.host.journal_owner(task, &(fence), None).await?,
             execution_operation(task, turn, None)?,
             turn,
             self.filesystem.clone(),
@@ -1598,19 +1598,19 @@ where
             Some(work) => {
                 let (_, fence) = context.task().owned_task_binding_with_native_work(work)?;
                 self.host
-                    .journal_owner_with_native_work(task, fence, work)
+                    .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?
             }
             None => {
                 self.host
-                    .journal_owner(task, context.task().owned_task_fence()?)
+                    .journal_owner(task, &(context.task().owned_task_fence()?), None)
                     .await?
             }
         };
         #[cfg(target_arch = "wasm32")]
         let owner = self
             .host
-            .journal_owner(task, context.task().owned_task_fence()?)
+            .journal_owner(task, &(context.task().owned_task_fence()?), None)
             .await?;
         let owner = owner
             .for_tool_workflow(context, tool, invocation, cancellation, io)
@@ -1659,7 +1659,7 @@ where
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
         FilesystemWorkflowJournal::for_task(
-            self.host.journal_owner(task, fence).await?,
+            self.host.journal_owner(task, &(fence), None).await?,
             self.filesystem.clone(),
             &self.volume,
             &self.verifier,
@@ -1681,7 +1681,7 @@ where
         let admission = self.admission_observed(task, Some(&io)).await?;
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
             .await?;
         FilesystemWorkflowJournal::for_task(
             owner,
