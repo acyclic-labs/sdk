@@ -30,7 +30,7 @@ pub(super) fn write_entry(
         placeholder.FileBasicInfo.IsDirectory = true;
         placeholder.FileBasicInfo.FileAttributes |= FILE_ATTRIBUTE_DIRECTORY.0;
     }
-    let (target, extended) = symlink_extended(target.bytes())
+    let (target, extended) = symlink_extended(&target.bytes)
         .ok_or_else(|| format!("link at {path:?} is unrepresentable"))?;
     let relative = HSTRING::from(host.as_os_str());
     let size = u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX);
