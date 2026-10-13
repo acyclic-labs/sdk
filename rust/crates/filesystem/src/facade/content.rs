@@ -21,7 +21,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let allocation = accounting.claim_owned(bytes, 0)?;
             let compiled = self
                 .compile_content_with_accounting(
-                    crate::kernel::Owned::new(input, allocation, bytes),
+                    Owned::new(input, allocation, bytes),
                     times,
                     &mut accounting,
                     cancellation,
@@ -34,154 +34,132 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-    /// Input custody covers paths; opaque source custody stays with its caller
+    async fn content_file_id<F: ContentFile>(
+        &mut self,
+        file: &F,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<FileId, FsError> {
+        match file.address() {
+            ContentAddress::File(id) => Ok(id),
+            ContentAddress::Path(path) => {
+                let (lookup, allocation) = self
+                    .lookup_no_follow_with_accounting(&path, accounting, cancellation, true)
+                    .await?;
+                drop(allocation);
+                Ok(lookup.record.ok_or(FsError::NotFound)?.file_id)
+            }
+        }
+    }
+
     pub(crate) async fn compile_content_with_accounting<F: ContentFile>(
         &mut self,
-        input: crate::kernel::Owned<(F, ContentChange<F>)>,
+        input: Owned<(F, ContentChange<F>)>,
         times: ContentTimes,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::kernel::Owned<Vec<Mutation>>, FsError> {
-        let mut input = crate::kernel::Owned::new(Some(input.value), input.allocation, input.bytes);
+    ) -> Result<Owned<Vec<Mutation>>, FsError> {
+        let mut input = Owned::new(Some(input.value), input.allocation, input.bytes);
         let result = async {
             accounting.check()?;
-            let mut operations = crate::kernel::Owned::allocate(
+            let mut operations = Owned::<Vec<Mutation>>::allocate(
                 1 + usize::from(matches!(times, ContentTimes::Stamp(_))),
                 accounting,
             )?;
             let lowered = async {
                 let (file, change) = input.value.take().expect("content input is consumed once");
-                let operation = match change {
-                    ContentChange::Write { bytes, .. } if bytes.is_empty() => {
-                        ContentOperation::File(FileMutation::ValidateRegular)
-                    }
-                    ContentChange::Write { offset, bytes } => {
-                        let content = self
-                            .stage_authored_blob_with_accounting(bytes, accounting, cancellation)
-                            .await?;
-                        ContentOperation::File(FileMutation::Write {
-                            offset,
-                            length: content.logical_bytes,
-                            content: content.root,
-                            content_offset: 0,
-                        })
-                    }
-                    ContentChange::Resize { logical_bytes } => {
-                        ContentOperation::File(FileMutation::Resize { logical_bytes })
-                    }
-                    ContentChange::ZeroRange {
-                        range,
-                        allocated,
-                        extend,
-                    } => ContentOperation::File(FileMutation::ZeroRange {
-                        offset: range.offset,
-                        length: range.length,
-                        allocated,
-                        extend,
-                    }),
-                    ContentChange::Preallocate { range, keep_size } => {
-                        ContentOperation::File(FileMutation::Preallocate {
-                            offset: range.offset,
-                            length: range.length,
-                            keep_size,
-                        })
-                    }
+                let file_id = self
+                    .content_file_id(&file, accounting, cancellation)
+                    .await?;
+                let mutation = match change {
                     ContentChange::CloneFrom {
                         source,
                         source_offset,
                         offset,
                         length,
-                    } => ContentOperation::CloneFrom {
-                        source,
-                        source_offset,
-                        offset,
-                        length,
+                    } => {
+                        let source_file_id = self
+                            .content_file_id(&source, accounting, cancellation)
+                            .await?;
+                        Mutation::CloneFileRange {
+                            source_file_id,
+                            source_offset,
+                            destination_file_id: file_id,
+                            destination_offset: offset,
+                            length,
+                        }
+                    }
+                    change => Mutation::File {
+                        file_id,
+                        mutation: match change {
+                            ContentChange::Write { bytes, .. } if bytes.is_empty() => {
+                                FileMutation::ValidateRegular
+                            }
+                            ContentChange::Write { offset, bytes } => {
+                                let content = self
+                                    .stage_authored_blob_with_accounting(
+                                        bytes,
+                                        accounting,
+                                        cancellation,
+                                    )
+                                    .await?;
+                                FileMutation::Write {
+                                    offset,
+                                    length: content.logical_bytes,
+                                    content: content.root,
+                                    content_offset: 0,
+                                }
+                            }
+                            ContentChange::Resize { logical_bytes } => {
+                                FileMutation::Resize { logical_bytes }
+                            }
+                            ContentChange::ZeroRange {
+                                range,
+                                allocated,
+                                extend,
+                            } => FileMutation::ZeroRange {
+                                offset: range.offset,
+                                length: range.length,
+                                allocated,
+                                extend,
+                            },
+                            ContentChange::Preallocate { range, keep_size } => {
+                                FileMutation::Preallocate {
+                                    offset: range.offset,
+                                    length: range.length,
+                                    keep_size,
+                                }
+                            }
+                            ContentChange::CloneFrom { .. } => unreachable!("clone handled above"),
+                        },
                     },
                 };
-                let mut stamped_metadata = None;
+                push_authored_operation(
+                    &mut operations,
+                    &mut input.allocation,
+                    &mut input.bytes,
+                    accounting,
+                    mutation,
+                )?;
                 if let ContentTimes::Stamp(at_ns) = times {
-                    let mut metadata = match file.address() {
-                        ContentAddress::Path(path) => {
-                            self.read_metadata_with_accounting(path, accounting, cancellation)
-                                .await?
-                        }
-                        ContentAddress::File(file_id) => {
-                            self.read_metadata_by_id_with_accounting(
-                                file_id,
-                                accounting,
-                                cancellation,
-                            )
-                            .await?
-                        }
-                    };
+                    let mut metadata = self
+                        .read_metadata_by_id_with_accounting(file_id, accounting, cancellation)
+                        .await?;
                     if metadata.stamp_content_change(at_ns) {
-                        stamped_metadata = Some(
-                            self.stage_metadata_with_accounting(metadata, accounting, cancellation)
-                                .await?,
-                        );
-                    }
-                }
-                if let Some(metadata) = stamped_metadata {
-                    let cloned = file.clone_content_with_accounting(accounting, cancellation)?;
-                    let crate::kernel::Owned {
-                        value: cloned,
-                        allocation: mut cloned_allocation,
-                        bytes: mut cloned_bytes,
-                    } = cloned;
-                    let mutation = cloned.mutation(operation);
-                    // A clone operation also moves its original source path.
-                    let source_bytes = mutation_path_owned_bytes(&mutation)
-                        .checked_sub(cloned_bytes)
-                        .ok_or(WorkError::Overflow)?;
-                    let mut source_allocation =
-                        crate::kernel::split_allocation(&mut input.allocation, source_bytes)?;
-                    input.bytes = input
-                        .bytes
-                        .checked_sub(source_bytes)
-                        .ok_or(WorkError::Overflow)?;
-                    if let Err(error) = cloned_allocation.absorb(&mut source_allocation) {
-                        drop(mutation);
-                        crate::kernel::retire_allocation(
-                            source_allocation,
-                            source_bytes,
+                        let metadata = self
+                            .stage_metadata_with_accounting(metadata, accounting, cancellation)
+                            .await?;
+                        push_authored_operation(
+                            &mut operations,
+                            &mut input.allocation,
+                            &mut input.bytes,
                             accounting,
+                            Mutation::File {
+                                file_id,
+                                mutation: FileMutation::SetMetadata { metadata },
+                            },
                         )?;
-                        crate::kernel::retire_allocation(
-                            cloned_allocation,
-                            cloned_bytes,
-                            accounting,
-                        )?;
-                        return Err(error);
                     }
-                    cloned_bytes = cloned_bytes
-                        .checked_add(source_bytes)
-                        .ok_or(WorkError::Overflow)?;
-                    let pushed = push_authored_operation(
-                        &mut operations,
-                        &mut cloned_allocation,
-                        &mut cloned_bytes,
-                        accounting,
-                        mutation,
-                    );
-                    crate::kernel::retire_allocation(cloned_allocation, cloned_bytes, accounting)?;
-                    pushed?;
-                    push_authored_operation(
-                        &mut operations,
-                        &mut input.allocation,
-                        &mut input.bytes,
-                        accounting,
-                        file.mutation(ContentOperation::File(FileMutation::SetMetadata {
-                            metadata,
-                        })),
-                    )?;
-                } else {
-                    push_authored_operation(
-                        &mut operations,
-                        &mut input.allocation,
-                        &mut input.bytes,
-                        accounting,
-                        file.mutation(operation),
-                    )?;
                 }
                 Ok::<_, FsError>(())
             }

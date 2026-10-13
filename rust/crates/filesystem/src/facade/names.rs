@@ -34,16 +34,10 @@ pub(super) fn name_fold_key(
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(delta)?;
-    let requested = name.as_bytes().len() as u64;
-    let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(name.as_bytes().len())
-        .map_err(|_| FsError::PendingMutationAllocationFailed)?;
-    accounting.reconcile_owned(&mut allocation, requested, bytes.capacity() as u64)?;
-    bytes.extend_from_slice(name.as_bytes());
+    let mut bytes = Owned::<Vec<u8>>::allocate(name.as_bytes().len(), accounting)?;
+    bytes.value.extend_from_slice(name.as_bytes());
     accounting.record_completed(delta)?;
-    Ok((bytes, allocation))
+    Ok((bytes.value, bytes.allocation))
 }
 
 pub(super) fn name_fold_equal(

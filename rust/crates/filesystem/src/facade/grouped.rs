@@ -1,30 +1,54 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    /// Applies independent changes as if one at a time in order, landing
+    /// Applies independent changes in order with one budget per change.
     pub async fn apply_group(
         &mut self,
         changes: Vec<GroupedChange>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Vec<Result<GroupedOutcome, FsError>>> {
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let input = crate::kernel::Owned::new(
-            changes,
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone,
-            0,
-        );
-        let result = self
-            .apply_group_with_accounting(input, &mut accounting, cancellation)
+        let mut outer = KernelAccounting::standalone(budget, cancellation);
+        let mut output =
+            Owned::<Vec<Result<GroupedOutcome, FsError>>>::allocate(changes.len(), &mut outer)
+                .map_err(|error| OperationFailure::new(error, outer.spent()))?;
+        let live = output.bytes;
+        let mut work = outer.spent();
+        for change in changes {
+            let allowance = remaining_owned(WorkCounters::UNCHARGED, budget, live)?;
+            let mut accounting = KernelAccounting::standalone(allowance, cancellation);
+            let result = async {
+                let mut input = Owned::<Vec<GroupedChange>>::allocate(1, &mut accounting)?;
+                accounting.charge(WorkCounters {
+                    bytes_copied: size_of::<GroupedChange>() as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                input.value.push(change);
+                self.apply_group_with_accounting(input, &mut accounting, cancellation)
+                    .await
+            }
             .await;
-        let work = accounting.spent();
-        result
-            .map(|output| OperationReceipt {
-                value: output.value,
-                work,
-            })
-            .map_err(|error| OperationFailure::new(error, work))
+            let next = accounting.spent();
+            work = work
+                .with_backend(next, live)
+                .map_err(|error| OperationFailure::new(FsError::from(error), work))?;
+            match result {
+                Ok(mut outcomes) => {
+                    let outcome = outcomes
+                        .value
+                        .pop()
+                        .ok_or_else(|| OperationFailure::new(FsError::InvalidDiff, work))?;
+                    outcomes
+                        .retire(&mut accounting)
+                        .map_err(|error| OperationFailure::new(error, work))?;
+                    output.value.push(outcome);
+                }
+                Err(error) => output.value.push(Err(error)),
+            }
+        }
+        let value = output.value;
+        drop(output.allocation);
+        Ok(OperationReceipt { value, work })
     }
 
     pub(crate) async fn apply_group_with_accounting(
@@ -90,61 +114,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 };
                 compiled.value.push(change);
             }
-            let applicable = compiled
-                .value
-                .iter()
-                .filter(|change| change.is_ok())
-                .count();
-            let mut combined_succeeded = false;
-            if applicable > 1 {
-                let combined = (|| {
-                    let count = compiled.value.iter().flatten().try_fold(
-                        0usize,
-                        |count, (operations, _)| {
-                            count
-                                .checked_add(operations.value.len())
-                                .ok_or(FsError::Work(WorkError::Overflow))
-                        },
-                    )?;
-                    let mut combined = Owned::allocate(count, accounting)?;
-                    let copied = (|| {
-                        for (operations, _) in compiled.value.iter().flatten() {
-                            for mutation in &operations.value {
-                                let cloned = clone_grouped_mutation_with_accounting(
-                                    mutation,
-                                    accounting,
-                                    cancellation,
-                                )?;
-                                combined.bytes = combined
-                                    .bytes
-                                    .checked_add(cloned.bytes)
-                                    .ok_or(WorkError::Overflow)?;
-                                let mut guard = cloned.allocation;
-                                combined.allocation.absorb(&mut guard)?;
-                                combined.value.push(cloned.value);
-                            }
-                        }
-                        Ok::<(), FsError>(())
-                    })();
-                    if let Err(error) = copied {
-                        combined.retire(accounting)?;
-                        return Err(error);
-                    }
-                    Ok(combined)
-                })();
-                if let Ok(operations) = combined {
-                    combined_succeeded = self
-                        .mutate_owned_with_accounting(operations, accounting, cancellation)
-                        .await
-                        .is_ok();
-                }
-            }
             for change in compiled.value.drain(..) {
                 output.value.push(match change {
-                    Ok((operations, outcome)) if combined_succeeded => {
-                        operations.retire(accounting)?;
-                        Ok(outcome)
-                    }
                     Ok((operations, outcome)) => self
                         .mutate_owned_with_accounting(operations, accounting, cancellation)
                         .await
@@ -246,159 +217,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .await
                     .map(|operations| (operations, GroupedOutcome::Changed))
             }
-        }
-    }
-}
-
-pub(super) fn clone_grouped_mutation_with_accounting(
-    mutation: &Mutation,
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<crate::kernel::Owned<Mutation>, FsError> {
-    accounting.charge(WorkCounters {
-        bytes_copied: size_of::<Mutation>() as u64,
-        ..WorkCounters::UNCHARGED
-    })?;
-    let mut allocation = accounting.claim_owned(0, 0)?;
-    let mut bytes = 0_u64;
-    let result = (|| {
-        let mut path = |path: &NamespacePath| -> Result<NamespacePath, FsError> {
-            let (cloned, mut guard) = path.clone_with_accounting(accounting, cancellation)?;
-            let retained = cloned.retained_bytes();
-            allocation.absorb(&mut guard)?;
-            bytes = bytes.checked_add(retained).ok_or(WorkError::Overflow)?;
-            Ok(cloned)
-        };
-        let cloned = match mutation {
-            Mutation::Create {
-                path: source,
-                record,
-            } => Mutation::Create {
-                path: path(source)?,
-                record: *record,
-            },
-            Mutation::Restore {
-                path: source,
-                record,
-            } => Mutation::Restore {
-                path: path(source)?,
-                record: *record,
-            },
-            Mutation::Remove {
-                path: source,
-                expected_file_id,
-            } => Mutation::Remove {
-                path: path(source)?,
-                expected_file_id: *expected_file_id,
-            },
-            Mutation::Rename {
-                source,
-                destination,
-                replace,
-            } => Mutation::Rename {
-                source: path(source)?,
-                destination: path(destination)?,
-                replace: *replace,
-            },
-            Mutation::Link {
-                source,
-                destination,
-            } => Mutation::Link {
-                source: path(source)?,
-                destination: path(destination)?,
-            },
-            Mutation::SetMetadata {
-                path: source,
-                metadata,
-            } => Mutation::SetMetadata {
-                path: path(source)?,
-                metadata: *metadata,
-            },
-            Mutation::Write {
-                path: source,
-                offset,
-                length,
-                content,
-                content_offset,
-            } => Mutation::Write {
-                path: path(source)?,
-                offset: *offset,
-                length: *length,
-                content: *content,
-                content_offset: *content_offset,
-            },
-            Mutation::ValidateRegular { path: source } => Mutation::ValidateRegular {
-                path: path(source)?,
-            },
-            Mutation::Resize {
-                path: source,
-                logical_bytes,
-            } => Mutation::Resize {
-                path: path(source)?,
-                logical_bytes: *logical_bytes,
-            },
-            Mutation::ZeroRange {
-                path: source,
-                offset,
-                length,
-                allocated,
-                extend,
-            } => Mutation::ZeroRange {
-                path: path(source)?,
-                offset: *offset,
-                length: *length,
-                allocated: *allocated,
-                extend: *extend,
-            },
-            Mutation::Preallocate {
-                path: source,
-                offset,
-                length,
-                keep_size,
-            } => Mutation::Preallocate {
-                path: path(source)?,
-                offset: *offset,
-                length: *length,
-                keep_size: *keep_size,
-            },
-            Mutation::CloneRange {
-                source,
-                source_offset,
-                destination,
-                destination_offset,
-                length,
-            } => Mutation::CloneRange {
-                source: path(source)?,
-                source_offset: *source_offset,
-                destination: path(destination)?,
-                destination_offset: *destination_offset,
-                length: *length,
-            },
-            Mutation::File { file_id, mutation } => Mutation::File {
-                file_id: *file_id,
-                mutation: mutation.clone(),
-            },
-            Mutation::CloneFileRange {
-                source_file_id,
-                source_offset,
-                destination_file_id,
-                destination_offset,
-                length,
-            } => Mutation::CloneFileRange {
-                source_file_id: *source_file_id,
-                source_offset: *source_offset,
-                destination_file_id: *destination_file_id,
-                destination_offset: *destination_offset,
-                length: *length,
-            },
-        };
-        Ok::<_, FsError>(cloned)
-    })();
-    match result {
-        Ok(cloned) => Ok(crate::kernel::Owned::new(cloned, allocation, bytes)),
-        Err(error) => {
-            crate::kernel::retire_allocation(allocation, bytes, accounting)?;
-            Err(error)
         }
     }
 }
