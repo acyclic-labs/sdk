@@ -30,6 +30,98 @@ pub(super) async fn read<P: StreamProvider>(
     result
 }
 
+/// Reads only the authenticated preparation's original task and fence.
+pub(crate) fn preparation_owner<'a, P: StreamProvider>(
+    witness: &'a crate::durable_host::TaskAdmissionReadonlyWitness<P>,
+    work: &'a NativeMaterializationWork,
+) -> Result<
+    crate::NativeFutureBundle<
+        'a,
+        Option<(
+            crate::TaskId,
+            crate::scheduler::LeaseFence,
+            NativeAllocation,
+        )>,
+    >,
+> {
+    use super::preparation_record::Intent;
+    if !work.remaining()?.has_finite_allowances() {
+        return Err(invalid());
+    }
+    crate::NativeFutureBundle::new(work, || async move {
+        let Some(journal) = read(witness, work).await? else {
+            return Ok(None);
+        };
+        if journal.custody.is_none() {
+            return Err(invalid());
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        let acyclic_fs::MaterializationIntent::NativePreparation {
+            selection,
+            original,
+        } = &journal.plan.intent
+        else {
+            return Err(invalid());
+        };
+        let (intent, mut custody) = native_decoded(io.decode(
+            std::marker::PhantomData::<Intent>,
+            original,
+            crate::wire::ErrorCode::Storage,
+        )?)?;
+        intent.manifest.validate(Some(&io))?;
+        if intent.task != witness.task()
+            || selection.len() != intent.manifest.volumes.len()
+            || journal.plan.edits.iter().any(|edit| {
+                !matches!(edit, acyclic_fs::MaterializationEdit::Install { image, .. }
+                if image.as_slice() == acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX)
+            })
+        {
+            return Err(invalid());
+        }
+        for (selected, mapping) in selection.iter().zip(&intent.manifest.volumes) {
+            let provider = io.encode(
+                mapping.volume.provider(),
+                work.remaining()?.bytes_encoded,
+                true,
+            )?;
+            if provider.as_slice() != selected.provider_identity
+                || selected.generation.digest().as_bytes().as_slice()
+                    != mapping.generation.as_resource().key()
+            {
+                return Err(invalid());
+            }
+        }
+        if let Some(scratch) = witness.scratch_proof() {
+            if crate::runtime::task_id_for_admission(scratch.origin().intended_child) != intent.task
+                || !intent
+                    .manifest
+                    .volumes
+                    .iter()
+                    .any(|mapping| mapping.writable && &mapping.volume == scratch.volume())
+            {
+                return Err(invalid());
+            }
+        }
+        witness.verify_with_native_work(work).await?;
+        drop(journal);
+        let Intent {
+            task,
+            original_fence,
+            ..
+        } = intent;
+        let bytes = (std::mem::size_of::<(
+            crate::TaskId,
+            crate::scheduler::LeaseFence,
+            NativeAllocation,
+        )>() as u64)
+            .checked_add(original_fence.reservation_id.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(original_fence.placement.capacity() as u64))
+            .ok_or_else(invalid)?;
+        custody.resize(bytes)?;
+        Ok(Some((task, original_fence, custody)))
+    })
+}
+
 pub(super) fn path(
     task: crate::TaskId,
     work: &NativeMaterializationWork,
@@ -57,15 +149,14 @@ async fn read_record<P: StreamProvider>(
     let bounds =
         match crate::store::operations::bounds_with_work(client, &path, &mut observer).await? {
             Ok(bounds) => bounds,
-            Err(error)
-                if matches!(
-                    error,
-                    acyclic_stream::StreamError::NotFound
-                ) =>
-            {
+            Err(error) if matches!(error, acyclic_stream::StreamError::NotFound) => {
                 return Ok(None);
             }
-            Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &observer)),
+            Err(error) => {
+                return Err(crate::store::operations::stream_error_with_work(
+                    error, &observer,
+                ));
+            }
         };
     let Some(sequence) = bounds.tail.checked_sub(1) else {
         return Ok(None);
