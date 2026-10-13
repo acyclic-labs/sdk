@@ -77,7 +77,12 @@ pub(super) fn ensure_current_host_node(
 pub(super) fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter =
         crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat(path, &mut meter).map_err(capture_demand_error)
+    #[cfg(unix)]
+    let result = root.stat(path, &mut meter);
+    #[cfg(windows)]
+    let result =
+        crate::native_host::with_wide_path(path, &mut meter, |path, work| root.stat(path, work));
+    result.map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -233,4 +238,20 @@ pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileM
 #[cfg(windows)]
 pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileMetadata) {
     result.windows_attributes = MetadataField::Value(metadata.file_attributes());
+}
+
+#[cfg(test)]
+pub(super) fn test_open_file(root: &HostRoot, path: &Path) -> std::io::Result<cap_std::fs::File> {
+    let mut work = crate::native_host::ordinary_work();
+    #[cfg(unix)]
+    let result = root.open_file(path, &mut work);
+    #[cfg(windows)]
+    let result = crate::native_host::with_wide_path(path, &mut work, |path, work| {
+        root.open_file(
+            path,
+            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+            work,
+        )
+    });
+    result.map_err(crate::native_host::ordinary_error)
 }
