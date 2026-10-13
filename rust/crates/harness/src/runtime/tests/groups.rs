@@ -202,31 +202,46 @@ async fn group_map_preserves_input_order_and_partial_failure() -> Result<()> {
         |context, inputs: Vec<u32>| async move {
             let leaf = context.task::<u32, u32>("test.map.leaf")?;
             let group = context.group();
-            match group.map(&leaf, inputs).await {
-                RuntimeMap::Complete(values) => Ok(values),
-                RuntimeMap::Incomplete(entries) => {
-                    assert_eq!(entries.len(), 4);
-                    assert!(matches!(entries[0], Ok(Outcome::Succeeded(2))));
-                    assert!(matches!(entries[1], Ok(Outcome::Succeeded(4))));
-                    assert!(matches!(&entries[2], Ok(Outcome::Failed { .. })));
-                    assert!(matches!(entries[3], Ok(Outcome::Succeeded(8))));
-                    let members = group
-                        .spawn_many(&leaf, [1, 3])
-                        .await
-                        .into_iter()
-                        .collect::<Result<Vec<_>>>()?;
-                    let partial = group
-                        .quorum(members, 2)
-                        .await
-                        .err()
-                        .ok_or_else(|| Error::Conflict("impossible quorum succeeded".into()))?;
-                    assert_eq!(partial.required, 2);
-                    assert_eq!(partial.successes.len(), 1);
-                    assert_eq!(partial.successes[0].1, 2);
-                    assert_eq!(partial.others.len(), 1);
-                    Ok(Vec::new())
-                }
+            let entries = group.map(&leaf, inputs).await;
+            if entries
+                .iter()
+                .all(|entry| matches!(entry, Ok(Outcome::Succeeded(_))))
+            {
+                return entries
+                    .into_iter()
+                    .map(|entry| match entry {
+                        Ok(Outcome::Succeeded(value)) => Ok(value),
+                        _ => unreachable!(),
+                    })
+                    .collect();
             }
+            assert_eq!(entries.len(), 4);
+            assert!(matches!(entries[0], Ok(Outcome::Succeeded(2))));
+            assert!(matches!(entries[1], Ok(Outcome::Succeeded(4))));
+            assert!(matches!(&entries[2], Ok(Outcome::Failed { .. })));
+            assert!(matches!(entries[3], Ok(Outcome::Succeeded(8))));
+            let members = group
+                .spawn_many(&leaf, [1, 3])
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?;
+            let partial = group
+                .quorum(members, 2)
+                .await
+                .err()
+                .ok_or_else(|| Error::Conflict("impossible quorum succeeded".into()))?;
+            assert_eq!(partial.len(), 2);
+            assert!(
+                partial
+                    .iter()
+                    .any(|(_, result)| matches!(result, Ok(Outcome::Succeeded(2))))
+            );
+            assert!(
+                partial
+                    .iter()
+                    .any(|(_, result)| matches!(result, Ok(Outcome::Failed { .. })))
+            );
+            Ok(Vec::new())
         },
     )?)?;
     let harness = Bindings {

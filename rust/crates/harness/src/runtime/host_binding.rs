@@ -41,39 +41,31 @@ impl AgentHarness {
                     "resource-derived admission state is not bound",
                 )
             })?;
-            let resumed = {
+            let resumed = match native {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if let Some(work) = native {
-                    let resumed = state
+                Some(work) => {
+                    let (scope, custody) = state
                         .resume_scope_with_native_work(
                             observed.task_id(),
                             observed.operation_id,
                             work,
                         )?
                         .await?;
-                    if !resumed.1.work().shares_allocation_context(work) {
+                    if !custody.work().shares_allocation_context(work) {
                         return Err(task_workflow_error(
                             native,
                             crate::wire::ErrorCode::Unauthorized,
                             "resumed scope differs from its original metadata ledger",
                         ));
                     }
-                    (resumed.0, Some(resumed.1))
-                } else {
-                    (
-                        state
-                            .resume_scope(observed.task_id(), observed.operation_id)
-                            .await?,
-                        None,
-                    )
+                    (scope, Some(custody))
                 }
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                (
+                _ => (
                     state
                         .resume_scope(observed.task_id(), observed.operation_id)
                         .await?,
                     None::<NativeCustody>,
-                )
+                ),
             };
             let digest = crate::executor::with_history_io(io, |work| {
                 observed.canonical_digest_with_work(work)
@@ -90,14 +82,15 @@ impl AgentHarness {
                     "resource scope seal differs from observed admission",
                 ));
             }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = native {
-                self.validate_native_resumed_scope(&resumed.0, observed.operation_id, work)?;
-            } else {
-                self.scope.resume_sealed(resumed.0, observed.operation_id)?;
+            match native {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                Some(work) => {
+                    self.validate_native_resumed_scope(&resumed.0, observed.operation_id, work)?
+                }
+                _ => {
+                    self.scope.resume_sealed(resumed.0, observed.operation_id)?;
+                }
             }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            self.scope.resume_sealed(resumed.0, observed.operation_id)?;
         }
         if observed.policy != self.policy_identity
             || observed.extensions.as_ref() != self.scope.extensions()
@@ -109,18 +102,11 @@ impl AgentHarness {
             ));
         }
         let matches = match (&self.execution, observed.execution.as_ref()) {
-            (Some(provider), Some(placement)) => {
+            (Some(provider), Some(placement)) => match native {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if let Some(work) = native {
-                    provider.identity_with_native_work(work)? == &placement.provider
-                } else {
-                    placement.provider == provider.identity()
-                }
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                {
-                    placement.provider == provider.identity()
-                }
-            }
+                Some(work) => provider.identity_with_native_work(work)? == &placement.provider,
+                _ => placement.provider == provider.identity(),
+            },
             (None, None) => true,
             _ => false,
         };
@@ -187,29 +173,17 @@ impl AgentHarness {
     pub(super) fn assert_durable_policy_bindings(&self, work: Option<&NativeWork>) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters::default())
-                .map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
+            work.charge(acyclic_fs::WorkCounters::default())?;
         }
         macro_rules! identity {
-            ($provider:expr, $ordinary:ident, $native:ident) => {{
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                {
-                    if let Some(work) = work {
-                        $provider.$native(work)?.map(std::borrow::Cow::Borrowed)
-                    } else {
-                        $provider.$ordinary().map(std::borrow::Cow::Owned)
-                    }
+            ($provider:expr, $ordinary:ident, $native:ident) => {
+                match work {
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    Some(work) => $provider.$native(work)?.map(std::borrow::Cow::Borrowed),
+                    _ => $provider.$ordinary().map(std::borrow::Cow::Owned),
                 }
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                {
-                    $provider.$ordinary().map(std::borrow::Cow::Owned)
-                }
-            }};
+            };
         }
-        let mut mismatch = false;
         for state in self
             .host
             .as_ref()
@@ -220,27 +194,32 @@ impl AgentHarness {
             if identity!(state, policy_identity, policy_identity_with_native_work).as_deref()
                 != self.policy_identity.as_ref()
             {
-                mismatch = true;
-                break;
+                return Err(task_workflow_error(
+                    work,
+                    crate::wire::ErrorCode::Conflict,
+                    "durable provider binding changed",
+                ));
             }
         }
-        if !mismatch && let Some(spawner) = &self.spawner {
-            mismatch = identity!(spawner, policy_identity, policy_identity_with_native_work)
-                .as_deref()
-                != self.policy_identity.as_ref();
+        if let Some(spawner) = &self.spawner
+            && identity!(spawner, policy_identity, policy_identity_with_native_work).as_deref()
+                != self.policy_identity.as_ref()
+        {
+            return Err(task_workflow_error(
+                work,
+                crate::wire::ErrorCode::Conflict,
+                "durable provider binding changed",
+            ));
         }
-        if !mismatch && let Some(execution) = &self.execution {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(execution) = &self.execution {
             let current = match work {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Some(work) => {
                     std::borrow::Cow::Borrowed(execution.identity_with_native_work(work)?)
                 }
-                None => std::borrow::Cow::Owned(execution.identity()),
+                _ => std::borrow::Cow::Owned(execution.identity()),
             };
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let current: std::borrow::Cow<'_, ComponentIdentity> =
-                std::borrow::Cow::Owned(execution.identity());
-            mismatch = match &self.state {
+            let matches_state = match &self.state {
                 Some(state) => {
                     identity!(
                         state,
@@ -248,12 +227,12 @@ impl AgentHarness {
                         execution_identity_with_native_work
                     )
                     .as_deref()
-                        != Some(current.as_ref())
+                        == Some(current.as_ref())
                 }
-                None => true,
+                None => false,
             };
-            if !mismatch {
-                mismatch = match &self.spawner {
+            let matches_spawner = matches_state
+                && match &self.spawner {
                     Some(spawner) => {
                         identity!(
                             spawner,
@@ -261,26 +240,18 @@ impl AgentHarness {
                             execution_identity_with_native_work
                         )
                         .as_deref()
-                            != Some(current.as_ref())
+                            == Some(current.as_ref())
                     }
-                    None => true,
+                    None => false,
                 };
+            if !matches_spawner {
+                return Err(task_workflow_error(
+                    work,
+                    crate::wire::ErrorCode::Conflict,
+                    "durable provider binding changed",
+                ));
             }
         }
-        if mismatch {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "durable provider binding changed after native source configuration",
-                });
-            }
-            return Err(Error::Conflict(
-                "durable policy implementation changed after binding".into(),
-            ));
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = work;
         Ok(())
     }
 

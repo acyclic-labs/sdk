@@ -69,24 +69,6 @@ impl AgentHarness {
         Ok(report)
     }
 
-    /// Observes an uncertain preparation without redispatching captures.
-    pub async fn reconcile_fork(
-        &self,
-        request: crate::fork::ForkRequest,
-    ) -> Result<Option<crate::fork::ForkReport>> {
-        let binding = self.fork_binding(&request)?;
-        let report = binding.preparer.reconcile(request.clone()).await?;
-        if let Some(report) = &report {
-            report.validate(&mut None)?;
-            if report.request != request {
-                return Err(Error::Conflict(
-                    "reconciled fork changed the request".into(),
-                ));
-            }
-        }
-        Ok(report)
-    }
-
     /// Binds a model only for scoped task/tool model requests.
     pub fn bind_model(
         self: &Arc<Self>,
