@@ -30,7 +30,7 @@ pub(crate) async fn build_writeback_generations<'a>(
         || imported.workspace_id() != root.workspace
         || actual_root.workspace.workspace().id() != root.workspace
         || actual_root.workspace.workspace().name().as_str() != storage_name.0
-        || actual_root.physical.source.inner().root_identity() != root.identity
+        || actual_root.physical.source.root_identity() != root.identity
         || paths.is_empty()
         || paths.len() > MAX_PRIVATE_DIRECTORY_PAGE
     {

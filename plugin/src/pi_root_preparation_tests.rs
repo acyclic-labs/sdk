@@ -118,7 +118,7 @@ impl Fixture {
     }
 
     async fn replace(&self, name: &str, media: &str, bytes: &[u8]) -> FileRef {
-        let authority = self.owner.authority().unwrap();
+        let authority = self.owner.authority(&self.work).unwrap();
         let grant = ContentGrant::verify(
             &authority.verifier,
             &authority.signed,
@@ -150,7 +150,7 @@ impl Fixture {
             self.command.operation_id = OperationId::from_bytes([99; 16]);
             return;
         }
-        let authority = self.owner.authority().unwrap();
+        let authority = self.owner.authority(&self.work).unwrap();
         let grant = ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.signed,
@@ -247,7 +247,7 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
         original = stage_root_request(owner, files, request, native)
             .await
             .unwrap();
-        let authority = owner.authority().unwrap();
+        let authority = owner.authority(native).unwrap();
         let signed = authority
             .issuer
             .issue(

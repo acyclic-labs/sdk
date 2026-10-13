@@ -41,10 +41,10 @@ impl Fixture {
         std::fs::write(native.join("untouched.txt"), b"original native bytes").unwrap();
         let native = native.canonicalize().unwrap();
         let data = directory.path().join("service");
-        let (lock, configured, startup) = crate::tests::configured_test_service_bootstrap(&data)
+        let (lock, configured, private, startup) = crate::tests::configured_test_service_bootstrap(&data)
             .await
             .unwrap();
-        let (resources, _) = ServiceResources::open(data, configured, &startup)
+        let (resources, _) = ServiceResources::open(data, configured, private, &startup)
             .await
             .unwrap();
         let session = resources.session_directory("root-provider");
@@ -139,7 +139,7 @@ impl Fixture {
         )
         .unwrap();
         crate::pi_owner::tests::publish_owner(&owner, &session, &startup).unwrap();
-        let filesystem = Arc::new(Host::new(resources.fs.clone(), provider).unwrap());
+        let filesystem = Host::new(resources.fs.clone(), &provider, None).unwrap();
         filesystem.create_volume(&journal).await.unwrap();
         let (root, projects) = match root {
             PiRootIntent::ScratchOnly {} => (PiRootIntent::ScratchOnly {}, BTreeMap::new()),
@@ -216,15 +216,10 @@ impl Fixture {
                 .run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io))
                 .await
                 .unwrap();
-            let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
-                unreachable!()
-            };
-            (
-                value,
-                custody
-                    .into_inner()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            )
+            let custody = acyclic_harness::store::HistoryWork::new(io)
+                .into_custody()
+                .unwrap();
+            (value, custody)
         };
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first else {
             panic!("original root lease")
@@ -248,9 +243,9 @@ impl Fixture {
             .journal_owner(
                 task,
                 &fence,
-                Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(
                     &startup,
-                )?),
+                ).unwrap()),
             )
             .await
             .unwrap();
@@ -360,9 +355,9 @@ impl Fixture {
             .journal_owner(
                 self.request.binding.task_id,
                 &fence,
-                Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(
                     &self.startup,
-                )?),
+                ).unwrap()),
             )
             .await
             .unwrap();
@@ -486,10 +481,12 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
             assert_eq!(
                 handle
                     .workspace
-                    .read("/untouched.txt", 64)
+                    .read("/untouched.txt", 64, &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work: &fixture.startup, cancellation: fixture.startup.cancellation(),
+                    })
                     .await
                     .unwrap()
-                    .as_ref(),
+                    .bytes.as_ref(),
                 b"original native bytes"
             );
         }
@@ -580,7 +577,7 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
                     .runtime
                     .runtime
                     .task_host()
-                    .cancel(fixture.request.binding.task_id, None)
+                    .cancel(fixture.request.binding.task_id)
                     .await
                     .unwrap();
                 reopened.cancel();
@@ -717,12 +714,13 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
         let generation = fixture
             .resources
             .fs
-            .create_workspace_with_operation_with_native_work(
+            .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                 &volume.storage_name(&mut None).unwrap(),
                 VolumeConfig::native(Lifecycle::Durable),
                 operation,
                 &fixture.startup,
                 fixture.startup.cancellation(),
+                None,
             )
             .await
             .unwrap();
@@ -784,12 +782,13 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
     let original = fixture
         .resources
         .fs
-        .create_workspace_with_operation_with_native_work(
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             &name,
             VolumeConfig::portable(Lifecycle::Durable),
             operation,
             &fixture.startup,
             fixture.startup.cancellation(),
+            None,
         )
         .await
         .unwrap();
@@ -1114,7 +1113,18 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
         .await
         .unwrap();
     allocation.0.scratch.workspace_id = [124; 16];
-    let (_, write) = pi_input_grants(&fixture.owner).unwrap();
+    let authority = fixture.owner.authority(&fixture.startup).unwrap();
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(&fixture.startup).unwrap(),
+    );
+    let write = ContentGrant::verify(
+        &authority.verifier,
+        &authority.signed,
+        &fixture.owner.policy().journal,
+        VolumeOperation::Write,
+        fixture.owner.policy().maximum_payload_bytes,
+        &mut Some(&mut io),
+    ).unwrap();
     fixture
         .filesystem
         .put_content(

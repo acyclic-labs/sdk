@@ -317,4 +317,4 @@ pub(crate) fn root_provider(
 }
 #[cfg(test)]
 #[path = "../pi_root_provider_tests.rs"]
-mod tests;
+pub(crate) mod tests;

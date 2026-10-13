@@ -139,7 +139,7 @@ fn operator_proof_binds_body_owner_and_agent_and_cannot_be_replaced_by_a_native_
     parsed.0.body = original_body;
     verify_request(&owner, session, &parsed.0, &native).unwrap();
     parsed.0.operator = owner
-        .authority()
+        .authority(&native)
         .unwrap()
         .issuer
         .issue(
