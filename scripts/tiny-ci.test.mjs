@@ -131,7 +131,7 @@ test('native builds and mount checks overlap qualification and still gate public
  ]);
  for(const target of ['linux-x64-gnu','linux-arm64-gnu','linux-arm64-musl','win32-x64']){
   const row=matrix.find(row=>row.target===target)??assert.fail(target);
-  assert.match(row.runner,/blacksmith-16vcpu-/);
+  assert.match(row.runner,target==='win32-x64'?/^blacksmith-32vcpu-windows-2025$/:/blacksmith-16vcpu-/);
   assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(row.runner));
  }
  const steps=build.steps;

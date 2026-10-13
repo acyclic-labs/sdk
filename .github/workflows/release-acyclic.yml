@@ -63,7 +63,7 @@ jobs:
             backend: windows-projfs
             qualifier: native-mount-qualify.exe
             rust_target: x86_64-pc-windows-msvc
-            runner: blacksmith-16vcpu-windows-2025
+            runner: blacksmith-32vcpu-windows-2025
             executable: acyclic.exe
           - target: win32-arm64
             rust_target: aarch64-pc-windows-msvc
