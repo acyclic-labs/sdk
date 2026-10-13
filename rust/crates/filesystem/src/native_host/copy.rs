@@ -24,7 +24,7 @@ pub(super) async fn copy_windows_file_worker(
             .into_std();
             let stat = source_root.stat_file(&source, &mut work)?;
             if !stat.file_type().is_file()
-                || stat.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+                || stat.raw.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
             {
                 return Err(DemandError::InvalidRequest);
             }

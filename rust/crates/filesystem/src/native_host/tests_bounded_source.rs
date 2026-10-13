@@ -86,8 +86,8 @@ fn native_stat_preserves_full_file_id_and_opaque_reparse_kind() -> io::Result<()
     information.FileAttributes = FILE_ATTRIBUTE_REPARSE_POINT.0;
     information.ReparseTag = 0x9000_001A;
     let opaque = HostStat::from_stat_information(&information, 17)?;
-    assert_eq!(opaque.file_index(), u64::MAX);
-    assert_eq!(opaque.volume_serial_number(), 17);
+    assert_eq!((opaque.raw.FileId as u64), u64::MAX);
+    assert_eq!(opaque.volume_serial_number, 17);
     assert!(opaque.file_type().is_file());
     assert!(!opaque.file_type().is_symlink());
     for tag in [0xA000_0003, 0xA000_000C] {

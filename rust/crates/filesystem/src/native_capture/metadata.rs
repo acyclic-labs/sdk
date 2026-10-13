@@ -143,7 +143,7 @@ pub(super) fn host_kind(metadata: &HostStat) -> Result<FileKind, CaptureError> {
 #[cfg(unix)]
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn host_device_identity(metadata: &HostStat) -> Result<(u32, u32), CaptureError> {
-    Ok(split_device(metadata.rdev()))
+    Ok(split_device((metadata.raw.st_rdev as u64)))
 }
 
 #[cfg(target_os = "linux")]
@@ -229,17 +229,17 @@ pub(crate) fn system_time(value: std::io::Result<cap_std::time::SystemTime>) -> 
 
 #[cfg(unix)]
 pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileMetadata) {
-    result.posix_mode = MetadataField::Value(metadata.mode());
-    result.posix_uid = MetadataField::Value(metadata.uid());
-    result.posix_gid = MetadataField::Value(metadata.gid());
-    let nanos = i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
+    result.posix_mode = MetadataField::Value((metadata.raw.st_mode as u32));
+    result.posix_uid = MetadataField::Value((metadata.raw.st_uid as u32));
+    result.posix_gid = MetadataField::Value((metadata.raw.st_gid as u32));
+    let nanos = i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000 + i128::from((metadata.raw.st_ctime_nsec as i64));
     result.changed_ns =
         i64::try_from(nanos).map_or(MetadataField::Unavailable, MetadataField::Value);
 }
 
 #[cfg(windows)]
 pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileMetadata) {
-    result.windows_attributes = MetadataField::Value(metadata.file_attributes());
+    result.windows_attributes = MetadataField::Value(metadata.raw.FileAttributes);
 }
 
 #[cfg(test)]

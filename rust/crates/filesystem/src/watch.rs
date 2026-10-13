@@ -8,7 +8,9 @@ use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 use notify::event::{ModifyKind, RenameMode};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use notify::{Event, EventKind, Watcher};
+#[cfg(not(windows))]
+use notify::RecursiveMode;
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};

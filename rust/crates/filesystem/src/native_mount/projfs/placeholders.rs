@@ -368,7 +368,7 @@ pub(super) fn write_ordinary(
             },
         )
     } else {
-        { #[cfg(unix)] { crate::native_host::rename_held(from, std::path::Path::new(&temporary), &directory, std::path::Path::new(name), acyclic_native_runtime::RenameMode::NoReplace, None, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(std::path::Path::new(&temporary), &mut &*work, |source_name, work| crate::native_host::with_wide_path(std::path::Path::new(name), work, |target, work| crate::native_host::rename_held(from, source_name, &directory, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) } }
+         #[cfg(unix)] { crate::native_host::rename_held(from, std::path::Path::new(&temporary), &directory, std::path::Path::new(name), acyclic_native_runtime::RenameMode::NoReplace, None, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(std::path::Path::new(&temporary), &mut &*work, |source_name, work| crate::native_host::with_wide_path(std::path::Path::new(name), work, |target, work| crate::native_host::rename_held(from, source_name, &directory, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) }
     };
     match published {
         Ok(()) => {

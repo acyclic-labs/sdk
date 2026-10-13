@@ -82,7 +82,7 @@ fn hash_native_metadata_edit(
         &u64::from(
             desired
                 .and_then(|value| value.posix_mode)
-                .unwrap_or_else(|| metadata.mode()),
+                .unwrap_or_else(|| (metadata.raw.st_mode as u32)),
         )
         .to_le_bytes(),
         hasher,
@@ -98,10 +98,10 @@ fn hash_native_metadata_edit(
                         .windows_attributes
                         .is_some_and(|attributes| attributes & 1 != 0) =>
                 {
-                    metadata.file_attributes() | 1
+                    metadata.raw.FileAttributes | 1
                 }
-                Some(_) => metadata.file_attributes() & !1,
-                None => metadata.file_attributes(),
+                Some(_) => metadata.raw.FileAttributes & !1,
+                None => metadata.raw.FileAttributes,
             });
         let attributes = if attributes & !0x80 == 0 {
             0x80
@@ -125,14 +125,14 @@ fn hash_native_entry(
     let facts = [
         metadata.len(),
         metadata.nlink(),
-        u64::from(metadata.uid()),
-        u64::from(metadata.gid()),
-        metadata.rdev(),
-        metadata.mtime() as u64,
-        metadata.mtime_nsec() as u64,
+        u64::from((metadata.raw.st_uid as u32)),
+        u64::from((metadata.raw.st_gid as u32)),
+        (metadata.raw.st_rdev as u64),
+        (metadata.raw.st_mtime as i64) as u64,
+        (metadata.raw.st_mtime_nsec as i64) as u64,
     ];
     #[cfg(windows)]
-    let facts = [metadata.len(), metadata.last_write_time()];
+    let facts = [metadata.len(), (metadata.raw.LastWriteTime as u64)];
     for value in facts {
         hash_bytes(&value.to_le_bytes(), hasher, work)?;
     }
@@ -236,11 +236,11 @@ pub(super) fn native_metadata(metadata: &HostStat) -> crate::WorkspaceMetadata {
     let mut value = crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default());
     #[cfg(unix)]
     {
-        value.posix_mode = Some(metadata.mode());
+        value.posix_mode = Some((metadata.raw.st_mode as u32));
     }
     #[cfg(windows)]
     {
-        value.windows_attributes = Some(metadata.file_attributes());
+        value.windows_attributes = Some(metadata.raw.FileAttributes);
     }
     value
 }
@@ -318,9 +318,9 @@ pub(super) fn apply_native_metadata(
                 .windows_attributes
                 .is_some_and(|attributes| attributes & 1 != 0)
             {
-                actual.file_attributes() | 1
+                actual.raw.FileAttributes | 1
             } else {
-                actual.file_attributes() & !1
+                actual.raw.FileAttributes & !1
             }
         });
         use std::os::windows::io::AsRawHandle as _;

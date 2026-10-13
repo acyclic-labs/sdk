@@ -215,7 +215,7 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
     unbounded!(transaction, hard_link("/tree/source", "/tree/hard-link"))?;
     unbounded!(
         transaction,
-        write_range("/tree/source", 1, OwnedBytes::from_static(b"Z"))
+        write_range("/tree/source", 1, bytes::Bytes::from_static(b"Z"))
     )?;
     transaction
         .zero_range("/tree/source", crate::ByteRange {
@@ -231,11 +231,13 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
                 length: 6,
             },
             true,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
-        .clone_range("/tree/source", 0, "/tree/destination", 1, 5)
-        .await?;
+        .clone_range("/tree/source", 0, "/tree/destination", 1, 5, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     unbounded!(
         transaction,
         set_metadata("/tree/source", FileMetadata::default())

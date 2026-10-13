@@ -90,7 +90,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         mutation: FileMutation::Resize { logical_bytes: 0 },
     });
     local
-        .mutate_owned_with_accounting(operations, &mut accounting, &cancellation)
+        .apply_mutations(operations, &mut accounting, &cancellation)
         .await?;
     remote
         .mutate(

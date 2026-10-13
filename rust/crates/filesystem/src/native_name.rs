@@ -245,7 +245,7 @@ fn copy_bytes_measured<W: SourceDemandReadWork>(
     let mut bytes = name_buffer(source.len(), maximum_bytes, work)?;
     bytes.extend_from_slice(source);
     let recorded = match reservation {
-        Some(reservation) => { let mut copy = reservation; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(original_name_error),
+        Some(reservation) => { let copy = reservation; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(original_name_error),
         None => work.record(delta),
     };
     if let Err(error) = recorded {

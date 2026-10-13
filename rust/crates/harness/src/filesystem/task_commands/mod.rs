@@ -313,7 +313,7 @@ where
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(self.execute_observed(
-            WorkerContext::Ordinary(context),
+            WorkerContext::Ordinary(Arc::new(context)),
             fence,
             command,
             payload,
@@ -330,7 +330,7 @@ where
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(self.execute_observed(
-            WorkerContext::Ordinary(context),
+            WorkerContext::Ordinary(Arc::new(context)),
             fence,
             command,
             payload,

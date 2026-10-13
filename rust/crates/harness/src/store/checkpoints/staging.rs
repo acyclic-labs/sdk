@@ -1,5 +1,4 @@
 use super::*;
-use crate::wire_codec::CodecQuota;
 
 /// Stages one immutable record using the caller's retained encoder buffer.
 pub(in crate::store) async fn stage_immutable<P: StreamProvider>(
@@ -9,15 +8,14 @@ pub(in crate::store) async fn stage_immutable<P: StreamProvider>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     let (path, path_owned) = stream;
-    let converted =
-        encoded.and_then(|bytes| operations::owned_bytes_from_retained_vec(bytes, work));
-    let (bytes, owned) = match converted {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            drop(path);
-            return operations::release_owned_after_drop(Err(error), path_owned, work);
-        }
-    };
+    let (bytes, owned) =
+        match encoded.and_then(|bytes| operations::owned_bytes_from_retained_vec(bytes, work)) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(path);
+                return operations::release_owned_after_drop(Err(error), path_owned, work);
+            }
+        };
     let mut quota = CodecQuota::from_retained(work, owned + path_owned);
     let result = async {
         if let Some(io) = quota.work().as_deref_mut() {
@@ -127,9 +125,6 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
         let bytes = operations::release_owned_after_drop(encoded, snapshot_owned, work)?;
         let mut quota = CodecQuota::from_retained(work, bytes.capacity() as u64);
         let staged = async {
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.hashed_bytes(bytes.len() as u64)?;
-            }
             let mut chunks = crate::core::reserve_copy_vector(
                 bytes.len().div_ceil(acyclic_stream::MAX_RECORD_BYTES),
                 &mut quota,
@@ -138,14 +133,10 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
                 if let Some(io) = quota.work().as_deref_mut() {
                     io.hashed_bytes(chunk.len() as u64)?;
                 }
-                chunks.push(ProjectionChunk {
-                    digest: *blake3::hash(chunk).as_bytes(),
-                    bytes: chunk.len() as u32,
-                });
+                chunks.push(*blake3::hash(chunk).as_bytes());
             }
             let location = ProjectionLocation {
                 bytes: bytes.len() as u64,
-                digest: *blake3::hash(&bytes).as_bytes(),
                 chunks,
             };
             let manifest = crate::store::history::canonical_bytes_with_work(
@@ -165,7 +156,7 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
                 .iter()
                 .zip(bytes.chunks(acyclic_stream::MAX_RECORD_BYTES))
             {
-                let hash = blake3::Hash::from_bytes(descriptor.digest).to_hex();
+                let hash = blake3::Hash::from_bytes(*descriptor).to_hex();
                 let path = operations::publication_path(
                     reducer.authority(),
                     "harness/v3/projection-chunks/",

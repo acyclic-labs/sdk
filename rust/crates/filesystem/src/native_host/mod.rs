@@ -42,7 +42,6 @@ pub(crate) use open::*;
 mod mutation;
 pub(crate) use mutation::*;
 mod metadata;
-use metadata::*;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 mod macos_metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
@@ -64,7 +63,7 @@ pub(crate) use unix_stat::*;
 #[cfg(windows)]
 mod root_path;
 #[cfg(windows)]
-pub(crate) use root_path::*;
+use root_path::*;
 mod identity;
 pub(crate) use identity::*;
 #[cfg(all(windows, any(feature = "native-mount", test)))]

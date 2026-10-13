@@ -17,8 +17,8 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
             .into());
         }
         Ok(NativeRootIdentity {
-            device: stat.dev(),
-            object: stat.ino(),
+            device: (stat.raw.st_dev as u64),
+            object: (stat.raw.st_ino as u64),
         })
     }
     #[cfg(windows)]

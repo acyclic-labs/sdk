@@ -177,11 +177,11 @@ where
                         .await?,
                 )
             } else {
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation).await?)
+                WorkerContext::Ordinary(self.harness.durable_context(task, operation, None).await?)
             };
             #[cfg(target_arch = "wasm32")]
             let context =
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation).await?);
+                WorkerContext::Ordinary(self.harness.durable_context(task, operation, None).await?);
             for command in transition.commands.iter().take(maximum_commands as usize) {
                 self.owner_observed(task, &fence, true, io).await?;
                 #[cfg(not(target_arch = "wasm32"))]

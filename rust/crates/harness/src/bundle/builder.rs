@@ -182,7 +182,7 @@ impl HarnessBuilder {
 
     /// Binds immutable artifact storage independently of conversation files.
     #[must_use]
-    pub fn artifacts(mut self, value: crate::runtime::ArtifactBindings) -> Self {
+    pub fn artifacts(mut self, value: crate::runtime::ContentBindings) -> Self {
         self.bindings.artifacts = Some(value);
         self
     }
@@ -194,12 +194,7 @@ impl HarnessBuilder {
         self
     }
 
-    /// Binds parent-authorized project forks and inspected joins.
-    #[must_use]
-    pub fn workspaces(mut self, value: Arc<dyn crate::merge::ProjectWorkspaceProvider>) -> Self {
-        self.bindings.workspaces = Some(value);
-        self
-    }
+
 
     /// Sets the local live-task concurrency bound.
     #[must_use]
