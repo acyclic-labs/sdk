@@ -84,17 +84,16 @@ fn worker_key(
     operation: OperationId,
     fence: &crate::scheduler::LeaseFence,
     revision: u64,
-    work: &mut Option<&mut dyn crate::store::HistoryIo>,
 ) -> Result<IdempotencyKey> {
     let digest = crate::executor::json::canonical_json_digest(
         fence,
         acyclic_stream::MAX_RECORD_BYTES as u64,
-        work,
+        &mut None,
     )?;
-    IdempotencyKey::new(crate::executor::preparation_format(format_args!(
+    IdempotencyKey::new(format!(
         "task-worker:{kind}:{operation}:{}:{revision}",
         blake3::Hash::from_bytes(digest).to_hex()
-    ), work)?)
+    ))
 }
 
 /// Stream-backed admission and observation for one durable owner. More
@@ -110,71 +109,32 @@ pub struct CoordinatorTaskHost<P> {
     verifier: AuthorityVerifier,
     root_scope: RuntimeScope,
     tasks: TaskRegistry,
-    pub(crate) machines: MachineRegistry,
-    pub(crate) clock: Arc<dyn UnixMillisClock>,
+    machines: MachineRegistry,
+    clock: Arc<dyn UnixMillisClock>,
     policy: Option<Arc<dyn ToolPolicy>>,
     effects: Option<Arc<dyn DurableEffectObserver>>,
     session_limits: Option<crate::scheduler::SessionLimits>,
-    creation_providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) native_custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-/// Immutable volume selection authenticated by an allocation receipt.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct TaskVolumeSnapshot {
-    /// Authenticated volume identity.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
-    pub volume: crate::conversation::VolumeRef,
-    /// Original allocation generation.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
-    pub generation: crate::resources::GenerationRef,
-}
-
-/// Canonical root binding and its single publication choice.
-#[cfg(feature = "filesystem")]
-pub struct RootBootstrapBindingWitness {
-    proof: std::sync::OnceLock<(crate::store::VerifiedRootBinding, crate::NativeCustody)>,
-    gate: Mutex<()>,
-    pending: std::sync::OnceLock<(OperationId, [u8; 32], [u8; 32])>,
 }
 
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
 /// Journal constructors use this binding to atomically fence their publications.
 #[cfg(feature = "filesystem")]
 pub struct TaskJournalOwner<P> {
-    pub(crate) host: Arc<CoordinatorTaskHost<P>>,
+    host: Arc<CoordinatorTaskHost<P>>,
     fence: crate::scheduler::LeaseFence,
     workflow: crate::workflow::WorkflowAdmission,
-    workflow_output: Option<Value>,
-    root_binding: Option<Arc<RootBootstrapBindingWitness>>,
-    created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
-    pub(crate) admission: Arc<TaskAdmissionRecord>,
-    pub(crate) invocation_stop: Option<acyclic_fs::CancellationToken>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) native_custody: Option<acyclic_fs::NativeAllocation>,
+    admission: Arc<TaskAdmissionRecord>,
 }
 
 mod admission;
 mod batch;
 mod dispatch;
-mod deadline;
 mod host;
 mod journal;
 mod lifecycle;
 mod mail;
-pub(crate) use mail::received_copy_operation;
 mod timer;
 mod workflow;
-#[cfg(feature = "filesystem")]
-mod tool_workflow;
-#[cfg(feature = "filesystem")]
-mod root_binding;
 
 #[cfg(test)]
 pub(crate) mod tests;
-
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for TimerEvent {}

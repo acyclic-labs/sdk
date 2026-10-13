@@ -40,8 +40,10 @@ where
                     "native source has no original owner",
                 )
             })?;
-            owner.require_mail_scope(context.scope(), &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?;
-            if owner.task_binding() != binding
+            owner.require_mail_scope_with_native_work(context.scope(), work)?;
+            let (owner_task, owner_fence) = owner.task_binding();
+            if owner_task != binding.0
+                || owner_fence != binding.1
                 || owner.authenticated_binding_agent(&mut Some(
                     &mut crate::store::HistoryWork::new(
                         crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -59,7 +61,7 @@ where
             && !crate::executor::with_history_io(io, |work| {
                 Ok::<_, Error>(context.scope().current_created_content(work)?.is_some_and(
                     |binding| {
-                        binding.authority.as_ref() == Some(caller.owner.authority())
+                        binding.authority.as_ref() == Some(caller.owner.issuer.audience())
                             && binding.volume == caller.private_volume
                     },
                 ))
@@ -72,9 +74,9 @@ where
             ));
         }
         let verifier = crate::executor::with_history_io(io, |work| {
-            let verifier = caller.owner.issuer().verifier(work)?;
+            let verifier = caller.owner.issuer.verifier(work)?;
             verifier.verify_scope_for_with_work(
-                caller.owner.authority(),
+                caller.owner.issuer.audience(),
                 &caller.owner.scope,
                 work,
             )?;
@@ -83,36 +85,32 @@ where
         for volume in
             std::iter::once(&caller.private_volume).chain(project_read.then_some(&caller.project))
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io
-                .and_then(crate::filesystem::PreparationIo::original_native_work)
-                .is_some()
-            {
-                crate::executor::with_history_io(io, |work| {
-                    owner.expect("native source owner").require_volume_grant(
-                        volume,
-                        VolumeOperation::Read,
-                        work,
-                    )
-                })?;
-                continue;
-            }
-            let read = volume.capability(VolumeOperation::Read, &mut None)?;
-            if !context.scope().grants().contains(&read) {
+            let granted = match io {
+                Some(io) => {
+                    io.contains_capability(context.scope().grants(), volume, "volume:read:")?
+                }
+                None => context
+                    .scope()
+                    .grants()
+                    .contains(&volume.capability(VolumeOperation::Read, &mut None)?),
+            };
+            if !granted {
                 return Err(failure(
                     io,
                     ErrorCode::Unauthorized,
                     "configured caller lacks its selected source read",
                 ));
             }
-            ContentGrant::verify(
-                &verifier,
-                &caller.owner.scope,
-                volume,
-                VolumeOperation::Read,
-                u64::MAX,
-                &mut None,
-            )?;
+            crate::executor::with_history_io(io, |work| {
+                ContentGrant::authorize_volume(
+                    &verifier,
+                    &caller.owner.scope,
+                    volume,
+                    VolumeOperation::Read,
+                    u64::MAX,
+                    work,
+                )
+            })?;
         }
         let _ = owner;
         Ok(caller)
@@ -198,7 +196,7 @@ where
         let io = None;
         let verifier = if io.is_some() || content.is_none() {
             Some(crate::executor::with_history_io(io, |work| {
-                binding.issuer().verifier(work)
+                binding.issuer.verifier(work)
             })?)
         } else {
             None

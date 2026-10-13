@@ -23,47 +23,51 @@ where
                 "effect command provider registry is not selected",
             )
         })?;
-        let status = 'status: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
-                let work = io.original_native_work().ok_or(Error::NativeBoundary {
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = io
+            .map(|io| {
+                io.original_native_work().ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "effect command requires the original native work",
-                })?;
-                let owner = self
+                })
+            })
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let work = None;
+        let owner = 'owner: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = work {
+                break 'owner self
                     .runtime
                     .task_host()
                     .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
                     .await?;
-                let (status, custody) = if reconciliation_only {
-                    effects
-                        .reconcile_task_effect(&owner, command, &plan, Some(work))
-                        .await?
-                } else {
-                    effects
-                        .run_task_effect(&owner, command, &plan, Some(work))
-                        .await?
-                };
-                io.absorb_native_custody(custody.ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "native effect result has no original custody",
-                })?)?;
-                break 'status status;
             }
-            let owner = self
-                .runtime
+            self.runtime
                 .task_host()
-                .journal_owner(task, fence.clone(), None)
-                .await?;
-            let status = if reconciliation_only {
-                effects
-                    .reconcile_task_effect(&owner, command, &plan, None)
-                    .await.map(|result| result.0)?
-            } else {
-                effects.run_task_effect(&owner, command, &plan, None).await.map(|result| result.0)?
-            };
-            break 'status status;
+                .journal_owner(task, fence.clone())
+                .await?
         };
+        let (status, custody) = if reconciliation_only {
+            effects
+                .reconcile_task_effect(&owner, command, &plan, work)
+                .await?
+        } else {
+            effects
+                .run_task_effect(&owner, command, &plan, work)
+                .await?
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        match io {
+            Some(io) => io.absorb_native_custody(custody.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native effect result has no original custody",
+            })?)?,
+            None => drop(custody),
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = custody;
+        drop(owner);
         match status {
             crate::core::EffectStatus::Succeeded { result } => {
                 ready(Outcome::Succeeded(result), io)

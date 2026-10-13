@@ -1,28 +1,6 @@
 //! Main durable task operations.
 use super::*;
 
-pub(crate) fn received_copy_operation(
-    task: TaskId,
-    receive: OperationId,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<OperationId> {
-    #[cfg(feature = "filesystem")]
-    if io.is_some_and(|io| io.original_native_work().is_none()) {
-        return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported,
-            "mail observer requires its original native work"));
-    }
-    let domain = b"acyclic.harness.received-copy.v1\0";
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.history_io().hashed_bytes(domain.len() as u64 + 32)?; }
-    let mut hash = blake3::Hasher::new();
-    hash.update(domain);
-    hash.update(&task.into_bytes());
-    hash.update(&receive.into_bytes());
-    let mut id = [0; 16];
-    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    Ok(OperationId::from_bytes(id))
-}
-
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Publishes ref-only mail under the sender's exact uncancelled lease.
     #[cfg(feature = "filesystem")]
@@ -55,13 +33,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<Vec<u8>> {
         payload.validate(&mut None)?;
         let sender_admission = self
-            .admission(OperationId::from_bytes(sender.into_bytes()), None)
+            .admission(OperationId::from_bytes(sender.into_bytes()))
             .await?;
         if !sender_admission.grants.contains("mail:send") {
             return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
         }
         let recipient_admission = self
-            .admission(OperationId::from_bytes(recipient.into_bytes()), None)
+            .admission(OperationId::from_bytes(recipient.into_bytes()))
             .await?;
         sender_admission.limits.validate_file(&payload, &mut None)?;
         if !read_granted(&sender_admission.grants, &payload)? {
@@ -107,7 +85,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         loop {
             if let Some(fence) = fence {
-                self.verify_owner(sender, fence, false, &mut None).await?;
+                self.verify_owner(sender, fence, false).await?;
             }
             match intent.bounds().await {
                 Ok(bounds) => {

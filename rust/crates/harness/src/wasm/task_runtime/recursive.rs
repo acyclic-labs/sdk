@@ -376,17 +376,17 @@ impl WasmTaskRuntime {
         let binding = restore_recursive_fork_source(
             self.filesystem.clone(),
             &self.stream,
-            &original_owner.reducer,
-            original_owner
+            (original_owner.reducer, None),
+            &original_owner
                 .issuer
                 .verifier(&mut None)
                 .expect("verifier copy"),
-            signed,
-            source.project,
-            from_js(stream_provider)?,
+            &signed,
+            &source.project,
+            &from_js(stream_provider)?,
             request,
             history_limits,
-            source_read,
+            source_read.as_ref(),
             resolver,
             &cancellation,
         )

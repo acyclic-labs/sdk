@@ -228,19 +228,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let mut entries: Vec<crate::conversation::PrivateDirectoryEntry> = Vec::new();
         let mut cursor = None;
         loop {
-            let page = io.receive_content(
-                source
-                    .backing
-                    .list(
-                        snapshot,
-                        &absolute,
-                        cursor,
-                        128,
-                        io.remaining()?,
-                        io.cancellation(),
-                    )
-                    .await,
-            )?;
+            let (page, _page_allocation) = source.backing.list(snapshot, &absolute, cursor, 128, io)?.await?;
             for entry in page.entries {
                 let kind = match entry.kind {
                     acyclic_fs::demand::SourceNodeKind::RegularFile => {

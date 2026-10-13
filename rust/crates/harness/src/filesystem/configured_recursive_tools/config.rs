@@ -3,22 +3,9 @@ use super::*;
 /// Host-owned conversation credentials and its signed actor.
 #[derive(Clone)]
 pub struct ConfiguredRecursiveAuthorityBinding {
-    issuer: AuthorityIssuer,
+    /// Host-owned signing identity.
+    pub issuer: AuthorityIssuer,
     pub scope: Scope,
-}
-impl ConfiguredRecursiveAuthorityBinding {
-    /// Binds the configured signer and scope.
-    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Self {
-        Self { issuer, scope }
-    }
-    /// Returns the signing audience.
-    pub fn authority(&self) -> &Authority {
-        self.issuer.audience()
-    }
-    /// Returns the host-owned signer.
-    pub fn issuer(&self) -> &AuthorityIssuer {
-        &self.issuer
-    }
 }
 impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
     fn deserialize<D: serde::Deserializer<'de>>(
@@ -33,10 +20,10 @@ impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
             scope: Scope,
         }
         let binding = Binding::deserialize(deserializer)?;
-        Ok(Self::new(
-            AuthorityIssuer::new(binding.issuer, binding.key, binding.authority),
-            binding.scope,
-        ))
+        Ok(Self {
+            issuer: AuthorityIssuer::new(binding.issuer, binding.key, binding.authority),
+            scope: binding.scope,
+        })
     }
 }
 

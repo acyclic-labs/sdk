@@ -87,7 +87,7 @@ where
     /// Reads one exact immutable file under the CALLER's retained authority.
     pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         match &self.reader {
-            SourceReader::Caller(reader) => reader.read_file(file).await,
+            SourceReader::Caller(reader) => reader.read_file(file, None).await,
             SourceReader::Project(reader) => reader.read_file(file).await,
         }
     }

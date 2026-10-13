@@ -103,7 +103,7 @@ where
                         if !shared.as_ref().original_task_binding_matches(task, &fence) {
                             return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native reconciliation differs from original task binding"));
                         }
-                        let body = shared.as_ref().read_file_with_native_work(&command.payload, work).await?;
+                        let body = shared.as_ref().read_file(&command.payload, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
                         let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<serde_json::Value>, &body, crate::wire::ErrorCode::Storage)?);
                         drop(body);
                         commands.reconcile_with_native_work(
@@ -111,13 +111,13 @@ where
                             observed::clone_command(command, Some(io))?, payload, work,
                         )?.await?
                     } else {
-                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                             .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                         commands.reconcile(context.context().clone(), fence.clone(), command.clone(), payload).await?
                     };
                     #[cfg(target_arch = "wasm32")]
                     let progress = {
-                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                             .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                         commands.reconcile(context.context().clone(), fence.clone(), command.clone(), payload).await?
                     };

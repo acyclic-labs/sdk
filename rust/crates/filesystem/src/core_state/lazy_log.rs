@@ -12,7 +12,7 @@ impl LocalCoreStateStore {
             .transaction(move |root| {
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
-                    let current = log.get::<LazyWorkspaceState>(&root, id)?;
+                    let current = log.get::<LazyWorkspaceState>(&root, id, None)?;
                     if current.as_ref().map_or(0, |state| state.revision) != expected {
                         return Ok(false);
                     }
@@ -64,8 +64,11 @@ impl LocalCoreStateStore {
                         if prior_origin.is_none() {
                             // Authenticate only the first freeze while companion collection
                             // and source binding updates share this same log transaction.
-                            let Some(parent) =
-                                log.get::<LazyWorkspaceState>(&root, origin.snapshot.workspace_id)?
+                            let Some(parent) = log.get::<LazyWorkspaceState>(
+                                &root,
+                                origin.snapshot.workspace_id,
+                                None,
+                            )?
                             else {
                                 return Ok(false);
                             };

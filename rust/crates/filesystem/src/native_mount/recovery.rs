@@ -90,8 +90,6 @@ pub(super) struct NativeRecoveryMailbox {
     pub(super) command: Option<NativeRecoveryCommand>,
     pub(super) reply: Option<Result<bool, NativeMountError>>,
     pub(super) snapshot: Option<NativeMountRecoveryCleanupState>,
-    // Actual state DATA has dropped; this is not a std thread-join proof.
-    pub(super) state_retired: bool,
 }
 
 pub(super) struct NativeRecoveryShared {
@@ -167,7 +165,6 @@ impl NativeMountRecoveryOwner {
                 command: None,
                 reply: None,
                 snapshot: None,
-                state_retired: false,
             }),
             wake: std::sync::Condvar::new(),
             _custody: destination.1,
@@ -476,7 +473,6 @@ impl NativeRecoveryWorker {
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 mailbox.reply = Some(Err(error));
-                mailbox.state_retired = true;
                 self.shared.wake.notify_all();
                 return;
             }
@@ -542,7 +538,7 @@ impl NativeRecoveryWorker {
                         .mailbox
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    mailbox.state_retired = true;
+                    mailbox.snapshot = None;
                     self.shared.wake.notify_all();
                     return;
                 }
@@ -568,7 +564,7 @@ impl Drop for NativeMountRecoveryOwner {
                 .mailbox
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if !mailbox.state_retired {
+            if mailbox.snapshot.is_some() {
                 mailbox.command = Some(NativeRecoveryCommand::LastDrop);
                 self.shared.wake.notify_one();
             }

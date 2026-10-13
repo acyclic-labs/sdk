@@ -14,7 +14,11 @@ impl StockExecution<'_> {
         self.verify_task_context_binding(operation_id)?;
         stock_validate_invocation(&invocation, self.io)?;
         let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?;
-        stock_tool_support(tool, self.io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = self.native_work() {
+            tool.executor.supports_native_execution(work)?;
+            tool.projection.supports_native_projection(Some(work))?;
+        }
         let capability = with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!("tool:call:{}", tool.definition.name),
@@ -273,7 +277,7 @@ impl StockExecution<'_> {
                     stock_execute_tool(tool, &mut tool_context, &invocation, self.io).await;
                 match execution {
                     Ok(result) => result,
-                    Err(error) if stock_native_failure(&error) => return Err(error),
+                    Err(error) if error.is_native_failure() => return Err(error),
                     Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
@@ -298,7 +302,7 @@ impl StockExecution<'_> {
                     stock_reconcile_tool(tool, &mut tool_context, &invocation, self.io).await;
                 match reconciliation {
                     Ok(Some(result)) => result,
-                    Err(error) if stock_native_failure(&error) => return Err(error),
+                    Err(error) if error.is_native_failure() => return Err(error),
                     Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
@@ -327,7 +331,7 @@ impl StockExecution<'_> {
                     work,
                 )
             }) {
-                if stock_native_failure(&error) {
+                if error.is_native_failure() {
                     return Err(error);
                 }
                 self.record_tool_failure(
@@ -369,7 +373,7 @@ impl StockExecution<'_> {
             let result_ref = stage_json(journal, operation_id, &key, &result, self.io).await;
             let result_ref = match result_ref {
                 Ok(reference) => reference,
-                Err(error) if stock_native_failure(&error) => return Err(error),
+                Err(error) if error.is_native_failure() => return Err(error),
                 Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                     return Err(Error::Indeterminate(operation_id));
                 }
@@ -399,7 +403,7 @@ impl StockExecution<'_> {
                 stage_json(journal, operation_id, &key, &projection, self.io).await;
             let projection_ref = match projection_ref {
                 Ok(reference) => reference,
-                Err(error) if stock_native_failure(&error) => return Err(error),
+                Err(error) if error.is_native_failure() => return Err(error),
                 Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                     return Err(Error::Indeterminate(operation_id));
                 }

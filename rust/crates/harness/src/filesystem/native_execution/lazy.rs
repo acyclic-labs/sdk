@@ -41,7 +41,7 @@ pub(super) trait Backend: Send + Sync {
 struct Mount<P: StreamProvider, A, O, D, S> {
     mount: Arc<LazyMount<A, O, D, S>>,
     owner: Arc<TaskJournalOwner<P>>,
-    callback: Arc<dyn crate::runtime::NativeVolumePublicationGuard>,
+    callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
 }
 
 impl NativeExistingLazyVolume {
@@ -89,8 +89,7 @@ impl NativeExistingLazyVolume {
             }
             let io = PreparationIo::from_native_work(work)?;
             let callback = guard
-                .for_volume(owner, binding.volume, binding.writable, work)?
-                .1;
+                .for_volume(owner, binding.volume, binding.writable, work)?;
             let (path, path_custody) = work.path(mount.path(), None)?;
             io.absorb_native_custody(path_custody)?;
             let mapping = NativeVolumeMapping {
@@ -177,7 +176,7 @@ where
                     move |actual: &NativeMaterializationWork| {
                         let actual = actual.clone();
                         let callback = Arc::clone(&callback);
-                        async move { callback.check(&actual)?.await }
+                        async move { callback.check(&actual).map_err(Error::from)?.await.map_err(Error::from) }
                     },
                 )
                 .await)
@@ -209,7 +208,7 @@ where
                     }));
                 }
             };
-            if let Err(cause) = async { self.callback.check(work)?.await }.await {
+            if let Err(cause) = async { self.callback.check(work).map_err(Error::from)?.await.map_err(Error::from) }.await {
                 return Ok(Err(NativeMountPublicationFailure {
                     cause,
                     accounting_failure: None,
