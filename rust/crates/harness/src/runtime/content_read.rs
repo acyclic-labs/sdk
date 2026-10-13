@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::*;
 use crate::conversation::BoundedContentFuture;
 use crate::conversation::{ContentIo, content_error};
@@ -319,7 +320,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
-        let writer = self.bound_content_writer(self.content_binding(None), scope, io)?;
+        let writer = bound_content_writer(self.content_binding(None), scope, io)?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }

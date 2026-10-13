@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::{
     InteractionRouter, IssuedContextPurpose, Limits, RuntimeScope, TaskContext, ToolContext,
 };
@@ -137,7 +138,7 @@ impl TaskContext {
                     "output volume has no authenticated created writer",
                 )
             })?;
-        self.bound_content_writer(
+        bound_content_writer(
             Some(binding),
             &self.scope,
             Some(&crate::executor::PreparationIo::from_native_work(work)?),

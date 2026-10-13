@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
@@ -78,7 +79,7 @@ impl TaskContext {
         let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
             Error::Unauthorized("output volume has no admitted creation binding".into())
         })?;
-        self.bound_content_writer(Some(binding), &self.scope, None)?;
+        bound_content_writer(Some(binding), &self.scope, None)?;
         let mut context = self.as_ref().clone();
         context.output_content = Some(binding.clone());
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

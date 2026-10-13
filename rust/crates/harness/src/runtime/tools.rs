@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::*;
 
 /// An admission decision for one exact, schema-valid tool invocation.
@@ -420,7 +421,7 @@ impl ToolContext {
         if let Some(source) = source {
             task.authorize_file_read(source, self.effective_scope(), Some(&io))?;
         }
-        let writer = task.bound_content_writer(
+        let writer = bound_content_writer(
             task.content_binding(source.map(FileRef::volume)),
             self.effective_scope(),
             Some(&io),
