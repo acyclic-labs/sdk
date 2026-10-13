@@ -272,7 +272,7 @@ impl SharedPhysicalRoot {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(SharedRootObservation, NativeAllocation)> {
-        use native_root_source::{native_source_error, native_watch_error};
+        use native_root_source::native_watch_error;
 
         self.observe_transaction(
             || acyclic_harness::Error::NativeBoundary {
@@ -280,9 +280,6 @@ impl SharedPhysicalRoot {
                 reason: "physical root reference state is poisoned",
             },
             |prior_source, reference| {
-                self.source
-                    .validate_current(prior_source, &mut acyclic_fs::NativeMaterializationWork::clone(work))
-                    .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
                     acyclic_harness::Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Storage,

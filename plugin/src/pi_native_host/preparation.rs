@@ -112,7 +112,8 @@ impl PiNativeCommandHost {
                     None
                 };
                 let scratch_context = Arc::clone(&shared)
-                    .with_output_volume_with_native_work(&prepared.binding.scratch.volume, work)?;
+                    .with_output_volume(&prepared.binding.scratch.volume)
+                    .await?;
                 if handles.session.is_none() {
                     handles.session = Some(
                         intent
@@ -128,6 +129,7 @@ impl PiNativeCommandHost {
                             unauthorized("Pi session has no original publication custody")
                         })?
                         .0,
+                    work,
                 )?;
                 let mut conversation = self.protected.conversation_authority_with_native_work(
                     owner.task_id(),
@@ -136,7 +138,9 @@ impl PiNativeCommandHost {
                     work,
                 )?;
                 let mut verifier = {
-                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+                    let mut io = acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    );
                     let value = conversation.0.1.verifier(&mut Some(&mut io))?;
                     (value, io.into_custody()?)
                 };
@@ -159,6 +163,7 @@ impl PiNativeCommandHost {
                 )?;
                 let scratch_generation = GenerationId::new(Digest::from_bytes(
                     generation
+                        .0
                         .as_resource()
                         .key()
                         .try_into()
@@ -174,7 +179,6 @@ impl PiNativeCommandHost {
                         command.operation_id,
                         work,
                         cancellation,
-                        &entry.cleanup_cancellation,
                         existing_only,
                     )
                     .await?;
@@ -189,7 +193,7 @@ impl PiNativeCommandHost {
                 let scratch_binding = BorrowedNativeVolumeBinding {
                     host: &self.filesystem,
                     volume: &prepared.binding.scratch.volume,
-                    generation: &generation,
+                    generation: &generation.0,
                     path: "scratch",
                     writable: true,
                     verifier: &authority.0,
@@ -254,18 +258,16 @@ impl PiNativeCommandHost {
                     .iter()
                     .next()
                     .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
-                let project_generation = GenerationRef::new_with_native_work(
+                let project_generation = GenerationRef::new(
                     project.provider(),
-                    prepared
-                        .native_lazy
-                        .authored_generation
-                        .digest()
-                        .into_bytes(),
+                    prepared.native_lazy.authored_generation.digest().as_bytes(),
                     None,
-                    work,
+                    Some(work),
                 )?;
                 let write_capability = {
-                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+                    let mut io = acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    );
                     let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
                     (value, io.into_custody()?)
                 };
@@ -280,7 +282,6 @@ impl PiNativeCommandHost {
                         command.operation_id,
                         work,
                         cancellation,
-                        &entry.cleanup_cancellation,
                         existing_only,
                     )
                     .await?;
@@ -289,7 +290,6 @@ impl PiNativeCommandHost {
                         root,
                         project: retained_mount,
                         project_allocation,
-                        project_startup_owner,
                         project_work,
                         ..
                     } = &mut *handles;
@@ -302,14 +302,11 @@ impl PiNativeCommandHost {
                         &prepared.binding,
                         root_key,
                         &prepared.workspace,
-                        self.filesystem.clone(),
                         &project_generation.0,
                         &authority,
-                        project_permit,
                         writable,
                         retained_mount,
                         project_allocation,
-                        project_startup_owner,
                         project_work
                             .as_ref()
                             .ok_or(Error::Indeterminate(command.operation_id))?,
@@ -345,16 +342,12 @@ impl PiNativeCommandHost {
                         namespace: &project_capture.0.namespace,
                     },
                 ];
-                let scratch_guard = shared
-                    .volume_callback_guard(&owner, work)
-                    .await?;
-                let guards = [scratch_guard, project_capture.2];
-                let existing_lazy = [None, Some(&project_capture.1)];
+                let guards = [shared.clone(), shared.clone()];
                 handles
                     .root
                     .as_mut()
                     .ok_or(Error::Indeterminate(command.operation_id))?
-                    .prepare(&owner, &options.0, &bindings, &guards, &existing_lazy, work)
+                    .prepare(&owner, &options.0, &bindings, &guards, work)
                     .await?;
             }
             Arc::clone(
@@ -387,8 +380,9 @@ impl PiNativeCommandHost {
             .as_ref()
             .ok_or_else(|| unauthorized("Pi result selection vanished"))?
             .volume;
-        let result_context =
-            Arc::clone(&shared).with_output_volume_with_native_work(result_volume, work)?;
+        let result_context = Arc::clone(&shared)
+            .with_output_volume(result_volume)
+            .await?;
         let request = intent.request_with_work(
             self.protected.native_runtime()?,
             &prepared.binding,
