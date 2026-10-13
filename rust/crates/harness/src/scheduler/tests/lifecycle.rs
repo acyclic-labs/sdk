@@ -20,7 +20,7 @@ fn exhausted_child_revision_rejects_cancellation_atomically() -> Result<()> {
 }
 
 #[test]
-fn cancellation_retains_owned_capacity_until_fenced_acknowledgement() -> Result<()> {
+fn cancellation_releases_undispatched_capacity_and_retains_partial_claims() -> Result<()> {
     for recursive in [false, true] {
         for partial in [false, true] {
             let mut scheduler = Scheduler::new();
@@ -59,6 +59,19 @@ fn cancellation_retains_owned_capacity_until_fenced_acknowledgement() -> Result<
                 &mut None,
             )?;
             let state = scheduler.operation(target).unwrap();
+            if !partial {
+                assert_eq!(state.phase, OperationPhase::Terminal);
+                assert_eq!(state.outcome, Some(Outcome::Cancelled));
+                assert!(state.reservation.is_none());
+                rejected(
+                    &mut scheduler,
+                    &SchedulerEvent::Started {
+                        operation_id: target,
+                        fence: held,
+                    },
+                );
+                continue;
+            }
             assert_eq!(state.reservation.as_ref(), Some(&reservation));
             assert!(state.cancellation_requested);
             for event in [
@@ -74,18 +87,9 @@ fn cancellation_retains_owned_capacity_until_fenced_acknowledgement() -> Result<
                 rejected(&mut scheduler, &event);
             }
             assert!(complete(&mut scheduler, target, Outcome::Cancelled, None).is_err());
-            let acknowledgement = if partial {
-                SchedulerEvent::LeaseReleased {
-                    operation_id: target,
-                    fence: held,
-                }
-            } else {
-                SchedulerEvent::Completed {
-                    operation_id: target,
-                    outcome: Outcome::Cancelled,
-                    fence: Some(held),
-                    execution_duration_ns: None,
-                }
+            let acknowledgement = SchedulerEvent::LeaseReleased {
+                operation_id: target,
+                fence: held,
             };
             scheduler.apply(&acknowledgement, &mut None)?;
             let state = scheduler.operation(target).unwrap();
