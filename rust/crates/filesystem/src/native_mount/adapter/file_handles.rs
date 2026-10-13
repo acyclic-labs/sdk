@@ -106,18 +106,10 @@ where
         let cancellation = carrier.cancellation();
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let bytes = std::mem::size_of::<CheckoutAttachedFile<A, O>>() as u64;
-        let allocation = if let Some(work) = carrier.original_native_work() {
-            Some(
-                work.claim(bytes, 1, crate::WorkCounters::UNCHARGED)
-                    .map_err(MountSourceError::NativeWork)?,
-            )
-        } else {
-            carrier
-                .with_work(|work| work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED))
-                .map_err(super::super::lazy::mount_demand_error)?;
-            None
-        };
-        let retained = if allocation.is_some() { 0 } else { bytes };
+        let work = carrier.original_native_work().expect("native SDK callback");
+        let allocation = work
+            .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
+            .map_err(MountSourceError::NativeWork)?;
         let attached: Arc<dyn MountOpenFile> = Arc::new(CheckoutAttachedFile {
             checkout: Arc::clone(&self.checkout),
             file_id,
@@ -125,19 +117,14 @@ where
             cancellation: self.cancellation.clone(),
             profile: self.profile,
             limits: self.limits,
-            _native_allocation: allocation,
+            _native_allocation: Some(allocation),
             native_callback_guard: self.native_callback_guard.clone(),
         });
         if let Err(error) = carrier.check(&cancellation, Some(&self.cancellation)) {
             drop(attached);
-            if retained != 0 {
-                carrier
-                    .with_work(|work| work.release(retained))
-                    .map_err(super::super::lazy::mount_demand_error)?;
-            }
             return Err(error);
         }
-        Ok((attached, retained))
+        Ok((attached, 0))
     }
 
     pub(super) fn detached_handle(
