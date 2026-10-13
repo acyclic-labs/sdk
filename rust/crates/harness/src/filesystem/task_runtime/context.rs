@@ -40,14 +40,14 @@ where
         let Some(claim) = claim else {
             return Ok(None);
         };
-        let (owner, request) = self
+        let (owner, request, custody) = self
             .host
             .readonly_fork_journal_owner_with_native_work(&witness, query, claim, work)?
             .await?;
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        io.absorb_native_custody(request.1)?;
+        io.absorb_native_custody(custody)?;
         let mut preparation = owner
-            .resource_preparation(request.0, &mut Some(&mut io.history_io()))
+            .resource_preparation(request, &mut Some(&mut io.history_io()))
             .await?;
         preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
         let mut header = work.claim(

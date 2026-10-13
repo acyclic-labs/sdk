@@ -209,7 +209,9 @@ pub(super) fn symbolic_link_digest(data: &[u8]) -> Option<u64> {
     };
     Some(link_digest(
         std::iter::repeat_n(u16::from(b'\\'), slashes).chain(
-            name.chunks_exact(2)
+            name.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])),
         ),
     ))

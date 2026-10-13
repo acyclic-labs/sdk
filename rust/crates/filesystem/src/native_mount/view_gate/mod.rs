@@ -172,35 +172,6 @@ impl ViewGate {
         }
     }
 
-    pub(super) fn reads_for_callback_measured(
-        self: &Arc<Self>,
-        owner: CallbackOwner,
-        admissions: &mut ViewGateReadAdmissions,
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut crate::WorkCounters,
-        budget: crate::WorkBudget,
-    ) -> Result<bool, MountSourceError> {
-        let entry = admissions.entry_mut(self, allocations, work, budget)?;
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        reconcile_reader_registry(entry, self, allocations)?;
-        for slot in &state.reader_slots {
-            work.charge(
-                &crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::default()
-                },
-                &budget,
-            )
-            .map_err(MountSourceError::Work)?;
-            if matches!(slot, Some(ReadSlot::Owner { owner: current, readers })
-                if *current == ViewReaderId::Callback(owner) && *readers != 0)
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     pub(super) fn try_read_for_callback_measured(
         self: &Arc<Self>,
         owner: CallbackOwner,
@@ -331,7 +302,7 @@ impl ViewGate {
             .map_err(MountSourceError::Work)?;
             match slot {
                 Some(ReadSlot::Owner { owner: current, .. }) if *current == owner => {
-                    owner_slot = Some(index)
+                    owner_slot = Some(index);
                 }
                 None if first_free.is_none() => first_free = Some(index),
                 None if second_free.is_none() => second_free = Some(index),
@@ -455,24 +426,23 @@ impl ViewGate {
                 ReadSlot::Owner { owner, readers: 0 },
             )
         });
-        let cleanup_slot = match entry.slot {
-            Some(index) => index,
-            None => {
-                let index = insert_reader_slot(
-                    &mut state,
-                    &mut first_free,
-                    &mut second_free,
-                    ReadSlot::Meter {
-                        readers: 0,
-                        finished: 0,
-                        proof_alive: true,
-                        payload_active: 0,
-                        payload_finished: 0,
-                    },
-                );
-                entry.slot = Some(index);
-                index
-            }
+        let cleanup_slot = if let Some(index) = entry.slot {
+            index
+        } else {
+            let index = insert_reader_slot(
+                &mut state,
+                &mut first_free,
+                &mut second_free,
+                ReadSlot::Meter {
+                    readers: 0,
+                    finished: 0,
+                    proof_alive: true,
+                    payload_active: 0,
+                    payload_finished: 0,
+                },
+            );
+            entry.slot = Some(index);
+            index
         };
         if let Some(ReadSlot::Owner { readers, .. }) = &mut state.reader_slots[owner_slot] {
             *readers = owner_readers;

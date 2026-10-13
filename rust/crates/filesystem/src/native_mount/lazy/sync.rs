@@ -44,10 +44,10 @@ where
                 .lock()
                 .map_err(|_| MountSourceError::Stale)?
                 .publication;
-            if let (Some((operation, proof)), Some((_, _, requested))) = (remembered, selected) {
-                if operation != requested || proof != selected_proof {
-                    return Err(MountSourceError::Stale.into());
-                }
+            if let (Some((operation, proof)), Some((_, _, requested))) = (remembered, selected)
+                && (operation != requested || proof != selected_proof)
+            {
+                return Err(MountSourceError::Stale.into());
             }
             let retained = {
                 let mut checkout = adapter::await_lock(
@@ -108,7 +108,11 @@ where
                             .map_err(lazy_error)?,
                     )
                 };
-                *acknowledged = Some(crate::NativePublicationSnapshot { context, operation: Some(operation), generation });
+                *acknowledged = Some(crate::NativePublicationSnapshot {
+                    context,
+                    operation: Some(operation),
+                    generation,
+                });
                 if retained == Some(operation) {
                     self.authored
                         .shared_checkout()
@@ -158,7 +162,11 @@ where
                     self.finish_detached_publication(work)?;
                     self.clear_mount_removals()?;
                 }
-                return Ok(crate::NativePublicationSnapshot { context, operation: Some(operation), generation });
+                return Ok(crate::NativePublicationSnapshot {
+                    context,
+                    operation: Some(operation),
+                    generation,
+                });
             }
             if let Some(operation) = operation {
                 if retained == Some(operation) {
