@@ -160,7 +160,7 @@ pub(super) fn publish_restore(
         Err(crate::demand::DemandError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>
         {
-            { #[cfg(unix)] { crate::native_host::rename_held(&(stage_parent).directory, name, &(destination_parent).directory, name, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(name, work, |name, work| crate::native_host::with_wide_path(name, work, |target, work| crate::native_host::rename_held(&(stage_parent).directory, name, &(destination_parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
+            { #[cfg(unix)] { crate::native_host::rename_held(&(stage_parent).directory, name, &(destination_parent).directory, name, acyclic_native_runtime::RenameMode::Replace, None, work) } #[cfg(windows)] { crate::native_host::with_wide_path(name, work, |source_name, work| crate::native_host::with_wide_path(name, work, |target, work| crate::native_host::rename_held(&(stage_parent).directory, source_name, &(destination_parent).directory, target, acyclic_native_runtime::RenameMode::Replace, None, work))) } }
                 .map_err(restore_demand_error)?;
             crate::native_host::sync_directory_held(&destination_parent.directory, work)
                 .map_err(restore_demand_error)?;
