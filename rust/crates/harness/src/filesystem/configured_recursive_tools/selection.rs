@@ -39,12 +39,10 @@ where
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let reference_io: Option<PreparationIo> = None;
-        let references = BoundedContentFuture::new(reference_io.as_ref(), || {
-            source
-                .preparer
-                .required_reference_grants(&source.request, reference_io.as_ref())
-        })?
-        .await?;
+        let references = source
+            .preparer
+            .required_reference_grants(&source.request, reference_io.as_ref())
+            .await?;
         let mut grants = std::mem::take(&mut child.grants).0;
         let mut scoped = BTreeSet::new();
         let append = |values: &mut BTreeSet<String>, grant: &str| -> Result<()> {
@@ -132,15 +130,15 @@ where
         crate::executor::with_history_io(io, |work| child.validate(work))?;
         Ok((child, scope))
     }
-    pub(super) async fn select_source(
+    pub(in crate::filesystem) async fn select(
         &self,
         context: &ToolContext,
         arguments: &ForkToolArguments,
         cancellation: &CancellationToken,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<RecursiveForkSourceIntent> {
+        native_io(io)?;
         use crate::executor::stock_boundary as failure;
-        use crate::filesystem::fork_preparer_io;
         use crate::wire::ErrorCode;
         let caller = self
             .authenticate(
@@ -193,11 +191,21 @@ where
                 .await?;
             Some(
                 owner
-                    .authorize_project_source(context.task(), issuer, provider.as_ref(), selected, context.operation_id(), &(ProjectSourceSnapshot {
+                    .authorize_project_source(
+                        context.task(),
+                        issuer,
+                        provider.as_ref(),
+                        selected,
+                        context.operation_id(),
+                        &(ProjectSourceSnapshot {
                             project: chosen.project.clone(),
                             generation,
                             native_snapshot: chosen.native_snapshot.clone(),
-                        }), allocation.limits.work, allocation.limits.bytes, None)
+                        }),
+                        allocation.limits.work,
+                        allocation.limits.bytes,
+                        None,
+                    )
                     .await?,
             )
         } else {

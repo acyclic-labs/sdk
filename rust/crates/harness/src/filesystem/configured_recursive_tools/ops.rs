@@ -54,20 +54,11 @@ where
     ) -> Result<RetainedSourceBinding<A, O>> {
         let owner = self.source_owner(context.task(), cancellation, io).await?;
         let selected = match &request.authorized_source {
-            Some(authorization) => {
-                let selected = 'selection: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                        let handle = owner
-                            .restore_project_source_authorization(context.task(), authorization, io).await?;
-                        break 'selection handle;
-                    }
-                    owner
-                        .restore_project_source_authorization(context.task(), authorization, None)
-                        .await?
-                };
-                Some(selected)
-            }
+            Some(authorization) => Some(
+                owner
+                    .restore_project_source_authorization(context.task(), authorization, io)
+                    .await?,
+            ),
             None => None,
         };
         let verifier =

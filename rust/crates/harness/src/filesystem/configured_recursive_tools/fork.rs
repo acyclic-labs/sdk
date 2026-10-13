@@ -1,6 +1,6 @@
 use super::*;
 use crate::executor::stock_boundary;
-use crate::filesystem::{PreparationIo, fork_preparer_io};
+use crate::filesystem::PreparationIo;
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -9,7 +9,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn fork_binding(
+    pub(in crate::filesystem) async fn fork(
         &self,
         context: &ToolContext,
         arguments: &ForkToolArguments,
@@ -18,6 +18,7 @@ where
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<RecursiveForkToolBinding<P, A, O>> {
+        native_io(io)?;
         let caller = self
             .authenticate(
                 context,

@@ -90,13 +90,7 @@ where
                 )
                 .await
             }
-            MAIL_SEND_TASK_COMMAND_KIND if reconciliation_only => {
-                self.reconcile_mail(task, &fence, &command, payload, io)
-                    .await
-            }
-            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND
-                if !reconciliation_only =>
-            {
+            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND => {
                 self.mail_command(
                     task,
                     &fence,
@@ -104,6 +98,7 @@ where
                     payload,
                     io,
                     admission.task.name == "acyclic.stock_turn",
+                    reconciliation_only,
                 )
                 .await
             }
@@ -151,12 +146,16 @@ where
 
             TIMER_TASK_COMMAND_KIND if !reconciliation_only => {
                 let input: TimerTaskCommand = mail::decode_command(payload, io)?;
-                let fence =
-                    crate::executor::with_history_io(io, |work| fence.clone_with_work(work))?;
                 let elapsed = self
                     .runtime
                     .task_host()
-                    .poll_timer(task, fence, command.operation_id, input.deadline_unix_ms)
+                    .poll_timer(
+                        task,
+                        &fence,
+                        command.operation_id,
+                        input.deadline_unix_ms,
+                        io,
+                    )
                     .await?;
                 if elapsed {
                     ready(Outcome::Succeeded(Value::Null), io)
@@ -164,25 +163,14 @@ where
                     Ok(TaskCommandProgress::Pending)
                 }
             }
-            TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND
-                if reconciliation_only =>
-            {
+            TIMER_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND if reconciliation_only => {
                 mail::reconciled(io)
             }
-            _ => Err(if io.is_some() {
-                boundary(
-                    io,
-                    ErrorCode::Unsupported,
-                    "stock command kind is not bound",
-                )
-            } else if reconciliation_only {
-                Error::Unsupported(format!(
-                    "stock command kind {} has no effect reconciliation",
-                    command.kind
-                ))
-            } else {
-                Error::Unsupported(format!("stock command kind {} is not bound", command.kind))
-            }),
+            _ => Err(boundary(
+                io,
+                ErrorCode::Unsupported,
+                "stock command kind is not bound",
+            )),
         };
         #[cfg(not(target_arch = "wasm32"))]
         let progress = match progress {
@@ -219,9 +207,17 @@ where
                     ));
                 }
                 let input: TimerTaskCommand = mail::decode_command(payload, io)?;
+                let mut history = io.map(crate::filesystem::PreparationIo::history_io);
                 self.runtime
                     .task_host()
-                    .timer_ready(task, command.operation_id, input.deadline_unix_ms)
+                    .timer_ready(
+                        task,
+                        command.operation_id,
+                        input.deadline_unix_ms,
+                        &mut history
+                            .as_mut()
+                            .map(|work| work as &mut dyn crate::store::HistoryIo),
+                    )
                     .await
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
@@ -230,18 +226,10 @@ where
             }
             TASK_OBSERVE_COMMAND_KIND => {
                 let input: TaskObserveCommand = mail::decode_command(payload, io)?;
-                let child = TaskId::from_bytes(
-                    child_operation(task, input.admission_operation, io)?.into_bytes(),
-                );
-                if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
-                    return Err(crate::filesystem::task_runtime::observed::boundary(
-                        io,
-                        crate::wire::ErrorCode::Unauthorized,
-                        "wait is not for a direct child",
-                    ));
-                }
-                Ok(matches!(self.runtime.outcome_observed(child, io).await?,
-                    Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })))
+                Ok(
+                    matches!(self.observe_child(task, input.admission_operation, io).await?,
+                    Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })),
+                )
             }
             TOOL_TASK_COMMAND_KIND => {
                 let input: ToolTaskCommand = mail::decode_command(payload, io)?;
