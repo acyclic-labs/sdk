@@ -436,154 +436,41 @@ pub(super) fn clone_borrowed_authored_descriptor(
             bytes = total;
             Ok(path.value)
         };
-        Ok::<_, FsError>(match authored {
-            Reidentify { path, file_id } => Reidentify {
-                path: copy_path(path)?,
-                file_id: *file_id,
-            },
-            CreateFile {
-                path,
-                bytes,
-                metadata,
-            } => CreateFile {
-                path: copy_path(path)?,
-                bytes: bytes.clone(),
-                metadata: *metadata,
-            },
-            CreateFileFromContent {
-                path,
-                content,
-                metadata,
-                file_id,
-            } => CreateFileFromContent {
-                path: copy_path(path)?,
-                content: *content,
-                metadata: *metadata,
-                file_id: *file_id,
-            },
-            CreateDirectory { path, metadata } => CreateDirectory {
-                path: copy_path(path)?,
-                metadata: *metadata,
-            },
-            CreateSymbolicLink {
-                path,
-                target,
-                metadata,
-            } => CreateSymbolicLink {
-                path: copy_path(path)?,
-                target: target.clone(),
-                metadata: *metadata,
-            },
-            CreateEmptySpecial {
-                path,
-                kind,
-                metadata,
-            } => CreateEmptySpecial {
-                path: copy_path(path)?,
-                kind: *kind,
-                metadata: *metadata,
-            },
-            CreateDevice {
-                path,
-                kind,
-                major,
-                minor,
-                metadata,
-            } => CreateDevice {
-                path: copy_path(path)?,
-                kind: *kind,
-                major: *major,
-                minor: *minor,
-                metadata: *metadata,
-            },
-            CreateReparsePoint {
-                path,
-                payload,
-                metadata,
-            } => CreateReparsePoint {
-                path: copy_path(path)?,
-                payload: payload.clone(),
-                metadata: *metadata,
-            },
-            Remove {
-                path,
-                expected_file_id,
-            } => Remove {
-                path: copy_path(path)?,
-                expected_file_id: *expected_file_id,
-            },
-            Rename {
-                source,
-                destination,
-                replace,
-            } => Rename {
-                source: copy_path(source)?,
-                destination: copy_path(destination)?,
-                replace: *replace,
-            },
-            HardLink {
-                source,
-                destination,
-            } => HardLink {
-                source: copy_path(source)?,
-                destination: copy_path(destination)?,
-            },
-            Write {
-                path,
-                offset,
-                bytes,
-            } => Write {
-                path: copy_path(path)?,
-                offset: *offset,
-                bytes: bytes.clone(),
-            },
-            WriteFromContent {
-                path,
-                offset,
-                content,
-            } => WriteFromContent {
-                path: copy_path(path)?,
-                offset: *offset,
-                content: *content,
-            },
-            SetMetadata { path, metadata } => SetMetadata {
-                path: copy_path(path)?,
-                metadata: *metadata,
-            },
-            Resize {
-                path,
-                logical_bytes,
-            } => Resize {
-                path: copy_path(path)?,
-                logical_bytes: *logical_bytes,
-            },
-            ZeroRange {
-                path,
-                range,
-                allocated,
-                extend,
-            } => ZeroRange {
-                path: copy_path(path)?,
-                range: *range,
-                allocated: *allocated,
-                extend: *extend,
-            },
-            Preallocate {
-                path,
-                range,
-                keep_size,
-            } => Preallocate {
-                path: copy_path(path)?,
-                range: *range,
-                keep_size: *keep_size,
-            },
-            CloneRange(request) => CloneRange(FileCloneRequest {
-                source: copy_path(&request.source)?,
-                source_offset: request.source_offset,
-                destination: copy_path(&request.destination)?,
-                destination_offset: request.destination_offset,
-                length: request.length,
-            }),
+        macro_rules! copy_descriptor {
+            ($($variant:ident { $($path:ident),*; $($field:ident),* }),* $(,)?) => {
+                match authored {
+                    $($variant { $($path,)* $($field,)* } => $variant {
+                        $($path: copy_path($path)?,)*
+                        $($field: $field.clone(),)*
+                    },)*
+                    CloneRange(request) => CloneRange(FileCloneRequest {
+                        source: copy_path(&request.source)?,
+                        destination: copy_path(&request.destination)?,
+                        source_offset: request.source_offset,
+                        destination_offset: request.destination_offset,
+                        length: request.length,
+                    }),
+                }
+            };
+        }
+        Ok::<_, FsError>(copy_descriptor! {
+            Reidentify { path; file_id },
+            CreateFile { path; bytes, metadata },
+            CreateFileFromContent { path; content, metadata, file_id },
+            CreateDirectory { path; metadata },
+            CreateSymbolicLink { path; target, metadata },
+            CreateEmptySpecial { path; kind, metadata },
+            CreateDevice { path; kind, major, minor, metadata },
+            CreateReparsePoint { path; payload, metadata },
+            Remove { path; expected_file_id },
+            Rename { source, destination; replace },
+            HardLink { source, destination; },
+            Write { path; offset, bytes },
+            WriteFromContent { path; offset, content },
+            SetMetadata { path; metadata },
+            Resize { path; logical_bytes },
+            ZeroRange { path; range, allocated, extend },
+            Preallocate { path; range, keep_size },
         })
     })();
     match result {
