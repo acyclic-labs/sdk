@@ -5,7 +5,7 @@ use acyclic_fs::{
     MaterializationPhase, MaterializationPlan, WorkCounters,
 };
 
-pub(super) async fn verify_binding<P: StreamProvider + 'static, A, O>(
+async fn verify_binding<P: StreamProvider + 'static, A, O>(
     owner: &TaskJournalOwner<P>,
     binding: &BorrowedNativeVolumeBinding<'_, A, O>,
     guard: &crate::runtime::NativeVolumeCallbackGuard<P>,
@@ -33,14 +33,13 @@ pub(super) async fn verify_binding<P: StreamProvider + 'static, A, O>(
 impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send + Sync + 'static>
     NativeVolumeView<A, O>
 {
-    /// Prepares exact authorized volumes through the existing protected materializer.
+    /// Prepares exact materialized generations through the protected SDK journal.
     pub fn prepare<'a, P: StreamProvider + 'static>(
         owner: &'a Arc<TaskJournalOwner<P>>,
         guards: &'a [crate::runtime::NativeVolumeCallbackGuard<P>],
         allocation: &'a NativePreparationRoot,
         options: &'a NativeViewOptions,
         bindings: &'a [BorrowedNativeVolumeBinding<'a, A, O>],
-        existing: &'a [Option<&'a Arc<NativeExistingLazyVolume>>],
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, Self>> {
         crate::NativeFutureBundle::new(work, || async move {
@@ -50,7 +49,6 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 || bindings.is_empty()
                 || bindings.len() > options.maximum_volumes as usize
                 || bindings.len() != guards.len()
-                || bindings.len() != existing.len()
             {
                 return Err(invalid());
             }
@@ -60,8 +58,13 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             let mut generations = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             let mut selected = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
             let mut edits = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
-            let mut preserved = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             for (index, (binding, guard)) in bindings.iter().zip(guards).enumerate() {
+                if binding.namespace != &NativeVolumeNamespace::MaterializedDirectory {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native commands require materialized directory selections",
+                    });
+                }
                 if binding.path.is_empty()
                     || binding.path.contains(['\\', '\0'])
                     || binding
@@ -85,15 +88,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         return Err(invalid());
                     }
                 }
-                let volume_work = match existing[index] {
-                    Some(lazy) => lazy.custody.work().clone(),
-                    None => work.native_volume_work(options.work_per_volume)?,
-                };
-                if !volume_work.shares_ledger(work)
-                    || volume_work.budget() != options.work_per_volume
-                {
-                    return Err(invalid());
-                }
+                let volume_work = work.native_volume_work(options.work_per_volume)?;
                 verify_binding(owner, binding, guard, &volume_work).await?;
                 let volume_io = PreparationIo::from_native_work(&volume_work)?;
                 let reference = crate::filesystem::fork_preparer_io::content_workspace(
@@ -122,51 +117,38 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 }
                 let (path, custody) = work.path(&options.root, Some(path))?;
                 io.absorb_native_custody(custody)?;
-                let mapping = NativeVolumeMapping {
+                mappings.push(NativeVolumeMapping {
                     volume: binding.volume.copy(&mut Some(&mut io.history_io()))?,
                     generation: binding.generation.clone_with_io(&io)?,
+                    namespace: NativeVolumeNamespace::MaterializedDirectory,
                     path,
                     writable: binding.writable,
-                    namespace: binding.namespace.clone(),
                     authority_revision: crate::executor::json::canonical_json_digest(
                         &(binding.verifier.audience(), binding.scope),
                         owner.input_limits().file_bytes,
                         &mut Some(&mut io.history_io()),
                     )?,
-                };
-                match (binding.namespace, existing[index]) {
-                    (NativeVolumeNamespace::MaterializedDirectory, None) => {
-                        let top = binding.path.split('/').next().ok_or_else(invalid)?;
-                        if !edits.iter().any(|edit| matches!(edit, MaterializationEdit::Install { path, .. } if path == top)) {
-                            let (path, custody) = work.display(top)?; plan_io.absorb_native_custody(custody)?;
-                            let (image, custody) = work.copy_bytes(acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX)?;
-                            plan_io.absorb_native_custody(custody)?;
-                            edits.push(MaterializationEdit::Install { path, image });
-                        }
-                    }
-                    (NativeVolumeNamespace::LazyMount { snapshot }, Some(lazy)) => {
-                        if !lazy.backend.matches_owner(owner.as_ref())
-                            || lazy.mapping != mapping
-                            || lazy.publication != binding.publication
-                            || lazy.backend.snapshot(&volume_work)?.await? != *snapshot
-                        {
-                            return Err(invalid());
-                        }
-                        preserved.push(binding.path);
-                    }
-                    _ => return Err(invalid()),
+                });
+                let top = binding.path.split('/').next().ok_or_else(invalid)?;
+                if !edits.iter().any(
+                    |edit| matches!(edit, MaterializationEdit::Install { path, .. } if path == top),
+                ) {
+                    let (path, custody) = work.display(top)?;
+                    plan_io.absorb_native_custody(custody)?;
+                    let (image, custody) =
+                        work.copy_bytes(acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX)?;
+                    plan_io.absorb_native_custody(custody)?;
+                    edits.push(MaterializationEdit::Install { path, image });
                 }
-                let provider_identity = crate::store::history::canonical_bytes_with_work(
-                    binding.volume.provider(),
-                    acyclic_stream::MAX_RECORD_BYTES as u64,
-                    &mut Some(&mut plan_io.history_io()),
-                )?;
                 selected.push(acyclic_fs::MaterializationPreparationSelection {
-                    provider_identity,
+                    provider_identity: crate::store::history::canonical_bytes_with_work(
+                        binding.volume.provider(),
+                        acyclic_stream::MAX_RECORD_BYTES as u64,
+                        &mut Some(&mut plan_io.history_io()),
+                    )?,
                     volume: workspace.id().volume_id(),
                     generation: generation.id(),
                 });
-                mappings.push(mapping);
                 generations.push((generation, volume_work));
             }
             edits.sort_unstable_by(|left, right| match (left, right) {
@@ -194,46 +176,40 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             let operation = super::journal::operation(owner.task_binding().0, work)?;
             let retained = store.load(operation).await?;
             let backend = allocation.backend(work).await?;
-            backend.require_selected_root(&edits, &preserved)?;
-            let intent = match retained.as_ref() {
-                Some(retained) => {
-                    let original = super::preparation_record::intent(retained, &io)?;
-                    if (original.task, &original.original_fence) != owner.task_binding()
-                        || original.manifest != manifest
-                        || original.operation_directory != allocation.operation_directory
-                    {
-                        return Err(invalid());
-                    }
-                    original
+            backend.require_selected_root(&edits, &[])?;
+            let intent = if let Some(retained) = &retained {
+                let original = super::preparation_record::intent(retained, &io)?;
+                if (original.task, &original.original_fence) != owner.task_binding()
+                    || original.manifest != manifest
+                    || original.operation_directory != allocation.operation_directory
+                {
+                    return Err(invalid());
                 }
-                None => {
-                    if preserved.is_empty() {
-                        backend.require_initial_empty()?;
-                    }
-                    let (operation_directory, custody) =
-                        work.path(&allocation.operation_directory, None)?;
-                    io.absorb_native_custody(custody)?;
-                    Intent {
-                        task: owner.task_binding().0,
-                        original_fence: owner
-                            .task_binding()
-                            .1
-                            .clone_with_work(&mut Some(&mut io.history_io()))?,
-                        operation_directory,
-                        manifest,
-                    }
+                original
+            } else {
+                backend.require_initial_empty()?;
+                let (operation_directory, custody) =
+                    work.path(&allocation.operation_directory, None)?;
+                io.absorb_native_custody(custody)?;
+                Intent {
+                    task: owner.task_binding().0,
+                    original_fence: owner
+                        .task_binding()
+                        .1
+                        .clone_with_work(&mut Some(&mut io.history_io()))?,
+                    operation_directory,
+                    manifest,
                 }
             };
-            let original = crate::store::history::canonical_bytes_with_work(
-                &intent,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut Some(&mut plan_io.history_io()),
-            )?;
             let plan = MaterializationPlan {
                 operation_id: operation,
                 intent: MaterializationIntent::NativePreparation {
                     selection: selected,
-                    original,
+                    original: crate::store::history::canonical_bytes_with_work(
+                        &intent,
+                        acyclic_stream::MAX_RECORD_BYTES as u64,
+                        &mut Some(&mut plan_io.history_io()),
+                    )?,
                 },
                 edits,
             };
@@ -246,8 +222,9 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             drop(retained);
             let materializer = JournaledMaterializer::new(store, backend);
             let retained_plan = plan_io.owned_bytes()?;
-            let plan_custody = plan_io.into_native_custody(retained_plan)?;
-            let mut journal = materializer.prepare(plan, Some(plan_custody)).await?;
+            let mut journal = materializer
+                .prepare(plan, Some(plan_io.into_native_custody(retained_plan)?))
+                .await?;
             if journal.root_identity != Some(allocation.expected_identity.to_bytes())
                 || journal.preparation_identity.as_ref()
                     != Some(&allocation.expected_preparation_identity)
@@ -258,27 +235,10 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 for (binding, guard) in bindings.iter().zip(guards) {
                     verify_binding(owner, binding, guard, work).await?;
                 }
-                for lazy in existing.iter().flatten() {
-                    if lazy.backend.snapshot(lazy.custody.work())?.await?
-                        != match &lazy.mapping.namespace {
-                            NativeVolumeNamespace::LazyMount { snapshot } => *snapshot,
-                            _ => return Err(invalid()),
-                        }
-                    {
-                        return Err(invalid());
-                    }
-                }
                 Ok::<_, Error>(())
             };
             if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
-                for (binding, (generation, volume_work)) in
-                    bindings.iter().zip(&generations).filter(|(binding, _)| {
-                        matches!(
-                            binding.namespace,
-                            NativeVolumeNamespace::MaterializedDirectory
-                        )
-                    })
-                {
+                for (binding, (generation, volume_work)) in bindings.iter().zip(&generations) {
                     verify().await?;
                     let completion = materializer.store().prepare_action(journal).await?;
                     let identity = materializer
@@ -309,76 +269,63 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         .await?;
                 }
             }
-            let mut before_effect = verify;
             journal = materializer
                 .recover(
                     operation,
                     acyclic_fs::MaterializationRecovery::Complete,
-                    &mut before_effect,
+                    &mut { verify },
                 )
                 .await?
                 .ok_or_else(invalid)?;
-            let final_io = PreparationIo::from_native_work(work)?;
-            let mut volumes = crate::model::vec_with_capacity(bindings.len(), Some(&final_io))?;
+            let mut volumes = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             for (index, (binding, (generation, volume_work))) in
                 bindings.iter().zip(generations).enumerate()
             {
                 verify().await?;
-                let volume = match existing[index] {
-                    Some(lazy) => PreparedVolume::Lazy(Arc::clone(lazy)),
-                    None => {
-                        let identity =
-                            materializer.backend().mapping_root_identity(binding.path)?;
-                        let callback = guards[index].for_volume(
-                            owner,
-                            binding.volume,
-                            binding.writable,
-                            &volume_work,
-                        )?;
-                        let mount = if binding.writable {
-                            acyclic_fs::MountOptions::read_write()
-                                .publication(acyclic_fs::MountPublication::Manual)
-                        } else {
-                            acyclic_fs::MountOptions::read_only()
-                        };
-                        let mount = mount.native_context(
-                            &volume_work,
-                            Some(Arc::clone(&callback)),
-                            Some(&volume_work),
-                        );
-                        let view = generation
-                            .attach_native_working_set(
-                                &mount,
-                                &acyclic_fs::MaterializeOptions::native(
-                                    &intent.manifest.volumes[index].path,
-                                ),
-                                identity,
-                                options.work_per_volume,
-                                work.cancellation(),
-                            )
-                            .await?;
-                        PreparedVolume::Materialized {
-                            view,
-                            publication: binding.publication,
-                            work: volume_work,
-                            callback,
-                        }
-                    }
+                let identity = materializer.backend().mapping_root_identity(binding.path)?;
+                let callback = guards[index].for_volume(
+                    owner,
+                    binding.volume,
+                    binding.writable,
+                    &volume_work,
+                )?;
+                let mount = if binding.writable {
+                    acyclic_fs::MountOptions::read_write()
+                        .publication(acyclic_fs::MountPublication::Manual)
+                } else {
+                    acyclic_fs::MountOptions::read_only()
                 };
-                volumes.push(volume);
+                let mount = mount.native_context(
+                    &volume_work,
+                    Some(Arc::clone(&callback)),
+                    Some(&volume_work),
+                );
+                let view = generation
+                    .attach_native_working_set(
+                        &mount,
+                        &acyclic_fs::MaterializeOptions::native(
+                            &intent.manifest.volumes[index].path,
+                        ),
+                        identity,
+                        options.work_per_volume,
+                        work.cancellation(),
+                    )
+                    .await?;
+                volumes.push(PreparedVolume {
+                    view,
+                    publication: binding.publication,
+                    work: volume_work,
+                    callback,
+                });
             }
-            final_io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            let metadata_bytes = io.owned_bytes()?;
-            final_io.absorb_native_custody(io.into_native_custody(metadata_bytes)?)?;
-            let custody = journal.custody.take().ok_or_else(invalid)?;
-            final_io.absorb_native_custody(custody)?;
-            let retained = final_io.owned_bytes()?;
-            let custody = final_io.into_native_custody(retained)?;
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.absorb_native_custody(journal.custody.take().ok_or_else(invalid)?)?;
             verify().await?;
+            let retained = io.owned_bytes()?;
             Ok(Self {
                 volumes,
                 preparation: intent,
-                custody,
+                custody: io.into_native_custody(retained)?,
             })
         })
     }
