@@ -833,7 +833,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        (checkout.read_metadata_by_id(unknown_id, B, &cancellation,))
+        (checkout.read_metadata(unknown_id, B, &cancellation,))
             .await
             .is_err()
     );

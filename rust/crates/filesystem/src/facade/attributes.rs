@@ -403,7 +403,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let (id, metadata, maximum) = match file.address() {
                 ContentAddress::File(id) => (
                     id,
-                    self.read_metadata_by_id_with_accounting(id, &mut accounting, cancellation)
+                    self.read_metadata_with_accounting(id, &mut accounting, cancellation)
                         .await?,
                     u64::MAX,
                 ),
@@ -433,14 +433,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 cancellation,
             )
             .await?;
-            self.set_attributes_by_id_with_accounting(
-                id,
-                metadata,
-                None,
-                &mut accounting,
-                cancellation,
-            )
-            .await
+            self.set_attributes_with_accounting(id, metadata, None, &mut accounting, cancellation)
+                .await
         }
         .await;
         budget.finish(result, &accounting)

@@ -65,7 +65,7 @@ pub(super) struct FileHandle {
     pub(super) open_file: FuseOpenFile,
     pub(super) operation: Arc<(Mutex<()>, crate::NativeAllocation)>,
     pub(super) dirty: bool,
-    pub(super) claim: Option<crate::FileId>,
+    pub(super) writes: bool,
     pub(super) _storage: crate::NativeAllocation,
 }
 
@@ -99,34 +99,21 @@ pub(super) fn changes_content(flags: i32) -> bool {
     flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
 }
 
-pub(super) struct OpenedFile<'a> {
-    pub(super) path: &'a MountPath,
-    pub(super) lookup: &'a MountLookup,
-    pub(super) stamp: Option<ViewStamp>,
-    pub(super) flags: i32,
-    pub(super) open_file: FuseOpenFile,
-    pub(super) dirty: bool,
-    pub(super) stores_pages: bool,
-}
-
 impl ProjectionState {
+    #[allow(clippy::too_many_arguments, reason = "open callback data")]
     pub(super) fn admit_file_handle(
         &mut self,
         source: &dyn MountFilesystem,
         inode: u64,
-        opened: OpenedFile<'_>,
+        path: &MountPath,
+        lookup: &MountLookup,
+        stamp: Option<ViewStamp>,
+        flags: i32,
+        open_file: FuseOpenFile,
+        dirty: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(u64, FopenFlags, Option<PageStore>), NativeMountError> {
+    ) -> Result<(u64, FopenFlags), NativeMountError> {
         work.charge(Items.delta(1))?;
-        let OpenedFile {
-            path,
-            lookup,
-            stamp,
-            flags,
-            open_file,
-            dirty,
-            stores_pages,
-        } = opened;
         let file_id = lookup.node.file_id;
         let handle = self.next_handle;
         if self.files.contains_key(&handle) {
@@ -139,7 +126,6 @@ impl ProjectionState {
             .ok_or(libc::ESTALE)?
             .cached_content;
         let opened_version = ContentVersion::of(lookup);
-        let claim = changes_content(flags).then_some(file_id);
         let storage = work.claim(
             std::mem::size_of::<(u64, FileHandle)>() as u64,
             1,
@@ -154,34 +140,6 @@ impl ProjectionState {
         self.files
             .try_reserve(1)
             .map_err(NativeMountError::Allocation)?;
-        let store = match (stamp, u32::try_from(lookup.node.logical_bytes)) {
-            (Some(stamp), Ok(length))
-                if stores_pages
-                    && admitted
-                    && previous.is_none()
-                    && claim.is_none()
-                    && flags & libc::O_DIRECT == 0
-                    && length != 0
-                    && u64::from(length) <= PAGE_STORE_LIMIT
-                    && self.page_stores.may_begin(file_id) =>
-            {
-                let path = fuse_clone_path(path, work)?;
-                let open_file = open_file.clone();
-                self.page_stores.begin(file_id, stamp, work)?;
-                Some(PageStore {
-                    inode,
-                    file_id,
-                    path,
-                    stamp,
-                    length,
-                    open_file,
-                })
-            }
-            _ => None,
-        };
-        if let Some(file_id) = claim {
-            self.page_stores.claim(file_id, work)?;
-        }
         let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         entry.open_handles = entry.open_handles.saturating_add(1);
         hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
@@ -194,7 +152,7 @@ impl ProjectionState {
                 open_file,
                 operation,
                 dirty,
-                claim,
+                writes: changes_content(flags),
                 _storage: storage,
             },
         );
@@ -207,7 +165,7 @@ impl ProjectionState {
             FopenFlags::FOPEN_NOFLUSH,
             !(flags & libc::O_ACCMODE != libc::O_RDONLY && source.flush_on_handle_close()),
         );
-        Ok((handle, open_flags, store))
+        Ok((handle, open_flags))
     }
 
     pub(super) fn discard_file_handle(&mut self, inode: u64, handle: u64) -> Result<(), i32> {
@@ -220,13 +178,7 @@ impl ProjectionState {
             return Err(libc::EIO);
         }
         entry.open_handles -= 1;
-        let file = self
-            .files
-            .remove(&handle)
-            .expect("validated handle remains locked");
-        if let Some(file_id) = file.claim {
-            self.page_stores.release(file_id);
-        }
+        self.files.remove(&handle);
         if entry.bindings.is_empty()
             && entry.lookup_references == 0
             && entry.open_handles == 0
@@ -347,9 +299,6 @@ impl FuseProjection {
                 held,
             )
         };
-        let _claim = changes_content(flags)
-            .then(|| self.core.claim_content(file_id, work))
-            .transpose()?;
         let held = match held {
             Some((lookup, facts)) if lookup.node.file_id == file_id => source
                 .unchanged_since_with_meter(&path, Some(file_id), facts, work)?
@@ -388,22 +337,17 @@ impl FuseProjection {
         if let Some(binding) = entry.binding_mut(&path) {
             binding.verified = stamp;
         }
-        let (handle, open_flags, store) = state.admit_file_handle(
+        state.admit_file_handle(
             source,
             inode,
-            OpenedFile {
-                path: &path,
-                lookup: &refreshed,
-                stamp,
-                flags,
-                open_file,
-                dirty: flags & libc::O_TRUNC != 0,
-                stores_pages: !self.skips_open,
-            },
+            &path,
+            &refreshed,
+            stamp,
+            flags,
+            open_file,
+            flags & libc::O_TRUNC != 0,
             work,
-        )?;
-        drop(state);
-        Ok((handle, self.store_pages(store, open_flags, work)))
+        )
     }
 
     pub(super) fn open_source(
@@ -470,11 +414,6 @@ impl FuseProjection {
         };
         let path = &child.spelled;
         let stamp = source.view_stamp_with_meter(work)?;
-        let claim = |file_id| {
-            changes_content(flags)
-                .then(|| self.core.claim_content(file_id, work))
-                .transpose()
-        };
         let (existing, proof) = match absent_since {
             Some(held) if source.unchanged_since_with_meter(child.key(), None, held, work)? => {
                 (None, Some(held))
@@ -482,7 +421,7 @@ impl FuseProjection {
             _ => (source.lookup_with_meter(path, work)?, stamp),
         };
         let mut confirmed = HashMap::new();
-        let (lookup, open_file, dirty, _claim) =
+        let (lookup, open_file, dirty) =
             if let Some(existing) = existing {
                 if flags & libc::O_EXCL != 0 {
                     return Err(libc::EEXIST.into());
@@ -491,21 +430,19 @@ impl FuseProjection {
                     return Err(libc::EISDIR.into());
                 }
                 self.confirm_names(child.key(), existing.node, &mut confirmed, work)?;
-                let claimed = claim(existing.node.file_id)?;
                 let (open_file, lookup, _) =
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
-                (lookup, open_file, flags & libc::O_TRUNC != 0, claimed)
+                (lookup, open_file, flags & libc::O_TRUNC != 0)
             } else {
                 let metadata = create_metadata(mode, S_IFREG, request.uid(), request.gid());
                 let created = self.source_write(work, || {
                     Ok(source.create_file(path, metadata, proof, work)?)
                 })?;
-                let claimed = claim(created.node.file_id)?;
                 let open_file = FuseOpenFile::Source(fuse_open_file(
                     source.open_created_with_meter(path, &created, work)?,
                     work,
                 )?);
-                (created, open_file, true, claimed)
+                (created, open_file, true)
             };
         let mut state = self.core.state()?;
         let inode = state.intern(
@@ -519,32 +456,24 @@ impl FuseProjection {
         )?;
         let created = (|| -> Result<_, NativeMountError> {
             let attr = state.attr(inode, &lookup)?;
-            let (handle, open_flags, store) = state.admit_file_handle(
+            let (handle, open_flags) = state.admit_file_handle(
                 source,
                 inode,
-                OpenedFile {
-                    path: child.key(),
-                    lookup: &lookup,
-                    stamp,
-                    flags,
-                    open_file,
-                    dirty,
-                    stores_pages: true,
-                },
+                child.key(),
+                &lookup,
+                stamp,
+                flags,
+                open_file,
+                dirty,
                 work,
             )?;
-            Ok((attr, handle, open_flags, store))
+            Ok((attr, handle, open_flags))
         })();
-        let (attr, handle, open_flags, store) = created.inspect_err(|_| {
+        let (attr, handle, open_flags) = created.inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
-        drop(state);
-        Ok((
-            Entry { attr, ttl },
-            handle,
-            self.store_pages(store, open_flags, work),
-        ))
+        Ok((Entry { attr, ttl }, handle, open_flags))
     }
 
     pub(super) fn with_handle<T>(
@@ -566,7 +495,7 @@ impl FuseProjection {
             let held = state.implicit.get(&inode).map(|held| held.0);
             let writes = held
                 .and_then(|handle| state.files.get(&handle))
-                .is_some_and(|file| file.claim.is_some());
+                .is_some_and(|file| file.writes);
             (held, writes)
         };
         match (held, access) {
@@ -602,7 +531,7 @@ impl FuseProjection {
             let state = self.core.state()?;
             stale
                 .and_then(|handle| state.files.get(&handle))
-                .is_some_and(|file| file.claim.is_some())
+                .is_some_and(|file| file.writes)
         };
         let storage = {
             let mut state = self.core.state()?;

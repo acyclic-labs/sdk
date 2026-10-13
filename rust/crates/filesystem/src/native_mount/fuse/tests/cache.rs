@@ -357,34 +357,6 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
 }
 
 #[test]
-pub(super) fn page_stores_and_content_claims_exclude_each_other() {
-    let [before, target, after] = positions();
-    let (stored, claimed) = (FileId::new(), FileId::new());
-    let mut stores = PageStores::default();
-    assert!(stores.may_begin(stored));
-    stores.begin(stored, before, &fuse_fixture_work()).unwrap();
-    assert!(!stores.may_begin(stored), "one store per file at a time");
-    assert!(stores.precede(target), "the barrier waits for older reads");
-    assert!(!stores.precede(before));
-
-    stores.claim(claimed, &fuse_fixture_work()).unwrap();
-    stores.claim(claimed, &fuse_fixture_work()).unwrap();
-    assert!(!stores.may_begin(claimed));
-    stores.release(claimed);
-    assert!(!stores.may_begin(claimed), "every claim must be released");
-    stores.release(claimed);
-    assert!(stores.may_begin(claimed));
-
-    stores.in_flight.remove(&stored);
-    assert!(!stores.precede(target));
-    stores.begin(stored, after, &fuse_fixture_work()).unwrap();
-    assert!(!stores.precede(target), "a newer read supersedes nothing");
-    stores.in_flight.remove(&stored);
-    stores.claim(stored, &fuse_fixture_work()).unwrap();
-    assert!(!stores.may_begin(stored));
-}
-
-#[test]
 pub(super) fn directory_streams_wait_at_their_offset_and_evict_the_oldest() {
     let stream = |emitted| crate::native_mount::fuse::DirectoryStream {
         path: crate::native_mount::fuse::FuseOwned::empty(MountPath::root()),

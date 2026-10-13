@@ -18,7 +18,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
     let request = McpStdioRequest {
         initialization,
         operation,
-        method: McpStdioMethod::CallTool,
+        method: "tools/call".into(),
         params: json!({"name":"echo","arguments":{}}),
         maximum_bytes: 4096,
     };
@@ -46,7 +46,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
         assert!(
             McpStdioRequest {
                 params: params.clone(),
-                ..request
+                ..request.clone()
             }
             .exchange(None)
             .is_err(),
@@ -71,9 +71,9 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
     );
     assert!(
         McpStdioRequest {
-            method: McpStdioMethod::ListTools,
+            method: "tools/list".into(),
             params: json!({"cursor":1}),
-            ..request
+            ..request.clone()
         }
         .exchange(None)
         .is_err()
@@ -88,7 +88,12 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
     assert!(request.decode_response(&malformed).is_err());
     let mut encoded = serde_json::to_value(&request).unwrap();
     encoded["method"] = json!("sampling/createMessage");
-    assert!(serde_json::from_value::<McpStdioRequest>(encoded).is_err());
+    assert!(
+        serde_json::from_value::<McpStdioRequest>(encoded)
+            .unwrap()
+            .exchange(None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -105,7 +110,7 @@ fn every_stream_cut_preserves_order_and_exact_result() {
         let (mut codec, first, _) = McpStdioRequest {
             initialization: init,
             operation: op,
-            method: McpStdioMethod::CallTool,
+            method: "tools/call".into(),
             params: json!({"name":"echo","arguments":{}}),
             maximum_bytes: 4096,
         }
@@ -137,7 +142,7 @@ fn malformed_foreign_callback_and_truncated_inputs_cannot_replay() {
     for bytes in [b"not json\n".to_vec(), line(&json!({"jsonrpc":"2.0","id":op.to_string(),"result":{}})).unwrap(),
             line(&json!({"jsonrpc":"2.0","id":init.to_string(),"method":"sampling/createMessage","params":{}})).unwrap()] {
             let (mut codec,_,_) = McpStdioRequest {
-                initialization: init, operation: op, method: McpStdioMethod::ListTools,
+                initialization: init, operation: op, method: "tools/list".into(),
                 params: json!({}), maximum_bytes: 4096,
             }.exchange(None).unwrap();
             assert!(codec.push(&bytes, None).is_err());
@@ -147,7 +152,7 @@ fn malformed_foreign_callback_and_truncated_inputs_cannot_replay() {
     let (mut codec, _, _) = McpStdioRequest {
         initialization: init,
         operation: op,
-        method: McpStdioMethod::ListTools,
+        method: "tools/list".into(),
         params: json!({}),
         maximum_bytes: 4096,
     }
@@ -157,7 +162,7 @@ fn malformed_foreign_callback_and_truncated_inputs_cannot_replay() {
     let (mut codec, _, _) = McpStdioRequest {
         initialization: init,
         operation: op,
-        method: McpStdioMethod::ListTools,
+        method: "tools/list".into(),
         params: json!({}),
         maximum_bytes: 4096,
     }
@@ -183,7 +188,7 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
         let (mut codec, _, _) = McpStdioRequest {
             initialization: init,
             operation: op,
-            method: McpStdioMethod::ListTools,
+            method: "tools/list".into(),
             params: json!({}),
             maximum_bytes: 4096,
         }
@@ -219,34 +224,26 @@ fn native_work() -> acyclic_fs::NativeMaterializationWork {
 fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
     let (initialization, operation) = ids();
     for (method, params, expected) in [
-        (McpStdioMethod::ListTools, json!({}), json!({"tools":[]})),
+        ("tools/list", json!({}), json!({"tools":[]})),
         (
-            McpStdioMethod::CallTool,
+            "tools/call",
             json!({"name":"echo","arguments":{"n":u64::MAX}}),
             json!({"content":[{"type":"text","text":"héllo"}],"structuredContent":null}),
         ),
+        ("resources/list", json!({}), json!({"resources":[]})),
         (
-            McpStdioMethod::ListResources,
-            json!({}),
-            json!({"resources":[]}),
-        ),
-        (
-            McpStdioMethod::ListResourceTemplates,
+            "resources/templates/list",
             json!({}),
             json!({"resourceTemplates":[]}),
         ),
         (
-            McpStdioMethod::ReadResource,
+            "resources/read",
             json!({"uri":"fixture://binary"}),
             json!({"contents":[{"uri":"fixture://binary","blob":"AAE="}]}),
         ),
+        ("prompts/list", json!({}), json!({"prompts":[]})),
         (
-            McpStdioMethod::ListPrompts,
-            json!({}),
-            json!({"prompts":[]}),
-        ),
-        (
-            McpStdioMethod::GetPrompt,
+            "prompts/get",
             json!({"name":"fixture","arguments":{}}),
             json!({"messages":[]}),
         ),
@@ -254,7 +251,7 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
         let request = McpStdioRequest {
             initialization,
             operation,
-            method,
+            method: method.into(),
             params,
             maximum_bytes: 4096,
         };
@@ -313,7 +310,7 @@ fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
     let request = McpStdioRequest {
         initialization,
         operation,
-        method: McpStdioMethod::ListTools,
+        method: "tools/list".into(),
         params: json!({}),
         maximum_bytes: 4096,
     };
@@ -344,7 +341,7 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     let request = McpStdioRequest {
         initialization,
         operation,
-        method: McpStdioMethod::ListTools,
+        method: "tools/list".into(),
         params: json!({}),
         maximum_bytes: 4096,
     };
@@ -400,7 +397,7 @@ fn original_native_frame_quota_precedes_trusted_parse_and_preserves_owned_cause(
     let request = McpStdioRequest {
         initialization,
         operation,
-        method: McpStdioMethod::ListTools,
+        method: "tools/list".into(),
         params: json!({}),
         maximum_bytes: 4096,
     };
