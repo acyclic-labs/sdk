@@ -50,7 +50,6 @@ include!("retained.rs");
 include!("path_state.rs");
 
 include!("history.rs");
-include!("finite_read.rs");
 
 include!("capacity.rs");
 
