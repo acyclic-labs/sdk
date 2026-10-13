@@ -469,15 +469,7 @@ pub(crate) fn count_json_bytes_trusted<
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<u64> {
-    let mut inspect = |event| {
-        charge(match event {
-            JsonCodecCharge::Work { bytes, items } if bytes != 0 => JsonCodecCharge::Inspect {
-                items: bytes.saturating_add(items),
-            },
-            other => other,
-        })
-    };
-    let mut scope = scope(bounds, code, &mut inspect);
+    let mut scope = scope(bounds, code, charge);
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     let size = write(value, &mut scope, None, bounds.maximum_bytes, false)?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
