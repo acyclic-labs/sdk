@@ -569,8 +569,9 @@ test("the core lanes cover the Rust workspace, docs crate, and TypeScript worksp
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
   assert.match(script, /node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs/);
-  const policy = script.slice(script.indexOf("\n  policy)"));
-  assert.match(policy, /^ +cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/m);
+  const policy = script.match(/^  policy\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1] ?? assert.fail("missing policy lane");
+  assert.match(policy, /^    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings$/m);
+  assert.doesNotMatch(policy, /full_qualification|exit 0/);
   const typescript = script.match(/^  typescript\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
   assert.ok(typescript, "missing TypeScript lane");
   const testCommand = typescript.search(/^ +bun run test$/m);

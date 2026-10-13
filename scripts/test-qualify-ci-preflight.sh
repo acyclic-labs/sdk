@@ -242,20 +242,6 @@ mapfile -t cargo_calls <"$gate/cargo.log"
 [[ "${#cargo_calls[@]}" -eq 1 ]]
 [[ "${cargo_calls[0]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
-full="$work/full"
-mkdir -p "$full/temp" "$full/artifacts" "$full/tools" "$full/bin"
-: >"$full/cargo.log"
-cp "$gate/bin/cargo-nextest" "$full/bin/cargo-nextest"
-(
-  cd "$root"
-  SDK_TEMP_DIR="$full/temp" SDK_ARTIFACT_DIR="$full/artifacts" TOOLS_DIR="$full/tools" \
-    FORCE=true FAKE_CARGO_LOG="$full/cargo.log" PATH="$full/bin:$work/bin:$PATH" \
-    bash scripts/qualify-ci.sh gate
-)
-mapfile -t full_cargo_calls <"$full/cargo.log"
-[[ "${#full_cargo_calls[@]}" -eq 1 ]]
-[[ "${full_cargo_calls[0]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
-
 for lane in docs generation; do
   : >"$gate/cargo.log"
   (

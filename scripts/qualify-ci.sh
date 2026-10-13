@@ -16,10 +16,6 @@ timing_start=$(($(date +%s) - SECONDS))
 trap 'printf "%s\t%s\0" "${EPOCHREALTIME:-$((timing_start + SECONDS))}" "$BASH_COMMAND" \
   >>"$observability/steps.tsv"' DEBUG
 
-full_qualification="${FORCE:-false}"
-case "${GITHUB_EVENT_NAME:-}" in
-  release|workflow_dispatch|schedule) full_qualification=true ;;
-esac
 # macOS ships shasum rather than sha256sum.
 sha256_matches() {
   local observed
@@ -342,13 +338,6 @@ case "$lane" in
     node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
-    if [[ "$full_qualification" != true ]]; then
-      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs
-      node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
-      cargo fmt --all -- --check
-      exit 0
-    fi
     bash scripts/test-ensure-rust-target.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
