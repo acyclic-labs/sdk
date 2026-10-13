@@ -1,8 +1,6 @@
 use super::*;
 use crate::kernel::FileKind;
 use crate::native_host::{HostRoot, HostStat};
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt as _;
 
 pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
     root: &HostRoot,
@@ -18,7 +16,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
     let path = copy_string(path, &mut allocation)?;
     push_buffer(&mut pending, (path, children, allocation), &mut storage)?;
     while let Some((path, children, _allocation)) = pending.pop() {
-        let (absolute, _absolute_allocation) = native_absolute_string(&path, work)?;
+        let (absolute, _absolute_allocation) = work.display(&format_args!("/{path}"))?;
         let source = match generation.stat(&absolute, work, work.cancellation()).await {
             Ok(stat) => Some(stat),
             Err(crate::WorkspaceError::NotFound) => None,
@@ -30,9 +28,10 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                 .file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         );
-        let parent = match root.open_dir_held(
+        let parent = match host_path(
             relative.parent().unwrap_or_else(|| Path::new("")),
             &mut &*work,
+            |path, work| root.open_dir_held(path, work),
         ) {
             Ok(parent) => Some(parent),
             Err(NativeTreeMaterializationError::Io(error))
@@ -43,7 +42,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             Err(error) => return Err(error.into()),
         };
         let observed = match &parent {
-            Some(_) => match root.stat(relative, &mut &*work) {
+            Some(_) => match host_path(relative, &mut &*work, |path, work| root.stat(path, work)) {
                 Ok(stat) => Some(stat),
                 Err(NativeTreeMaterializationError::Io(error))
                     if error.kind() == std::io::ErrorKind::NotFound =>
@@ -166,7 +165,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             }
             _ => return Ok(false),
         }
-        let selected = root.stat(relative, &mut &*work)?;
+        let selected = host_path(relative, &mut &*work, |path, work| root.stat(path, work))?;
         if selected.identity() != observed.identity()
             || children && observed.is_dir() && selected.modified()? != observed.modified()?
         {
@@ -190,17 +189,19 @@ pub(super) async fn generation_children<
     )>,
     work: &NativeMaterializationWork,
 ) -> Result<bool, NativeWorkspacePublicationError> {
-    let directory = root.open_dir_held(Path::new(path), &mut &*work)?;
+    let directory = host_path(Path::new(path), &mut &*work, |path, work| {
+        root.open_dir_held(path, work)
+    })?;
     let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
     let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut names = Vec::new();
     let (mut reader, cursor) = crate::native_host::read_dir_held(&directory, &mut &*work)?;
-    while let Some(name) = next_name(&mut reader, work)? {
-        push_buffer(&mut names, name, &mut storage)?;
+    while let Some((entry, allocation)) = reader.next(&mut &*work)? {
+        push_buffer(&mut names, (entry.name, allocation), &mut storage)?;
     }
     drop(reader);
     drop(cursor);
-    let (absolute, _absolute_allocation) = native_absolute_string(path, work)?;
+    let (absolute, _absolute_allocation) = work.display(&format_args!("/{path}"))?;
     let mut after = None;
     let mut after_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     loop {
@@ -254,7 +255,8 @@ pub(super) async fn generation_children<
 }
 
 fn host_name_matches(
-    host: &std::ffi::OsStr,
+    #[cfg(unix)] host: &std::ffi::OsStr,
+    #[cfg(windows)] host: &[u16],
     logical: &crate::kernel::LogicalName,
     work: &NativeMaterializationWork,
 ) -> Result<bool, NativeTreeMaterializationError> {
@@ -278,7 +280,7 @@ fn host_name_matches(
             }
             #[cfg(windows)]
             {
-                Ok(native_compare(host.encode_wide(), units, work)? == std::cmp::Ordering::Equal)
+                Ok(native_compare(host.iter().copied(), units, work)? == std::cmp::Ordering::Equal)
             }
         }
         crate::kernel::NameEncoding::Utf8 | crate::kernel::NameEncoding::PosixBytes => {
@@ -301,7 +303,7 @@ fn host_name_matches(
                     return Ok(false);
                 };
                 Ok(
-                    native_compare(host.encode_wide(), text.encode_utf16(), work)?
+                    native_compare(host.iter().copied(), text.encode_utf16(), work)?
                         == std::cmp::Ordering::Equal,
                 )
             }

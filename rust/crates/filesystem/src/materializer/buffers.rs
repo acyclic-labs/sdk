@@ -1,38 +1,27 @@
 use super::*;
 
-#[cfg(all(feature = "local", feature = "native-mount"))]
-pub(super) fn native_absolute_string(
-    path: &str,
-    work: &NativeMaterializationWork,
-) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
-    work.display(&format_args!("/{path}"))
-}
-
 pub(super) fn push_buffer<T>(
     values: &mut Vec<T>,
     value: T,
     allocation: &mut NativeAllocation,
 ) -> Result<(), NativeTreeMaterializationError> {
     if values.len() == values.capacity() {
+        let work = allocation.work().clone();
         let capacity = values
             .capacity()
             .checked_mul(2)
             .and_then(|size| size.checked_add(1))
             .ok_or(crate::WorkError::Overflow)?;
-        let before = values.capacity();
-        let mut growth = allocation.work().claim(
-            owned_size(capacity - before, std::mem::size_of::<T>())?,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        let reserved = values.try_reserve_exact(capacity - values.len());
-        let reconciled = growth.reconcile_capacity(owned_size(
-            values.capacity() - before,
-            std::mem::size_of::<T>(),
-        )?);
-        allocation.absorb(&mut growth)?;
-        reserved.map_err(NativeTreeMaterializationError::AllocationFailed)?;
-        reconciled?;
+        let prior = owned_size(values.capacity(), std::mem::size_of::<T>())?;
+        let copied =
+            NativeResourceCredit::Copy.delta(owned_size(values.len(), std::mem::size_of::<T>())?);
+        let copying = work.reserve_work(copied)?;
+        let (mut replacement, mut storage) = crate::native_host::buffer(capacity, &mut &work)?;
+        replacement.append(values);
+        drop(std::mem::replace(values, replacement));
+        allocation.release(prior)?;
+        allocation.absorb(&mut storage)?;
+        copying.record_completed(copied)?;
     }
     values.push(value);
     Ok(())

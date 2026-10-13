@@ -388,3 +388,31 @@ unsafe extern "system" fn yield_on_break(context: *mut std::ffi::c_void, _timed_
         let _ = unsafe { CancelIoEx(HANDLE(file.as_raw_handle()), None) };
     }
 }
+
+impl HostRoot {
+    pub(crate) fn open_file_yielding<W: SourceDemandReadWork>(
+        &self,
+        path: &[u16],
+        work: &mut W,
+    ) -> Result<YieldingFile, DemandError> {
+        use windows::{Wdk::Storage::FileSystem as nt, Win32::Storage::FileSystem as fs};
+        let (parent, leaf) = wide_parent_leaf(path)?;
+        let parent = self.open_dir_held(parent, work)?;
+        let mut opened = |flags| {
+            open_windows_at(
+                &parent,
+                leaf,
+                fs::FILE_GENERIC_READ,
+                nt::FILE_OPEN,
+                nt::FILE_NON_DIRECTORY_FILE | flags,
+                work,
+            )
+        };
+        let file = match opened(nt::FILE_OPEN_REQUIRING_OPLOCK) {
+            Ok(file) => file,
+            Err(DemandError::Io(_)) => opened(nt::NTCREATEFILE_CREATE_OPTIONS(0))?,
+            Err(error) => return Err(error),
+        };
+        YieldingFile::new(file, work)
+    }
+}

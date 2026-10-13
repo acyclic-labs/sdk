@@ -23,15 +23,6 @@ pub(crate) fn validate_records(records: &[OwnedBytes], meter: WireMeter<'_>) -> 
     Ok(())
 }
 
-pub(crate) fn validate_append_size(request: &AppendRequest) -> Result<(), StreamError> {
-    (crate::wire_codec::CanonicalWire::Append(request)
-        .encoded_len(None, None)
-        .expect("ordinary sizing has no fallible meter")
-        <= MAX_COMMAND_BYTES)
-        .then_some(())
-        .ok_or(StreamError::LimitExceeded)
-}
-
 pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
     (crate::wire_codec::CanonicalWire::Fork(request)
         .encoded_len(None, None)

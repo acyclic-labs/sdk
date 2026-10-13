@@ -100,9 +100,11 @@ impl NativeTreeMaterializationBackend {
                 Target => Path::new("target"),
                 Backup => Path::new("backup"),
             };
-            work.with_original_leaf(|state| parent.create_dir(leaf, state))
-                .map_err(native_materialization_work_error)
-                .map_err(backend)?;
+            work.with_original_leaf(|state| {
+                host_path(leaf, state, |path, work| parent.create_dir(path, work))
+            })
+            .map_err(native_materialization_work_error)
+            .map_err(backend)?;
             crate::native_host::sync_directory_held(&parent.directory, &mut &*work)
                 .map_err(backend)?;
             let identity = held_child(&parent, leaf, work)

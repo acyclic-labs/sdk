@@ -58,9 +58,9 @@ where
                     "model is outside the committed outbox",
                 ));
             }
-            let recorded = if stock && !latest.next.state["mail"].is_null() {
+            let recorded = if stock && !latest.transition.state["mail"].is_null() {
                 Some(
-                    OperationId::deserialize(&latest.next.state["receive"]["operation_id"])
+                    OperationId::deserialize(&latest.transition.state["receive"]["operation_id"])
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 )
             } else {

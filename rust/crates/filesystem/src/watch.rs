@@ -1473,7 +1473,7 @@ impl NativeWatch {
                 .checked_mul(2)
                 .ok_or(WorkError::Overflow)?;
             let result = (|| {
-                let mut held = self.held_root.open_dir_held_wide(&[], work)?;
+                let mut held = self.held_root.open_dir_held(&[], work)?;
                 let mut component_start = 0;
                 for index in 0..path.len() {
                     work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;

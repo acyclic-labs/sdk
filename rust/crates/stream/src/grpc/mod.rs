@@ -17,8 +17,8 @@ use tracing::field::Empty;
 use crate::obs;
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
-    commit_id, commit_outcome_from_wire, commit_outcome_to_wire, condition_wire,
-    envelope_from_wire, envelope_to_wire, fork_receipt_to_wire, mutation_wire,
+    commit_id, commit_outcome_from_wire, commit_outcome_to_wire, commit_to_wire,
+    envelope_from_wire, envelope_to_wire, fork_receipt_to_wire,
     observation_from_wire, observation_wire, optional_key, path, read_response_records,
     read_response_wire, record, record_wire,
 };

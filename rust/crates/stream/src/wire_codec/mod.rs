@@ -27,6 +27,4 @@ mod frames;
 mod funding;
 pub use conversion::*;
 pub(crate) use encoding::CanonicalWire;
-#[cfg(test)]
-pub(crate) use frames::zstd_read_response;
 pub use frames::{read_response_batch, read_response_records, read_response_wire};

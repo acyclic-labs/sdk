@@ -3,7 +3,7 @@ use crate::kernel::allocation::AllocationLedger;
 use crate::materializer::NativeResourceAllowance;
 use std::sync::{Arc, Weak};
 
-/// Source accounting on the shared kernel allocation ledger.
+/// Accounting for one bounded source operation.
 pub struct DemandWork {
     pub(crate) work: WorkCounters,
     pub(crate) budget: WorkBudget,
@@ -16,17 +16,16 @@ pub struct DemandWork {
     pub(crate) capture_custody: Option<Weak<CaptureTransientCustody>>,
     pub(super) roots: Admissions,
 }
-
 impl DemandWork {
     /// Starts one bounded operation.
     pub fn new(budget: WorkBudget, cancellation: &CancellationToken) -> Self {
         Self {
+            work: WorkCounters::UNCHARGED,
             budget,
             initial_budget: budget,
-            cancellation: cancellation.clone(),
-            work: WorkCounters::UNCHARGED,
             original_work: None,
             allocations: AllocationLedger::default(),
+            cancellation: cancellation.clone(),
             native_resource: None,
             native_invocation: None,
             capture_custody: None,
@@ -39,10 +38,10 @@ impl DemandWork {
         value: T,
         operation: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let previous = std::mem::replace(field(self), value);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        *field(self) = previous;
-        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        let saved = std::mem::replace(field(self), value);
+        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
+        *field(self) = saved;
+        answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
     pub(crate) fn original_budget(&self) -> WorkBudget {
         self.initial_budget
@@ -60,13 +59,13 @@ impl DemandWork {
         self.cancellation
             .check()
             .map_err(|_| DemandError::Cancelled)?;
-        if let Some(invocation) = self.native_invocation.as_ref().and_then(Weak::upgrade) {
-            invocation.check()?;
+        if let Some(view) = self.native_invocation.as_ref().and_then(Weak::upgrade) {
+            view.check()?;
         }
         if self
             .capture_custody
             .as_ref()
-            .is_some_and(|origin| origin.strong_count() == 0)
+            .is_some_and(|owner| owner.strong_count() == 0)
         {
             return Err(DemandError::NativeWorkUnavailable);
         }
@@ -75,38 +74,20 @@ impl DemandWork {
     pub(super) fn resource(&self) -> Option<Arc<NativeResourceAllowance>> {
         self.native_resource.as_ref().and_then(Weak::upgrade)
     }
+    fn admission(
+        &mut self,
+        delta: WorkCounters,
+        bytes: u64,
+        mut operation: impl FnMut(&mut Self) -> Result<(), DemandError>,
+    ) -> Result<(), DemandError> {
+        match self.resource() {
+            Some(resource) => resource.admission(delta, bytes, &mut || operation(self)),
+            None => operation(self),
+        }
+    }
     pub(crate) fn take_for_native_queue(&mut self) -> Self {
         let shell = Self::new(WorkBudget::default(), &self.cancellation);
         std::mem::replace(self, shell)
-    }
-    pub(crate) fn from_current(
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        work: WorkCounters,
-        allocations: AllocationLedger,
-        roots: Admissions,
-    ) -> Self {
-        let mut state = Self::new(budget, cancellation);
-        state.work = work;
-        state.allocations = allocations;
-        state.roots = roots;
-        state.budget = state
-            .roots
-            .pending
-            .remaining(budget)
-            .expect("balanced transferred reservations");
-        #[cfg(feature = "native-mount")]
-        state.roots.view_gates.budget_reconstructed();
-        state
-    }
-    pub(crate) fn into_current(mut self) -> (WorkCounters, AllocationLedger, Admissions) {
-        self.reconcile_cancellation_registry()
-            .expect("balanced accounting transfer");
-        (
-            self.work,
-            std::mem::take(&mut self.allocations),
-            std::mem::take(&mut self.roots),
-        )
     }
     pub(crate) fn allocation_parts(
         &mut self,
@@ -116,11 +97,10 @@ impl DemandWork {
         WorkBudget,
         &CancellationToken,
     ) {
-        let budget = self.budget;
         (
             &mut self.allocations,
             &mut self.work,
-            budget,
+            self.budget,
             &self.cancellation,
         )
     }
@@ -129,7 +109,7 @@ impl DemandWork {
             .live_bytes()
             .checked_sub(self.roots.freed_bytes())
             .and_then(|live| live.checked_add(self.roots.unrecorded_bytes()))
-            .expect("balanced allocation custody")
+            .expect("balanced retained bytes")
     }
     pub(crate) fn receipt(&mut self) -> WorkCounters {
         self.reconcile_native_controls()
@@ -167,16 +147,9 @@ impl DemandWork {
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
         self.check()?;
-        let resource = self.resource();
-        let mut charge = || {
-            self.work
-                .charge(&delta, &self.budget)
-                .map_err(DemandError::from)
-        };
-        match resource {
-            Some(resource) => resource.admission(delta, 0, &mut charge),
-            None => charge(),
-        }
+        self.admission(delta, 0, |state| {
+            Ok(state.work.charge(&delta, &state.budget)?)
+        })
     }
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         let resource = self
@@ -214,33 +187,27 @@ impl DemandWork {
     ) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
         self.check()?;
-        let resource = self.resource();
-        let capture = self.capture_custody();
-        let mut claim = || {
-            let mut work = self.work;
-            let mut allocations = self.allocations;
-            work.charge(&delta, &self.budget)?;
-            allocations
-                .claim_bytes(bytes, operations, &mut work, self.budget)
-                .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-            self.work = work;
-            self.allocations = allocations;
-            if let Some(capture) = &capture {
-                capture.claim(bytes);
-            }
-            Ok(())
-        };
-        match resource {
-            Some(resource) => resource.admission(
-                delta.checked_add(WorkCounters {
-                    allocation_operations: operations,
-                    ..WorkCounters::UNCHARGED
-                })?,
-                bytes,
-                &mut claim,
-            ),
-            None => claim(),
-        }
+        self.admission(
+            delta.checked_add(WorkCounters {
+                allocation_operations: operations,
+                ..WorkCounters::UNCHARGED
+            })?,
+            bytes,
+            |state| {
+                let mut work = state.work;
+                let mut ledger = state.allocations;
+                work.charge(&delta, &state.budget)?;
+                ledger
+                    .claim_bytes(bytes, operations, &mut work, state.budget)
+                    .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+                state.work = work;
+                state.allocations = ledger;
+                if let Some(capture) = state.capture_custody() {
+                    capture.claim(bytes);
+                }
+                Ok(())
+            },
+        )
     }
     pub(crate) fn retain_native_owned(
         &mut self,
@@ -250,20 +217,16 @@ impl DemandWork {
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
         }
-        let resource = self.resource();
-        let mut retain = || {
-            self.allocations
-                .claim_bytes(bytes, 0, &mut self.work, self.budget)
+        self.admission(WorkCounters::UNCHARGED, bytes, |state| {
+            state
+                .allocations
+                .claim_bytes(bytes, 0, &mut state.work, state.budget)
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
             if let Some(capture) = capture {
                 capture.claim(bytes);
             }
             Ok(())
-        };
-        match resource {
-            Some(resource) => resource.admission(WorkCounters::UNCHARGED, bytes, &mut retain),
-            None => retain(),
-        }
+        })
     }
     pub(crate) fn record_native_owned_completed(
         &mut self,
@@ -313,23 +276,23 @@ impl DemandWork {
             self.release(*allocation - actual)?;
             *allocation = actual;
         }
-        let (claimed, result) =
+        let (retained, result) =
             self.record_native_owned_completed(actual - *allocation, &self.capture_custody());
-        *allocation += claimed;
+        *allocation += retained;
         result
     }
     pub(crate) fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
         self.reconcile_native_controls()?;
-        let mut budget = self.work.remaining(self.budget)?;
-        budget.peak_allocation_bytes = budget
+        let mut remaining = self.work.remaining(self.budget)?;
+        remaining.peak_allocation_bytes = remaining
             .peak_allocation_bytes
             .checked_sub(self.live_allocation_bytes())
             .and_then(|bytes| bytes.checked_sub(self.allocations.reserved_bytes()))
             .ok_or(crate::WorkError::Overflow)?;
-        Ok(self.resource().map_or(Ok(budget), |resource| {
+        Ok(self.resource().map_or(Ok(remaining), |resource| {
             resource
                 .remaining()
-                .map(|local| budget.intersect_budget(local))
+                .map(|local| remaining.intersect_budget(local))
         })?)
     }
     pub(crate) fn merge(&mut self, delta: WorkCounters, live: u64) -> Result<(), DemandError> {
@@ -338,11 +301,9 @@ impl DemandWork {
         Ok(self.work.verify(self.budget)?)
     }
     pub(crate) fn record_native_io_failure(&mut self, error: DemandError) -> std::io::Error {
-        let error = self.roots.io_failure.get_or_insert(error);
-        if matches!(error, DemandError::Allocation(_)) {
-            std::io::ErrorKind::OutOfMemory.into()
-        } else {
-            std::io::ErrorKind::Other.into()
+        match self.roots.io_failure.get_or_insert(error) {
+            DemandError::Allocation(_) => std::io::ErrorKind::OutOfMemory.into(),
+            _ => std::io::ErrorKind::Other.into(),
         }
     }
     pub(crate) fn take_native_io_failure(&mut self) -> Option<DemandError> {
@@ -353,7 +314,6 @@ impl DemandWork {
         self.record_native_io_failure(DemandError::OriginalWorkPoisoned);
     }
 }
-
 impl Drop for DemandWork {
     fn drop(&mut self) {
         self.reconcile_native_controls()

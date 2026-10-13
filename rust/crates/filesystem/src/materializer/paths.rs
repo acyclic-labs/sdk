@@ -1,6 +1,22 @@
 use super::*;
 use crate::native_host::HostRoot;
 
+pub(super) fn host_path<W: crate::native_host::NativeHostWork, T>(
+    path: &Path,
+    work: &mut W,
+    #[cfg(unix)] operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
+    #[cfg(windows)] operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    #[cfg(unix)]
+    {
+        operation(path, work)
+    }
+    #[cfg(windows)]
+    {
+        crate::native_host::with_wide_path(path, work, operation)
+    }
+}
+
 /// Validates a recovery location against the held checkout allocation.
 pub fn validate_native_preparation_location(
     root: &Path,

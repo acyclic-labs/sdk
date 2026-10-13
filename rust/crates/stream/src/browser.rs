@@ -197,7 +197,7 @@ impl BrowserStream {
         match &mut command {
             Command::Append(request) => {
                 memory::provider_result(memory::validate_records(&request.records, None))?;
-                memory::validate_append_size(request)?;
+                crate::http_codec::validate_append_size(request)?;
             }
             Command::Fork(request) => memory::validate_fork_size(request)?,
             Command::Commit(request) => {

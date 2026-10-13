@@ -51,10 +51,6 @@ native_modules! {
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]
 mod runtime_meter;
-#[cfg(not(target_arch = "wasm32"))]
-type NativeFingerprint = [u8; 32];
-#[cfg(not(target_arch = "wasm32"))]
-type NativeWitness = (Option<NativeFingerprint>, Option<NativeFingerprint>);
 
 #[cfg(all(
     feature = "local",

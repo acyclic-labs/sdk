@@ -449,7 +449,7 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
     assert!(
         resources
             .fs
-            .open_workspace_with_native_work(&scratch, &work, work.cancellation())
+            .open_workspace(&scratch, &work, work.cancellation())
             .await
             .is_err()
     );
@@ -471,7 +471,7 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
     assert!(
         service
             .fs
-            .open_workspace_with_native_work(&scratch, &work, work.cancellation())
+            .open_workspace(&scratch, &work, work.cancellation())
             .await
             .is_ok()
     );

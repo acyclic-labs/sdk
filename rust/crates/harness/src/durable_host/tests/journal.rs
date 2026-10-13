@@ -82,7 +82,7 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
             |_| Ok(()),
         )
         .await?;
-    let record = workflow.replay(0, 1).await?.pop().unwrap();
+    let record = workflow.replay(0, 1, None)?.await?.0.pop().unwrap();
     assert_eq!(
         workflow
             .commit(0, record.idempotency_key.clone(), record.clone())
@@ -90,7 +90,6 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
         record
     );
     let mut wrong = record.clone();
-    wrong.next.state = json!(1);
     wrong.transition.state = json!(1);
     assert!(
         workflow
@@ -129,7 +128,7 @@ async fn b15_replacement_rejects_stale_publications() -> Result<()> {
             |_| Ok(()),
         )
         .await?;
-    let record = workflow.replay(0, 1).await?.pop().unwrap();
+    let record = workflow.replay(0, 1, None)?.await?.0.pop().unwrap();
     let attempt = OperationId::from_bytes([3; 16]);
     let journal = f.execution(f.owner(1).await?, attempt)?;
     journal

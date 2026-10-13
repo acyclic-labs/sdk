@@ -9,7 +9,7 @@ pub fn validate_append_request(input: &[u8]) -> String {
         .and_then(wire_codec::append_from_wire)
         .and_then(|request| {
             memory::provider_result(memory::validate_records(&request.records, None))?;
-            memory::validate_append_size(&request)
+            crate::http_codec::validate_append_size(&request)
         });
     result.map_or_else(|error| error.code().to_owned(), |_| String::new())
 }

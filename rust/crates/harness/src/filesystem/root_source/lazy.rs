@@ -135,7 +135,7 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         let validate = || async move {
             let mut accounting = acyclic_fs::facade::FsWork::accounting(&io, io.cancellation());
-            let result = self.lazy.validate_snapshot(snapshot, &mut accounting);
+            let result = self.lazy.validate_snapshot(snapshot, &mut accounting).await;
             let (result, recorded) = acyclic_fs::facade::FsWork::finish(&io, result, &accounting);
             recorded?;
             result.map_err(root_source_error)

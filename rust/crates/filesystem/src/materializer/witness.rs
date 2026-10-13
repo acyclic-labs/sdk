@@ -30,7 +30,7 @@ pub(super) fn encode_native_witness(
 
 pub(super) fn decode_native_witness(
     image: &[u8],
-) -> Result<NativeWitness, NativeTreeMaterializationError> {
+) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>), NativeTreeMaterializationError> {
     let header = image
         .get(..67)
         .ok_or(NativeTreeMaterializationError::InvalidLayout)?;

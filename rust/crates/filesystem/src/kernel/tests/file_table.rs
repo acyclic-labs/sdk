@@ -649,7 +649,7 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
             assert!(matches!(failure.error, FileRecordReadError::Work(WorkError::BudgetExceeded { .. })));
             assert_eq!(*failure.work, WorkCounters::default());
         }
-        assert_eq!(owner.pending_data_work(), WorkCounters::default());
+        assert_eq!(owner.take_completed_data_work(), WorkCounters::default());
     }
     cancellation.cancel();
     let owner = ProofDataCustody::default();
@@ -665,7 +665,7 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
         assert!(matches!(failure.error, FileRecordReadError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::default());
     }
-    assert_eq!(owner.pending_data_work(), WorkCounters::default());
+    assert_eq!(owner.take_completed_data_work(), WorkCounters::default());
     Ok(())
 }
 

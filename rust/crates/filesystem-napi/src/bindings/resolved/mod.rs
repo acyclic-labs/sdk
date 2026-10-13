@@ -9,19 +9,16 @@ pub struct NativeResolvedFiles {
 
 #[napi]
 impl NativeResolvedFiles {
-    /// Number of original-order results.
     #[napi(getter)]
     pub fn length(&self) -> Result<u32> {
         u32::try_from(self.files.lock().map_err(napi_error)?.len()).map_err(napi_error)
     }
 
-    /// Exact machine-readable work receipt for the shared namespace traversal.
     #[napi(getter)]
     pub fn work_json(&self) -> String {
         self.work_json.clone()
     }
 
-    /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
     #[napi]
     pub fn take(&self, index: NapiU32) -> Result<Option<NativeResolvedFile>> {
         let index = index.into_inner();
@@ -44,21 +41,18 @@ pub struct NativeResolvedFile {
 
 #[napi]
 impl NativeResolvedFile {
-    /// Terminal file kind authenticated by the pinned generation.
     #[napi(getter)]
     #[must_use]
     pub fn kind(&self) -> FileKind {
         self.inner.description().kind
     }
 
-    /// Logical content length authenticated by the pinned generation.
     #[napi(getter)]
     #[must_use]
     pub fn logical_bytes(&self) -> BigInt {
         self.inner.description().logical_bytes.into()
     }
 
-    /// Complete canonical metadata authenticated by the pinned generation.
     #[napi(getter)]
     pub fn metadata_canonical_bytes(&self) -> Result<Buffer> {
         encode_file_metadata(
@@ -70,7 +64,6 @@ impl NativeResolvedFile {
         .map_err(napi_error)
     }
 
-    /// Reads one exact logical range without another namespace lookup.
     #[napi]
     pub async fn read_range(&self, offset: BigInt, length: BigInt) -> Result<NativeFileRead> {
         let receipt = self
@@ -91,7 +84,6 @@ impl NativeResolvedFile {
         })
     }
 
-    /// Reads opaque symbolic-link target bytes without another namespace lookup.
     #[napi]
     pub async fn read_symbolic_link(&self) -> Result<NativeFileRead> {
         let receipt = self

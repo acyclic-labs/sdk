@@ -16,20 +16,17 @@ pub struct BrowserResolvedFiles {
 
 #[wasm_bindgen]
 impl BrowserResolvedFiles {
-    /// Number of original-order results.
     #[wasm_bindgen(getter)]
     #[must_use]
     pub fn length(&self) -> usize {
         self.files.len()
     }
 
-    /// Exact work receipt for the shared namespace traversal.
     #[wasm_bindgen(getter)]
     pub fn work(&self) -> Result<Ts<BrowserWorkCounters>, JsValue> {
         ts(browser_work(self.work))
     }
 
-    /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
     pub fn take(&mut self, index: usize) -> Result<Option<BrowserResolvedFile>, JsValue> {
         self.files
             .get_mut(index)
@@ -40,21 +37,18 @@ impl BrowserResolvedFiles {
 
 #[wasm_bindgen]
 impl BrowserResolvedFile {
-    /// Terminal file kind authenticated by the pinned generation.
     #[wasm_bindgen(getter)]
     pub fn kind(&self) -> Result<Ts<FileKind>, JsValue> {
         let kind = self.engine.description().kind;
         ts(kind)
     }
 
-    /// Logical content length authenticated by the pinned generation.
     #[wasm_bindgen(getter, js_name = logicalBytes)]
     #[must_use]
     pub fn logical_bytes(&self) -> u64 {
         self.engine.description().logical_bytes
     }
 
-    /// Complete canonical metadata authenticated by the pinned generation.
     #[wasm_bindgen(getter, js_name = metadataCanonicalBytes)]
     pub fn metadata_canonical_bytes(&self) -> Result<Vec<u8>, JsValue> {
         let metadata = self.engine.description().metadata;
@@ -66,7 +60,6 @@ impl BrowserResolvedFile {
         .map_err(js_error)
     }
 
-    /// Reads one exact logical range without another namespace lookup.
     #[wasm_bindgen(js_name = readRange)]
     pub async fn read_range(
         &self,
@@ -90,7 +83,6 @@ impl BrowserResolvedFile {
         })
     }
 
-    /// Reads opaque symbolic-link target bytes without another namespace lookup.
     #[wasm_bindgen(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self) -> Result<Ts<BrowserFileReadResult>, JsValue> {
         let cancellation = CancellationToken::default();

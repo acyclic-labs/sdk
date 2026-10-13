@@ -66,12 +66,14 @@ use copying::*;
 use digest::*;
 pub(crate) use digest::{append_digest, commit_digest, fork_digest};
 use history::*;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub(crate) use history::HistoryCursor;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use prepared::NativeMemoryPreparedCommit;
 use publication::*;
 use state::*;
 pub(crate) use validation::{
-    normalize_commit, validate_append_size, validate_commit_shape, validate_fork_size,
+    normalize_commit, validate_commit_shape, validate_fork_size,
     validate_limit, validate_records,
 };
 /// Explicit fail-closed process-memory ceilings.

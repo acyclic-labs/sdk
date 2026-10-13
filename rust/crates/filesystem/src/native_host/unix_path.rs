@@ -6,29 +6,12 @@ pub(crate) fn unix_name<W: NativeHostWork, T>(
     work: &mut W,
     operation: impl FnOnce(&std::ffi::CStr, &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
-    unix_name_checked(name, false, work, operation)
-}
-
-#[cfg(unix)]
-pub(super) fn unix_name_checked<W: NativeHostWork, T>(
-    name: &OsStr,
-    single_leaf: bool,
-    work: &mut W,
-    operation: impl FnOnce(&std::ffi::CStr, &mut W) -> Result<T, W::Error>,
-) -> Result<T, W::Error> {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = name.as_bytes();
-    if single_leaf && matches!(bytes, b"" | b"." | b"..") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected one owned native child",
-        )
-        .into());
-    }
     for byte in bytes {
         let delta = ITEM;
         work.admit(delta)?;
-        let invalid = *byte == 0 || single_leaf && *byte == b'/';
+        let invalid = *byte == 0;
         work.record(delta)?;
         if invalid {
             return Err(W::invalid_request());
@@ -83,6 +66,8 @@ pub(crate) fn open_unix_directory<W: NativeHostWork>(
 ) -> Result<Dir, W::Error> {
     unix_name(name, work, |name, work| {
         let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+        #[cfg(target_os = "linux")]
+        let flags = flags | libc::O_NOATIME;
         let open =
             |work: &mut W| open_unix(parent.as_raw_fd(), name, flags, work).map(Dir::from_std_file);
         match open(work) {
@@ -106,7 +91,10 @@ pub(crate) fn open_owned_child_directory<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<Dir, W::Error> {
     #[cfg(unix)]
-    let file = unix_name_checked(name, true, work, |name, work| {
+    let file = unix_name(name, work, |name, work| {
+        if matches!(name.to_bytes(), b"" | b"." | b"..") || name.to_bytes().contains(&b'/') {
+            return Err(W::invalid_request());
+        }
         #[cfg(target_os = "linux")]
         {
             use std::os::fd::FromRawFd as _;
@@ -180,7 +168,15 @@ pub(crate) fn open_owned_child_directory<W: NativeHostWork>(
         use windows::Win32::Storage::FileSystem::{
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_GENERIC_READ,
         };
-        let child = open_windows_leaf_handle(parent, name, FILE_GENERIC_READ, Some(true), work)?;
+        let child = open_windows_at(
+            parent,
+            name,
+            FILE_GENERIC_READ,
+            windows::Wdk::Storage::FileSystem::FILE_OPEN,
+            windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
+                | windows::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE,
+            work,
+        )?;
         let identity = directory_identity(parent, work)?;
         work.attempt_io(READ, || {
             let metadata = windows_file_information(&child)?;
@@ -258,16 +254,16 @@ pub(super) fn open_unix_directory_path<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-pub(super) fn with_unix_parent_leaf<W: NativeHostWork<Error = DemandError>, T>(
+pub(super) fn with_unix_parent_leaf<W: NativeHostWork, T>(
     root: &Dir,
     path: &Path,
     work: &mut W,
-    operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, DemandError>,
-) -> Result<T, DemandError> {
-    let leaf = path.file_name().ok_or(DemandError::InvalidRequest)?;
+    operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    let leaf = path.file_name().ok_or_else(W::invalid_request)?;
     let parent = open_unix_directory_path(
         root,
-        path.parent().ok_or(DemandError::InvalidRequest)?,
+        path.parent().ok_or_else(W::invalid_request)?,
         false,
         work,
     )?;

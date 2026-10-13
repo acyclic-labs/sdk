@@ -61,31 +61,12 @@ pub(crate) fn copy_resource(
     )
 }
 
-pub(crate) fn copy_file(
-    source: &FileRef,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<FileRef> {
-    if quota.work().is_none() {
-        return Ok(source.clone());
-    }
-    let file = source.copy(quota.work())?;
-    quota.adopt(file.logical_owned_bytes()?)?;
-    Ok(file)
-}
 pub(crate) fn copy_vector<T>(
     source: &[T],
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    mut copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<Vec<T>> {
-    copy_iter(source.len(), source.iter(), quota, copy)
-}
-pub(crate) fn copy_iter<'s, T: 's, U>(
-    count: usize,
-    source: impl Iterator<Item = &'s T>,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    mut copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<U>,
-) -> Result<Vec<U>> {
-    let mut values = reserve_copy_vector(count, quota)?;
+    let mut values = reserve_copy_vector(source.len(), quota)?;
     for value in source {
         values.push(copy(value, quota)?);
     }
@@ -300,16 +281,6 @@ pub(crate) fn copy_boxed<T>(
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
 }
-pub(in crate::core) fn copy_message(
-    source: &ConversationMessage,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<ConversationMessage> {
-    copy_owned(source, quota, |value, work| {
-        value.validate(work)?;
-        owned_message(value)
-    })
-}
-
 pub(crate) fn copy_event(
     source: &Event,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,

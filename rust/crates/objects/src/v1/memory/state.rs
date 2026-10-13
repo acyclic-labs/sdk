@@ -31,7 +31,7 @@ pub(super) struct Receipt {
     pub(super) digest: [u8; 32],
     pub(super) response: OwnedBytes,
     pub(super) put_info: Option<SharedInfo>,
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(super) kind: u32,
 }
 

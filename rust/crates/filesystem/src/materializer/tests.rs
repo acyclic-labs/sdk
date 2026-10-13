@@ -9,6 +9,28 @@ use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use std::fmt::Error;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn buffer_growth_funds_both_live_backings() -> Result<(), Box<dyn std::error::Error>> {
+    let width = std::mem::size_of::<usize>() as u64;
+    let work = NativeMaterializationWork::new(
+        crate::WorkBudget {
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 3 * width,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    let (mut values, mut allocation) = crate::native_host::buffer::<usize, _>(1, &mut &work)?;
+    values.push(1);
+    assert!(matches!(
+        push_buffer(&mut values, 2, &mut allocation),
+        Err(NativeTreeMaterializationError::Work(_))
+    ));
+    assert_eq!(values, [1]);
+    Ok(())
+}
+
 fn allow<S: std::error::Error + 'static, B: std::error::Error + 'static>()
 -> std::future::Ready<Result<(), MaterializationError<S, B>>> {
     std::future::ready(Ok(()))
@@ -496,11 +518,11 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
     let (_temporary, root, _operation, backend) = fixture();
     let directory = root.join("directory");
     std::fs::create_dir(&directory)?;
-    let before = native_metadata(
-        &backend
-            .held_root
-            .stat(Path::new("directory"), &mut backend.work())?,
-    );
+    let before = native_metadata(&host_path(
+        Path::new("directory"),
+        &mut backend.work(),
+        |path, work| backend.held_root.stat(path, work),
+    )?);
     let mut desired = before.clone();
     #[cfg(unix)]
     {
@@ -533,11 +555,11 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
             &mut allow,
         )
         .await?;
-    let applied = native_metadata(
-        &backend
-            .held_root
-            .stat(Path::new("directory"), &mut backend.work())?,
-    );
+    let applied = native_metadata(&host_path(
+        Path::new("directory"),
+        &mut backend.work(),
+        |path, work| backend.held_root.stat(path, work),
+    )?);
     assert_eq!(applied.posix_mode, desired.posix_mode);
     assert_eq!(applied.windows_attributes, desired.windows_attributes);
     materializer
@@ -547,11 +569,11 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
             &mut allow,
         )
         .await?;
-    let restored = native_metadata(
-        &backend
-            .held_root
-            .stat(Path::new("directory"), &mut backend.work())?,
-    );
+    let restored = native_metadata(&host_path(
+        Path::new("directory"),
+        &mut backend.work(),
+        |path, work| backend.held_root.stat(path, work),
+    )?);
     assert_eq!(restored.posix_mode, before.posix_mode);
     assert_eq!(restored.windows_attributes, before.windows_attributes);
     assert_eq!(std::fs::read(directory.join("child"))?, b"concurrent");

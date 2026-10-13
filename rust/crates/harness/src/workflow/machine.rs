@@ -108,10 +108,7 @@ impl MachineRegistry {
         for (identity, machine) in &self.0 {
             copied.insert(identity.copy_fields(&mut quota)?, Arc::clone(machine));
         }
-        work.remaining().map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
+        work.remaining()?;
         quota.transfer();
         drop(quota);
         Ok((Self(copied), observer.into_custody()?))
@@ -231,18 +228,6 @@ impl MachineRegistry {
         })
     }
 
-    /// Validates a checkpoint on its original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_checkpoint_with_native_work(
-        &self,
-        checkpoint: &MachineCheckpoint,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let io = PreparationIo::from_native_work(work)?;
-        let result = self.validate_checkpoint(checkpoint, Some(&io));
-        finish_native_io(result, io, 0).map(|_| ())
-    }
-
     /// Initializes paid schema-checked state.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn initialize_with_native_work(
@@ -359,8 +344,10 @@ impl MachineRegistry {
                     Cow::Borrowed(&record.input)
                 };
             let (next, transition, retained, _) = self.step(checkpoint, input, io)?;
-            if next != record.next || transition != record.transition {
-                return Err(error(
+            if record.checkpoint()? != (&next.machine, next.revision, &next.state)
+                || transition != record.transition
+            {
+                return Err(stock_boundary(
                     io,
                     Conflict,
                     "workflow history disagrees with its pinned machine",

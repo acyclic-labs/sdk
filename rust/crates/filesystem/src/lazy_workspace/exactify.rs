@@ -27,7 +27,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         key: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx)?;
+        self.validate_snapshot(cut, ctx).await?;
         retire_node(
             self.store
                 .load_lazy_overlay(cut.overlay, ctx)

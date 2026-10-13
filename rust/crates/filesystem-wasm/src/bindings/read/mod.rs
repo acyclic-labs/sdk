@@ -51,7 +51,6 @@ pub struct BrowserFileReadResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Resolves one canonical absolute path without following links.
     #[wasm_bindgen(js_name = lookupNoFollow)]
     pub async fn lookup_no_follow(
         &mut self,
@@ -69,7 +68,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Resolves a bounded path batch with shared authenticated frontiers.
     #[wasm_bindgen(js_name = lookupBatchNoFollow)]
     pub async fn lookup_batch_no_follow(
         &mut self,
@@ -111,7 +109,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Returns one complete no-follow file record and canonical metadata.
     #[wasm_bindgen(js_name = statNoFollow)]
     pub async fn stat_no_follow(&mut self, path: String) -> Result<Ts<BrowserStatResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
@@ -138,7 +135,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Reads one complete candidate file record by stable identity.
     #[wasm_bindgen(js_name = readFileRecordById)]
     pub async fn read_file_record_by_id(
         &mut self,
@@ -152,7 +148,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Resolves an ordered path batch once into immutable generation-bound handles.
     #[wasm_bindgen(js_name = resolveFiles)]
     pub async fn resolve_files(
         &mut self,
@@ -200,7 +195,6 @@ impl BrowserCheckout {
         Ok(BrowserResolvedFiles { files, work })
     }
 
-    /// Reads one exact logical regular-file range.
     #[wasm_bindgen(js_name = readFileRange)]
     pub async fn read_file_range(
         &mut self,
@@ -216,7 +210,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Reads one exact logical range by stable file identity.
     #[wasm_bindgen(js_name = readFileRangeById)]
     pub async fn read_file_range_by_id(
         &mut self,
@@ -235,7 +228,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Reads one symbolic link's exact opaque target bytes without following it.
     #[wasm_bindgen(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(
         &mut self,
@@ -249,7 +241,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Reads one opaque Windows reparse-point payload without interpreting it.
     #[wasm_bindgen(js_name = readReparsePoint)]
     pub async fn read_reparse_point(
         &mut self,

@@ -17,7 +17,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         drop(name);
         let cut = match self.store.load_lazy_workspace(id, ctx).await? {
             Some(state) => {
-                self.fork_origin(&state, id, key.operation_id(), ctx)?
+                self.fork_origin(&state, id, key.operation_id(), ctx)
+                    .await?
                     .snapshot
             }
             None => self.snapshot(ctx).await?,
@@ -84,10 +85,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if id == self.workspace.id() {
             return Err(LazyWorkspaceError::Concurrent);
         }
-        self.validate_snapshot(cut, ctx)?;
+        self.validate_snapshot(cut, ctx).await?;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
-                let origin = self.fork_origin(&state, id, operation, ctx)?;
+                let origin = self.fork_origin(&state, id, operation, ctx).await?;
                 return if origin.snapshot == cut {
                     Ok(cut)
                 } else {
@@ -125,7 +126,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
         Err(LazyWorkspaceError::Concurrent)
     }
-    fn fork_origin(
+    async fn fork_origin(
         &self,
         state: &LazyWorkspaceState,
         id: WorkspaceId,
@@ -141,7 +142,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         {
             return Err(LazyWorkspaceError::Concurrent);
         }
-        self.validate_snapshot(origin.snapshot, ctx)?;
+        self.validate_snapshot(origin.snapshot, ctx).await?;
         if origin.phase == LazyForkPhase::Prepared
             && (state.source != origin.snapshot.source
                 || state.overlay != origin.snapshot.overlay
@@ -189,7 +190,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 .load_lazy_workspace(child.id(), ctx)
                 .await?
                 .ok_or(LazyWorkspaceError::Concurrent)?;
-            let origin = self.fork_origin(&state, child.id(), operation, ctx)?;
+            let origin = self.fork_origin(&state, child.id(), operation, ctx).await?;
             if origin.snapshot != cut {
                 return Err(LazyWorkspaceError::Concurrent);
             }

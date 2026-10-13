@@ -16,7 +16,9 @@ pub(super) fn native_entry_fingerprint(
         return Ok(None);
     };
     let mut hasher = blake3::Hasher::new();
-    hash_native_entry(entry, &metadata, &mut hasher, work)?;
+    host_path(entry.1, &mut &*work, |path, _| {
+        hash_native_entry(entry.0, path, &metadata, &mut hasher, work)
+    })?;
     Ok(Some(*hasher.finalize().as_bytes()))
 }
 pub(super) fn native_entry_fingerprint_for_edit(
@@ -111,52 +113,45 @@ fn hash_native_metadata_edit(
     Ok(())
 }
 fn hash_native_entry(
-    entry: &(&HostRoot, &Path),
+    root: &HostRoot,
+    #[cfg(unix)] path: &Path,
+    #[cfg(windows)] path: &[u16],
     metadata: &HostStat,
     hasher: &mut blake3::Hasher,
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
     hash_native_metadata_edit(metadata, None, hasher, work)?;
-    hash_bytes(&metadata.len().to_le_bytes(), hasher, work)?;
-    #[cfg(unix)]
-    {
-        for value in [
-            metadata.nlink(),
-            u64::from(metadata.uid()),
-            u64::from(metadata.gid()),
-            metadata.rdev(),
-        ] {
-            hash_bytes(&value.to_le_bytes(), hasher, work)?;
-        }
-        hash_bytes(&metadata.mtime().to_le_bytes(), hasher, work)?;
-        hash_bytes(&metadata.mtime_nsec().to_le_bytes(), hasher, work)?;
+    for value in [
+        metadata.len(),
+        #[cfg(unix)]
+        metadata.nlink(),
+        #[cfg(unix)]
+        u64::from(metadata.uid()),
+        #[cfg(unix)]
+        u64::from(metadata.gid()),
+        #[cfg(unix)]
+        metadata.rdev(),
+        #[cfg(unix)]
+        metadata.mtime() as u64,
+        #[cfg(unix)]
+        metadata.mtime_nsec() as u64,
+        #[cfg(windows)]
+        metadata.last_write_time(),
+    ] {
+        hash_bytes(&value.to_le_bytes(), hasher, work)?;
     }
-    #[cfg(windows)]
-    hash_bytes(&metadata.last_write_time().to_le_bytes(), hasher, work)?;
     let kind = metadata.file_type();
     if kind.is_symlink() {
+        let (target, _allocation) =
+            root.read_link(path, work.remaining()?.source_bytes_read, &mut &*work)?;
         #[cfg(unix)]
-        {
-            let (target, _allocation) =
-                entry
-                    .0
-                    .read_link(entry.1, work.remaining()?.source_bytes_read, &mut &*work)?;
-            hash_bytes(&target, hasher, work)?;
-        }
+        hash_bytes(&target, hasher, work)?;
         #[cfg(windows)]
-        {
-            let (target, _allocation) =
-                crate::native_host::with_wide_path(entry.1, &mut &*work, |path, meter| {
-                    entry
-                        .0
-                        .read_link_wide(path, work.remaining()?.source_bytes_read, meter)
-                })?;
-            for unit in target {
-                hash_bytes(&unit.to_le_bytes(), hasher, work)?;
-            }
+        for unit in target {
+            hash_bytes(&unit.to_le_bytes(), hasher, work)?;
         }
     } else if kind.is_dir() {
-        let directory = entry.0.open_dir_held(entry.1, &mut &*work)?;
+        let directory = root.open_dir_held(path, &mut &*work)?;
         let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
         if identity != metadata.identity() {
             return Err(NativeTreeMaterializationError::ExternalMutation);
@@ -165,22 +160,43 @@ fn hash_native_entry(
             directory,
             identity,
         };
-        let (mut reader, _buffer) = root.read_dir_stats(Path::new(""), &mut &*work)?;
+        let (mut reader, _buffer) =
+            crate::native_host::read_dir_held(&root.directory, &mut &*work)?;
         let mut names = Vec::new();
         let mut capacity = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        while let Some(name) = next_name(&mut reader, work)? {
-            push_buffer(&mut names, name, &mut capacity)?;
+        while let Some((entry, allocation)) = reader.next(&mut &*work)? {
+            push_buffer(&mut names, (entry.name, allocation), &mut capacity)?;
         }
         work.charge(NativeResourceCredit::Items.delta(names.len() as u64))?;
-        names.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        names.sort_unstable_by(|a, b| {
+            #[cfg(unix)]
+            {
+                a.0.cmp(&b.0)
+            }
+            #[cfg(windows)]
+            {
+                native_utf16_name_bytes(a.0.iter().copied())
+                    .cmp(native_utf16_name_bytes(b.0.iter().copied()))
+            }
+        });
         for (name, _allocation) in names {
-            hash_native_os_str(&name, hasher, work)?;
+            hash_native_name(&name, hasher, work)?;
+            #[cfg(unix)]
             let path = Path::new(&name);
+            #[cfg(windows)]
+            let path = name.as_slice();
             let metadata = root.stat(path, &mut &*work)?;
-            hash_native_entry(&(&root, path), &metadata, hasher, work)?;
+            hash_native_entry(&root, path, &metadata, hasher, work)?;
         }
     } else if kind.is_file() {
-        let file = entry.0.open_file(entry.1, &mut &*work)?.into_std();
+        let file = root
+            .open_file(
+                path,
+                #[cfg(windows)]
+                ::windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+                &mut &*work,
+            )?
+            .into_std();
         let actual = crate::native_host::stat_file(&file, &mut &*work)?;
         if actual.identity() != metadata.identity() {
             return Err(NativeTreeMaterializationError::ExternalMutation);
@@ -211,8 +227,10 @@ fn hash_native_entry(
             remaining -= read as u64;
             hash_bytes(&buffer[..read], hasher, work)?;
         }
-        let after = crate::native_host::stat_file(&file, &mut &*work)?;
-        if !same_file_version(metadata, &after)? {
+        if !same_file_version(
+            metadata,
+            &crate::native_host::stat_file(&file, &mut &*work)?,
+        )? {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
     }
@@ -243,12 +261,13 @@ pub(super) fn apply_native_metadata(
     expected: Option<[u8; 32]>,
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    let parent = entry.0.open_dir_held(
+    let parent = host_path(
         entry
             .1
             .parent()
             .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         &mut &*work,
+        |path, work| entry.0.open_dir_held(path, work),
     )?;
     let leaf = Path::new(
         entry
@@ -256,10 +275,13 @@ pub(super) fn apply_native_metadata(
             .file_name()
             .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
     );
-    let metadata = entry.0.stat(entry.1, &mut &*work)?;
+    let metadata = host_path(entry.1, &mut &*work, |path, work| entry.0.stat(path, work))?;
     #[cfg(unix)]
     let file = if metadata.is_dir() {
-        entry.0.open_dir_held(entry.1, &mut &*work)?.into_std_file()
+        host_path(entry.1, &mut &*work, |path, work| {
+            entry.0.open_dir_held(path, work)
+        })?
+        .into_std_file()
     } else {
         crate::native_host::open_leaf(
             &parent,
@@ -273,11 +295,17 @@ pub(super) fn apply_native_metadata(
         use windows::Win32::Storage::FileSystem::{
             FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
         };
-        crate::native_host::open_windows_leaf_handle(
+        crate::native_host::open_windows_at(
             &parent,
             name,
             FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
-            Some(metadata.is_dir()),
+            windows::Wdk::Storage::FileSystem::FILE_OPEN,
+            windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
+                | if metadata.is_dir() {
+                    windows::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
+                } else {
+                    windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE
+                },
             meter,
         )
     })?;
@@ -339,24 +367,22 @@ pub(super) fn apply_native_metadata(
     }
     Ok(())
 }
-#[cfg(unix)]
-fn hash_native_os_str(
-    value: &std::ffi::OsStr,
+fn hash_native_name(
+    #[cfg(unix)] value: &std::ffi::OsStr,
+    #[cfg(windows)] value: &[u16],
     hasher: &mut blake3::Hasher,
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    use std::os::unix::ffi::OsStrExt as _;
-    hash_bytes(value.as_bytes(), hasher, work)
-}
-#[cfg(windows)]
-fn hash_native_os_str(
-    value: &std::ffi::OsStr,
-    hasher: &mut blake3::Hasher,
-    work: &NativeMaterializationWork,
-) -> Result<(), NativeTreeMaterializationError> {
-    use std::os::windows::ffi::OsStrExt as _;
-    for unit in value.encode_wide() {
-        hash_bytes(&unit.to_le_bytes(), hasher, work)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        hash_bytes(value.as_bytes(), hasher, work)
     }
-    Ok(())
+    #[cfg(windows)]
+    {
+        for unit in value {
+            hash_bytes(&unit.to_le_bytes(), hasher, work)?;
+        }
+        Ok(())
+    }
 }

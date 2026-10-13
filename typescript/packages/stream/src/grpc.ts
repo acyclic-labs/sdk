@@ -4,8 +4,8 @@ import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, commitId, type StreamFailureCode } from "./types.js";
+import { checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { StreamError, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
@@ -181,11 +181,6 @@ function deliveryAcknowledgements(client: ReturnType<typeof createStreamGrpcClie
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
-function checkedRecord(record: wire.Record | undefined, expected: bigint): EncodedRecord {
-  if (record === undefined || record.sequence !== expected || record.value.length > wire.StreamLimit.MAX_RECORD_BYTES) throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
-  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
-  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
-}
 /** Matches the Rust gRPC status mapping; unknown peer statuses remain unavailable. */
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
@@ -203,7 +198,6 @@ function providerError(error: unknown, operation: string): Error {
     case Code.FailedPrecondition:
       if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed") code = reason;
       break;
-    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, reason);

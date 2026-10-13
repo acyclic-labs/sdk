@@ -76,14 +76,14 @@ where
                 let journal = self.workflow_journal(task, fence.clone()).await?;
                 #[cfg(not(target_arch = "wasm32"))]
                 let present = if let Some(io) = io {
-                    let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native journal requires original work"))?;
-                    let admission = journal.admission_with_native_work(work)?.await?;
+                    io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native journal requires original work"))?;
+                    let admission = journal.admission(Some(io))?.await?;
                     let present = admission.0.is_some();
                     drop(admission);
                     present
-                } else { journal.admission().await?.is_some() };
+                } else { journal.admission(None)?.await?.0.is_some() };
                 #[cfg(target_arch = "wasm32")]
-                let present = journal.admission().await?.is_some();
+                let present = journal.admission(None)?.await?.0.is_some();
                 if !present { return self.finish_known_reconciliation(task, &fence, io).await; }
                 let transition = journal.observe_latest_record(io).await?.map(|record| record.transition);
                 let Some(transition) = transition else { return self.finish_known_reconciliation(task, &fence, io).await; };

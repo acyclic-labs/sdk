@@ -154,7 +154,7 @@ pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError, MergeGenerationOutcome, MergeGenerationRequest, MergeGenerationResult, merge_generation_async};
 #[cfg(test)]
 pub(crate) use merge::{
-    file_table_mutation, merge_directory_record_async, merge_file_fields, resolve_three, tree_mutation};
+    file_table_mutation, merge_directory_record_async, resolve_three, tree_mutation};
 pub use metadata::{
     FileMetadata, MetadataField, decode_file_metadata, encode_file_metadata, file_metadata_id};
 pub use mutation::{

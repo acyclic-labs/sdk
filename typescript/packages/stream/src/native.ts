@@ -5,9 +5,9 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
-import { StreamError, commitId, type StreamFailureCode } from "./types.js";
+import { StreamError, type StreamFailureCode } from "./types.js";
 import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 
 let modulePromise: Promise<typeof GeneratedNative> | undefined;
@@ -271,14 +271,6 @@ export class NativeStreamProvider implements StreamProvider {
     try { return projectMemoryResponse(operation, value); }
     catch (error) { throw invalidResponse(operation, error); }
   }
-}
-
-function checkedRecord(record: wire.Record | undefined, expected: bigint): EncodedRecord {
-  if (record === undefined || record.sequence !== expected || record.value.length > wire.StreamLimit.MAX_RECORD_BYTES) {
-    throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
-  }
-  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
-  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
 }
 
 function invalidResponse(operation: string, error: unknown): StreamError {
