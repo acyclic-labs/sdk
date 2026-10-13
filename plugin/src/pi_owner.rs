@@ -3,6 +3,7 @@
 use super::pi_runtime::PiRuntimeAuthority;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::conversation::ContentResidencyVerifier;
+use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::{
     AgentId, Capabilities, Error, Result, TaskId,
     conversation::{Limits, VolumeOperation, VolumeRef},
@@ -58,9 +59,8 @@ impl PiOwnerPolicy {
             0,
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let journal = self.journal.copy(&mut Some(&mut io))?;
         let grants = Capabilities::copy(self.grants.iter(), work)?;
         combine_native_metadata((
@@ -196,9 +196,8 @@ impl PiOwnerConfig {
             return Err(native_invalid("invalid Pi owner configuration"));
         }
         let storage = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             self.policy.session_limits.validate(&mut Some(&mut io))?;
             let grants = [
                 self.policy
@@ -218,9 +217,8 @@ impl PiOwnerConfig {
         };
         let issuer =
             self.issuer_with_native_work(AggregateKind::Task, self.policy.root_task, work)?;
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let verifier = issuer.0.verifier(&mut Some(&mut io))?;
         let signed = issuer.0.issue(
             &verifier.audience().id,
@@ -255,9 +253,7 @@ impl PiOwnerConfig {
         };
         authority.validate(
             &self.policy.journal,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )?;
         Ok(authority)
     }
@@ -292,14 +288,11 @@ impl PiOwnerConfig {
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<(acyclic_harness::core::AuthorityVerifier, NativeAllocation)> {
-        let original = self.authority(work)?;
-        drop(original);
         let issuer =
             self.issuer_with_native_work(AggregateKind::Conversation, self.policy.root_task, work)?;
         let verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             let value = issuer.0.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -356,8 +349,6 @@ impl PiOwnerConfig {
         (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
         NativeAllocation,
     )> {
-        let original = self.authority(work)?;
-        drop(original);
         let audience_id = work.display(&task)?;
         let audience = (
             Authority {
@@ -368,9 +359,8 @@ impl PiOwnerConfig {
         );
         let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
         let scope_id = work.display(&scope_id)?;
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let scope = issuer
             .0
             .issue(&scope_id.0, grants, Some(agent), None, &mut Some(&mut io))?;
@@ -413,8 +403,6 @@ impl PiOwnerConfig {
         session: &Path,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
-        let authority = self.authority(work)?;
-        drop(authority);
         let session = work.path(root, Some(session))?;
         let plain = super::pi_root_provider::guarded_pi_bytes(self, MAXIMUM_OWNER_BYTES, work)?;
         let plain = NativeOwnerPlaintext {

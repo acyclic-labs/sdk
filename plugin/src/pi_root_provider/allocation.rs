@@ -1,5 +1,6 @@
 //! Idempotent creation of the selected root resources.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl PiRootProvider {
     pub(super) async fn capture_inputs_with_native_work(
@@ -45,9 +46,7 @@ impl PiRootProvider {
             self.execution_owner()?
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             self.require_native_creation()?;
@@ -93,13 +92,12 @@ impl PiRootProvider {
     ) -> Result<(EffectObservation, NativeAllocation)> {
         self.check_native_ledger(work)?;
         self.require_native_creation()?;
+        let cancellation = work.cancellation().clone();
         let owner = self.execution_owner()?;
         owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
             )
             .await?;
         self.bind_conversation_with_native_work(effect, attempt, work)
@@ -136,9 +134,7 @@ impl PiRootProvider {
                 owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                        )),
+                        &mut Some(&mut &PreparationIo::from_native_work(work)?),
                     )
                     .await?;
                 self.require_native_creation()?;
@@ -175,7 +171,7 @@ impl PiRootProvider {
                             generation.workspace().id(),
                             &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                                 work,
-                                cancellation: work.cancellation(),
+                                cancellation: &cancellation,
                             },
                         )
                         .await?
@@ -207,9 +203,7 @@ impl PiRootProvider {
                 owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                        )),
+                        &mut Some(&mut &PreparationIo::from_native_work(work)?),
                     )
                     .await?;
                 self.require_native_creation()?;
@@ -217,7 +211,7 @@ impl PiRootProvider {
                     Some(workspace) => {
                         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                             work,
-                            cancellation: work.cancellation(),
+                            cancellation: &cancellation,
                         };
                         let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
                             &self.store,
@@ -248,7 +242,7 @@ impl PiRootProvider {
                             self.creation_operation_with_native_work(effect, attempt, key, work)?;
                         let name = {
                             let mut io = acyclic_harness::store::HistoryWork::new(
-                                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                                PreparationIo::from_native_work(work)?,
                             );
                             let value = volume.storage_name(&mut Some(&mut io))?;
                             (value, io.into_custody()?)
@@ -262,7 +256,7 @@ impl PiRootProvider {
                             operation,
                             &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                                 work,
-                                cancellation: work.cancellation(),
+                                cancellation: &cancellation,
                             },
                         )
                         .await
@@ -297,18 +291,14 @@ impl PiRootProvider {
         owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
             )
             .await?;
         let volume = &self.preparation.request.binding.scratch.volume;
         owner.require_volume_grant(
             volume,
             VolumeOperation::Write,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )?;
         if self
             .creation_with_native_work(
@@ -325,9 +315,7 @@ impl PiRootProvider {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             self.require_native_creation()?;
@@ -335,30 +323,44 @@ impl PiRootProvider {
                 self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
             let name = {
                 let mut io = acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    PreparationIo::from_native_work(work)?,
                 );
                 let value = volume.storage_name(&mut Some(&mut io))?;
                 (value, io.into_custody()?)
             };
+            let owner = Arc::clone(self.journal_owner.as_ref().ok_or_else(|| {
+                Self::native_failure("root creation requires its original execution owner")
+            })?);
+            let mut guard =
+                acyclic_fs::NativeAuthorityGuard(move |work: &NativeMaterializationWork| {
+                    let owner = Arc::clone(&owner);
+                    let work = work.clone();
+                    async move {
+                        owner
+                            .verify(
+                                false,
+                                &mut Some(&mut &PreparationIo::from_native_work(&work)?),
+                            )
+                            .await
+                    }
+                });
             self.fs
-                .create_workspace_with_operation_with_native_work(
+                .create_workspace_with_operation::<_, _, Error>(
                     &name.0,
                     VolumeConfig::portable(Lifecycle::Durable),
                     operation,
                     work,
-                    work.cancellation(),
+                    &cancellation,
+                    Some(&mut guard),
                 )
-                .await
-                .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                .await?;
         }
         #[cfg(test)]
         self.test_fault_native("before-result-stage")?;
         owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
             )
             .await?;
         let observation = self

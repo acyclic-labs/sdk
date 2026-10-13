@@ -8,7 +8,7 @@ use acyclic_harness::{
     filesystem::{TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
     runtime::{DurableTaskHost, TaskContext},
     scheduler::LeaseFence,
-    workflow::{MachineCheckpoint, WorkflowCommand},
+    workflow::{MachineTransition, WorkflowCommand},
 };
 use pi_host::PiControlHost;
 
@@ -27,9 +27,9 @@ impl PiControlHost<'_> {
         )
         .await?;
         let (recovered, custody) = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
-            );
+            let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(
+                &self.work,
+            )?);
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -112,9 +112,7 @@ impl PiControlHost<'_> {
         let effect = acyclic_harness::effect_host::task_effect_id(
             task,
             pi_root_inputs::preparation_operation(task, &self.work)?,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
         )?;
         provider
             .observe_allocation_with_native_work(
@@ -166,11 +164,13 @@ impl PiControlHost<'_> {
 
     fn checkpoint_control_reply(
         &self,
-        mut checkpoint: (MachineCheckpoint, acyclic_fs::NativeAllocation),
+        mut checkpoint: (Option<MachineTransition>, acyclic_fs::NativeAllocation),
         operation: acyclic_harness::OperationId,
     ) -> acyclic_harness::Result<Option<(Value, acyclic_fs::NativeAllocation)>> {
-        let mut reply =
-            pi_task::control_reply(std::mem::take(&mut checkpoint.0.state), &self.work)?;
+        let Some(transition) = checkpoint.0.take() else {
+            return Ok(None);
+        };
+        let mut reply = pi_task::control_reply(transition.state, &self.work)?;
         if let Err(cause) = checkpoint.1.absorb(&mut reply.1) {
             drop(reply.0);
             return Err(acyclic_harness::Error::NativeWork {
@@ -203,21 +203,26 @@ impl PiControlHost<'_> {
             &self.work,
         )
         .await?;
-        let checkpoint = self
-            .runtime
-            .runtime
-            .observe_workflow_checkpoint_with_native_work(task, &self.work)
+        let workflow = self.runtime.workflow(task, &self.work).await?;
+        let revision = workflow.0.checkpoint().revision;
+        let checkpoint = workflow
+            .0
+            .latest_transition_with_native_work(&self.work)
             .await?;
+        let waiting = match checkpoint
+            .0
+            .as_ref()
+            .map(|transition| transition.commands.as_slice())
+        {
+            Some([command]) => Some(command.operation_id),
+            Some([]) => None,
+            _ => return Err(acyclic_harness::Error::Indeterminate(operation)),
+        };
+        drop(workflow);
         if let Some(reply) = self.checkpoint_control_reply(checkpoint, operation)? {
             return Ok(Some(reply));
         }
-        let suspension = host
-            .workflow_suspension_with_native_work(task, &self.work)
-            .await?;
-        let Some(wait) = &suspension.0 else {
-            return Err(acyclic_harness::Error::Indeterminate(operation));
-        };
-        if let Some(waiting) = wait.waiting_command {
+        if let Some(waiting) = waiting {
             if waiting != operation {
                 return Err(acyclic_harness::Error::NativeBoundary {
                     code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -227,29 +232,49 @@ impl PiControlHost<'_> {
             if !wake_pending {
                 return Ok(None);
             }
-            host.wake_command_with_native_work(task, wait.revision, waiting, &self.work)
-                .await?;
+            let wake = pi_root_provider::stage_pi_input(
+                &self.protected,
+                &self.filesystem,
+                operation,
+                "command-wake",
+                &(),
+                &self.work,
+            )
+            .await?;
+            let key = self.work.display(&format_args!(
+                "task-command-wake:{task}:{revision}:{waiting}"
+            ))?;
+            host.resume_workflow(
+                task,
+                revision,
+                wake.0,
+                acyclic_harness::IdempotencyKey::new(key.0)?,
+                Some(waiting),
+                &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
+            )
+            .await?;
+            drop(wake.1);
+            drop(key.1);
         } else {
             let key = self
                 .work
                 .display(&format_args!("acyclic.pi/control/{task}/{operation}"))?;
             host.resume_workflow(
                 task,
-                wait.revision,
+                revision,
                 input.0,
                 acyclic_harness::IdempotencyKey::new(key.0)?,
                 None,
-                Some(&self.work),
+                &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
             )
             .await?;
             drop(key.1);
         }
-        drop(suspension);
         self.drive_root().await?;
-        let checkpoint = self
-            .runtime
-            .runtime
-            .observe_workflow_checkpoint_with_native_work(task, &self.work)
+        let workflow = self.runtime.workflow(task, &self.work).await?;
+        let checkpoint = workflow
+            .0
+            .latest_transition_with_native_work(&self.work)
             .await?;
         let result = self.checkpoint_control_reply(checkpoint, operation);
         drop(input.1);
@@ -292,19 +317,13 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner(
-                    task,
-                    &fence,
-                    Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-                )
+                .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
                 .await?
                 .into_native_shared(work)?;
             journal_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             let expected = pi_root_provider::guarded_pi_value(
@@ -322,7 +341,7 @@ impl PiControlHost<'_> {
             let content = acyclic_harness::runtime::content_residency_verifier(
                 Arc::clone(&context),
                 Arc::clone(&journal_owner),
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+                Some(&PreparationIo::from_native_work(work)?),
             )?;
             let authority = owner.effect_authority_with_native_work(work)?;
             let provider = pi_root_provider::root_provider(
@@ -373,19 +392,13 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner(
-                    task,
-                    &fence,
-                    Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-                )
+                .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
                 .await?
                 .into_native_shared(work)?;
             journal_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             pi_root_provider::bind_root_output_context_with_native_work(

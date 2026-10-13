@@ -5,18 +5,21 @@ use super::{
     pi_root::PiRootIntent,
     pi_task::{PiTaskExecution, PiTaskInput, PiTaskMachine},
 };
+use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::{
     Admission, AgentId, OperationId, TaskId,
     conversation::{FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, AuthorityIssuer, AuthorityVerifier, Scope},
     filesystem::{FilesystemHost, FilesystemResourceCreationProvider, FilesystemTaskRuntime},
-    runtime::{RuntimeScope, TaskDefinition, TaskRegistry},
+    runtime::{RuntimeScope, TaskDefinition, TaskRegistry, TaskSpawner},
     scheduler::SessionLimits,
     tool::ToolRegistry,
     workflow::MachineRegistry,
 };
 use acyclic_stream::LocalStream;
 use std::sync::Arc;
+
+mod workflow;
 
 /// Trusted service configuration, supplied independently of route bytes.
 pub(crate) struct PiRuntimeAuthority {
@@ -154,9 +157,7 @@ impl PiTaskRuntime {
     ) -> acyclic_harness::Result<Self> {
         authority.validate(
             journal,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )?;
         let (tools, _tools_custody) = ToolRegistry::new(work)?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
@@ -185,7 +186,7 @@ impl PiTaskRuntime {
         let creation_providers: [Arc<
             dyn acyclic_harness::resource_preparation::ResourceCreationProvider,
         >; 1] = [creation];
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let io = PreparationIo::from_native_work(work)?;
         let runtime = FilesystemTaskRuntime::open(
             stream,
             filesystem,
@@ -271,9 +272,8 @@ impl PiTaskRuntime {
                 VolumeOperation::Write,
             )))
         {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             let grant = volume.capability(operation, &mut Some(&mut io))?;
             if !authority.scope.grants().contains(&grant) {
                 return Err(acyclic_harness::Error::NativeBoundary {
@@ -292,24 +292,20 @@ impl PiTaskRuntime {
             authority.maximum_payload_bytes,
             work,
         )?;
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let io = PreparationIo::from_native_work(work)?;
         acyclic_harness::store::HistoryIo::absorb_native_custody(&mut &io, value.1)?;
-        let (record, retained) = self
-            .runtime
-            .harness()
-            .registered_admission(
-                operation,
-                &self.definition.identity().name,
-                &self.definition.identity().version,
-                value.0,
-                None,
-                Some(self.definition.identity().digest),
-                Some(&io),
-            )?;
-        self.runtime
-            .task_host()
-            .admit_with_native_work((record, io.take_native_custody(retained)?), work)?
-            .await
+        let (record, retained) = self.runtime.harness().registered_admission(
+            operation,
+            &self.definition.identity().name,
+            &self.definition.identity().version,
+            value.0,
+            None,
+            Some(self.definition.identity().digest),
+            Some(&io),
+        )?;
+        let record_custody = io.take_native_custody(retained)?;
+        let admission = self.runtime.task_host().admit(record).await?;
+        Ok((admission, record_custody))
     }
 }
 

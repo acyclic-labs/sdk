@@ -44,11 +44,13 @@ impl PiSession {
         )?;
         let operations = PiForkOperations::new(original, &work)?;
         let task = commit.child.task_id;
+        let resources =
+            pi_root_provider::service_resources_with_native_work(&self.resources, &work)?;
         let coordinator = pi_fork::PiForkCoordinator::new(
             self.runtime.clone(),
             self.filesystem.clone(),
             self.stream.clone(),
-            &self.resources,
+            &resources.0,
             native.protected.clone(),
             &work,
         )?;
@@ -239,14 +241,11 @@ impl PiSession {
             let waiting = if live.is_some() {
                 true
             } else {
-                self.runtime
-                    .runtime
-                    .task_host()
-                    .workflow_suspension_with_native_work(caller, &work)
-                    .await?
-                    .0
-                    .as_ref()
-                    .is_some_and(|state| state.waiting_command == Some(original))
+                let workflow = self.runtime.workflow(caller, &work).await?;
+                let transition = workflow.0.latest_transition_with_native_work(&work).await?;
+                transition.0.as_ref().is_some_and(|transition| {
+                    matches!(transition.commands.as_slice(), [command] if command.operation_id == original)
+                })
             };
             if waiting {
                 let admission = self

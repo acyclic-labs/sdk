@@ -1,5 +1,6 @@
 //! Validation of the original Pi fork.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl<'a> PiForkCoordinator<'a> {
     pub(super) fn validate_plan(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
@@ -13,13 +14,9 @@ impl<'a> PiForkCoordinator<'a> {
         {
             let work = &self.work;
             plan.request
-                .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )))?;
+                .validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?;
             plan.preparation
-                .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )))?;
+                .validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?;
         }
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &plan.request.child.input,
@@ -34,6 +31,9 @@ impl<'a> PiForkCoordinator<'a> {
                 FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
             )?;
         let request = &decoded_request.0;
+        request.validate(&mut Some(&mut &PreparationIo::from_native_work(
+            &self.work,
+        )?))?;
         let child_launch = match &child_input.execution {
             PiTaskExecution::Child { launch } => launch,
             PiTaskExecution::Host { .. } => {
@@ -47,12 +47,24 @@ impl<'a> PiForkCoordinator<'a> {
             let work = &self.work;
             plan.commit.launch.validate(work)?
         }
-        let project_selected = request.selections.iter().any(|selection| matches!(
-            &selection.revision, acyclic_harness::fork::ResourceRevision::Project { volume, generation }
-                if volume == &plan.source.project && generation == &plan.source.project_generation));
+        let mut projects =
+            request
+                .selections
+                .iter()
+                .filter_map(|selection| match &selection.revision {
+                    acyclic_harness::fork::ResourceRevision::Project { generation, .. }
+                        if selection.required =>
+                    {
+                        Some(generation)
+                    }
+                    _ => None,
+                });
+        let project_selected = projects.next().is_some_and(|generation| {
+            generation.as_resource().key() == plan.frozen.authored_generation.digest().as_bytes()
+        }) && projects.next().is_none();
         let scratch_selected = request.selections.iter().any(|selection| matches!(
-            &selection.revision, acyclic_harness::fork::ResourceRevision::PrivateVolume { volume, generation, paths }
-                if volume == &plan.source.private_volume && generation == &plan.source.private_generation && paths.is_empty()));
+            &selection.revision, acyclic_harness::fork::ResourceRevision::PrivateVolume { paths, .. }
+                if selection.required && paths.is_empty()));
         let native_snapshot = match request
             .authorized_source
             .as_ref()
@@ -71,8 +83,6 @@ impl<'a> PiForkCoordinator<'a> {
                     && source.source_task == plan.commit.source_task
                     && source.operation_id == operations.fork
                     && source.graph_root == self.owner.policy().root_task
-                    && source.project == plan.source.project
-                    && source.generation == plan.source.project_generation
                     && native_snapshot
             }
             _ => false,
@@ -87,7 +97,7 @@ impl<'a> PiForkCoordinator<'a> {
             || plan.request.child.parent != Some(caller)
             || !plan.request.child.resource_proofs.is_empty()
             || plan.request.source_checkpoint.is_none()
-            || plan.source.task != caller
+            || !task_id_text_matches(caller, &request.parent.id)
             || plan
                 .request
                 .command
@@ -122,8 +132,6 @@ impl<'a> PiForkCoordinator<'a> {
                 .environment
                 .keys()
                 .any(|key| crate::pi_caller::is_environment_key(key))
-            || plan.source.project_generation.as_resource().key()
-                != plan.frozen.authored_generation.digest().as_bytes()
         {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,

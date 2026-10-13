@@ -1,5 +1,6 @@
 //! Prepared and observed native project sources.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 pub(crate) struct PiNativeLiveSource {
     pub(crate) view: Arc<PiNativeLiveView>,
@@ -18,21 +19,8 @@ pub(super) struct PiNativeColdLocator {
 }
 
 impl PiNativeCommandHost {
-    /// Called only after the ordinary preparation succeeded and sealed admission was observed.
+    /// Retains the authenticated sealed preparation; dispatch checks its current SDK owner.
     pub(crate) async fn register_prepared(&self, prepared: PreparedPiFork) -> Result<()> {
-        self.register_binding(prepared, false).await
-    }
-
-    /// Read-only sealed publication observation cannot satisfy current-child dispatch admission.
-    pub(crate) async fn register_observed_source(&self, prepared: PreparedPiFork) -> Result<()> {
-        self.register_binding(prepared, true).await
-    }
-
-    pub(super) async fn register_binding(
-        &self,
-        prepared: PreparedPiFork,
-        observed: bool,
-    ) -> Result<()> {
         let original_work = prepared._metadata_custody.work().clone();
         prepared
             .report
@@ -95,12 +83,8 @@ impl PiNativeCommandHost {
             ));
         }
         let entry = self.entry(binding.task_id, &original_work)?;
-        let destination = if observed {
-            &entry.observed
-        } else {
-            &entry.prepared
-        };
-        let mut retained = destination
+        let mut retained = entry
+            .prepared
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(prior) = retained.as_ref() {
@@ -269,7 +253,7 @@ impl PiNativeCommandHost {
 
     /// The exact originally prepared child workspace, not a current-head reopen.
     pub(crate) fn live_workspace(&self, task: TaskId) -> Option<Arc<LocalLazyWorkspace>> {
-        self.source_prepared(task)
+        self.prepared(task)
             .map(|prepared| prepared.workspace.clone())
     }
 
@@ -304,9 +288,7 @@ impl PiNativeCommandHost {
             .owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(&original_work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(&original_work)?),
             )
             .await?;
         if effect.owner.task_id() != task || effect.context.durable_task_id() != Some(task) {
@@ -326,12 +308,11 @@ impl PiNativeCommandHost {
 
     /// The parent's immutable writeback baseline, never a recaptured head.
     pub(crate) fn frozen_source(&self, task: TaskId) -> Option<LazySnapshotRef> {
-        self.source_prepared(task)
-            .map(|prepared| prepared.frozen_source)
+        self.prepared(task).map(|prepared| prepared.frozen_source)
     }
 
     pub(crate) fn selected_source_task(&self, task: TaskId) -> Option<TaskId> {
-        let prepared = self.source_prepared(task)?;
+        let prepared = self.prepared(task)?;
         prepared
             .report
             .request
@@ -348,7 +329,7 @@ impl PiNativeCommandHost {
         volume: &acyclic_harness::conversation::VolumeRef,
         display: impl FnOnce(&std::path::Path) -> T,
     ) -> Option<T> {
-        let prepared = self.source_prepared(task)?;
+        let prepared = self.prepared(task)?;
         if !prepared
             .binding
             .project_volumes
@@ -384,7 +365,7 @@ impl PiNativeCommandHost {
         let effect = entry.handles.lock().await.effect.clone();
         let Some(effect) = effect else {
             let snapshot = self
-                .source_prepared(task)
+                .prepared(task)
                 .map(|prepared| prepared.native_lazy)
                 .ok_or_else(|| {
                     unauthorized("Pi undispatched source lost its first native companion")
@@ -433,28 +414,18 @@ impl PiNativeCommandHost {
             )
             .await;
         }
-        if prepared.binding.project_volumes.len() != 1 {
-            return Err(unauthorized(
-                "Pi published child has no unique original project binding",
-            ));
-        }
-        let project = prepared
-            .binding
-            .project_volumes
-            .values()
-            .next()
-            .ok_or_else(|| unauthorized("Pi published child has no original project binding"))?;
-        effect
-            .provider
-            .published_project_candidate_with_native_work(
-                effect.provider.original_attempt(),
-                project,
-                meter,
-            )?
+        let snapshot = prepared
+            .workspace
+            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: meter,
+                cancellation: meter.cancellation(),
+            })
             .await
+            .map_err(crate::pi_fork_host::native_lazy_error)?;
+        Ok((snapshot, meter.claim(0, 0, WorkCounters::UNCHARGED)?))
     }
 
-    /// Authorizes a terminal metadata candidate through the actual operation's Common Project reader, then rereads the same protected publication.
+    /// Checks the selected cut against the SDK's operation-sealed Project reader.
     pub(crate) async fn validate_published_selection_snapshot(
         &self,
         task: TaskId,
@@ -473,31 +444,38 @@ impl PiNativeCommandHost {
                 "Pi published selection replaced its original project binding",
             ));
         }
-        let entry = self.registered_entry(task)?;
-        let effect = entry.handles.lock().await.effect.clone().ok_or_else(|| {
-            unauthorized("Pi published selection has no original native operation")
+        let authorization = inspection.project_authorization().ok_or_else(|| {
+            unauthorized("Pi selected project has no SDK operation-sealed reader")
         })?;
-        let (snapshot, custody) = effect
-            .provider
-            .inspect_published_project_snapshot_with_native_work(
-                effect.provider.original_attempt(),
-                inspection,
-                project,
-                frozen,
-                meter,
-            )?
-            .await?;
-        meter.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        if snapshot != frozen {
+        let encoded = crate::pi_root_provider::guarded_pi_value(
+            &frozen,
+            self.protected.policy().maximum_payload_bytes,
+            meter,
+        )?;
+        if inspection.source().task_id() != task
+            || authorization.source_task != task
+            || &authorization.project != project
+            || authorization.generation.as_resource().key()
+                != frozen.authored_generation.digest().as_bytes()
+            || authorization.native_snapshot.as_ref() != Some(&encoded.0)
+        {
             return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Conflict,
-                reason: "Pi qualified publication changed its selected snapshot",
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi selected snapshot differs from its SDK Project authorization",
             });
         }
-        Ok(custody)
+        prepared
+            .workspace
+            .validate_snapshot(
+                frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: meter,
+                    cancellation: meter.cancellation(),
+                },
+            )
+            .await
+            .map_err(crate::pi_fork_host::native_lazy_error)?;
+        Ok(encoded.1)
     }
 
     pub(crate) fn project_mount(
@@ -560,9 +538,7 @@ impl PiNativeCommandHost {
             .owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(&work)?),
             )
             .await?;
         Ok(work)

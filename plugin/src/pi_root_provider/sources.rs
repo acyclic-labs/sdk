@@ -1,5 +1,6 @@
 //! Original physical source identity and selected project proofs.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 /// Fresh creator's source gate.
 pub(crate) async fn guard_root_preparation_source_with_native_work(
@@ -22,9 +23,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
     current_owner.require_volume_grant(
         project,
         VolumeOperation::Read,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )),
+        &mut Some(&mut &PreparationIo::from_native_work(work)?),
     )?;
     if context.durable_task_id() != Some(request.binding.task_id)
         || current_owner.task_id() != request.binding.task_id
@@ -52,9 +51,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
     current_owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     let identity = work.root_identity(Path::new(path))?;
@@ -72,9 +69,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
     current_owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     Ok(identity)
@@ -103,9 +98,8 @@ impl PiRootProvider {
                 reason: "created source is not an originally selected root",
             });
         }
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let read = request.binding.project_volumes[key]
             .capability(VolumeOperation::Read, &mut Some(&mut io))?;
         if !context.scope().grants().contains(&read) {
@@ -170,9 +164,7 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     context: Arc<acyclic_harness::runtime::TaskContext>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    let mut io = acyclic_harness::store::HistoryWork::new(
-        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-    );
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
     let read = project.capability(VolumeOperation::Read, &mut Some(&mut io))?;
     if !context.scope().grants().contains(&read) {
         return Err(Error::NativeBoundary {

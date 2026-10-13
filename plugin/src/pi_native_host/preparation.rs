@@ -370,7 +370,7 @@ impl PiNativeCommandHost {
             view.manifest(),
             work,
         )?;
-        let staged = pi_native::stage_command(
+        let mut staged = pi_native::stage_command(
             result_context.as_ref(),
             command.operation_id,
             &request.0,
@@ -393,17 +393,36 @@ impl PiNativeCommandHost {
         )
         .await?;
         let authority = self.authority(context, input, journal.clone(), work)?;
-        let provider = NativeProcessProvider::new(
-            owner.clone(),
-            command.operation_id,
-            &staged.1,
-            view,
-            approval,
-            authority,
+        let mut provider_plan = effect_plan(
+            &staged.1.provider,
+            staged.1.guarantee,
+            &staged.1.effect_kind,
+            &staged.1.request,
+            &staged.1.result_schema,
             work,
-        )?
-        .await?
-        .into_arc_with_native_work(work)?;
+        )?;
+        staged.2.absorb(&mut provider_plan.1)?;
+        staged.2.absorb(&mut work.claim(
+            std::mem::size_of::<
+                NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
+            >() as u64,
+            1,
+            WorkCounters {
+                allocation_operations: 1,
+                ..WorkCounters::UNCHARGED
+            },
+        )?)?;
+        let provider = Arc::new(
+            NativeProcessProvider::new(
+                owner.clone(),
+                command.operation_id,
+                provider_plan.0,
+                Some(view),
+                approval,
+                authority,
+            )
+            .await?,
+        );
         let effects = self.effects(context, input, &provider, work)?;
         let bound = Arc::new(BoundEffect {
             provider,
