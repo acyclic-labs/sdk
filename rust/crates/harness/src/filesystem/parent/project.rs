@@ -14,7 +14,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         self.host
             .fork_volume_pinned(
                 &self.project,
-                &ContentGrant::verify(&self.verifier, &self.scope, &self.project, VolumeOperation::Read, u64::MAX, &mut None)?,
+                &ContentGrant::verify(
+                    &self.verifier,
+                    &self.scope,
+                    &self.project,
+                    VolumeOperation::Read,
+                    u64::MAX,
+                    &mut None,
+                )?,
                 source_generation,
                 child,
                 None,
@@ -32,9 +39,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         generation: &GenerationRef,
         target: Option<&GenerationRef>,
     ) -> Result<ParentMergePlan<A, O>> {
-        self.prepare_project_import_checked(source, generation, target, false, || {
+        self.prepare_project_import_checked(source, generation, target, false, None, || {
             std::future::ready(Ok(()))
         })
+        .await
+    }
+
+    /// Reconstructs exact import endpoints under the original operation identity.
+    pub async fn prepare_project_import_at(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+        expected_target: &GenerationRef,
+        operation_id: crate::OperationId,
+    ) -> Result<ParentMergePlan<A, O>> {
+        self.prepare_project_import_checked(
+            source,
+            generation,
+            Some(expected_target),
+            false,
+            Some(operation_id),
+            || std::future::ready(Ok(())),
+        )
         .await
     }
 
@@ -114,7 +140,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             operation,
             io.as_ref(),
         )?;
-        self.prepare_project_import_checked(source, generation, target, true, || async {
+        self.prepare_project_import_checked(source, generation, target, true, None, || async {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = &io {
                 return owner
@@ -141,6 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         generation: &GenerationRef,
         selected_target: Option<&GenerationRef>,
         selected: bool,
+        replay: Option<crate::OperationId>,
         mut guard: F,
     ) -> Result<ParentMergePlan<A, O>>
     where
@@ -205,11 +232,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         guard().await?;
         let target_workspace = (self.host).open(&target_ref, Some(&io)).await?;
         guard().await?;
-        let source_generation =
-            (self.host).generation(&source_workspace, generation, Some(&io)).await?;
+        let source_generation = (self.host)
+            .generation(&source_workspace, generation, Some(&io))
+            .await?;
         guard().await?;
         let target_generation = if let Some(target) = selected_target {
-            (self.host).generation(&target_workspace, target, Some(&io)).await?
+            (self.host)
+                .generation(&target_workspace, target, Some(&io))
+                .await?
         } else {
             io.remaining()?;
             io.sdk(target_workspace.head(&io, io.cancellation()).await)?
@@ -217,15 +247,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         guard().await?;
         let join = source_workspace.join_into(&target_workspace);
         io.remaining()?;
-        let plan = io.sdk(
-            join.plan_at(
-                &source_generation,
-                &target_generation,
-                &io,
-                io.cancellation(),
-            )
-            .await,
-        )?;
+        let plan = io.sdk(match replay {
+            Some(operation) => {
+                join.plan_for_replay_at(
+                    &source_generation,
+                    &target_generation,
+                    project_join_key(operation, Some(&io))?,
+                    &io,
+                    io.cancellation(),
+                )
+                .await
+            }
+            None => {
+                join.plan_at(
+                    &source_generation,
+                    &target_generation,
+                    &io,
+                    io.cancellation(),
+                )
+                .await
+            }
+        })?;
         io.remaining()?;
         guard().await?;
         let (child_project, parent_project, parent_scope) =
