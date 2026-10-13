@@ -1,6 +1,6 @@
 use super::*;
 
-/// Immutable evidence of one admitted interaction resolution.
+/// Immutable result of one admitted interaction resolution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionReceipt {

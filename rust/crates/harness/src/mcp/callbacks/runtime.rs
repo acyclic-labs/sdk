@@ -186,16 +186,16 @@ impl McpRuntimeCallbacks {
                         };
                         json!({"action":"accept","content":value})
                     }
-                    InteractionOutcome::Declined | InteractionOutcome::Denied => {
+                    InteractionOutcome::Declined {} | InteractionOutcome::Denied {} => {
                         json!({"action":"decline"})
                     }
-                    InteractionOutcome::Cancelled | InteractionOutcome::Expired => {
+                    InteractionOutcome::Cancelled {} | InteractionOutcome::Expired {} => {
                         json!({"action":"cancel"})
                     }
                     InteractionOutcome::Indeterminate { .. } => {
                         return Err(Error::Indeterminate(operation));
                     }
-                    InteractionOutcome::Approved => {
+                    InteractionOutcome::Approved {} => {
                         return Err(Error::Invalid("MCP form received approval".into()));
                     }
                 }

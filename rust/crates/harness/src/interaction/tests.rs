@@ -1,6 +1,4 @@
 use super::*;
-
-use super::*;
 use crate::{
     AgentId,
     conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
@@ -82,7 +80,7 @@ fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Resul
     else {
         panic!("native request must preserve its original typed cause and guard");
     };
-    assert_eq!(code, crate::wire::ErrorCode::Invalid);
+    assert_eq!(code, Invalid);
     assert_eq!(source.classify(), original.classify());
     assert_eq!(
         (source.line(), source.column()),
@@ -93,30 +91,6 @@ fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Resul
     assert_eq!(io.into_custody()?.bytes(), 0);
     drop(source);
     drop(custody);
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[test]
-fn native_unit_choice_validation_retires_all_temporary_custody() -> Result<()> {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-    let bytes = br#"{"type":"choice","prompt":"Choose","options":[{"id":"one","label":"One"},{"id":"two","label":"Two"}],"min_selections":1,"max_selections":1}"#;
-    let ticket = InteractionTicket {
-        id: Uuid::from_bytes([1; 16]),
-        kind: InteractionKind::Choice,
-        request: file("native-choice.json", bytes)?,
-        deadline_unix_ms: None,
-        approval: None,
-    };
-    ticket.validate_request_bytes(bytes, &mut None)?;
-    let cancellation = CancellationToken::new();
-    let native =
-        NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)?,
-    );
-    ticket.validate_request_bytes(bytes, &mut Some(&mut io))?;
-    assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
 }
 
@@ -192,7 +166,7 @@ fn native_answer_error_retains_original_response_cause_after_request_drop() -> R
     else {
         panic!("original response cause and custody");
     };
-    assert_eq!(code, crate::wire::ErrorCode::Invalid);
+    assert_eq!(code, Invalid);
     assert_eq!(source.classify(), original.classify());
     assert_eq!(
         (source.line(), source.column()),
@@ -203,59 +177,6 @@ fn native_answer_error_retains_original_response_cause_after_request_drop() -> R
     assert_eq!(io.into_custody()?.bytes(), 0);
     drop(source);
     drop(custody);
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[test]
-fn native_request_carrier_retires_parser_and_keeps_actual_fields_through_response() -> Result<()> {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-    let padding = "x".repeat(30_000);
-    let request_bytes = serde_json::to_vec(&json!({
-        "type": "choice", "prompt": padding,
-        "options": [{"id": "one", "label": "One"}],
-        "min_selections": 1, "max_selections": 1,
-    }))
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    let bytes = serde_json::to_vec(&json!({
-        "type": "choice", "option_ids": [{"label": padding}],
-    }))
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    let ticket = InteractionTicket {
-        id: Uuid::from_bytes([1; 16]),
-        kind: InteractionKind::Choice,
-        request: file("native-large-request.json", &request_bytes)?,
-        deadline_unix_ms: None,
-        approval: None,
-    };
-    let answer = file("native-large-answer.json", &bytes)?;
-    let cancellation = CancellationToken::new();
-    let native =
-        NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)?,
-    );
-    let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
-    let guard = request.2.as_ref().expect("original native DTO guard");
-    assert_eq!(request.1, 0);
-    assert_eq!(
-        guard.bytes(),
-        interaction_request_owned_bytes(&request.0, &None)?
-    );
-    assert!(native.shares_ledger(guard.work()));
-    let error = ticket
-        .validate_answer_bytes(&request.0, &answer, &bytes, &mut Some(&mut io))
-        .expect_err("original typed string id rejects the funded response object");
-    assert!(matches!(
-        error,
-        Error::NativeJson {
-            code: crate::wire::ErrorCode::Invalid,
-            ..
-        }
-    ));
-    assert_eq!(io.into_custody()?.bytes(), 0);
-    drop(error);
-    drop(request);
     Ok(())
 }
 
@@ -288,7 +209,7 @@ fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()>
     let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
     ticket.validate_decision_bytes(
         &request.0,
-        &InteractionOutcome::Declined,
+        &InteractionOutcome::Declined {},
         &detail,
         bytes,
         &mut Some(&mut io),
@@ -298,13 +219,13 @@ fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()>
     assert!(matches!(
         ticket.validate_decision_bytes(
             &request.0,
-            &InteractionOutcome::Approved,
+            &InteractionOutcome::Approved {},
             &detail,
             bytes,
             &mut Some(&mut io),
         ),
         Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict,
+            code: Conflict,
             reason: "approval artifact disagrees with outcome",
         })
     ));

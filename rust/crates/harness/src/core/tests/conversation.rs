@@ -26,7 +26,7 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
     let resolution = InteractionResolution {
         id: ticket.id,
         expected_version: 2,
-        outcome: InteractionOutcome::Approved,
+        outcome: InteractionOutcome::Approved {},
         detail: None,
     };
     let ungranted = Action::ResolveInteraction {
