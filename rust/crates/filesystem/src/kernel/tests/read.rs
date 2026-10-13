@@ -29,8 +29,15 @@ async fn put_page(
     {
         let __object_args = (
             id,
-        OwnedBytes::from(encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_tree_page(
+                page,
+                16,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -62,7 +69,8 @@ async fn lookup_reads_only_one_frontier() -> Result<(), Box<dyn std::error::Erro
         DecodeLimits::default(),
         unlimited(),
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         result.value.map(|entry| entry.file_id),
         Some(FileId::from_bytes([4; 16]))
@@ -81,7 +89,8 @@ async fn budget_stops_before_an_unadmitted_child_read() -> Result<(), Box<dyn st
             first: name("a")?,
             page: leaf_id,
         }]),
-    ).await?;
+    )
+    .await?;
     let mut budget = unlimited();
     budget.page_reads = 1;
     assert!(matches!(
@@ -92,7 +101,8 @@ async fn budget_stops_before_an_unadmitted_child_read() -> Result<(), Box<dyn st
             DecodeLimits::default(),
             budget,
             &CancellationToken::new(),
-        ).await,
+        )
+        .await,
         Err(OperationFailure {
             error: TreeReadError::Work(WorkError::BudgetExceeded {
                 counter: "page_reads",
@@ -118,7 +128,8 @@ async fn wrong_root_kind_fails_without_backend_work() -> Result<(), Box<dyn std:
             DecodeLimits::default(),
             unlimited(),
             &CancellationToken::new(),
-        ).await,
+        )
+        .await,
         Err(OperationFailure {
             error: TreeReadError::WrongRootKind,
             ..
@@ -162,14 +173,16 @@ async fn forged_parent_lower_bound_fails_closed() -> Result<(), Box<dyn std::err
             file_id: FileId::from_bytes([8; 16]),
             kind: FileKind::Regular,
         }]),
-    ).await?;
+    )
+    .await?;
     let root = put_page(
         &store,
         &TreePage::Internal(vec![Child {
             first: name("a")?,
             page: leaf,
         }]),
-    ).await?;
+    )
+    .await?;
     assert!(matches!(
         lookup_tree_entry(
             &store,
@@ -178,7 +191,8 @@ async fn forged_parent_lower_bound_fails_closed() -> Result<(), Box<dyn std::err
             DecodeLimits::default(),
             unlimited(),
             &CancellationToken::new(),
-        ).await,
+        )
+        .await,
         Err(OperationFailure {
             error: TreeReadError::ChildBoundsMismatch,
             ..
@@ -233,7 +247,8 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
                 kind: FileKind::Regular,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let right = put_page(
         &store,
         &TreePage::Leaf(vec![
@@ -248,7 +263,8 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
                 kind: FileKind::Regular,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let root = put_page(
         &store,
         &TreePage::Internal(vec![
@@ -261,7 +277,8 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
                 page: right,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let queries = vec![name("n")?, name("a")?, name("n")?, name("z")?];
     let result = lookup_tree_entries(
         &store,
@@ -271,7 +288,8 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         result
             .value
@@ -287,7 +305,7 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
     );
     assert_eq!(result.work.page_reads, 3);
     assert_eq!(result.work.backend_read_operations, 2);
-    assert_eq!(result.work.items_returned, 4);
+    assert_eq!(result.value.len(), 4);
 
     Ok(())
 }
@@ -308,7 +326,8 @@ async fn batch_cancellation_and_query_admission_precede_backend_work()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("pre-cancelled batch unexpectedly succeeded")?;
     assert!(matches!(failure.error, TreeReadError::Cancelled));
