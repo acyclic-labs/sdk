@@ -105,7 +105,7 @@ impl<D: Domain> Client<D> {
         Ok(roots)
     }
 
-    /// Observe trusted evidence for one demanded key.
+    /// Observes trusted evidence for one demanded key.
     pub fn observe(&mut self, key: D::Key, evidence: &D::Evidence) -> Result<Changes, Error> {
         if self.domain.identity() != self.adapter {
             return Err(Error::Conflict);

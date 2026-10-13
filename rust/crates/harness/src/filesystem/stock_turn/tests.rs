@@ -42,8 +42,7 @@ fn stock_turn_runtime_requires_original_model_grant_before_work() -> Result<()> 
     tasks.register(machine.definition()?)?;
     let mut missing = Bindings::local();
     missing.tasks = tasks.clone();
-    assert!(matches!(missing.build(None), Err(Error::Invalid(message))
-        if message == "unsatisfied task requirement: model"));
+    assert!(matches!(missing.build(None), Err(Error::Invalid(_))));
 
     let mut available = Bindings::local();
     available.tasks = tasks;

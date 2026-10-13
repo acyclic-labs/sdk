@@ -1,5 +1,6 @@
 //! Parent-controlled publication of an inspected project merge.
 
+use crate::store::guarded_boundary;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ConversationMessage, MessageKind, VolumeRef},

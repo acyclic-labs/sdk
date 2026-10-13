@@ -32,8 +32,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         None,
                         false,
                     )
-                    .await?
-                    .into_parts();
+                    .await?;
                     records[index] = observed.0.lookup.record;
                     let bytes =
                         Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;

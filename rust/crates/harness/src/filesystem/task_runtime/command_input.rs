@@ -179,11 +179,7 @@ mod tests {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 
     fn finite_budget() -> WorkBudget {
-        let mut value = serde_json::to_value(WorkBudget::UNBOUNDED).expect("existing budget fields");
-        for field in value.as_object_mut().expect("budget object").values_mut() {
-            *field = Value::from(1_000_000_u64);
-        }
-        serde_json::from_value(value).expect("finite budget")
+        acyclic_fs::performance::work_budget(1_000_000, 1_000_000)
     }
 
     fn result(work: &NativeMaterializationWork, text: &str) -> TaskCommandProgress {

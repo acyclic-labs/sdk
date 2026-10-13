@@ -9,7 +9,7 @@ fn total(file: &FileRef, additional: usize) -> Result<u64> {
 
 impl UploadRecord for ReadInput {
     fn diagnostic_label_bytes() -> u64 {
-        crate::tool::tool_serde_diagnostic_label_bytes()
+        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         total(&self.file, 0)
@@ -17,7 +17,7 @@ impl UploadRecord for ReadInput {
 }
 impl UploadRecord for SearchInput {
     fn diagnostic_label_bytes() -> u64 {
-        crate::tool::tool_serde_diagnostic_label_bytes()
+        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         total(&self.file, self.query.capacity())
@@ -25,7 +25,7 @@ impl UploadRecord for SearchInput {
 }
 impl UploadRecord for ReadResult {
     fn diagnostic_label_bytes() -> u64 {
-        crate::tool::tool_serde_diagnostic_label_bytes()
+        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         total(&self.file, self.selection.text.capacity())
@@ -33,7 +33,7 @@ impl UploadRecord for ReadResult {
 }
 impl UploadRecord for SearchResult {
     fn diagnostic_label_bytes() -> u64 {
-        crate::tool::tool_serde_diagnostic_label_bytes()
+        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let positions = self

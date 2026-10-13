@@ -689,7 +689,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let restarted = FilesystemForkPreparer::new(
         host,
         Reducer::restore(
-            aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
+            restored_parent.snapshot(usize::MAX, &mut None)?.0,
             issuer.verifier(&mut None)?,
             SchemaRegistry::new(),
             &mut None,

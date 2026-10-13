@@ -127,7 +127,7 @@ pub(in crate::filesystem) fn generation_ref(
             quota.work(),
         )?;
         let reference =
-            crate::resources::GenerationRef::from_resource_with_work(resource, quota.work())?;
+            crate::resources::GenerationRef::from_resource(resource, quota.work())?;
         quota.transfer();
         Ok(reference)
     })

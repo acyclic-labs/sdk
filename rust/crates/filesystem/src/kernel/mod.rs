@@ -58,7 +58,7 @@ pub use persistent_btree::Child;
 pub(crate) use attribute_list::list_attributes_async_with_accounting;
 pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use blob::PreparedBlobDemandFailure;
+pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,7 +82,6 @@ pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };
 pub(crate) use persistent_point::split_allocation;
-pub(crate) use publication::contextual_publication_fingerprint_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
 pub(crate) use range::plan_extent_range_with_accounting;
@@ -194,8 +193,7 @@ pub use path_access::{
     observe_path_async, observe_paths_async,
 };
 pub(crate) use path_access::{
-    lookup_path_async_with_accounting, lookup_paths_async_with_accounting,
-    lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting,
+    PathQueries, PathBatchMode, lookup_path_async_with_accounting, lookup_paths_with_accounting, observe_path_async_with_accounting,
     observe_paths_async_with_accounting,
 };
 pub(crate) use persistent_point::retire_allocation;

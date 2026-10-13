@@ -540,8 +540,7 @@ pub(crate) fn namespace_path_text(path: &NamespacePath) -> Result<String, String
         .components()
         .iter()
         .map(|name| {
-            name.unicode_text()
-                .map(|value| value.into_owned())
+            name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value)
                 .ok_or_else(|| "non-Unicode path cannot be presented to an agent".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;

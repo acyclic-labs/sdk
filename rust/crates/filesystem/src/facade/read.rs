@@ -197,17 +197,10 @@ pub(super) async fn read_symbolic_link_record_with_accounting<
         return Ok(crate::kernel::OwnedSourceChunk::claimed(bytes, 0));
     }
     let before = readonly_standalone_live(accounting);
-    let result = crate::kernel::read_blob_range_with_accounting(
-        &volume.fs.inner.objects,
-        target,
-        ByteRange {
+    let result = crate::kernel::read_blob_range_with_accounting(&volume.fs.inner.objects, target, ByteRange {
             offset: 0,
             length: target_bytes,
-        },
-        DecodeLimits::for_volume(volume.config),
-        accounting,
-        cancellation,
-    )
+        }, DecodeLimits::for_volume(volume.config), accounting, cancellation, true)
     .await;
     let retained = result.as_ref().map_or(0, |read| read.logical_owned_bytes());
     readonly_cleanup_standalone(accounting, before, retained)?;
@@ -278,17 +271,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if payload_bytes == 0 {
                 return Ok(acyclic_stream::OwnedBytes::new());
             }
-            crate::kernel::read_blob_range_with_accounting(
-                &self.volume.fs.inner.objects,
-                payload,
-                ByteRange {
+            crate::kernel::read_blob_range_with_accounting(&self.volume.fs.inner.objects, payload, ByteRange {
                     offset: 0,
                     length: payload_bytes,
-                },
-                DecodeLimits::for_volume(self.volume.config),
-                &mut accounting,
-                cancellation,
-            )
+                }, DecodeLimits::for_volume(self.volume.config), &mut accounting, cancellation, true)
             .await
             .map(|read| read.bytes)
         }

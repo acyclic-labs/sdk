@@ -87,7 +87,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     owner.verify(false, observed).await?;
                     Some(
                         self.providers
-                            .dispatch_state_and_attest(&self.issuer, effect_id, &effect.0, observed)
+                            .dispatch_and_attest(&self.issuer, effect_id, &effect.0, observed)
                             .await?,
                     )
                 } else {

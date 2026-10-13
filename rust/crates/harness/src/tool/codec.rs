@@ -85,77 +85,74 @@ pub(crate) fn value<T: Serialize>(
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-/// Static labels of the closed tool DTO graphs, extending the SDK profile with their actual derived type and field names before serde constructs an error.
+/// Closed tool DTO diagnostic labels.
 #[cfg(feature = "filesystem")]
-pub(crate) const fn tool_serde_diagnostic_label_bytes() -> u64 {
-    const BYTES: u64 = {
-        const LABELS: &[&str] = &[
-            "ToolDefinition",
-            "ToolInvocation",
-            "ToolResult",
-            "ReadFileInput",
-            "WriteFileInput",
-            "EditFileInput",
-            "PatchFileInput",
-            "FileResult",
-            "ReadText",
-            "ReadInput",
-            "SearchInput",
-            "ReadResult",
-            "SearchResult",
-            "TextRange",
-            "TextSelection",
-            "SearchMatches",
-            "ListFilesInput",
-            "WorkflowAdmission",
-            "MachineCheckpoint",
-            "MachineIdentity",
-            "operation_id",
-            "call_id",
-            "name",
-            "revision",
-            "description",
-            "input_schema",
-            "output_schema",
-            "projection_schema",
-            "arguments",
-            "value",
-            "file",
-            "path",
-            "text",
-            "media_type",
-            "display_name",
-            "old_text",
-            "new_text",
-            "diff",
-            "range",
-            "query",
-            "selection",
-            "matches",
-            "start",
-            "end",
-            "omitted_before",
-            "omitted_after",
-            "total_matches",
-            "omitted_matches",
-            "work",
-            "expected_generation",
-            "after",
-            "maximum_entries",
-            "request_digest",
-            "initial",
-            "machine",
-            "version",
-            "digest",
-            "state",
-        ];
-        let mut bytes = crate::executor::json::preparation_serde_diagnostic_label_bytes();
-        let mut index = 0;
-        while index < LABELS.len() {
-            bytes += LABELS[index].len() as u64 + 4;
-            index += 1;
-        }
-        bytes
-    };
-    BYTES
-}
+pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
+    const LABELS: &[&str] = &[
+        "ToolDefinition",
+        "ToolInvocation",
+        "ToolResult",
+        "ReadFileInput",
+        "WriteFileInput",
+        "EditFileInput",
+        "PatchFileInput",
+        "FileResult",
+        "ReadText",
+        "ReadInput",
+        "SearchInput",
+        "ReadResult",
+        "SearchResult",
+        "TextRange",
+        "TextSelection",
+        "SearchMatches",
+        "ListFilesInput",
+        "WorkflowAdmission",
+        "MachineCheckpoint",
+        "MachineIdentity",
+        "operation_id",
+        "call_id",
+        "name",
+        "revision",
+        "description",
+        "input_schema",
+        "output_schema",
+        "projection_schema",
+        "arguments",
+        "value",
+        "file",
+        "path",
+        "text",
+        "media_type",
+        "display_name",
+        "old_text",
+        "new_text",
+        "diff",
+        "range",
+        "query",
+        "selection",
+        "matches",
+        "start",
+        "end",
+        "omitted_before",
+        "omitted_after",
+        "total_matches",
+        "omitted_matches",
+        "work",
+        "expected_generation",
+        "after",
+        "maximum_entries",
+        "request_digest",
+        "initial",
+        "machine",
+        "version",
+        "digest",
+        "state",
+    ];
+    let mut bytes = crate::executor::json::preparation_serde_diagnostic_label_bytes();
+    let mut index = 0;
+    while index < LABELS.len() {
+        bytes += LABELS[index].len() as u64 + 4;
+        index += 1;
+    }
+    bytes
+};

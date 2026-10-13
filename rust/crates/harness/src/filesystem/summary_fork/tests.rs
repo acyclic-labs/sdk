@@ -32,7 +32,7 @@ fn rewritten_context_retains_only_the_replacement_file() -> Result<()> {
         "replacement.txt".into(),
         &mut None,
     )?;
-    let key = crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?;
+    let key = crate::executor::json::canonical_json_digest(&source, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None)?;
     let mut context = Context::default();
     context.metadata.insert("payload".into(), source);
     let replacements = BTreeMap::from([(key, replacement)]);

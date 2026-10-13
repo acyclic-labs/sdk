@@ -73,7 +73,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
     ) -> Result<(), StreamError> {
         self.measure_committed(outcome);
         if aggregate_fault == 3 {
-            self.hide_aggregate_read.store(true, Ordering::SeqCst);
+            self.hide_receipt.store(true, Ordering::SeqCst);
         }
         if matches!(aggregate_fault, 2 | 3) {
             return Err(StreamError::Unavailable);

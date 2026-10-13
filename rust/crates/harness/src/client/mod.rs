@@ -1,8 +1,4 @@
 //! Bounded hypotheses over immutable authoritative references.
-//!
-//! This module performs no admission, IO, domain reduction or effect cancellation.
-//! A trusted [`Domain`] adapter supplies validated facts and correspondence.
-//! Exported hypotheses remain hypotheses; they are never accepted as evidence.
 
 #![doc = include_str!("../../docs/client/README.md")]
 

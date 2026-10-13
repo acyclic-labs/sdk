@@ -255,7 +255,8 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 result_schema: schema,
             },
             None,
-         false)
+            false,
+        )
         .await?;
     aggregate = StreamAggregate::open(
         &stream,
@@ -368,7 +369,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .store(false, Ordering::SeqCst);
     provider
         .hide_effect_transition_position
-        .store(4, Ordering::SeqCst);
+        .store(3, Ordering::SeqCst);
     assert!(
         probe_reader
             .effect(&original_cut, effect_id, limits, None)

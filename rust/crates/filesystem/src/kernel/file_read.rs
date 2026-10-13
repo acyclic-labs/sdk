@@ -136,17 +136,10 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
                 else {
                     continue;
                 };
-                let nested = super::blob::read_blob_range_for_copy_with_accounting(
-                    store,
-                    object,
-                    ByteRange {
+                let nested = super::blob::read_blob_range_with_accounting(store, object, ByteRange {
                         offset: object_offset,
                         length: span.length,
-                    },
-                    request.limits,
-                    accounting,
-                    cancellation,
-                )
+                    }, request.limits, accounting, cancellation, false)
                 .await?;
                 let start = usize::try_from(span.offset - request.range.offset)
                     .map_err(|_| FileRangeReadError::InvalidRange)?;

@@ -304,7 +304,7 @@ impl ContentGrant {
         verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        authorization.verify_scope_with_work(verifier, work)?;
+        authorization.verify_scope(verifier, work)?;
         Ok(Self {
             volume: authorization.project.copy(work)?,
             operation: VolumeOperation::Read,

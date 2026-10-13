@@ -76,7 +76,7 @@ pub(crate) async fn diff_native(
     {
         let (name, mut name_custody) = entry
             .name
-            .unicode_text_with_native_work(work, cancellation)?;
+            .unicode_text(work, cancellation)?;
         let path = if directory.is_empty() {
             work.display(&format_args!("{name}"))?
         } else {
