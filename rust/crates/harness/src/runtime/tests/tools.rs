@@ -141,19 +141,6 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
             fn identity(&self) -> ComponentIdentity {
                 panic!("native policy must not use ordinary identity")
             }
-            fn evaluate<'a>(
-                &'a self,
-                _: &'a ToolInvocation,
-                _: &'a RuntimeScope,
-            ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
-                panic!("native policy must not use ordinary evaluation")
-            }
-            fn supports_native_policy(
-                &self,
-                _: &acyclic_fs::NativeMaterializationWork,
-            ) -> Result<()> {
-                Ok(())
-            }
             fn identity_with_native_work(
                 &self,
                 work: &acyclic_fs::NativeMaterializationWork,
@@ -164,22 +151,24 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
                 }
                 Ok((identity, custody))
             }
-            fn evaluate_with_native_work<'a>(
+            fn evaluate<'a>(
                 &'a self,
                 _: &'a ToolInvocation,
                 scope: &'a RuntimeScope,
-                work: &'a acyclic_fs::NativeMaterializationWork,
+                io: Option<&'a crate::executor::PreparationIo>,
             ) -> Result<
-                crate::NativeFutureBundle<'a, (ToolPolicyDecision, acyclic_fs::NativeAllocation)>,
+                crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
             > {
+                let work = task_original_work(io)?.expect("native policy ledger");
                 crate::NativeFutureBundle::new(work, || async move {
                     assert!(!scope.grants().contains("tool:call:test.echo"));
                     self.changed.store(true, Ordering::SeqCst);
                     Ok((
                         ToolPolicyDecision::Allow,
-                        work.claim(0, 0, acyclic_fs::WorkCounters::default())?,
+                        Some(work.claim(0, 0, acyclic_fs::WorkCounters::default())?),
                     ))
                 })
+                .map(crate::store::HistoryContentFuture::Native)
             }
         }
         let effective = narrowed.scope.narrow(

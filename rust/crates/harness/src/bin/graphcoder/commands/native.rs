@@ -6,7 +6,7 @@ use acyclic_harness::{
     fork::{ForkHistoryPolicy, ForkReport, ForkSeed},
     resource_preparation::ResourcePreparationRequest,
     resources::GenerationRef,
-    runtime::{RuntimeTask, TaskDefinition, TaskSpawner as _, TaskStateProvider as _},
+    runtime::{RuntimeTask, TaskDefinition, TaskStateProvider as _},
     scheduler::LeaseFence,
     store::{HistoryCursor, HistoryReadLimits, HistoryReader},
 };
@@ -173,7 +173,11 @@ pub(super) async fn execute(
                         ),
                     )?;
                     if name == "/claim" {
-                        native.runtime.task_host().start_task(&lease, None).await?;
+                        native
+                            .runtime
+                            .task_host()
+                            .start_task(&lease, &mut None)
+                            .await?;
                         return Ok(format!("worker retained task={task}\n"));
                     }
                     workers.spawn(async move { native.resume(lease).await });
@@ -184,7 +188,7 @@ pub(super) async fn execute(
         "/cancel-task" => {
             let task = TaskId::parse(argument)?;
             let admission = native.runtime.task_host().observe_admission(task).await?;
-            native.runtime.task_host().cancel(task, None).await?;
+            native.runtime.task_host().cancel(task).await?;
             return Ok(format!(
                 "cancellation requested task={task} admission-operation={}\n",
                 admission.operation_id
@@ -440,6 +444,7 @@ pub(super) async fn execute(
                     &path,
                     generation.as_ref(),
                     terminal::MAX_FRAME_BYTES as u64,
+                    None,
                 )
                 .await?;
             json_line("file", &json!({"file": file, "text": utf8(&bytes)?}))
@@ -451,12 +456,7 @@ pub(super) async fn execute(
             #[cfg(feature = "native-execution")]
             {
                 let request = read_json(path)?;
-                let result = match name {
-                    "/publication-open" => native.publication_open(&request).await?,
-                    "/publication-observe" => native.publication_observe(&request).await?,
-                    "/publication-apply" => native.publication_apply(&request).await?,
-                    _ => native.publication_reconcile(&request).await?,
-                };
+                let result = native.publication(name, &request).await?;
                 json_line("publication", &result)
             }
             #[cfg(not(feature = "native-execution"))]

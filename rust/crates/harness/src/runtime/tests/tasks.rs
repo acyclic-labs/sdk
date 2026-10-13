@@ -228,6 +228,8 @@ async fn local_stock_admission_coexists_with_a_durable_execution_route() -> Resu
         spawner: Arc<dyn TaskSpawner>,
         state: Arc<dyn TaskStateProvider>,
     }
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     impl ExecutionProvider for RouteProbe {
         fn identity(&self) -> ComponentIdentity {
             ComponentIdentity {
@@ -242,11 +244,10 @@ async fn local_stock_admission_coexists_with_a_durable_execution_route() -> Resu
         fn state(&self) -> Arc<dyn TaskStateProvider> {
             Arc::clone(&self.state)
         }
-        fn qualify<'a>(
-            &'a self,
-            _: &'a TaskAdmissionRecord,
-        ) -> BoxFuture<'a, Result<ExecutionPlacement>> {
-            Box::pin(async { Err(Error::Conflict("local turn reached durable route".into())) })
+        async fn qualify(
+            &self,
+            _: &TaskAdmissionRecord,
+        ) -> Result<ExecutionPlacement> { Err(Error::Conflict("local turn reached durable route".into()))
         }
     }
     let record = TaskAdmissionRecord::from_canonical_value(

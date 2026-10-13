@@ -215,7 +215,6 @@ impl Bindings {
             .map(|policy| policy.identity());
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(work), Some(policy)) = (native, &self.policy) {
-            policy.supports_native_policy(work)?;
             let (identity, custody) = policy.identity_with_native_work(work)?;
             check_policy_metadata(&identity, &custody, work)?;
             validate_policy_identity(&identity, startup)?;
@@ -268,7 +267,16 @@ impl Bindings {
                 }
             }
         }
-        super::dependencies::validate_task_dependencies(&self, startup)?;
+        super::dependencies::validate_task_dependencies(
+            self.tasks.0.len(),
+            |index| {
+                let definition = &self.tasks.0[index];
+                let identity = definition.identity();
+                (&identity.name, &identity.version, definition.requirements())
+            },
+            |requirement| super::dependencies::requirement_available(&self, requirement, startup),
+            startup,
+        )?;
         let state = self
             .state
             .or_else(|| self.execution.as_ref().map(|route| route.state()))

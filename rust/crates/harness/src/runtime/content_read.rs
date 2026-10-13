@@ -9,7 +9,7 @@ pub(super) struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
     pub(super) context: Arc<TaskContext>,
     pub(super) owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) custody: Option<acyclic_fs::NativeAllocation>,
+    pub(super) _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// Retains an issued context's content reader under its exact original owner.
@@ -22,6 +22,12 @@ pub fn content_residency_verifier<P>(
 where
     P: acyclic_stream::StreamProvider + 'static,
 {
+    let original = if io.is_none() {
+        context.preparation_io()?
+    } else {
+        None
+    };
+    let io = io.or(original.as_ref());
     owner.require_task_context_binding(&context, io)?;
     #[cfg(not(target_arch = "wasm32"))]
     let native = io.and_then(ContentIo::original_native_work);
@@ -29,7 +35,8 @@ where
     let custody = native
         .map(|work| {
             work.claim(
-                std::mem::size_of::<ContextContentVerifier<P>>() as u64,
+                (std::mem::size_of::<ContextContentVerifier<P>>()
+                    + 2 * std::mem::size_of::<usize>()) as u64,
                 1,
                 acyclic_fs::WorkCounters::UNCHARGED,
             )
@@ -40,7 +47,7 @@ where
         context,
         owner,
         #[cfg(not(target_arch = "wasm32"))]
-        custody,
+        _custody: custody,
     }))
 }
 
@@ -75,24 +82,12 @@ where
     fn supports_read(&self, _volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
         if let Some(io) = io {
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                let work = io.original_native_work().ok_or(content_error(
+            self.context
+                .require_original_native_work(io.original_native_work().ok_or(content_error(
                     Some(io),
                     ErrorCode::Unsupported,
                     "content reader requires original native work",
-                ))?;
-                if !self
-                    .custody
-                    .as_ref()
-                    .is_some_and(|custody| custody.work().shares_allocation_context(work))
-                {
-                    return Err(content_error(
-                        Some(io),
-                        ErrorCode::Unauthorized,
-                        "content callback differs from its original native ledger",
-                    ));
-                }
-            }
+                ))?)?;
             #[cfg(target_arch = "wasm32")]
             return Err(content_error(
                 Some(io),
@@ -144,6 +139,14 @@ impl TaskContext {
 
     /// Reads an immutable file under this task's scope and caller IO limits.
     pub async fn read_file(&self, file: &FileRef, io: Option<&ContentIo>) -> Result<OwnedBytes> {
+        #[cfg(feature = "filesystem")]
+        let original = if io.is_none() {
+            self.preparation_io()?
+        } else {
+            None
+        };
+        #[cfg(feature = "filesystem")]
+        let io = io.or(original.as_ref());
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
             file,

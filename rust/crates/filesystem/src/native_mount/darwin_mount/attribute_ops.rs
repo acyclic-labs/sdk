@@ -8,8 +8,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
     value: *mut c_char,
     length: usize,
 ) -> c_int {
-    let span = callback_span!(TRACE, getxattr);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         let path = mount_path(path, work)?;
         if !context.may_have_named_attributes(&path, work)? {
             return Err(driver_errno(libc::ENOATTR));
@@ -33,8 +32,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
     length: usize,
     flags: c_int,
 ) -> c_int {
-    let span = callback_span!(TRACE, setxattr);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         bounded_length(length).map_err(driver_errno)?;
         let mode = match flags {
             0 => MountAttributeWriteMode::Upsert,
@@ -69,8 +67,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
     list: *mut c_char,
     length: usize,
 ) -> c_int {
-    let span = callback_span!(TRACE, listxattr);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         let path = mount_path(path, work)?;
         if !context.may_have_named_attributes(&path, work)? {
             return copy_variable_result(&[], list, length, work);
@@ -138,8 +135,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     path: *const c_char,
     name: *const c_char,
 ) -> c_int {
-    let span = callback_span!(TRACE, removexattr);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         context.mutate(|| context.source.remove_attribute(&path, name, work), work)?;
         Ok(0)

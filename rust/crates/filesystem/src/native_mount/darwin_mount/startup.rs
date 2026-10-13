@@ -151,7 +151,7 @@ impl DriverSessionResources {
             return Ok(());
         }
         if let Some(wait) = wait {
-            self.sdk_credit.loan(Some(wait)).started_io(WRITE_WORK)?;
+            self.sdk_credit.started_io(WRITE_WORK, Some(wait))?;
         } else {
             self.sdk_credit.started_drop_io(WRITE_WORK);
         }
@@ -171,7 +171,7 @@ impl DriverSessionResources {
             return Ok(());
         }
         if let Some(wait) = wait {
-            self.sdk_credit.loan(Some(wait)).started_io(WRITE_WORK)?;
+            self.sdk_credit.started_io(WRITE_WORK, Some(wait))?;
         } else {
             self.sdk_credit.started_drop_io(WRITE_WORK);
         }
@@ -307,10 +307,8 @@ impl DarwinMountSession {
         if !probe.mounted(destination, &ProbeWork::Live(original))? {
             return Err(driver_errno(libc::EIO));
         }
-        self.native_root_identity = Some(crate::native_host::root_path_identity(
-            destination,
-            &mut &*original,
-        )?);
+        self.native_root_identity =
+            Some(crate::native_host::HostRoot::open(destination, &mut &*original)?.identity());
         Ok(())
     }
 }
@@ -318,71 +316,74 @@ impl DarwinMountSession {
 fn run_loop(
     (driver, original, _allocation): (Arc<DriverSessionResources>, Work, NativeAllocation),
 ) -> c_int {
-    let mut state = driver.state.lock().unwrap_or_else(PoisonError::into_inner);
-    if driver.pointer() == 0 && !state.control.start_aborted {
-        driver.credit.started_drop_io(READ_WORK);
-        state = driver
-            .changed
-            .wait_while(state, |state| {
-                driver.pointer() == 0 && !state.control.start_aborted
-            })
-            .unwrap_or_else(PoisonError::into_inner);
-    }
-    let aborted = state.control.start_aborted;
-    let (context, destination, pointers) = state
-        .resources
-        .as_ref()
-        .expect("provider resources")
-        .clone();
-    drop(state);
-    let admitted = if aborted {
-        Err(NativeMountError::ControlPending)
-    } else {
-        original.charge(WRITE_WORK).map_err(Into::into)
-    };
-    let status = match admitted {
-        Err(error) => {
-            driver
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .control
-                .start_aborted = true;
-            context.record_failure(error, original.receipt());
-            -libc::EIO
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut state = driver.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if driver.pointer() == 0 && !state.control.start_aborted {
+            driver.credit.started_drop_io(READ_WORK);
+            state = driver
+                .changed
+                .wait_while(state, |state| {
+                    driver.pointer() == 0 && !state.control.start_aborted
+                })
+                .unwrap_or_else(PoisonError::into_inner);
         }
-        Ok(()) => {
-            let mut interrupted = 0;
-            // SAFETY: this thread retains the SDK owner, context, argv and destination through the loop.
-            let status = unsafe {
-                acyclic_fs_darwin_mount_run(
-                    driver.pointer() as *mut c_void,
-                    pointers
-                        .iter()
-                        .position(|pointer| *pointer == 0)
-                        .unwrap_or(7) as c_int,
-                    pointers.as_ptr().cast(),
-                    destination.as_ptr(),
-                    Arc::as_ptr(&context) as usize,
-                    report_mounted,
-                    Arc::as_ptr(&driver).cast_mut().cast(),
-                    &mut interrupted,
-                )
-            };
-            if interrupted != 0 {
+        let aborted = state.control.start_aborted;
+        let (context, destination, pointers) = state
+            .resources
+            .as_ref()
+            .expect("provider resources")
+            .clone();
+        drop(state);
+        let admitted = if aborted {
+            Err(NativeMountError::ControlPending)
+        } else {
+            original.charge(WRITE_WORK).map_err(Into::into)
+        };
+        let status = match admitted {
+            Err(error) => {
                 driver
                     .state
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .control
                     .start_aborted = true;
+                context.record_failure(error, original.receipt());
+                -libc::EIO
             }
-            status
-        }
-    };
+            Ok(()) => {
+                let mut interrupted = 0;
+                // SAFETY: this thread retains the SDK owner, context, argv and destination through the loop.
+                let status = unsafe {
+                    acyclic_fs_darwin_mount_run(
+                        driver.pointer() as *mut c_void,
+                        pointers
+                            .iter()
+                            .position(|pointer| *pointer == 0)
+                            .unwrap_or(7) as c_int,
+                        pointers.as_ptr().cast(),
+                        destination.as_ptr(),
+                        Arc::as_ptr(&context) as usize,
+                        report_mounted,
+                        Arc::as_ptr(&driver).cast_mut().cast(),
+                        &mut interrupted,
+                    )
+                };
+                if interrupted != 0 {
+                    driver
+                        .state
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .control
+                        .start_aborted = true;
+                }
+                status
+            }
+        };
+        status
+    }));
     driver.provider_exited.store(true, Ordering::Release);
     driver.changed.notify_all();
     drop(original);
     driver.finish();
-    status
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }

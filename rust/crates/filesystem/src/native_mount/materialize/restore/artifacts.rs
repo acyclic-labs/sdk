@@ -15,7 +15,7 @@ pub(in crate::native_mount::materialize) fn restore_artifact_name(
             bytes_hashed: bytes.len() as u64,
             ..WorkCounters::UNCHARGED
         })
-        .map_err(restore_demand_error)?;
+        .map_err(MaterializeError::from)?;
         hasher.update(bytes);
     }
     #[cfg(windows)]
@@ -27,7 +27,7 @@ pub(in crate::native_mount::materialize) fn restore_artifact_name(
                 bytes_encoded: 2,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(restore_demand_error)?;
+            .map_err(MaterializeError::from)?;
             hasher.update(&unit.to_le_bytes());
         }
     }
@@ -36,15 +36,15 @@ pub(in crate::native_mount::materialize) fn restore_artifact_name(
         bytes_encoded: bytes as u64,
         ..WorkCounters::UNCHARGED
     };
-    work.admit(delta).map_err(restore_demand_error)?;
+    work.admit(delta).map_err(MaterializeError::from)?;
     work.claim_allocation(bytes as u64, u64::from(bytes != 0), WorkCounters::UNCHARGED)
-        .map_err(restore_demand_error)?;
+        .map_err(MaterializeError::from)?;
     let mut name = String::with_capacity(bytes);
     write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {
         drop(name);
-        work.release(bytes as u64).map_err(restore_demand_error)?;
-        return Err(restore_demand_error(error));
+        work.release(bytes as u64).map_err(MaterializeError::from)?;
+        return Err(MaterializeError::from(error));
     }
     Ok(PathBuf::from(name))
 }
@@ -62,7 +62,7 @@ pub(in crate::native_mount::materialize) fn with_restore_artifact<
     let bytes = name.as_os_str().as_encoded_bytes().len() as u64;
     let result = operation(&name, work);
     drop(name);
-    work.release(bytes).map_err(restore_demand_error)?;
+    work.release(bytes).map_err(MaterializeError::from)?;
     result
 }
 
@@ -79,13 +79,13 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,
         )
-        .map_err(restore_demand_error)?;
+        .map_err(MaterializeError::from)?;
         loop {
             work.started_io(WorkCounters {
                 backend_write_operations: 1,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(restore_demand_error)?;
+            .map_err(MaterializeError::from)?;
             match fs2::FileExt::try_lock_exclusive(&file) {
                 Ok(()) => return Ok(file),
                 Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -115,7 +115,7 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
         &crate::native_host::NativeOpenOptions::CreateNew,
         work,
     )
-    .map_err(restore_demand_error)?;
+    .map_err(MaterializeError::from)?;
     let mut remaining = contents;
     while !remaining.is_empty() {
         work.admit(WorkCounters {
@@ -123,12 +123,12 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
             backend_write_operations: 1,
             ..WorkCounters::UNCHARGED
         })
-        .map_err(restore_demand_error)?;
+        .map_err(MaterializeError::from)?;
         work.started_io(WorkCounters {
             backend_write_operations: 1,
             ..WorkCounters::UNCHARGED
         })
-        .map_err(restore_demand_error)?;
+        .map_err(MaterializeError::from)?;
         match file.write(remaining) {
             Ok(0) => {
                 return Err(std::io::Error::new(
@@ -142,7 +142,7 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
                     output_bytes: written as u64,
                     ..WorkCounters::UNCHARGED
                 })
-                .map_err(restore_demand_error)?;
+                .map_err(MaterializeError::from)?;
                 remaining = &remaining[written..];
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -153,9 +153,9 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
         durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })
-    .map_err(restore_demand_error)?;
+    .map_err(MaterializeError::from)?;
     file.sync_all()?;
-    crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)
+    crate::native_host::sync_directory_held(&parent.directory, work).map_err(MaterializeError::from)
 }
 
 pub(in crate::native_mount::materialize) fn validate_restore_witness(
@@ -177,7 +177,7 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
         {
             return Ok(false);
         }
-        Err(error) => return Err(restore_demand_error(error)),
+        Err(error) => return Err(MaterializeError::from(error)),
     };
     let mut contents = [0_u8; 64];
     let bound = expected
@@ -192,12 +192,12 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
         })
-        .map_err(restore_demand_error)?;
+        .map_err(MaterializeError::from)?;
         work.started_io(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
         })
-        .map_err(restore_demand_error)?;
+        .map_err(MaterializeError::from)?;
         match file.read(&mut contents[read..bound]) {
             Ok(0) => break,
             Ok(bytes) => {
@@ -205,7 +205,7 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
                     source_bytes_read: bytes as u64,
                     ..WorkCounters::UNCHARGED
                 })
-                .map_err(restore_demand_error)?;
+                .map_err(MaterializeError::from)?;
                 read += bytes;
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -228,6 +228,6 @@ pub(in crate::native_mount::materialize) fn remove_restore_witness(
     name: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
-    remove_entry(parent, name, work).map_err(restore_demand_error)?;
-    crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)
+    remove_entry(parent, name, work).map_err(MaterializeError::from)?;
+    crate::native_host::sync_directory_held(&parent.directory, work).map_err(MaterializeError::from)
 }

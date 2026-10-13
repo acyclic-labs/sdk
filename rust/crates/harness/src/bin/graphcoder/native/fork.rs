@@ -15,7 +15,7 @@ impl NativeSession {
             .find(|source| source.caller == caller && source.request.operation_id == operation)
             .ok_or_else(|| Error::NotFound("original fork source".into()))?;
         let reducer = acyclic_harness::core::Reducer::restore(
-            source.snapshot.clone(),
+            source.snapshot.copy(&mut None)?,
             source.owner.verifier()?,
             SchemaRegistry::default(),
             &mut None,

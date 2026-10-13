@@ -21,21 +21,13 @@ pub enum ToolPolicyDecision {
 pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     /// Immutable implementation identity pinned across admission and replay.
     fn identity(&self) -> ComponentIdentity;
-    /// Policy implementations must be deterministic for an admitted revision.
+    /// Evaluates a policy on the caller's original IO ledger.
     fn evaluate<'a>(
         &'a self,
         invocation: &'a ToolInvocation,
         scope: &'a RuntimeScope,
-    ) -> BoxFuture<'a, Result<ToolPolicyDecision>>;
-
-    /// Rejects opaque policies before any native callback or future allocation.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_policy(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "policy has no original-ledger implementation",
-        })
-    }
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>;
 
     /// Returns the owned identity with custody for its inline Self and strings.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -46,21 +38,6 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "policy has no original-ledger identity",
-        })
-    }
-
-    /// Evaluates the same predicate against the originally issued scope.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn evaluate_with_native_work<'a>(
-        &'a self,
-        _invocation: &'a ToolInvocation,
-        _scope: &'a RuntimeScope,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolPolicyDecision, acyclic_fs::NativeAllocation)>>
-    {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "policy has no original-ledger evaluator",
         })
     }
 }
@@ -148,26 +125,14 @@ pub(crate) fn tool_approval_request(
         }
     }
     let (operation, digest) = tool_approval_binding(task, policy, definition, invocation, work)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() {
-        if digest == [0; 32] {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "approval action digest is empty",
-            });
-        }
-        return Ok((
-            (
-                operation,
-                Interaction::Approval {
-                    prompt: paid.0,
-                    operation_id: invocation.operation_id,
-                    action_digest: digest,
-                },
-            ),
-            paid.1,
+    if work.is_some() && digest == [0; 32] {
+        return Err(task_workflow_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "approval action digest is empty",
         ));
     }
+
     Ok((
         (
             operation,

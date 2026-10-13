@@ -61,7 +61,7 @@ impl NativeStockExecutor {
                     "stock policy is not issued by this context",
                 ));
             }
-            policy.supports_native_policy(work)?;
+            policy.identity_with_native_work(work)?;
         }
         if let Some(interactions) = &interactions {
             interactions.supports_native_interactions(work)?;

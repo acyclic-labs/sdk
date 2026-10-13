@@ -8,33 +8,6 @@ pub struct HostDataRange {
     pub length: u64,
 }
 
-/// Native file kind.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HostFileType(u32);
-impl HostFileType {
-    pub fn is_dir(self) -> bool {
-        self.0 == 0o040000
-    }
-    pub fn is_file(self) -> bool {
-        self.0 == 0o100000
-    }
-    pub fn is_symlink(self) -> bool {
-        self.0 == 0o120000
-    }
-    pub fn is_fifo(self) -> bool {
-        self.0 == 0o010000
-    }
-    pub fn is_socket(self) -> bool {
-        self.0 == 0o140000
-    }
-    pub fn is_char_device(self) -> bool {
-        self.0 == 0o020000
-    }
-    pub fn is_block_device(self) -> bool {
-        self.0 == 0o060000
-    }
-}
-
 /// No-follow native metadata with the host's identity bits preserved.
 #[derive(Clone)]
 #[cfg_attr(windows, derive(Copy, Debug))]
@@ -61,26 +34,34 @@ impl std::fmt::Debug for HostStat {
     }
 }
 impl HostStat {
-    pub fn file_type(&self) -> HostFileType {
+    pub fn file_type(&self) -> crate::demand::SourceNodeKind {
+        use crate::demand::SourceNodeKind as Kind;
         #[cfg(unix)]
         {
-            HostFileType(self.raw.st_mode as u32 & 0o170000)
+            match self.raw.st_mode as u32 & 0o170000 {
+                0o040000 => Kind::Directory,
+                0o100000 => Kind::RegularFile,
+                0o120000 => Kind::SymbolicLink,
+                0o010000 => Kind::Fifo,
+                0o140000 => Kind::Socket,
+                0o020000 => Kind::CharacterDevice,
+                0o060000 => Kind::BlockDevice,
+                _ => Kind::Unsupported,
+            }
         }
         #[cfg(windows)]
         {
-            HostFileType(
-                if matches!(self.raw.ReparseTag, 0xA000_0003 | 0xA000_000C) {
-                    0o120000
-                } else if self.raw.FileAttributes & fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
-                    0o040000
-                } else {
-                    0o100000
-                },
-            )
+            if matches!(self.raw.ReparseTag, 0xA000_0003 | 0xA000_000C) {
+                Kind::SymbolicLink
+            } else if self.raw.FileAttributes & fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                Kind::Directory
+            } else {
+                Kind::RegularFile
+            }
         }
     }
     pub fn is_dir(&self) -> bool {
-        self.file_type().is_dir()
+        (self.file_type() == crate::demand::SourceNodeKind::Directory)
     }
     pub fn len(&self) -> u64 {
         #[cfg(unix)]

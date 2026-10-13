@@ -126,10 +126,9 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     policy: &CapturePolicy,
     maximum: usize,
     paths: &mut Vec<(NamespacePath, ())>,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    cancellation.check()?;
+    meter.cancellation().check()?;
     walk_checkout_subtree(checkout, root, 1024, meter, |directory, entry, pending| {
         capture_charge(
             meter,

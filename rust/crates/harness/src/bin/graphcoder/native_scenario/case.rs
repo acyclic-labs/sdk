@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_harness::runtime::TaskSpawner as _;
 use prost::Message as _;
 pub(super) async fn prepare_case(
     root: &Path,
@@ -157,11 +156,19 @@ pub(super) async fn prepare_case(
                 "genuine bounded native source import failed: {error}"
             ))
         })?;
-    let imported_generation = imported.head().await.map_err(storage)?;
-    imported_generation
-        .pin("graphcoder-native-original-baseline")
+    let imported_generation = imported
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
         .await
-        .map_err(storage)?;
+        .map_err(|failure| storage(failure.error))?
+        .value;
+    imported_generation
+        .pin(
+            "graphcoder-native-original-baseline",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| storage(failure.error))?;
     let native_operation_directory = root.join("native-writeback-operation");
     tokio::fs::create_dir(&native_operation_directory)
         .await
@@ -263,22 +270,7 @@ pub(super) async fn prepare_case(
         .join("inputs")
         .join("bootstrap_seed-original-lease.json");
     persist(&seed_lease_path, &seed_lease).await?;
-    let mut aggregate = aggregate(&stream, files.clone(), &owner, &config).await?;
-    aggregate
-        .execute(
-            Command {
-                operation_id: OperationId::new(),
-                idempotency_key: IdempotencyKey::new("bind-bootstrap")?,
-                expected_revision: 0,
-                scope: owner.scope.clone(),
-                causal_parent: None,
-                action: Action::BindConversation { agent: seed_agent },
-            },
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    let aggregate = aggregate(&stream, files.clone(), &owner, &config).await?;
     let mut seed = Caller {
         task: seed_task,
         binding: owner,
@@ -288,6 +280,8 @@ pub(super) async fn prepare_case(
         aggregate,
         lease: seed_lease,
     };
+    seed.apply(Action::BindConversation { agent: seed_agent })
+        .await?;
     let mut producer = Producer {
         root: root.clone(),
         files,
@@ -361,34 +355,17 @@ pub(super) async fn prepare_case(
     producer
         .fork(&mut left, "cross_source", Some(logical_root.task))
         .await?;
-    let notice_file = write(&producer.files, &left.binding, &left.private,
+    let notice_file = producer.file(&left, &left.private,
         "merge/selected-grandchild.txt",
         b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
-        "text/plain", "merge-notice.txt", "left-grandchild-merge-notice").await?;
+        "text/plain").await?;
     producer
         .references
         .insert("merge_notice".into(), notice_file.clone());
-    let notice_sequence = left
-        .aggregate
-        .reducer()
-        .conversation()
-        .ok_or_else(|| Error::Invalid("merge caller conversation is missing".into()))?
-        .logical_revision()
-        .checked_add(1)
-        .ok_or_else(|| Error::Invalid("merge notice sequence overflow".into()))?;
     producer.config.tools.merges.push(ConfiguredRecursiveMerge {
         caller: left.task,
         source: grandchild.task,
-        notice: ConversationMessage {
-            id: uuid::Uuid::new_v4(),
-            sequence: notice_sequence,
-            kind: MessageKind::Merge,
-            content: notice_file,
-            attachments: Default::default(),
-            reply_to: None,
-            tool_call_id: None,
-            extensions: Default::default(),
-        },
+        notice: left.message(MessageKind::Merge, notice_file)?,
     });
     let callers = [
         (&seed, "bootstrap_seed"),
@@ -453,9 +430,13 @@ pub(super) async fn prepare_case(
         .map_err(|failure| storage(failure.error))?
         .value;
     target_generation
-        .pin("graphcoder-native-exact-approved-target")
+        .pin(
+            "graphcoder-native-exact-approved-target",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            cancellation,
+        )
         .await
-        .map_err(storage)?;
+        .map_err(|failure| storage(failure.error))?;
     let publication_operation = OperationId::new();
     let source_root_identity = acyclic_fs::capture_root_identity(&native_root)
         .map_err(|error| {

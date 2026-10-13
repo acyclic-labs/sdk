@@ -18,7 +18,13 @@ impl Snapshot {
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         inspect_metadata(self, work)?;
         let bytes = if work.is_some() {
-            self.fields_owned_bytes()?
+            ownership::owned_sum([
+                owned_vector(&self.projection.bindings, |(extension, _)| {
+                    Ok(extension.name.capacity() as u64)
+                })?,
+                self.projection
+                    .owned_bytes(&self.authority, self.events.iter())?,
+            ])?
         } else {
             0
         };
@@ -38,15 +44,6 @@ impl Snapshot {
         };
         quota.transfer();
         Ok(snapshot)
-    }
-    fn fields_owned_bytes(&self) -> Result<u64> {
-        ownership::owned_sum([
-            owned_vector(&self.projection.bindings, |(extension, _)| {
-                Ok(extension.name.capacity() as u64)
-            })?,
-            self.projection
-                .owned_bytes(&self.authority, self.events.iter())?,
-        ])
     }
 }
 impl Reducer {

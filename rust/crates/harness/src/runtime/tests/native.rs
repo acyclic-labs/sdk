@@ -1,12 +1,10 @@
 use super::*;
 
 pub(super) struct OpaqueRouter;
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl InteractionRouter for OpaqueRouter {
-    fn route<'a>(
-        &'a self,
-        _: OperationId,
-        _: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
+    async fn route(&self, _: OperationId, _: Interaction) -> Result<InteractionOutcome> {
         panic!("ordinary route must not run");
     }
 }
@@ -244,11 +242,16 @@ async fn native_policy_approval_keeps_exact_binding_and_paid_utf8_prompt() -> Re
     )?;
     drop((identity, custody));
     let (decision, custody) = policy
-        .evaluate_with_native_work(&invocation, &scope, &work)?
+        .evaluate(
+            &invocation,
+            &scope,
+            Some(&crate::executor::PreparationIo::from_native_work(&work)?),
+        )?
         .await?;
     let ToolPolicyDecision::RequireApproval { prompt } = decision else {
         panic!("fixture approval");
     };
+    let custody = custody.expect("paid native decision");
     assert_eq!(custody.bytes(), prompt.capacity() as u64);
     let task = TaskId::new();
     let expected = tool_approval_request(
@@ -364,8 +367,17 @@ fn opaque_policy_native_defaults_never_call_ordinary_body() -> Result<()> {
             &'a self,
             _: &'a ToolInvocation,
             _: &'a RuntimeScope,
-        ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
-            panic!("ordinary evaluator must not run");
+            io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<
+            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
+        > {
+            if io.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "opaque policy",
+                });
+            }
+            panic!("ordinary evaluator must not run")
         }
     }
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -380,13 +392,6 @@ fn opaque_policy_native_defaults_never_call_ordinary_body() -> Result<()> {
         Limits::default(),
     )?;
     assert!(matches!(
-        OpaquePolicy.supports_native_policy(&work),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            ..
-        })
-    ));
-    assert!(matches!(
         OpaquePolicy.identity_with_native_work(&work),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -394,7 +399,11 @@ fn opaque_policy_native_defaults_never_call_ordinary_body() -> Result<()> {
         })
     ));
     assert!(matches!(
-        OpaquePolicy.evaluate_with_native_work(&invocation, &scope, &work),
+        OpaquePolicy.evaluate(
+            &invocation,
+            &scope,
+            Some(&crate::executor::PreparationIo::from_native_work(&work)?)
+        ),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             ..

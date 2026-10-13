@@ -35,17 +35,14 @@ where
         });
         let preparation: Arc<TaskResourcePreparation> = 'preparation: {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let WorkerContext::Native(shared) = context else {
                     return Err(boundary(
-                        Some(io),
+                        io,
                         ErrorCode::Unauthorized,
                         "native fork requires its original shared context",
                     ));
                 };
-                let work = io
-                    .original_native_work()
-                    .expect("dispatch checked original work");
                 if reconciliation_only {
                     let Some(preparation) = self
                         .runtime
@@ -56,28 +53,6 @@ where
                     };
                     break 'preparation preparation;
                 }
-                let bytes = (std::mem::size_of::<ResourcePreparationRequest>() as u64)
-                    .checked_add(request.logical_owned_bytes()?)
-                    .ok_or_else(|| {
-                        boundary(
-                            Some(io),
-                            ErrorCode::Invalid,
-                            "fork preparation request ownership overflows",
-                        )
-                    })?;
-                let custody = io.take_native_custody(bytes)?;
-                let owner = self
-                    .runtime
-                    .task_host()
-                    .journal_owner(task, fence, Some(io))
-                    .await?
-                    .into_native_shared(work)?;
-                io.absorb_native_custody(custody)?;
-                let mut preparation = owner
-                    .resource_preparation(request, &mut Some(&mut io.history_io()))
-                    .await?;
-                preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
-                break 'preparation Arc::new(preparation);
             }
             let owner = self
                 .runtime
@@ -85,11 +60,27 @@ where
                 .journal_owner(task, fence, io)
                 .await?
                 .with_invocation_cancellation(&cancellation);
-            Arc::new(
-                Arc::new(owner)
-                    .resource_preparation(request, &mut None)
-                    .await?,
-            )
+            #[cfg(not(target_arch = "wasm32"))]
+            let owner = match io.and_then(PreparationIo::original_native_work) {
+                Some(work) => owner.into_native_shared(work)?,
+                None => Arc::new(owner),
+            };
+            #[cfg(target_arch = "wasm32")]
+            let owner = Arc::new(owner);
+            let mut history = io.map(PreparationIo::history_io);
+            let mut preparation = owner
+                .resource_preparation(
+                    request,
+                    &mut history
+                        .as_mut()
+                        .map(|work| work as &mut dyn crate::store::HistoryIo),
+                )
+                .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io {
+                preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
+            }
+            Arc::new(preparation)
         };
         let fork: crate::fork::ForkRequest =
             match io {
