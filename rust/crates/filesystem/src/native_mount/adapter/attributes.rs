@@ -23,7 +23,7 @@ where
                 .ok_or(MountSourceError::NotFound)?;
             candidate
                 .checkout
-                .set_attributes_by_id(
+                .set_attributes(
                     lookup.node.file_id,
                     metadata,
                     logical_bytes,

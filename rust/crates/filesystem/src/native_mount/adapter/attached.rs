@@ -122,7 +122,7 @@ where
                 .read_file_record_by_id(self.file_id, work, work.cancellation())
                 .await?;
             let metadata = checkout
-                .read_metadata_by_id(self.file_id, work, work.cancellation())
+                .read_metadata(self.file_id, work, work.cancellation())
                 .await?;
             NativeDemandCarrier::Native(work)
                 .check(work.cancellation(), Some(&self.cancellation))?;
@@ -396,7 +396,7 @@ where
                 .await?;
             candidate
                 .checkout
-                .set_attributes_by_id(self.file_id, metadata, logical_bytes, work, cancellation)
+                .set_attributes(self.file_id, metadata, logical_bytes, work, cancellation)
                 .await?;
             self.checkout
                 .install_change(
