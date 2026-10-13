@@ -80,6 +80,7 @@ fn visit_task_dependency<'a>(
     native_startup::item(io, std::mem::size_of_val(&(key, 1_u8)))?;
     marks.insert(key, 1);
     for requirement in requirements {
+        native_startup::item(io, 0)?;
         let available = if let Some(target) = parse_dependency_target(requirement, "task:", io)? {
             visit_task_dependency(target, marks, tasks, has_tool, environment, grants, io)?;
             true
@@ -143,12 +144,16 @@ fn provider_requirement_satisfied(
                 "invalid extension dependency",
             )
         })?;
-        return Ok(!name.is_empty()
-            && !name.contains('@')
-            && environment
-                .extensions
-                .iter()
-                .any(|(selected, revision)| selected == name && *revision == version));
+        if name.is_empty() || name.contains('@') {
+            return Ok(false);
+        }
+        for (selected, revision) in &environment.extensions {
+            native_startup::item(io, 0)?;
+            if selected == name && *revision == version {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
     }
     Ok(false)
 }

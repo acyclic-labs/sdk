@@ -46,18 +46,8 @@ impl TaskContext {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.require_original_native_dispatch(work)?;
-        if !self.native_metadata_matches(work) {
-            return Err(denied(
-                "native callback lacks original shared metadata custody",
-            ));
-        }
-        let (task, fence) = self.owned_task_binding_with_native_work(work)?;
-        if !owner.matches_task_binding(task, fence) {
-            return Err(denied(
-                "native callback differs from the original task and full fence",
-            ));
-        }
-        Ok(())
+        let io = PreparationIo::from_native_work(work)?;
+        owner.require_task_context_binding(self, Some(&io))
     }
 
     /// Selects the exact volume and retains its callback on the caller ledger.

@@ -28,7 +28,7 @@ impl<'a> PiForkCoordinator<'a> {
                 .runtime
                 .runtime
                 .task_host()
-                .observe_admission_with_native_work(plan.preparation.task_id(), &self.work)
+                .observe_admission_with_native_work(plan.preparation.task_id(), &self.work)?
                 .await
             {
                 Ok(value) => value,
@@ -45,7 +45,7 @@ impl<'a> PiForkCoordinator<'a> {
                 .runtime
                 .runtime
                 .task_host()
-                .outcome_with_native_work(plan.preparation.task_id(), &self.work)
+                .outcome_with_native_work(plan.preparation.task_id(), &self.work)?
                 .await?;
             let report: (ForkReport, acyclic_fs::NativeAllocation) = match &outcome.0 {
                 Some(Outcome::Succeeded(value)) => self.decode_input_value(
@@ -66,7 +66,7 @@ impl<'a> PiForkCoordinator<'a> {
                 .runtime
                 .runtime
                 .task_host()
-                .observe_admission_with_native_work(plan.request.child.task_id(), &self.work)
+                .observe_admission_with_native_work(plan.request.child.task_id(), &self.work)?
                 .await
             {
                 Ok(value) => value,
@@ -119,7 +119,7 @@ impl<'a> PiForkCoordinator<'a> {
                 .runtime
                 .runtime
                 .task_host()
-                .observe_admission_with_native_work(plan.commit.caller, &self.work)
+                .observe_admission_with_native_work(plan.commit.caller, &self.work)?
                 .await?;
             let parent_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self
                 .decode_input_value(
@@ -276,7 +276,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(owner.task_id(), &self.work)
+            .observe_admission_with_native_work(owner.task_id(), &self.work)?
             .await?;
         let caller: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &admission.0.input,

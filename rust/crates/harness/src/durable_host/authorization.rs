@@ -216,7 +216,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Shares the original paid owner without copying admission metadata.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(
-        self,
+        mut self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         if !self.native_shared_work_matches(work) {
@@ -224,10 +224,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "owner lacks original metadata custody".into(),
             ));
         }
-        work.charge(acyclic_fs::WorkCounters {
-            allocation_operations: 1,
-            ..Default::default()
-        })?;
+        let mut header = work.claim(
+            (2 * std::mem::size_of::<usize>()) as u64,
+            1,
+            acyclic_fs::WorkCounters::default(),
+        )?;
+        self.native_custody
+            .as_mut()
+            .expect("verified owner custody")
+            .absorb(&mut header)?;
         Ok(Arc::new(self))
     }
 
@@ -291,10 +296,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         self.verify(true, &mut Some(&mut io.history_io())).await?;
-        let (record, custody) = self
-            .host
-            .readonly_admission(self.operation_id(), &io)
-            .await?;
+        let record = self.host.admission(self.operation_id(), Some(&io)).await?;
+        let custody = io.take_native_custody(
+            std::mem::size_of::<TaskAdmissionRecord>() as u64 + record.logical_owned_bytes()?,
+        )?;
         if record != *self.admission {
             return Err(Error::Conflict("ROOT admission changed".into()));
         }
@@ -310,7 +315,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<crate::resource_preparation::RootBootstrapContentContext<'a>> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut history = io.history_io();
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut Some(&mut history),

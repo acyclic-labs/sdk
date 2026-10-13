@@ -186,11 +186,9 @@ fn errno(error: MountSourceError) -> i32 {
         | MountSourceError::NativeRecordCorrupt(_, _) => libc::EIO,
         MountSourceError::Metadata(_) => libc::EIO,
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-        MountSourceError::SourceWatchStartup(_)
-        | MountSourceError::NativeWatchOriginalIo(_)
+        MountSourceError::NativeWatchOriginalIo(_)
         | MountSourceError::NativeWatchOriginalBackend(_)
-        | MountSourceError::NativeWatchStartupFailed { .. }
-        | MountSourceError::NativeWatchSourceStartupFailed { .. } => libc::EIO,
+        | MountSourceError::NativeWatchStartupFailed { .. } => libc::EIO,
     }
 }
 

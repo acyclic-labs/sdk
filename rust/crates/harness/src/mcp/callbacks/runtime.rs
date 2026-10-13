@@ -5,7 +5,9 @@ pub struct McpRuntimeCallbacks {
     executor: StockExecutor,
     journal: Arc<dyn ExecutionJournal>,
     model_name: String,
-    sampling: McpSamplingPolicy,
+    continuation: ModelContent,
+    image: Option<NativeMediaPolicy>,
+    audio: Option<NativeMediaPolicy>,
 }
 impl McpRuntimeCallbacks {
     /// Selects the existing execution owner and model display identity.
@@ -13,18 +15,18 @@ impl McpRuntimeCallbacks {
         executor: StockExecutor,
         journal: Arc<dyn ExecutionJournal>,
         model_name: String,
-        sampling: McpSamplingPolicy,
+        continuation: ModelContent,
+        image: Option<NativeMediaPolicy>,
+        audio: Option<NativeMediaPolicy>,
     ) -> Result<Self> {
         if model_name.is_empty() {
             return Err(Error::Invalid("MCP sampling model name is empty".into()));
         }
-        sampling.continuation.validate_user_input(&mut None)?;
-        if sampling
-            .image
+        continuation.validate_user_input(&mut None)?;
+        if image
             .as_ref()
             .is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Image { .. }))
-            || sampling
-                .audio
+            || audio
                 .as_ref()
                 .is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Audio { .. }))
         {
@@ -36,7 +38,9 @@ impl McpRuntimeCallbacks {
             executor: executor.with_tool_registry(crate::tool::ToolRegistry::default()),
             journal,
             model_name,
-            sampling,
+            continuation,
+            image,
+            audio,
         })
     }
     async fn pin(&self, operation: OperationId, request: &McpCallbackRequest) -> Result<()> {
@@ -47,7 +51,7 @@ impl McpRuntimeCallbacks {
                 &crate::contract::canonical_json_bytes(&(
                     request,
                     &self.model_name,
-                    &self.sampling,
+                    json!({"continuation":self.continuation,"image":self.image,"audio":self.audio}),
                 ))?,
                 "application/json",
                 None,
@@ -101,9 +105,16 @@ impl McpRuntimeCallbacks {
                     .and_then(|tokens| u32::try_from(tokens).ok())
                     .ok_or_else(|| Error::Invalid("invalid MCP sampling token bound".into()))?;
                 self.pin(operation, request).await?;
-                let (input, prior) =
-                    sampling_messages(params, max_tokens, &context, operation, &self.sampling)
-                        .await?;
+                let (input, prior) = sampling_messages(
+                    params,
+                    max_tokens,
+                    &context,
+                    operation,
+                    &self.continuation,
+                    self.image.as_ref(),
+                    self.audio.as_ref(),
+                )
+                .await?;
                 let stage = Arc::new(SourceStage::new(
                     "mcp-sampling",
                     operation.to_string(),

@@ -26,7 +26,9 @@ pub(super) async fn sampling_messages(
     max_tokens: u32,
     context: &ToolContext,
     operation: OperationId,
-    policy: &McpSamplingPolicy,
+    continuation: &ModelContent,
+    image: Option<&NativeMediaPolicy>,
+    audio: Option<&NativeMediaPolicy>,
 ) -> Result<(ModelContent, Vec<ModelMessage>)> {
     if max_tokens == 0 {
         return Err(Error::Invalid("MCP sampling token bound is zero".into()));
@@ -68,12 +70,7 @@ pub(super) async fn sampling_messages(
                         .into(),
                 },
                 Some(kind @ ("image" | "audio")) => {
-                    let media = if kind == "image" {
-                        &policy.image
-                    } else {
-                        &policy.audio
-                    };
-                    let media = media.as_ref().ok_or_else(|| {
+                    let media = if kind == "image" { image } else { audio }.ok_or_else(|| {
                         Error::Unsupported(
                             "MCP sampling media was not selected by this host".into(),
                         )
@@ -152,6 +149,6 @@ pub(super) async fn sampling_messages(
             .ok_or_else(|| Error::Invalid("MCP sampling input disappeared".into()))?;
         Ok((last.content, messages))
     } else {
-        Ok((policy.continuation.clone(), messages))
+        Ok((continuation.clone(), messages))
     }
 }

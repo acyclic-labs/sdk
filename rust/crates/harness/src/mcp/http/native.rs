@@ -10,7 +10,7 @@ use std::time::Duration;
 pub struct NativeMcpHttpProvider(reqwest::Client);
 
 impl NativeMcpHttpProvider {
-    /// Creates a provider with redirects and request retries disabled.
+    /// Creates a provider with redirects and retries disabled.
     pub fn new(headers: reqwest::header::HeaderMap) -> Result<Self> {
         let client = reqwest::Client::builder()
             .default_headers(headers)
@@ -20,11 +20,13 @@ impl NativeMcpHttpProvider {
             .map_err(|e| Error::Invalid(e.to_string()))?;
         Ok(Self(client))
     }
-    pub(crate) fn exchange_authenticated<'a>(
+}
+
+impl McpHttpProvider for NativeMcpHttpProvider {
+    fn exchange<'a>(
         &'a self,
         operation: OperationId,
         request: McpHttpRequest,
-        bearer: Option<reqwest::header::HeaderValue>,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
         Box::pin(async move {
             if request.timeout_ms == 0 || request.maximum_response_bytes == 0 {
@@ -39,9 +41,6 @@ impl NativeMcpHttpProvider {
                 .body(request.body);
             for (key, value) in request.headers {
                 builder = builder.header(key, value);
-            }
-            if let Some(bearer) = bearer {
-                builder = builder.header(reqwest::header::AUTHORIZATION, bearer);
             }
             let response = builder
                 .send()
@@ -73,16 +72,6 @@ impl NativeMcpHttpProvider {
                 body: Box::pin(body),
             })
         })
-    }
-}
-
-impl McpHttpProvider for NativeMcpHttpProvider {
-    fn exchange<'a>(
-        &'a self,
-        operation: OperationId,
-        request: McpHttpRequest,
-    ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-        self.exchange_authenticated(operation, request, None)
     }
     fn reconcile<'a>(
         &'a self,

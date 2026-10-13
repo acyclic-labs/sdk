@@ -22,28 +22,9 @@ pub fn content_residency_verifier<P>(
 where
     P: acyclic_stream::StreamProvider + 'static,
 {
-    let issued = context.as_ref();
-    if issued.durable_task_id() != Some(owner.task_id()) || issued.id() != owner.operation_id() {
-        return Err(content_error(
-            io,
-            ErrorCode::Unauthorized,
-            "content reader differs from its original task owner",
-        ));
-    }
+    owner.require_task_context_binding(&context, io)?;
     #[cfg(not(target_arch = "wasm32"))]
     let native = io.and_then(ContentIo::original_native_work);
-    let (task, fence) = owner.task_binding();
-    if !issued.original_task_binding_matches(task, fence) {
-        return Err(content_error(
-            io,
-            ErrorCode::Unauthorized,
-            "content reader differs from its original task fence",
-        ));
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = native {
-        issued.require_original_native_work(work)?;
-    }
     #[cfg(not(target_arch = "wasm32"))]
     let custody = native
         .map(|work| {
@@ -73,19 +54,11 @@ where
         reference: &FileRef,
         io: Option<&ContentIo>,
     ) -> Result<()> {
-        let (task, fence) = self.owner.task_binding();
-        if !self.context.original_task_binding_matches(task, fence) {
-            return Err(content_error(
-                io,
-                ErrorCode::Unauthorized,
-                "content reader differs from its original task fence",
-            ));
-        }
+        self.owner.require_task_context_binding(&self.context, io)?;
         self.owner.validate_input_file(reference, io)?;
         let mut history = io.map(ContentIo::history_io);
         self.owner
-            .verify(
-                true,
+            .verify_read_access(
                 &mut history
                     .as_mut()
                     .map(|history| history as &mut dyn crate::store::HistoryIo),
