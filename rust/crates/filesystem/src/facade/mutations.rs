@@ -391,15 +391,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => self
                 .root
-                .prepare_held_root_native(&working.0, accounting, producer)?,
+                .prepare_held_root(&working.0, accounting, Some(producer))?,
             _ => {
                 let (allocations, work, budget, token) = accounting
                     .standalone_parts()
                     .ok_or(FsError::PendingMutationAllocationFailed)?;
                 token.check()?;
                 self.root
-                    .prepare_held_root(&working.0, allocations, work, budget, token)?
-                    .map(|root| {
+                    .prepare_held_root(&working.0, &mut KernelAccounting::borrowed_standalone(allocations, work, budget, token), None)?
+                    .map(|(root, _)| {
                         let control = Self::root_control_claim(&root, Some(producer))?;
                         Ok::<_, FsError>((root, control))
                     })

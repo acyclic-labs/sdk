@@ -70,7 +70,7 @@ pub mod wire_api;
 pub mod wire_codec;
 pub use wire_codec::encode_error;
 #[cfg(test)]
-#[path = "../tests/support/stream.rs"]
+#[path = "../tests/support/stream/mod.rs"]
 mod test_stream;
 pub mod wire_validation;
 pub mod wire_values;
