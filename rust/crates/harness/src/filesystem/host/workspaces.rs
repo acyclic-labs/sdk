@@ -111,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
         let generation = self
-            .apply_generation(workspace, expected_generation, mutations, idempotency_key, None, None)
+            .apply_generation(workspace, expected_generation, mutations, idempotency_key.clone(), None, None)
             .await?;
         self.generation_ref_id(generation.id(), None)
     }
@@ -212,12 +212,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
-    pub(in crate::filesystem) async fn apply_generation(
-        &self, reference: &WorkspaceRef, expected: Option<&GenerationRef>, mutations: &[WorkspaceMutation],
-        key: &IdempotencyKey, io: Option<&PreparationIo>, preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
-    ) -> Result<Generation<A,O>> {
+    pub(in crate::filesystem) fn apply_generation<'a>(
+        &'a self, reference: &'a WorkspaceRef, expected: Option<&'a GenerationRef>, mutations: &'a [WorkspaceMutation],
+        key: IdempotencyKey, io: Option<&'a PreparationIo>, preparation: Option<&'a crate::resource_preparation::TaskResourcePreparation>,
+    ) -> impl std::future::Future<Output = Result<Generation<A,O>>> + acyclic_stream::ProviderTask + 'a {
+        async move {
         let Some(io) = io else {
-            return self.apply_generation_guarded(reference, expected, mutations, key, &mut || std::future::ready(Ok(()))).await;
+            return self.apply_generation_guarded(reference, expected, mutations, &key, &mut || std::future::ready(Ok(()))).await;
         };
         #[cfg(not(target_arch="wasm32"))]
         let mut native_before = {
@@ -245,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
             None => io.sdk(workspace.head(io, io.cancellation()).await)?,
         };
-        let operation = fork_preparer_io::operation_key(key, Some(io))?;
+        let operation = fork_preparer_io::operation_key(&key, Some(io))?;
         let mut transaction = io.sdk(workspace.begin_pinned_transaction(&pinned, operation, io, io.cancellation()).await)?;
         for mutation in mutations {
             #[cfg(not(target_arch="wasm32"))]
@@ -273,6 +274,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
             TransactionCommit::Conflict { .. } | TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict =>
                 Err(stock_boundary(Some(io), crate::wire::ErrorCode::Conflict, "workspace publication conflicted or was fenced")),
+        }
         }
     }
     pub(in crate::filesystem) async fn operation_generation(&self, reference: &WorkspaceRef, key: &IdempotencyKey, io: Option<&PreparationIo>) -> Result<Option<Generation<A,O>>> {

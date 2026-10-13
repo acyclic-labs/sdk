@@ -110,21 +110,28 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody()?)
     };
-    let source = filesystem
-        .root_output_source(
-            current_owner,
-            &binding.scratch.volume,
-            operation,
-            &generation,
+    let io = PreparationIo::from_native_work(work)?;
+    let maximum = context.scope().limits().file_bytes.min(observer.maximum());
+    let output = acyclic_harness::runtime::ContentBindings {
+        reader: acyclic_harness::filesystem::FilesystemContentVerifier::new(
+            Arc::clone(&filesystem),
             &verifier.0,
             &authority.0.2,
-            work,
-        )
-        .await?;
-    context
-        .bind_root_output_context_with_native_work(source, work)
-        .await?;
-    Ok(context)
+            maximum,
+            Some(&io),
+        )?,
+        writer: Some(
+            acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                filesystem,
+                &binding.scratch.volume,
+                &verifier.0,
+                &authority.0.2,
+                maximum,
+                Some(&io),
+            )?,
+        ),
+    };
+    context.with_output_bindings(output).await
 }
 impl PiRootProvider {
     pub(crate) async fn observe_allocation_with_native_work(
@@ -223,30 +230,39 @@ impl PiRootProvider {
         Ok(Some((scratch.0, operation, scratch.1)))
     }
 
-    pub(super) async fn creation_with_native_work(
-        &self,
+    pub(super) fn creation_with_native_work<'a>(
+        &'a self,
         effect: EffectId,
         attempt: EffectAttemptId,
-        resource: &str,
-        volume: &VolumeRef,
+        resource: &'a str,
+        volume: &'a VolumeRef,
         config: VolumeConfig,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<LocalGeneration>> {
-        let operation =
-            self.creation_operation_with_native_work(effect, attempt, resource, work)?;
-        let name = {
-            let mut io =
-                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-            let value = volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody()?)
-        };
-        let io = PreparationIo::from_native_work(work)?;
-        let (generation, recorded) = self
-            .fs
-            .workspace_for_creation_operation(name.0, config, operation, &io, io.cancellation())
-            .await;
-        recorded?;
-        generation.map_err(Error::from)
+        work: &'a NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<Option<LocalGeneration>>> + Send + 'a {
+        async move {
+            let operation =
+                self.creation_operation_with_native_work(effect, attempt, resource, work)?;
+            let name = {
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    PreparationIo::from_native_work(work)?,
+                );
+                let value = volume.storage_name(&mut Some(&mut io))?;
+                (value, io.into_custody()?)
+            };
+            let io = PreparationIo::from_native_work(work)?;
+            let (generation, recorded) = self
+                .fs
+                .workspace_for_creation_operation(
+                    name.0,
+                    config,
+                    operation,
+                    &io,
+                    work.cancellation(),
+                )
+                .await;
+            recorded?;
+            generation.map_err(Error::from)
+        }
     }
 
     pub(super) fn scratch_creation_with_native_work(

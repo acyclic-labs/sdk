@@ -108,7 +108,7 @@ impl EffectRegistry {
             })?;
         }
         let provider = self.providers.get(&effect.provider).ok_or_else(|| {
-            crate::effect_host::effect_error(
+            crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unsupported,
                 "effect provider is not registered",
@@ -128,7 +128,7 @@ impl EffectRegistry {
                 .contains(&effect.guarantee)
         };
         if !supported {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unsupported,
                 "effect provider does not support the pinned guarantee",
@@ -137,7 +137,7 @@ impl EffectRegistry {
         if effect.guarantee == EffectGuarantee::ExactlyOnce
             && !provider.linearizable_reconciliation()
         {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unsupported,
                 "exactly-once requires linearizable provider reconciliation",
@@ -161,7 +161,7 @@ impl EffectRegistry {
             || observation.guarantee != effect.guarantee
             || !observation.status.is_terminal()
         {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "effect observation does not match durable dispatch",
@@ -206,14 +206,14 @@ impl EffectRegistry {
         let mut observed = None;
         let source = provider.id();
         if source.trim().is_empty() {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 &mut observed,
                 crate::wire::ErrorCode::Invalid,
                 "effect provider identity is empty",
             ));
         }
         if self.providers.contains_key(source) {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 &mut observed,
                 crate::wire::ErrorCode::Conflict,
                 "effect provider is already registered",

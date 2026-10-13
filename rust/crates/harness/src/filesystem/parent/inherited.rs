@@ -510,7 +510,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         })?,
                         bytes: bytes.clone(),
                     },
-                ], idempotency_key, io, preparation)
+                ], IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?), io, preparation)
             .await?
         };
         let generation = fork_preparer_io::generation_ref(&self.host.provider, committed.id(), io)?;

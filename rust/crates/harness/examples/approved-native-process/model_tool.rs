@@ -98,7 +98,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             self.result(
                 binding
                     .effects
-                    .run_task_effect(&binding.owner, binding.command, &binding.plan, None)
+                    .run_task_effect(&binding.owner, binding.command, &binding.plan, None, false)
                     .await
                     .map(|result| result.0)?,
             )
@@ -120,7 +120,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             let binding = &self.approved;
             match binding
                 .effects
-                .reconcile_task_effect(&binding.owner, binding.command, &binding.plan, None)
+                .run_task_effect(&binding.owner, binding.command, &binding.plan, None, true)
                 .await
                 .map(|result| result.0)
             {

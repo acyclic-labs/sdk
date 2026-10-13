@@ -490,32 +490,47 @@ where
     Fut: Future<Output = Result<(), E>> + Send + 'static,
 {
     let mut accounting = PublicationAccounting::Native(original);
-    let mut factory = before_publication.clone();
+    let factory = before_publication.clone();
     let owner_original = original.clone();
     let owned_owner = move |same_original: &crate::NativeMaterializationWork| {
-        let admitted = if owner_original.shares_ledger(same_original) {
-            owner_original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from).map_err(E::from)
-        } else {
-            Err(E::from(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)))
-        };
-        let future = admitted.map(|()| factory(same_original));
+        let same_original = same_original.clone();
+        let owner_original = owner_original.clone();
+        let mut factory = factory.clone();
         async move {
-            let future = future.map_err(NativePublicationOwnerFailure::Owner)?;
-            future.await.map_err(NativePublicationOwnerFailure::Owner)
+            if !owner_original.shares_ledger(&same_original) {
+                return Err(NativePublicationOwnerFailure::Owner(E::from(
+                    crate::FsError::NativeKernel(
+                        crate::NativeTreeMaterializationError::InvalidLayout,
+                    ),
+                )));
+            }
+            owner_original
+                .admit(WorkCounters::UNCHARGED)
+                .map_err(crate::FsError::from)
+                .map_err(E::from)
+                .map_err(NativePublicationOwnerFailure::Owner)?;
+            factory(&same_original)
+                .await
+                .map_err(NativePublicationOwnerFailure::Owner)
         }
     };
     let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
-        let mut owner = owned_owner.clone();
+        let mut guard = crate::NativeAuthorityGuard(owned_owner.clone());
         async move {
-            let outcome =(async { let __authority_args = (request, original, cancellation, &mut owner,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(NativePublicationOwnerFailure::Authority)); __authority_result }.await).map_err(|error| PublicationStepFailure {
-                cause: match error {
-                    NativePublicationOwnerFailure::Owner(error) => error,
-                    NativePublicationOwnerFailure::Authority(error) => {
+            let mut work = crate::AuthorityWork::native(original, cancellation);
+            let outcome = authority
+                .compare_and_append(request, &mut work, Some(&mut guard))
+                .await
+                .map_err(|error| error.into_error(NativePublicationOwnerFailure::Authority))
+                .map_err(|error| PublicationStepFailure {
+                    cause: match error {
+                        NativePublicationOwnerFailure::Owner(error) => error,
+                        NativePublicationOwnerFailure::Authority(error) => {
                             E::from(native_authority_error(error))
                         }
                     },
-                work: None,
-            })?;
+                    work: None,
+                })?;
             Ok((outcome, None))
         }
     };

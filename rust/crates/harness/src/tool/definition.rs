@@ -129,7 +129,7 @@ impl ToolDefinition {
             (revision, "tool revision is invalid"),
         ] {
             if !crate::contract::is_valid_component_label(value) {
-                return Err(crate::effect_host::effect_error(
+                return Err(crate::store::guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Invalid,
                     reason,
@@ -137,7 +137,7 @@ impl ToolDefinition {
             }
         }
         if name.contains('@') || revision.contains('@') {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "tool name and revision cannot contain the version separator",

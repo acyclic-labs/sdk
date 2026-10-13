@@ -447,7 +447,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             bytes: receipt_bytes,
         });
         let generation = self.apply_generation(
-            &workspace, expected_generation, &mutations, idempotency_key, io, None,
+            &workspace, expected_generation, &mutations, IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?), io, None,
         ).await?;
         let generation_reference =
             (self).generation_ref_id(generation.id(), io)?;
