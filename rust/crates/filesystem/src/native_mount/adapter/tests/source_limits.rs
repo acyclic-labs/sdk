@@ -152,7 +152,7 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
             options.custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0);
         }
         let file = options.open(&path)?;
-        let accounting = Some(NativeFileMeter::Owned(meter.clone()));
+        let accounting = Some(NativeFileMeter::Owned(root.runtime_meter()));
         #[cfg(windows)]
         // SAFETY: this fresh idle handle is overlapped and has no completion port.
         let file = unsafe { NativeFile::from_overlapped_file_unchecked(file, accounting) };
