@@ -205,7 +205,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let native_snapshot = snapshot
             .native_snapshot
             .as_ref()
-            .map(|value| crate::core::copy_value(value, &mut quota))
+            .map(|value| {
+                crate::core::copy(value, &mut quota, |value, _| {
+                    crate::executor::json::json_value_logical_owned_bytes(value)
+                })
+            })
             .transpose()?;
         let mut authorization = ProjectSourceAuthorization {
             owner,
