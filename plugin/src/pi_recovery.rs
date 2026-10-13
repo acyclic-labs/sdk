@@ -238,7 +238,7 @@ where
             if admission.0.task
                 != *preparation_definition
                     .as_ref()
-                    .expect("retained preparation definition")
+                    .ok_or_else(|| invalid("retained preparation definition is absent"))?
                     .identity()
                 || admission.0.parent != task.parent
                 || request.0.child.parent != task.parent
@@ -695,8 +695,7 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
         std::mem::size_of::<(String, serde_json::Value)>(),
     ]
     .into_iter()
-    .max()
-    .expect("closed recovery slot manifest") as u64;
+    .fold(0, usize::max) as u64;
     let typed = shape
         .lexical_items()
         .checked_add(shape.virtual_items())

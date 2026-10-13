@@ -43,7 +43,10 @@ pub(crate) async fn configured_test_service_bootstrap(
         pi_root_provider::allocation_budget(),
         &CancellationToken::new(),
     )
-    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work: Box::new(work) })?;
+    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction {
+        cause,
+        work: Box::new(work),
+    })?;
     let root = data.to_path_buf();
     Ok((lock, configured, root, work))
 }
@@ -84,7 +87,11 @@ pub(super) fn native_hook_request(
     cwd: &Path,
     extra: Value,
 ) -> ControlRequest {
-    let mut arguments = extra.as_object().cloned().unwrap_or_default();
+    let mut arguments = if let Value::Object(arguments) = extra {
+        arguments
+    } else {
+        serde_json::Map::new()
+    };
     arguments.insert("session_id".into(), json!(session_id));
     arguments.insert("cwd".into(), json!(cwd));
     ControlRequest {

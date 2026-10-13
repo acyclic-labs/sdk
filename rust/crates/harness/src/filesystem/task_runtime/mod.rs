@@ -2,7 +2,7 @@
 
 use super::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost, FilesystemInteractionHost, FilesystemWorkflowJournal, PreparationIo,
+    FilesystemHost, FilesystemInteractionHost, FilesystemWorkflowJournal,
 };
 use crate::runtime::TaskStateProvider;
 use crate::store::HistoryIo;
@@ -282,17 +282,16 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(|io| io.original_native_work()) {
-            if !self
+        if let Some(work) = io.and_then(|io| io.original_native_work())
+            && !self
                 .native_custody
                 .as_ref()
                 .is_some_and(|custody| custody.work().shares_allocation_context(work))
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "mailbox metadata differs from original work",
-                });
-            }
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "mailbox metadata differs from original work",
+            });
         }
         self.owner.as_ref().require_mail_scope(scope, io)
     }
@@ -471,15 +470,14 @@ fn native_step_key_with_custody(
                 Ok(held) => held,
                 Err(_) => return Err(Error::NativeWork { cause, custody }),
             };
-            if let Some(mut incoming) = custody {
-                if !held.work().shares_ledger(incoming.work())
-                    || held.absorb(&mut incoming).is_err()
-                {
-                    return Err(Error::NativeWork {
-                        cause,
-                        custody: Some(incoming),
-                    });
-                }
+            if let Some(mut incoming) = custody
+                && (!held.work().shares_ledger(incoming.work())
+                    || held.absorb(&mut incoming).is_err())
+            {
+                return Err(Error::NativeWork {
+                    cause,
+                    custody: Some(incoming),
+                });
             }
             return Err(Error::NativeWork {
                 cause,

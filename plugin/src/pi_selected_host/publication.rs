@@ -8,10 +8,10 @@ impl PiControlHost<'_> {
         input: &PiSelectedCommand,
         source: &PiNativeSelectedSource,
         import_operation: OperationId,
-        prior: Option<&SelectedImportIntent>,
-        reconcile: bool,
+        prior_reconcile: (Option<&SelectedImportIntent>, bool),
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<LazySnapshotRef>> {
+        let (prior, reconcile) = prior_reconcile;
         let context = &source.context;
         let owner = &source.owner;
         let key = source.key.as_str();
@@ -190,15 +190,19 @@ impl PiControlHost<'_> {
             }
             import_native_project(
                 source,
-                workspace,
-                mount.as_deref(),
-                volume,
-                intent.0.destination_snapshot,
+                (
+                    workspace,
+                    mount.as_deref(),
+                    volume,
+                    intent.0.destination_snapshot,
+                ),
                 intent.0.paths,
-                import_operation,
-                permit,
-                acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
-                self.protected.policy().limits.file_bytes,
+                (
+                    import_operation,
+                    permit,
+                    acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
+                    self.protected.policy().limits.file_bytes,
+                ),
                 &publication_work,
                 {
                     let caller_guard = Arc::clone(&caller_guard);

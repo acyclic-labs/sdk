@@ -303,8 +303,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.data,
-                self.directory,
+                (&self.resources.data, self.directory),
                 &self.runtime,
                 &self.filesystem,
                 binding,
@@ -378,8 +377,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.data,
-                self.directory,
+                (&self.resources.data, self.directory),
                 &self.runtime,
                 &self.filesystem,
                 binding,

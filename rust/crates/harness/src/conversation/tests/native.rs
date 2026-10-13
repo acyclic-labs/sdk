@@ -291,7 +291,6 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
 #[cfg(feature = "filesystem")]
 #[test]
 fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -> Result<()> {
-    use crate::store::history::HistoryWork;
     use acyclic_fs::{CancellationToken, WorkBudget};
     let agent = AgentId::from_bytes([8; 16]);
     let content = file(agent, "observed-rebuild.txt")?;
