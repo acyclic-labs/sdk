@@ -389,7 +389,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
     .await?;
     commit(&mut source, &cancel).await?;
     let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
-    let mut candidate = source.private_candidate(&original, &cancel)?;
+    let mut candidate = source.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancel), &cancel)?;
     candidate
         .change_content(
             id,

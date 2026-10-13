@@ -238,9 +238,8 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                             )
                             .await?;
                         let mut checkout = observation
-                            .observer(boundary_budget(), &source.cancellation)
-                            .map_err(facade_error)?
-                            .value;
+                            .observer(&mut crate::kernel::allocation::KernelAccounting::standalone(boundary_budget(), &source.cancellation), &source.cancellation)
+                            .map_err(fs_error)?;
                         let mut values = [0; 2];
                         for (value, path) in values.iter_mut().zip(&pair) {
                             let range = ByteRange {

@@ -28,7 +28,7 @@ where
                 Some(&self.cancellation),
             )
             .await?;
-        let checkout = observation.observer(work, work.cancellation())?;
+        let checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
         carrier.check(work.cancellation(), Some(&self.cancellation))?;
         Ok(checkout)
     }

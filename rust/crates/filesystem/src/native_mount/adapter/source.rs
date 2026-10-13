@@ -112,7 +112,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .carrier
             .original_native_work()
             .expect("native SDK callback");
-        let mut inspector = checkout.inspector(&work, &cancellation)?;
+        let mut inspector = checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation), &cancellation)?;
         self.read_lookup(&mut inspector, &path, &mut inputs, &cancellation)
             .await
     }
@@ -185,7 +185,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .carrier
             .original_native_work()
             .expect("native SDK callback");
-        let mut checkout = observation.observer(&original, &cancellation)?;
+        let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         let chunk = match range {
             Some(range) => {
                 let read = checkout
@@ -232,7 +232,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .carrier
             .original_native_work()
             .expect("native SDK callback");
-        let mut checkout = observation.observer(&original, &cancellation)?;
+        let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         self.read_lookup(&mut checkout, &path, &mut inputs, &cancellation)
             .await
     }
@@ -287,7 +287,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .await?;
         observation.ensure_publication_resolved()?;
         let original = carrier.original_native_work().expect("native SDK callback");
-        let mut checkout = observation.observer(&original, &cancellation)?;
+        let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         let record = checkout
             .read_file_record_by_id(file_id, &original, &cancellation)
             .await?;
@@ -463,9 +463,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
-            .private_candidate(boundary_budget(), &self.cancellation)
-            .map_err(facade_error)?
-            .value;
+            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(boundary_budget(), &self.cancellation), &self.cancellation)
+            .map_err(fs_error)?;
         let decision = checkout
             .rebase_head(
                 self.limits.maximum_checkout_dependencies,
@@ -492,9 +491,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
-            .private_candidate(boundary_budget(), &self.cancellation)
-            .map_err(facade_error)?
-            .value;
+            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::standalone(boundary_budget(), &self.cancellation), &self.cancellation)
+            .map_err(fs_error)?;
         checkout
             .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
             .await
@@ -562,7 +560,7 @@ where
                 crate::facade::ContentAddress::Path(path) => {
                     candidate
                         .checkout
-                        .inspector(work, work.cancellation())?
+                        .inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?
                         .lookup_no_follow(path, work, work.cancellation())
                         .await?
                         .record

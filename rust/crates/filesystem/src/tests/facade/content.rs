@@ -608,7 +608,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .await?
         .bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
-    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
+    let mut candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
     candidate
         .change_content(
             destination.file_id,

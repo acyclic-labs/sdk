@@ -51,7 +51,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let early = |error: MountSourceError| (E::from(error), None);
         let projection = state
             .checkout
-            .private_candidate(work, cancellation)
+            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
             .map_err(fs_error)
             .map_err(early)?;
         let notification = self
