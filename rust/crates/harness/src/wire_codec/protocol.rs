@@ -9,15 +9,19 @@ pub(crate) fn protocol_identity() -> wire::ProtocolIdentity {
     }
 }
 
-/// Requires the exact `expected` protocol identity; `missing` classifies its absence.
 pub(crate) fn validate_protocol(
     protocol: Option<&wire::ProtocolIdentity>,
-    expected: &wire::ProtocolIdentity,
-    missing: Fault,
+    expected: (&str, &str),
+    missing: wire::ErrorCode,
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    match protocol {
-        None => Err(missing("protocol identity is missing".into())),
-        Some(actual) if actual == expected => Ok(()),
-        Some(_) => Err(Error::Unsupported("protocol identity mismatch".into())),
+    let actual = protocol.ok_or_else(|| boundary(work, missing, "protocol identity is missing"))?;
+    if actual.version != expected.0 || actual.descriptor_digest != expected.1 {
+        return Err(boundary(
+            work,
+            wire::ErrorCode::Unsupported,
+            "protocol identity mismatch",
+        ));
     }
+    Ok(())
 }

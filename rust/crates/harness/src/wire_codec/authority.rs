@@ -1,8 +1,5 @@
 use super::*;
 
-/// Classifies malformed input: [`Error::Storage`] for persisted events, [`Error::Invalid`] for client requests.
-pub(crate) type Fault = fn(String) -> Error;
-
 /// Converts a semantic aggregate identity without conflating its typed kind.
 #[must_use]
 pub fn encode_authority(authority: &Authority) -> wire::Authority {
@@ -18,23 +15,33 @@ pub fn encode_authority(authority: &Authority) -> wire::Authority {
     }
 }
 
-pub(crate) fn decode_aggregate_kind(kind: i32, fault: Fault) -> Result<AggregateKind> {
+pub(crate) fn decode_aggregate_kind(
+    kind: i32,
+    code: wire::ErrorCode,
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<AggregateKind> {
     match wire::AggregateKind::try_from(kind)
-        .map_err(|_| fault("aggregate kind is invalid".into()))?
+        .map_err(|_| boundary(work, code, "aggregate kind is invalid"))?
     {
         wire::AggregateKind::Agent => Ok(AggregateKind::Agent),
         wire::AggregateKind::Conversation => Ok(AggregateKind::Conversation),
         wire::AggregateKind::Session => Ok(AggregateKind::Session),
         wire::AggregateKind::Turn => Ok(AggregateKind::Turn),
         wire::AggregateKind::Task => Ok(AggregateKind::Task),
-        wire::AggregateKind::Unspecified => Err(fault("aggregate kind is unspecified".into())),
+        wire::AggregateKind::Unspecified => {
+            Err(boundary(work, code, "aggregate kind is unspecified"))
+        }
     }
 }
 
-pub(crate) fn decode_authority(authority: wire::Authority, fault: Fault) -> Result<Authority> {
-    let kind = decode_aggregate_kind(authority.kind, fault)?;
+pub(crate) fn decode_authority(
+    authority: wire::Authority,
+    code: wire::ErrorCode,
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Authority> {
+    let kind = decode_aggregate_kind(authority.kind, code, work)?;
     if authority.id.is_empty() {
-        return Err(fault("authority identity is empty".into()));
+        return Err(boundary(work, code, "authority identity is empty"));
     }
     Ok(Authority {
         kind,
@@ -51,14 +58,16 @@ pub(super) fn encode_reference(reference: &EventReference) -> wire::EventReferen
 
 pub(super) fn decode_reference(
     reference: wire::EventReference,
-    fault: Fault,
+    code: wire::ErrorCode,
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<EventReference> {
     Ok(EventReference {
         authority: decode_authority(
             reference
                 .authority
-                .ok_or_else(|| fault("causal authority is missing".into()))?,
-            fault,
+                .ok_or_else(|| boundary(work, code, "causal authority is missing"))?,
+            code,
+            work,
         )?,
         revision: reference.revision,
     })
