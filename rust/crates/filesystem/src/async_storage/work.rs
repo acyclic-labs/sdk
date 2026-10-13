@@ -265,14 +265,7 @@ pub trait AuthorityGuard: ProviderTask {
                 return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));
             };
             let meter = original.state.clone();
-            let result = match deadline {
-                Some(deadline) => {
-                    provider
-                        .native_commit_before(request, deadline, meter)
-                        .await
-                }
-                None => provider.native_commit(request, meter).await,
-            };
+            let result = provider.native_commit(request, deadline, meter).await;
             result.map(|result| result.map_err(AuthorityError::from))
         }
     }

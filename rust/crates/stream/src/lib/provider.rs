@@ -137,9 +137,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     fn native_commit(
         &self,
         request: CommitRequest,
+        deadline: Option<u64>,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
-        let _ = request;
+        let _ = (request, deadline);
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
 
@@ -171,18 +172,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
         let _ = (request, maximum_record_bytes);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
-    }
-
-    /// Executes the same canonical commit with the provider's trusted clock checked at its actual linearization point, not at caller admission.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommitOutcome> {
-        let _ = (request, deadline_unix_millis);
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
 }

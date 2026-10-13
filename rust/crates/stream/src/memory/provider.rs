@@ -389,21 +389,10 @@ impl StreamProvider for MemoryStream {
     fn native_commit(
         &self,
         request: CommitRequest,
+        deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        self.native_commit_guarded(request, None, meter, || futures::future::ready(Ok(())))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        self.native_commit_guarded(request, Some(deadline), meter, || {
-            futures::future::ready(Ok(()))
-        })
+        self.native_commit_guarded(request, deadline, meter, || futures::future::ready(Ok(())))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
