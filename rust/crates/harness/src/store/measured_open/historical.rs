@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends() -> Result<()> {
-    let provider = fixture().await?;
+    let provider = projection_fixture(69).await?;
     let limits = default_projection_read_limits();
     let original = StreamAggregate::open(
         &provider,
