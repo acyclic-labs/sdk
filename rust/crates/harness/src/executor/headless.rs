@@ -68,8 +68,14 @@ impl StockExecution<'_> {
                 arguments,
             } = event
             {
-                let invocation =
-                    stock_model_call(input.operation_id, step, call_id, name, arguments, self.io)?;
+                let invocation = ToolInvocation::for_model_call(
+                    input.operation_id,
+                    step,
+                    call_id,
+                    name,
+                    arguments,
+                    self.native_work(),
+                )?;
                 let message = ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::ToolCall {

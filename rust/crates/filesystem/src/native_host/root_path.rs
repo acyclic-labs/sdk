@@ -1,173 +1,121 @@
 use super::*;
+use std::os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _};
 
-#[cfg(windows)]
 pub(super) fn open_windows_root_name(
     name: &[u16],
-    access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
+    access: fs::FILE_ACCESS_RIGHTS,
 ) -> io::Result<File> {
-    use std::os::windows::io::FromRawHandle as _;
-    use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
-    // SAFETY: callers validate the terminated name; a successful call transfers a fresh handle.
+    // SAFETY: callers validate the terminated name; success transfers a fresh handle.
     let handle = unsafe {
-        CreateFileW(
+        fs::CreateFileW(
             windows::core::PCWSTR(name.as_ptr()),
             access.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            fs::FILE_SHARE_READ | fs::FILE_SHARE_WRITE | fs::FILE_SHARE_DELETE,
             None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            fs::OPEN_EXISTING,
+            fs::FILE_FLAG_BACKUP_SEMANTICS | fs::FILE_FLAG_OPEN_REPARSE_POINT,
             None,
         )
     }
-    .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xffff))?;
+    .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
     Ok(unsafe { File::from_raw_handle(handle.0) })
 }
 
-#[cfg(windows)]
-pub(crate) fn encode_root_path_name<W: NativeHostWork>(
+pub(super) fn with_root_name<W: NativeHostWork, T>(
     path: &Path,
     work: &mut W,
-) -> Result<(Vec<u16>, W::Allocation), W::Error> {
-    use std::os::windows::ffi::OsStrExt as _;
-    let units = wide_units(path.as_os_str(), work)?
-        .checked_add(1)
-        .ok_or(crate::WorkError::Overflow)?;
-    let encoded = WorkCounters {
-        bytes_encoded: (units - 1)
-            .checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)? as u64,
-        ..WorkCounters::UNCHARGED
-    };
-    work.admit(encoded)?;
-    let (mut name, allocation) = buffer(units, work)?;
-    name.extend(path.as_os_str().encode_wide());
-    let result = work.record(encoded).and_then(|()| {
-        if name.contains(&0) {
-            return Err(
-                io::Error::new(io::ErrorKind::InvalidInput, "host path contains NUL").into(),
-            );
-        }
-        name.push(0);
-        Ok(())
-    });
-    if let Err(e) = result {
-        drop(name);
-        work.release(allocation)?;
-        return Err(e);
-    }
-    Ok((name, allocation))
-}
-
-#[cfg(windows)]
-pub(crate) fn normalize_root_wide_name<W: NativeHostWork>(
-    name: &[u16],
-    work: &mut W,
-) -> Result<(Vec<u16>, W::Allocation), W::Error> {
-    use windows::Win32::Storage::FileSystem::GetFullPathNameW;
+    operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
     const VERBATIM: &[u16] = &[92, 92, 63, 92];
     const NT: &[u16] = &[92, 63, 63, 92];
     const UNC: &[u16] = &[92, 92, 63, 92, 85, 78, 67, 92];
     const MAX_UNITS: usize = 32768;
-    check_root_wide_name(name, work)?;
-    if name.starts_with(VERBATIM) || name.starts_with(NT) {
-        let copied = copy_work(name.len() as u64 * 2);
-        work.admit(copied)?;
-        let (mut result, allocation) = buffer(name.len(), work)?;
-        result.extend_from_slice(name);
-        if let Err(e) = work.record(copied) {
-            drop(result);
-            work.release(allocation)?;
-            return Err(e);
+    let length = wide_units(path.as_os_str(), work)?;
+    let (mut input, allocation) = buffer(
+        length.checked_add(1).ok_or(crate::WorkError::Overflow)?,
+        work,
+    )?;
+    let result = (|| {
+        work.started_io(WorkCounters {
+            bytes_encoded: (length as u64)
+                .checked_mul(2)
+                .ok_or(crate::WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        })?;
+        for unit in path.as_os_str().encode_wide() {
+            work.started_io(ITEM)?;
+            if unit == 0 {
+                return Err(W::invalid_request());
+            }
+            input.push(unit);
         }
-        return Ok((result, allocation));
-    }
-    let input = if name == [0] { &[46u16, 0][..] } else { name };
-    let mut required = work.attempt_io(ITEM, || {
-        // SAFETY: input is a validated terminated native name.
-        let count = unsafe { GetFullPathNameW(windows::core::PCWSTR(input.as_ptr()), None, None) };
-        if count == 0 {
-            return Err(io::Error::last_os_error());
+        input.push(0);
+        if input.starts_with(VERBATIM) || input.starts_with(NT) {
+            return operation(&input, work);
         }
-        Ok(count as usize)
-    })?;
-    loop {
-        if required > MAX_UNITS {
-            return Err(io::Error::from_raw_os_error(206).into());
-        }
-        let (mut output, allocation) = buffer(
-            required.checked_add(8).ok_or(crate::WorkError::Overflow)?,
-            work,
-        )?;
-        output.resize(required + 8, 0u16);
-        let result = (|| {
-            let count = work.attempt_io(ITEM, || {
-                // SAFETY: the terminated input and complete output buffer remain live.
+        let input = if length == 0 { &[46, 0][..] } else { &input };
+        let query = |output: Option<&mut [u16]>, work: &mut W| {
+            work.attempt_io(ITEM, || {
+                // SAFETY: terminated input and any initialized output remain live.
                 let count = unsafe {
-                    GetFullPathNameW(
-                        windows::core::PCWSTR(input.as_ptr()),
-                        Some(&mut output[8..]),
-                        None,
-                    )
+                    fs::GetFullPathNameW(windows::core::PCWSTR(input.as_ptr()), output, None)
                 };
                 if count == 0 {
-                    return Err(io::Error::last_os_error());
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(count as usize)
                 }
-                Ok(count as usize)
-            })?;
-            if count >= required {
-                return Ok(None);
+            })
+        };
+        let mut required = query(None, work)?;
+        loop {
+            if required > MAX_UNITS {
+                return Err(io::Error::from_raw_os_error(206).into());
             }
-            let (prefix, skip): (&[u16], usize) = match &output[8..8 + count] {
-                [_, 58, 92, ..] => (VERBATIM, 0),
-                [92, 92, 46, 92, ..] => (VERBATIM, 4),
-                [92, 92, 63, 92, ..] | [92, 63, 63, 92, ..] => (&[], 0),
-                [92, 92, ..] => (UNC, 2),
-                _ => (&[], 0),
-            };
-            let begin = 8 + skip - prefix.len();
-            let length = 8 + count + 1 - begin;
-            let copied = copy_work((prefix.len() + length) as u64 * 2);
-            work.admit(copied)?;
-            output[begin..begin + prefix.len()].copy_from_slice(prefix);
-            output.copy_within(begin..8 + count + 1, 0);
-            output.truncate(length);
-            work.record(copied)?;
-            Ok(Some(()))
-        })();
-        match result {
-            Ok(Some(())) => return Ok((output, allocation)),
-            Ok(None) if required < MAX_UNITS => {
-                drop(output);
-                work.release(allocation)?;
-                required = required.saturating_mul(2).min(MAX_UNITS);
-            }
-            result => {
-                drop(output);
-                work.release(allocation)?;
-                return match result {
-                    Err(e) => Err(e),
-                    _ => Err(io::Error::from_raw_os_error(206).into()),
+            let (mut output, allocation) = buffer(required + 8, work)?;
+            output.resize(required + 8, 0);
+            let result = (|| {
+                let count = query(Some(&mut output[8..]), work)?;
+                if count >= required {
+                    return Ok(Err(count));
+                }
+                let (prefix, skip): (&[u16], usize) = match &output[8..8 + count] {
+                    [_, 58, 92, ..] => (VERBATIM, 0),
+                    [92, 92, 46, 92, ..] => (VERBATIM, 4),
+                    [92, 92, 63, 92, ..] | [92, 63, 63, 92, ..] => (&[], 0),
+                    [92, 92, ..] => (UNC, 2),
+                    _ => (&[], 0),
                 };
+                let begin = 8 + skip - prefix.len();
+                work.started_io(copy_work(prefix.len() as u64 * 2))?;
+                output[begin..begin + prefix.len()].copy_from_slice(prefix);
+                Ok::<_, W::Error>(Ok((begin, 8 + count + 1)))
+            })();
+            if let Ok(Ok((begin, end))) = result {
+                let result = operation(&output[begin..end], work);
+                drop(output);
+                work.release(allocation)?;
+                return result;
             }
+            drop(output);
+            work.release(allocation)?;
+            let Err(count) = result? else { unreachable!() };
+            required = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
         }
-    }
+    })();
+    drop(input);
+    work.release(allocation)?;
+    result
 }
 
-#[cfg(windows)]
 pub(super) fn check_root_wide_name<W: NativeHostWork>(
     name: &[u16],
     work: &mut W,
 ) -> Result<(), W::Error> {
     work.check()?;
-    let Some((last, body)) = name.split_last() else {
+    let Some((&0, body)) = name.split_last() else {
         return Err(W::invalid_request());
     };
-    if *last != 0 {
-        return Err(W::invalid_request());
-    }
     for unit in body {
         work.started_io(ITEM)?;
         if *unit == 0 {
@@ -177,35 +125,12 @@ pub(super) fn check_root_wide_name<W: NativeHostWork>(
     Ok(())
 }
 
-#[cfg(windows)]
-pub(crate) fn root_path_identity_wide<W: NativeHostWork>(
-    name: &[u16],
-    work: &mut W,
-) -> Result<NativeRootIdentity, W::Error> {
-    check_root_wide_name(name, work)?;
-    let file = work.attempt_io(READ, || {
-        open_windows_root_name(
-            name,
-            windows::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES
-                | windows::Win32::Storage::FileSystem::SYNCHRONIZE,
-        )
-    })?;
-    directory_identity(&Dir::from_std_file(file), work)
-}
-
-#[cfg(windows)]
 pub(super) fn windows_file_information(
     file: &impl std::os::windows::io::AsRawHandle,
-) -> io::Result<windows::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
-    let mut information =
-        windows::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: the held handle and complete output outlive this synchronous query.
-    unsafe {
-        windows::Win32::Storage::FileSystem::GetFileInformationByHandle(
-            windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
-            &mut information,
-        )
-    }
-    .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xffff))?;
+) -> io::Result<fs::BY_HANDLE_FILE_INFORMATION> {
+    let mut information = fs::BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: held handle and complete output remain live for this query.
+    unsafe { fs::GetFileInformationByHandle(win::HANDLE(file.as_raw_handle()), &mut information) }
+        .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
     Ok(information)
 }

@@ -16,7 +16,7 @@ pub struct FilesystemRootBootstrapAllocation<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) publication_lease: Option<Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) witness: Arc<crate::durable_host::RootBootstrapBindingWitness>,
+    pub(crate) witness: Arc<(crate::store::VerifiedRootBinding, Option<crate::runtime::NativeCustody>)>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) _custody: acyclic_fs::NativeAllocation,
 }
@@ -81,8 +81,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             owner.authenticate_root_bootstrap_creator_with_native_work(&creator, work).await?;
             drop(creator);
             drop(creator_custody);
-            let witness = owner.root_bootstrap_binding_witness_with_native_work(work).await?;
-            let root = witness.binding();
+            let witness = owner.authenticated_root_binding_with_native_work(work).await?;
+            let root = &witness.0;
             let original_custody;
             let (original_root, custody) = owner.original_root_admission_with_native_work(work).await?;
             original_custody = custody;
@@ -294,7 +294,7 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn record(&self) -> impl Serialize + '_ {
-        let root = self.witness.binding();
+        let root = &self.witness.0;
         let selected = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
             self.request
                 .generation

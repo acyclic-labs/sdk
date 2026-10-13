@@ -43,7 +43,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(self.protected.policy().root_task, work)
+            .observe_admission_with_native_work(self.protected.policy().root_task, work)?
             .await?;
         let limits = pi_native::capture_limits(
             root_admission.0.limits,
@@ -346,7 +346,7 @@ impl PiNativeCommandHost {
                     },
                 ];
                 let scratch_guard = shared
-                    .volume_callback_guard_with_native_work(&owner, work)
+                    .volume_callback_guard(&owner, work)
                     .await?;
                 let guards = [scratch_guard, project_capture.2];
                 let existing_lazy = [None, Some(&project_capture.1)];

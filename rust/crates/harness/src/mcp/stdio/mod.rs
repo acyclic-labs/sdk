@@ -2,7 +2,7 @@
 
 use super::{
     PROTOCOL_VERSION, charge, error,
-    rpc::{initialization, notification, rpc_result},
+    rpc::{Envelope, initialization, notification, rpc_result},
 };
 use crate::{Error, NativeCustody, NativeWork, OperationId, Result, wire::ErrorCode};
 use bytes::{Buf as _, BytesMut};

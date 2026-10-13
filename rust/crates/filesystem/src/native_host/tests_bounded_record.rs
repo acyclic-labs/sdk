@@ -43,41 +43,38 @@ fn canonical_wide_directory_retains_native_capacity_without_scalar_conversion()
     Ok(())
 }
 #[test]
-fn owned_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dyn std::error::Error>>
+fn held_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dyn std::error::Error>>
 {
     let temporary = tempfile::tempdir()?;
     let original = temporary.path().join("original");
     std::fs::create_dir(&original)?;
     std::fs::create_dir(original.join("child"))?;
-    let parent = Dir::open_ambient_dir(&original, cap_std::ambient_authority())?;
+    let parent = HostRoot::open(&original, &mut ordinary_work()).map_err(ordinary_error)?;
     let child = Dir::open_ambient_dir(original.join("child"), cap_std::ambient_authority())?;
     let expected = directory_identity(&child, &mut ordinary_work()).map_err(ordinary_error)?;
     std::fs::rename(&original, temporary.path().join("moved"))?;
     std::fs::create_dir(&original)?;
     std::fs::create_dir(original.join("child"))?;
     #[cfg(unix)]
-    let name = OsStr::new("child");
+    let name = Path::new("child");
     #[cfg(windows)]
     let name = &[99_u16, 104, 105, 108, 100][..];
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
-    let actual = open_owned_child_directory(&parent, name, &mut work)?;
-    assert_eq!(
-        directory_identity(&actual, &mut ordinary_work()).map_err(ordinary_error)?,
-        expected
-    );
+    let actual = parent.open_child(name, &mut work)?;
+    assert_eq!(actual.identity(), expected);
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
 #[cfg(unix)]
 #[test]
-fn owned_child_refuses_symlinks_and_nonleaf_names() -> Result<(), Box<dyn std::error::Error>> {
+fn held_child_refuses_symlinks_and_nonleaf_names() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     std::fs::create_dir(temporary.path().join("child"))?;
     std::os::unix::fs::symlink("child", temporary.path().join("link"))?;
-    let parent = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+    let parent = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     for name in ["link", "..", "child/../child"] {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
-        assert!(open_owned_child_directory(&parent, OsStr::new(name), &mut work).is_err());
+        assert!(parent.open_child(Path::new(name), &mut work).is_err());
         assert_eq!(work.live_allocation_bytes(), 0);
     }
     Ok(())

@@ -37,6 +37,22 @@ fn fork_selection_compare_names(
     Ok(left.len().cmp(&right.len()))
 }
 
+fn fork_selection_search(
+    length: usize,
+    mut compare: impl FnMut(usize) -> Result<std::cmp::Ordering, WorkspaceError>,
+) -> Result<(usize, bool), WorkspaceError> {
+    let (mut lower, mut upper) = (0, length);
+    while lower < upper {
+        let middle = lower + (upper - lower) / 2;
+        match compare(middle)? {
+            std::cmp::Ordering::Less => lower = middle + 1,
+            std::cmp::Ordering::Greater => upper = middle,
+            std::cmp::Ordering::Equal => return Ok((middle, true)),
+        }
+    }
+    Ok((lower, false))
+}
+
 fn fork_directory_components<'a>(
     directory: &ForkDirectorySelection,
     selected: &'a [Owned<NamespacePath>],
@@ -208,30 +224,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     if inherited {
                         continue;
                     }
-                    let mut lower = 0;
-                    let mut upper = directories.value.len();
-                    let mut existing = false;
-                    while lower < upper {
-                        let middle = lower + (upper - lower) / 2;
-                        let plan = directories
-                            .value
-                            .get(middle)
-                            .ok_or(WorkspaceError::JoinLimit)?;
-                        match fork_selection_compare_names(
-                            fork_directory_components(plan, &selected.value)?,
-                            prefix,
-                            accounting,
-                            cancellation,
-                        )? {
-                            std::cmp::Ordering::Less => lower = middle + 1,
-                            std::cmp::Ordering::Greater => upper = middle,
-                            std::cmp::Ordering::Equal => {
-                                lower = middle;
-                                existing = true;
-                                break;
-                            }
-                        }
-                    }
+                    let (lower, existing) =
+                        fork_selection_search(directories.value.len(), |middle| {
+                            let plan = directories
+                                .value
+                                .get(middle)
+                                .ok_or(WorkspaceError::JoinLimit)?;
+                            fork_selection_compare_names(
+                                fork_directory_components(plan, &selected.value)?,
+                                prefix,
+                                accounting,
+                                cancellation,
+                            )
+                        })?;
                     if !existing {
                         if directories.value.len() >= maximum as usize {
                             return Err(WorkspaceError::JoinLimit);
@@ -266,32 +271,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .components()
                         .get(depth)
                         .ok_or(WorkspaceError::JoinLimit)?;
-                    let mut name_lower = 0;
-                    let mut name_upper = plan.children.value.len();
-                    let mut present = false;
-                    while name_lower < name_upper {
-                        let middle = name_lower + (name_upper - name_lower) / 2;
-                        let child = plan
-                            .children
-                            .value
-                            .get(middle)
-                            .and_then(|index| selected.value.get(*index))
-                            .and_then(|path| path.value.components().get(depth))
-                            .ok_or(WorkspaceError::JoinLimit)?;
-                        match fork_selection_compare_names(
-                            std::slice::from_ref(child),
-                            std::slice::from_ref(name),
-                            accounting,
-                            cancellation,
-                        )? {
-                            std::cmp::Ordering::Less => name_lower = middle + 1,
-                            std::cmp::Ordering::Greater => name_upper = middle,
-                            std::cmp::Ordering::Equal => {
-                                present = true;
-                                break;
-                            }
-                        }
-                    }
+                    let (name_lower, present) =
+                        fork_selection_search(plan.children.value.len(), |middle| {
+                            let child = plan
+                                .children
+                                .value
+                                .get(middle)
+                                .and_then(|index| selected.value.get(*index))
+                                .and_then(|path| path.value.components().get(depth))
+                                .ok_or(WorkspaceError::JoinLimit)?;
+                            fork_selection_compare_names(
+                                std::slice::from_ref(child),
+                                std::slice::from_ref(name),
+                                accounting,
+                                cancellation,
+                            )
+                        })?;
                     if !present {
                         let moved = plan.children.value.len() - name_lower + 1;
                         fork_selection_grow(
@@ -500,23 +495,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut pending = Owned::<Vec<FileId>>::allocate(1, accounting)?;
         fork_file_table_copy::<FileId>(1, accounting, cancellation)?;
         pending.value.push(root.root_file_id);
-        let mut links = Owned::<Vec<(FileId, u64)>>::allocate(1, accounting)?;
-        fork_file_table_copy::<(FileId, u64)>(1, accounting, cancellation)?;
-        links.value.push((root.root_file_id, 1));
-        let mut records = Owned::<Vec<FileRecord>>::allocate(0, accounting)?;
+        let mut records = Owned::<Vec<(FileId, u64, Option<FileRecord>)>>::allocate(1, accounting)?;
+        fork_file_table_copy::<(FileId, u64, Option<FileRecord>)>(1, accounting, cancellation)?;
+        records.value.push((root.root_file_id, 1, None));
         while !pending.value.is_empty() {
             fork_file_table_copy::<FileId>(1, accounting, cancellation)?;
             let id = pending.value.pop().ok_or(WorkspaceError::JoinLimit)?;
-            let position = match crate::kernel::binary_search_with_accounting(
+            let position = crate::kernel::binary_search_with_accounting(
                 &records.value,
                 accounting,
-                |record| record.file_id.cmp(&id),
-            )? {
-                Ok(_) => continue,
-                Err(position) => position,
-            };
-            if records.value.len() >= maximum as usize {
-                return Err(WorkspaceError::JoinLimit);
+                |entry| entry.0.cmp(&id),
+            )?
+            .map_err(|_| WorkspaceError::JoinLimit)?;
+            if records.value[position].2.is_some() {
+                continue;
             }
             let mut overridden = None;
             for record in &overrides.value {
@@ -543,13 +535,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 drop(allocation);
                 record.ok_or(WorkspaceError::NotFound)?
             };
-            fork_selection_grow(&mut records, maximum as usize, accounting, cancellation)?;
-            fork_file_table_copy::<FileRecord>(
-                records.value.len() - position + 1,
-                accounting,
-                cancellation,
-            )?;
-            records.value.insert(position, record);
+            fork_file_table_copy::<FileRecord>(1, accounting, cancellation)?;
+            records.value[position].2 = Some(record);
             if let FilePayload::Directory { entries } = record.payload {
                 let mut cursor: Option<Owned<LogicalName>> = None;
                 loop {
@@ -580,32 +567,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         }
                         let child = entry.file_id;
                         match crate::kernel::binary_search_with_accounting(
-                            &links.value,
+                            &records.value,
                             accounting,
                             |binding| binding.0.cmp(&child),
                         )? {
                             Ok(position) => {
-                                links.value[position].1 = links.value[position]
+                                records.value[position].1 = records.value[position]
                                     .1
                                     .checked_add(1)
                                     .ok_or(WorkspaceError::JoinLimit)?;
                             }
                             Err(position) => {
-                                if links.value.len() >= maximum as usize {
+                                if records.value.len() >= maximum as usize {
                                     return Err(WorkspaceError::JoinLimit);
                                 }
                                 fork_selection_grow(
-                                    &mut links,
+                                    &mut records,
                                     maximum as usize,
                                     accounting,
                                     cancellation,
                                 )?;
-                                fork_file_table_copy::<(FileId, u64)>(
-                                    links.value.len() - position + 1,
+                                fork_file_table_copy::<(FileId, u64, Option<FileRecord>)>(
+                                    records.value.len() - position + 1,
                                     accounting,
                                     cancellation,
                                 )?;
-                                links.value.insert(position, (child, 1));
+                                records.value.insert(position, (child, 1, None));
                             }
                         }
                         fork_selection_grow(
@@ -628,13 +615,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             .name
                             .retained_bytes() as u64;
                         let remaining = page.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
-                        let allocation = match &mut page.allocation {
-                            KernelOwnedAllocation::Standalone => KernelOwnedAllocation::Standalone,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            KernelOwnedAllocation::NativeOriginal(guard) => {
-                                KernelOwnedAllocation::NativeOriginal(guard.split_off(bytes)?)
-                            }
-                        };
+                        let allocation =
+                            crate::kernel::split_allocation(&mut page.allocation, bytes)?;
                         let name = page
                             .value
                             .entries
@@ -661,22 +643,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         overrides.retire(accounting)?;
         let mut mutations =
             Owned::<Vec<FileTableMutation>>::allocate(records.value.len(), accounting)?;
-        for record in &records.value {
+        for (_, count, record) in &records.value {
             fork_selection_items(accounting, cancellation)?;
-            let position = crate::kernel::binary_search_with_accounting(
-                &links.value,
-                accounting,
-                |binding| binding.0.cmp(&record.file_id),
-            )?
-            .map_err(|_| WorkspaceError::JoinLimit)?;
             fork_file_table_copy::<FileRecord>(1, accounting, cancellation)?;
-            let mut record = *record;
-            record.link_count = links.value[position].1;
+            let mut record = record.ok_or(WorkspaceError::NotFound)?;
+            record.link_count = *count;
             fork_file_table_copy::<FileTableMutation>(1, accounting, cancellation)?;
             mutations.value.push(FileTableMutation::Insert(record));
         }
         records.retire(accounting)?;
-        links.retire(accounting)?;
         let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
             encode_file_table_page(
                 &FileTablePage::Leaf(Vec::new()),

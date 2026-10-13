@@ -1,5 +1,26 @@
 use super::*;
 
+async fn assert_contents<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
+    checkout: &mut crate::Checkout<A, O>,
+    path: &NamespacePath,
+    expected: &[u8],
+    cancellation: &CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let read = checkout
+        .read_file_range(
+            path,
+            ByteRange {
+                offset: 0,
+                length: expected.len() as u64,
+            },
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await?;
+    assert_eq!(read.value.bytes.as_ref(), expected);
+    Ok(())
+}
+
 #[tokio::test]
 async fn capture_host_hard_links_preserves_shared_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -259,18 +280,11 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await
-    .map_err(|error| std::io::Error::other(format!("sparse materialization: {error}")))?;
+    .await?;
     assert_eq!(materialized.value.files, 1);
     let host_file = destination.join("sparse.bin");
-    assert_eq!(
-        std::fs::metadata(&host_file)
-            .map_err(|error| std::io::Error::other(format!("materialized metadata: {error}")))?
-            .len(),
-        1024 * 1024
-    );
-    let body = std::fs::read(&host_file)
-        .map_err(|error| std::io::Error::other(format!("materialized read: {error}")))?;
+    assert_eq!(std::fs::metadata(&host_file)?.len(), 1024 * 1024);
+    let body = std::fs::read(&host_file)?;
     assert_eq!(&body[..4], b"head");
     assert_eq!(&body[body.len() - 4..], b"tail");
 
@@ -287,8 +301,7 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await
-    .map_err(|error| std::io::Error::other(format!("sparse recapture: {error}")))?;
+    .await?;
     assert!(sparse_capture.value.staged_file_bytes < 1024 * 1024);
     let sparse_plan = checkout
         .plan_file_extents(
@@ -311,8 +324,7 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
             .any(|span| matches!(span.kind, crate::kernel::ExtentKind::Hole))
     );
 
-    mutate_as_a_user_would(|| std::fs::write(&host_file, b"captured"))
-        .map_err(|error| std::io::Error::other(format!("host rewrite: {error}")))?;
+    mutate_as_a_user_would(|| std::fs::write(&host_file, b"captured"))?;
     let captured = capture_paths(
         &mut checkout,
         std::slice::from_ref(&file),
@@ -322,18 +334,7 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     )
     .await?;
     assert_eq!(captured.value.changed_paths, 1);
-    let read = checkout
-        .read_file_range(
-            &file,
-            ByteRange {
-                offset: 0,
-                length: 8,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    assert_eq!(read.value.bytes.as_ref(), b"captured");
+    assert_contents(&mut checkout, &file, b"captured", &cancellation).await?;
 
     let before_rename = checkout
         .lookup_no_follow(&file, WorkBudget::UNBOUNDED, &cancellation)
@@ -342,8 +343,7 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
         .record
         .ok_or("captured file disappeared")?;
     let renamed = portable_path(limits, &[b"renamed.bin"])?;
-    mutate_as_a_user_would(|| std::fs::rename(&host_file, destination.join("renamed.bin")))
-        .map_err(|error| std::io::Error::other(format!("host rename: {error}")))?;
+    mutate_as_a_user_would(|| std::fs::rename(&host_file, destination.join("renamed.bin")))?;
     let watch = capture_watch_batch(
         &mut checkout,
         WatchBatch::Changes {
@@ -381,10 +381,8 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
             destination.join("renamed.bin"),
             destination.join("moved.bin"),
         )
-    })
-    .map_err(|error| std::io::Error::other(format!("second host rename: {error}")))?;
-    mutate_as_a_user_would(|| std::fs::write(destination.join("renamed.bin"), b"replacement"))
-        .map_err(|error| std::io::Error::other(format!("host replacement create: {error}")))?;
+    })?;
+    mutate_as_a_user_would(|| std::fs::write(destination.join("renamed.bin"), b"replacement"))?;
     capture_watch_batch(
         &mut checkout,
         WatchBatch::Changes {
@@ -423,18 +421,7 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
         .ok_or("replacement file disappeared")?;
     assert_eq!(moved_record.file_id, before_rename.file_id);
     assert_ne!(replacement_record.file_id, before_rename.file_id);
-    let replacement = checkout
-        .read_file_range(
-            &renamed,
-            ByteRange {
-                offset: 0,
-                length: 11,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    assert_eq!(replacement.value.bytes.as_ref(), b"replacement");
+    assert_contents(&mut checkout, &renamed, b"replacement", &cancellation).await?;
 
     let mut previous_id = replacement_record.file_id;
     let mut first_sequence = 14;
@@ -507,16 +494,12 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     )
     .await?;
 
-    mutate_as_a_user_would(|| std::fs::remove_file(destination.join("renamed.bin")))
-        .map_err(|error| std::io::Error::other(format!("host replacement removal: {error}")))?;
-    mutate_as_a_user_would(|| std::fs::remove_file(destination.join("moved.bin")))
-        .map_err(|error| std::io::Error::other(format!("host moved removal: {error}")))?;
-    mutate_as_a_user_would(|| std::fs::create_dir(destination.join("nested")))
-        .map_err(|error| std::io::Error::other(format!("host nested directory: {error}")))?;
+    mutate_as_a_user_would(|| std::fs::remove_file(destination.join("renamed.bin")))?;
+    mutate_as_a_user_would(|| std::fs::remove_file(destination.join("moved.bin")))?;
+    mutate_as_a_user_would(|| std::fs::create_dir(destination.join("nested")))?;
     mutate_as_a_user_would(|| {
         std::fs::write(destination.join("nested").join("new.txt"), b"baseline")
-    })
-    .map_err(|error| std::io::Error::other(format!("host baseline write: {error}")))?;
+    })?;
     let baseline = capture_baseline(
         &mut checkout,
         &CaptureOptions {
@@ -539,18 +522,7 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     assert!(removed_moved.value.record.is_none());
     let nested = PortablePath::parse("/nested/new.txt", limits)?;
     let nested = NamespacePath::from_portable(&nested, limits)?;
-    let nested_read = checkout
-        .read_file_range(
-            &nested,
-            ByteRange {
-                offset: 0,
-                length: 8,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    assert_eq!(nested_read.value.bytes.as_ref(), b"baseline");
+    assert_contents(&mut checkout, &nested, b"baseline", &cancellation).await?;
 
     let missing =
         NamespacePath::from_portable(&PortablePath::parse("/missing.tmp", limits)?, limits)?;
@@ -575,23 +547,7 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
         &cancellation,
     )
     .await?;
-    assert_eq!(
-        checkout
-            .read_file_range(
-                &arrived,
-                ByteRange {
-                    offset: 0,
-                    length: 7,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value
-            .bytes
-            .as_ref(),
-        b"arrival"
-    );
+    assert_contents(&mut checkout, &arrived, b"arrival", &cancellation).await?;
 
     let prior_arrival = checkout
         .lookup_no_follow(&arrived, WorkBudget::UNBOUNDED, &cancellation)
@@ -668,23 +624,13 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
         &cancellation,
     )
     .await?;
-    assert_eq!(
-        checkout
-            .read_file_range(
-                &created_and_modified,
-                ByteRange {
-                    offset: 0,
-                    length: 20,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value
-            .bytes
-            .as_ref(),
-        b"created-and-modified"
-    );
+    assert_contents(
+        &mut checkout,
+        &created_and_modified,
+        b"created-and-modified",
+        &cancellation,
+    )
+    .await?;
 
     let expected_root_identity = capture_root_identity(&destination)?;
     let displaced = temporary.path().join("displaced-view");
@@ -862,18 +808,7 @@ async fn stale_created_hints_for_existing_directory_capture_exactly()
         .ok_or("directory disappeared after stale hints")?;
     assert_eq!(directory_after.file_id, directory_before.file_id);
     for (path, expected) in [(&child, b"child".as_slice()), (&created, b"created")] {
-        let read = checkout
-            .read_file_range(
-                path,
-                ByteRange {
-                    offset: 0,
-                    length: (expected.len() as u64),
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?;
-        assert_eq!(read.value.bytes.as_ref(), expected);
+        assert_contents(&mut checkout, path, expected, &cancellation).await?;
     }
     Ok(())
 }
@@ -924,18 +859,7 @@ async fn windows_created_and_modified_hint_captures_one_new_file()
         &cancellation,
     )
     .await?;
-    let read = checkout
-        .read_file_range(
-            &path,
-            ByteRange {
-                offset: 0,
-                length: 7,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    assert_eq!(read.value.bytes.as_ref(), b"created");
+    assert_contents(&mut checkout, &path, b"created", &cancellation).await?;
     Ok(())
 }
 

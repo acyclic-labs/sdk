@@ -53,8 +53,6 @@ mod native_context;
 mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_volume_callback::NativeVolumeCallbackGuard;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_volume_callback::NativeVolumePublicationGuard;
 
 mod tasks;
 pub use tasks::*;

@@ -498,106 +498,6 @@ impl ToolContext {
         }
         Ok(())
     }
-
-    /// Reads original content under the effective tool scope.
-    pub async fn read_file_with_native_work(
-        &self,
-        file: &FileRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        let task = self.task();
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        task.read_bound_file(
-            task.content_binding(Some(file.volume())),
-            file,
-            self.effective_scope(),
-            Some(&io),
-        )
-        .await
-    }
-
-    /// Publishes once under the effective tool scope.
-    pub async fn stage_file_once_with_native_work(
-        &self,
-        operation_id: OperationId,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
-        self.task()
-            .stage_native_file(
-                operation_id,
-                path,
-                bytes,
-                media_type,
-                display_name,
-                None,
-                self.effective_scope(),
-                work,
-            )
-            .await
-    }
-
-    /// Replaces the pinned source generation under the effective tool scope.
-    pub async fn stage_file_at_with_native_work(
-        &self,
-        operation_id: OperationId,
-        source: &FileRef,
-        bytes: &[u8],
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
-        self.task()
-            .stage_native_file(
-                operation_id,
-                source.path(),
-                bytes,
-                source.descriptor().media_type(),
-                source.display_name(),
-                Some(source),
-                self.effective_scope(),
-                work,
-            )
-            .await
-    }
-
-    /// Observes the original publication under effective WRITE and limits.
-    pub async fn observe_staged_file_once_with_native_work(
-        &self,
-        operation_id: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<FileRef>, acyclic_fs::NativeAllocation)> {
-        let task = self.task();
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let scope = self.effective_scope();
-        let writer = task.bound_content_writer(task.content_binding(None), scope, Some(&io))?;
-        task.scope
-            .verify_created_write(writer.volume(), Some(&io))
-            .await?;
-        let (file, hold) = writer
-            .observe_staged_once(operation_id, scope.limits.file_bytes, Some(&io))?
-            .await?;
-        task.scope
-            .verify_created_write(writer.volume(), Some(&io))
-            .await?;
-        if let Some(file) = &file {
-            scope
-                .limits
-                .validate_file(file, &mut Some(&mut io.history_io()))?;
-            if file.volume() != writer.volume() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Storage,
-                    reason: "content publisher observed another volume",
-                });
-            }
-        }
-        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        if let Some(hold) = hold {
-            hold.into_retained();
-        }
-        Ok((file, io.take_native_custody(retained)?))
-    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -660,5 +560,82 @@ impl ToolContext {
             ));
         }
         Ok(context)
+    }
+}
+
+impl ToolContext {
+    /// Observes the original publication under the effective tool scope.
+    pub async fn observe_staged_file_once(
+        &self,
+        operation_id: OperationId,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.task()
+            .observe_bound_file_once(operation_id, io, self.effective_scope())
+            .await
+    }
+
+    /// Publishes once under the effective tool scope and caller IO limits.
+    pub async fn stage_file_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, u64)> {
+        let task = self.task();
+        task.stage_bound_file(
+            task.content_binding(None),
+            operation_id,
+            path,
+            bytes,
+            media_type,
+            display_name,
+            super::content_write::ContentPublication::OperationBound,
+            self.effective_scope(),
+            io,
+        )
+        .await
+    }
+
+    /// Replaces the pinned source under the effective tool scope and caller IO limits.
+    pub async fn stage_file_at(
+        &self,
+        operation_id: OperationId,
+        source: &FileRef,
+        bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, u64)> {
+        let task = self.task();
+        task.stage_bound_file(
+            task.content_binding(Some(source.volume())),
+            operation_id,
+            source.path(),
+            bytes,
+            source.descriptor().media_type(),
+            source.display_name(),
+            super::content_write::ContentPublication::Replacement(source),
+            self.effective_scope(),
+            io,
+        )
+        .await
+    }
+
+    /// Reads immutable content under the effective tool scope and caller IO limits.
+    pub async fn read_file(
+        &self,
+        file: &FileRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        let task = self.task();
+        task.read_bound_file(
+            task.content_binding(Some(file.volume())),
+            file,
+            self.effective_scope(),
+            io,
+        )
+        .await
     }
 }

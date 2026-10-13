@@ -1223,7 +1223,7 @@ impl PiSession {
             }
         };
         let fence = acyclic_harness::scheduler::LeaseFence::from(&lease.reservation);
-        let journal_owner = host.journal_owner(binding.task_id, fence.clone()).await?;
+        let journal_owner = host.journal_owner(binding.task_id, &(fence.clone()), None).await?;
         let context = self
             .runtime
             .runtime

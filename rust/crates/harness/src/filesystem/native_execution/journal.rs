@@ -84,7 +84,7 @@ async fn read_record<P: StreamProvider>(
         &record.value,
         crate::wire::ErrorCode::Storage,
     )?)?;
-    custody.substitute(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
+    custody.resize(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
     if record.sequence != sequence
         || journal.revision != bounds.tail
         || !journal.is_valid_for(operation)
@@ -179,7 +179,7 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
             || !replacement
                 .custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(&self.work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(&self.work))
         {
             return Err(invalid());
         }

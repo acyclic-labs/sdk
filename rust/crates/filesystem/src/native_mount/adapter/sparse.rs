@@ -51,13 +51,17 @@ pub(super) async fn read_sparse<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let end = offset
         .checked_add(u64::from(length))
         .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-    let mut carrier = NativeDemandCarrier::Native(work);
-    let mut inputs = InputBuffers::new(&mut carrier)?;
-    let mut spans = inputs.vec::<super::super::MountSparseSpan>(0)?;
+    let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+    let mut spans =
+        crate::kernel::Owned::<Vec<super::super::MountSparseSpan>>::allocate(0, &mut accounting)
+            .map_err(fs_error)?;
     let mut position = offset;
     while position < end {
-        inputs.carrier.check(work.cancellation(), Some(lifetime))?;
-        inputs.items(1)?;
+        NativeDemandCarrier::Native(work).check(work.cancellation(), Some(lifetime))?;
+        accounting.charge(crate::WorkCounters {
+            items_examined: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
         let Some(data) = file
             .seek(position, ExtentSeekTarget::Data, work, work.cancellation())
             .await
@@ -88,43 +92,29 @@ pub(super) async fn read_sparse<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             )
             .await
             .map_err(fs_error)?;
-        if spans.len() == spans.capacity() {
-            let count = spans
-                .len()
-                .checked_add(1)
-                .and_then(usize::checked_next_power_of_two)
-                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-            let mut next = inputs.vec(count)?;
-            let copied = spans.len() * std::mem::size_of::<super::super::MountSparseSpan>();
-            let retired = spans.capacity() * std::mem::size_of::<super::super::MountSparseSpan>();
-            let delta = crate::WorkCounters {
-                bytes_copied: copied as u64,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            inputs.admit(delta)?;
-            next.append(&mut spans);
-            drop(spans);
-            inputs.release(retired as u64)?;
-            inputs.record(delta)?;
-            spans = next;
-        }
-        inputs.charge(crate::WorkCounters {
+        spans
+            .ensure_for_push(length as usize, &mut accounting)
+            .map_err(fs_error)?;
+        accounting.charge(crate::WorkCounters {
             bytes_copied: std::mem::size_of::<super::super::MountSparseSpan>() as u64,
             ..crate::WorkCounters::UNCHARGED
         })?;
-        spans.push(super::super::MountSparseSpan {
+        spans.value.push(super::super::MountSparseSpan {
             relative_offset: data - offset,
             bytes: read.bytes,
         });
         position = hole;
     }
-    inputs.carrier.check(work.cancellation(), Some(lifetime))?;
+    NativeDemandCarrier::Native(work).check(work.cancellation(), Some(lifetime))?;
+    let crate::kernel::KernelOwnedAllocation::NativeOriginal(allocation) = spans.allocation else {
+        unreachable!("native sparse spans");
+    };
     Ok((
         MountSparseRange {
             logical_bytes: u64::from(length),
-            spans,
+            spans: spans.value,
         },
-        inputs.retain().expect("native sparse spans"),
+        allocation,
     ))
 }
 

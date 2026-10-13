@@ -132,7 +132,7 @@ impl ToolExecutor for InterruptedTool {
                     .ok_or_else(|| Error::Invalid("missing file".into()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(context.task().read_file(&file).await?.as_ref(), b"hello");
+            assert_eq!(context.task().read_file(&file, None).await?.as_ref(), b"hello");
             self.executed.fetch_add(1, Ordering::SeqCst);
             Err(Error::Storage("lost tool result".into()))
         })
@@ -164,7 +164,7 @@ impl ToolExecutor for InterruptedTool {
                     .ok_or_else(|| Error::Invalid("missing file".into()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(context.task().read_file(&file).await?.as_ref(), b"hello");
+            assert_eq!(context.task().read_file(&file, None).await?.as_ref(), b"hello");
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             Ok(Some(ToolResult {
                 value: json!("tool-restored"),
@@ -1465,7 +1465,7 @@ async fn worker_restart_with_options(
                     )
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                     let input: MailSendTaskCommand =
-                        serde_json::from_slice(&context.read_file(&file).await?)
+                        serde_json::from_slice(&context.read_file(&file, None).await?)
                             .map_err(|error| Error::Invalid(error.to_string()))?;
                     let fence = LeaseFence::from(&lease.reservation);
                     for index in 100..170u8 {
@@ -1590,7 +1590,7 @@ async fn worker_restart_with_options(
                     let file = serde_json::from_value(admission.input)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
                     let payload: ToolTaskCommand =
-                        serde_json::from_slice(&context.read_file(&file).await?)
+                        serde_json::from_slice(&context.read_file(&file, None).await?)
                             .map_err(|error| Error::Invalid(error.to_string()))?;
                     let command = WorkflowCommand {
                         operation_id: OperationId::from_bytes([26; 16]),
@@ -2238,7 +2238,7 @@ async fn stock_restart_with_publication_fault(
             harness
                 .durable_context(task, operation)
                 .await?
-                .read_file(&input_file)
+                .read_file(&input_file, None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -2750,7 +2750,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let parcel = request.messages.iter().flat_map(|message| message.content.file_refs())
                 .find(|file| file.path() == parcel_path).ok_or_else(|| Error::NotFound("selected model parcel".into()))?;
             assert_eq!(parcel.descriptor(), selected.as_ref().unwrap().payload.descriptor());
-            assert_eq!(runtime.harness().durable_context(task, operation).await?.read_file(parcel).await?.as_ref(), b"first steering");
+            assert_eq!(runtime.harness().durable_context(task, operation).await?.read_file(parcel, None).await?.as_ref(), b"first steering");
         }
         if phase == 3 {
             let Some(Outcome::Succeeded(value)) = runtime.task_host().outcome(task).await? else {

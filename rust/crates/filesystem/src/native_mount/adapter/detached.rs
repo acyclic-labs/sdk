@@ -58,10 +58,6 @@ pub(super) struct CheckoutDetachedFile<A, O> {
 }
 
 impl<A, O> CheckoutDetachedFile<A, O> {
-    pub(super) fn mutation_epoch(&self) -> Option<u64> {
-        self.state.try_lock().ok().map(|state| state.mutation_epoch)
-    }
-
     pub(super) async fn read_bytes(
         &self,
         offset: u64,
@@ -84,23 +80,14 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             offset,
             length: u64::from(length),
         };
-        let read = if let Some(original) = carrier.original_native_work() {
-            state
-                .file
-                .read_range(range, &original, &cancellation)
-                .await
-                .map_err(fs_error)?
-        } else {
-            let (budget, live) = carrier.remaining()?;
-            let result = state.file.read_range(range, budget, &cancellation).await;
-            carrier.accept_with_prior_live(result, live, fs_error)?
-        };
+        let original = carrier.original_native_work().expect("native SDK callback");
+        let read = state
+            .file
+            .read_range(range, &original, &cancellation)
+            .await
+            .map_err(fs_error)?;
         let capacity = read.logical_owned_bytes();
-        let chunk = if carrier.original_native_work().is_some() {
-            crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
-        } else {
-            crate::kernel::OwnedSourceChunk::claimed(read.bytes, capacity)
-        };
+        let chunk = crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity);
         carrier.finish_read(chunk, &cancellation, Some(&self.cancellation))
     }
 

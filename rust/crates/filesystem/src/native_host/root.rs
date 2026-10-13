@@ -365,17 +365,9 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
         if path.as_os_str().is_empty() {
             return Err(io::Error::from_raw_os_error(3).into());
         }
-        let (input, input_allocation) = encode_root_path_name(path, work)?;
-        let result = normalize_root_wide_name(&input, work);
-        drop(input);
-        work.release(input_allocation)?;
-        let (name, allocation) = result?;
-        let file = work.attempt_io(READ, || {
-            open_windows_root_name(&name, fs::FILE_GENERIC_READ)
-        });
-        drop(name);
-        work.release(allocation)?;
-        file?
+        with_root_name(path, work, |name, work| {
+            work.attempt_io(READ, || open_windows_root_name(name, fs::FILE_GENERIC_READ))
+        })?
     };
     let directory = Dir::from_std_file(file);
     let identity = directory_identity(&directory, work)?;

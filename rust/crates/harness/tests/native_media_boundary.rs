@@ -1483,8 +1483,8 @@ where
             serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(converted.source, source);
         assert_eq!(converted.mask, 255);
-        let original_bytes = writable.read_file(&source).await?;
-        let derived_bytes = writable.read_file(&converted.derived).await?;
+        let original_bytes = writable.read_file(&source, None).await?;
+        let derived_bytes = writable.read_file(&converted.derived, None).await?;
         let mut expected_bytes = original_bytes.as_ref().to_vec();
         for pixel in expected_bytes.iter_mut().skip(8) {
             *pixel ^= 255;

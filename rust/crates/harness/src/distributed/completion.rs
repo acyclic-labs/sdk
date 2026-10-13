@@ -228,7 +228,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             Err(error) => return Err(completion_error(error, custody)),
         };
         let output_bytes = size_of::<acyclic_fs::MaterializationJournal>() as u64;
-        if let Err(cause) = custody.substitute(output_bytes) {
+        if let Err(cause) = custody.resize(output_bytes) {
             drop(journal);
             return Err(Error::NativeWork {
                 cause,
