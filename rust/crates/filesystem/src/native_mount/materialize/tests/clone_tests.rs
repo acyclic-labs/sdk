@@ -6,7 +6,6 @@ use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
 #[tokio::test]
 async fn identical_regular_payloads_use_native_clone_without_aliasing()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     #[cfg(target_os = "macos")]
     let directory = tempfile::tempdir()?;
     #[cfg(windows)]
