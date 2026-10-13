@@ -6,10 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 /// Model schema selection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -24,6 +21,7 @@ pub enum McpSchemaExposure {
         names: Vec<String>,
     },
 }
+
 /// Local discovery policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -34,6 +32,7 @@ pub enum McpDiscoveryPolicy {
     /// Permit bounded search.
     Search,
 }
+
 /// Complete immutable remote catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -53,6 +52,7 @@ pub struct McpCatalog {
     /// Complete tool contracts.
     pub tools: Vec<McpToolDefinition>,
 }
+
 impl McpCatalog {
     /// Digests the replacement, predecessor and allowances.
     pub fn installation_digest(
@@ -72,7 +72,9 @@ impl McpCatalog {
                 "harness/mcp-catalog-install/v1",
                 self,
                 previous
-                    .map(|old| crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None))
+                    .map(|old| {
+                        crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None)
+                    })
                     .transpose()?,
                 maximum_tools,
                 maximum_bytes,
@@ -81,6 +83,7 @@ impl McpCatalog {
             &mut None,
         )
     }
+
     /// Verifies signed scope and approval before installation.
     pub async fn install_scoped(
         &self,
@@ -106,8 +109,13 @@ impl McpCatalog {
                 "scope does not permit MCP catalog installation".into(),
             ));
         }
-        let digest = self.installation_digest(previous, maximum_tools, maximum_bytes)?;
-        approval.verify(interaction, operation, digest).await?;
+        approval
+            .verify(
+                interaction,
+                operation,
+                self.installation_digest(previous, maximum_tools, maximum_bytes)?,
+            )
+            .await?;
         self.install(
             registry,
             previous,
@@ -117,6 +125,7 @@ impl McpCatalog {
             maximum_bytes,
         )
     }
+
     /// Validates the complete catalog before mutation.
     pub fn validate(&self, maximum_tools: u32, maximum_bytes: u32) -> Result<()> {
         crate::registry::validate_component_label(&self.server, "MCP server")?;
@@ -129,13 +138,10 @@ impl McpCatalog {
         if maximum_tools == 0
             || maximum_bytes == 0
             || self.tools.len() as u64 > u64::from(maximum_tools)
-            || serde_json::to_vec(self)
-                .map_err(|e| Error::Invalid(e.to_string()))?
-                .len() as u64
-                > u64::from(maximum_bytes)
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
+        crate::executor::json::json_byte_length(self, u64::from(maximum_bytes), &mut None)?;
         crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
@@ -168,12 +174,14 @@ impl McpCatalog {
         }
         Ok(())
     }
+
     fn selected(&self, name: &str) -> bool {
         match &self.schema_exposure {
             McpSchemaExposure::Eager => true,
-            McpSchemaExposure::Selected { names } => names.iter().any(|value| value == name),
+            McpSchemaExposure::Selected { names } => names.iter().any(|selected| selected == name),
         }
     }
+
     fn definition(&self, remote: &McpToolDefinition) -> Result<ToolDefinition> {
         crate::registry::validate_component_label(&remote.name, "MCP tool")?;
         let mut output = json!({"type":"object", "required":["content","isError"],
@@ -194,6 +202,7 @@ impl McpCatalog {
             projection_schema: self.projection_schema.clone(),
         })
     }
+
     fn validate_transport_binding(&self, transport: &dyn McpToolTransport) -> Result<()> {
         if let Some(policy) = transport.callback_policy() {
             policy.validate()?;
@@ -205,6 +214,7 @@ impl McpCatalog {
         }
         Ok(())
     }
+
     /// Returns selected model schemas in name order.
     pub fn model_definitions(
         &self,
@@ -221,6 +231,7 @@ impl McpCatalog {
         definitions.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(definitions)
     }
+
     /// Replaces future selection atomically, retaining admitted revisions.
     pub fn install(
         &self,
@@ -239,22 +250,17 @@ impl McpCatalog {
             ));
         }
         let prefix = format!("mcp.{}.", self.server);
-        let selected = registry
-            .definitions(None)?
-            .into_iter()
-            .filter(|tool| tool.name.starts_with(&prefix))
-            .map(|tool| (tool.name.clone(), tool))
-            .collect::<BTreeMap<_, _>>();
-        let expected = previous
-            .into_iter()
-            .flat_map(|old| {
-                old.tools
-                    .iter()
-                    .filter(move |tool| old.selected(&tool.name))
-                    .map(move |tool| old.definition(tool))
-            })
-            .map(|tool| tool.map(|tool| (tool.name.clone(), tool)))
-            .collect::<Result<BTreeMap<_, _>>>()?;
+        let mut selected = registry.definitions(None)?;
+        selected.retain(|tool| tool.name.starts_with(&prefix));
+        let mut expected = Vec::new();
+        if let Some(old) = previous {
+            for tool in &old.tools {
+                if old.selected(&tool.name) {
+                    expected.push(old.definition(tool)?);
+                }
+            }
+        }
+        expected.sort_by(|a, b| a.name.cmp(&b.name));
         if selected != expected {
             return Err(Error::Conflict(
                 "MCP previous catalog is not the complete selection".into(),
@@ -302,6 +308,7 @@ impl McpCatalog {
         *registry = next;
         Ok(())
     }
+
     /// Searches the pinned catalog without granting authority.
     pub fn search(
         &self,

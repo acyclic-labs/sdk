@@ -149,13 +149,13 @@ impl DurableToolRunner<'_> {
             call_id: call.0,
             reason,
         };
-        match async {
-            self.journal
-                .append_if_tail(operation_id, 2, &key.0, &event, io)?
-                .await
-        }
-        .await
+        match match self
+            .journal
+            .append_if_tail(operation_id, 2, &key.0, &event, io)
         {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        } {
             Ok(true) => tool_outcome(operation_id, Some(reason), io).map(Some),
             Ok(false) => Ok(None),
             Err(error) if tool_propagate(&error, io) => Err(error),

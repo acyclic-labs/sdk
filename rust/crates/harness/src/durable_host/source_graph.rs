@@ -401,7 +401,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         self.verify_project_source_authorization(record, parent, &mut work)
             .await?;
-        let copied = record.clone_with_work_and_custody(&mut work)?.0;
+        let copied = record.copy(&mut work)?.0;
         ProjectSourceReadHandle::seal(copied, &self.verifier, &mut work)
     }
 
@@ -412,7 +412,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        record.verify_scope_with_work(&self.verifier, quota.work())?;
+        record.verify_scope(&self.verifier, quota.work())?;
         if &record.owner != self.verifier.audience() || record.caller_task != parent {
             return Err(crate::store::guarded_boundary(
                 quota.work(),

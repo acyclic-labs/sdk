@@ -21,7 +21,7 @@ fn dependency_bytes(length: usize, capacity: usize) -> Result<usize, Error> {
     backing.checked_add(indexes).ok_or(Error::Budget)
 }
 
-/// Demand-scoped client kernel. Construction grants no authority and starts no work.
+/// Demand-scoped hypothesis state.
 pub struct Client<D: Domain> {
     domain: D,
     adapter: u128,
@@ -39,7 +39,7 @@ pub struct Client<D: Domain> {
 }
 
 impl<D: Domain> Client<D> {
-    /// Construct an empty client with explicit finite positive bounds.
+    /// Constructs an empty client with finite positive bounds.
     pub fn new(domain: D, namespace: u128, sequence: u64, limits: Limits) -> Result<Self, Error> {
         if [
             limits.records,
@@ -73,12 +73,12 @@ impl<D: Domain> Client<D> {
         })
     }
 
-    /// Last allocated sequence for data-only host checkpoints.
+    /// Returns the durable allocation watermark.
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
 
-    /// Accounted resident bytes, records, branches and edges.
+    /// Returns accounted bytes, records, branches and edges.
     pub fn residency(&self) -> (usize, usize, usize, usize) {
         (
             self.bytes,

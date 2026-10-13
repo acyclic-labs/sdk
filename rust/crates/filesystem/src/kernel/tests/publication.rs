@@ -900,7 +900,7 @@ async fn evidence_fixture() -> Result<
         request,
         None,
         None,
-        &mut PublicationAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+        &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
         &cancellation,
     )?;
     let append = GuardedAppend {
@@ -1444,7 +1444,7 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas()
             &objects,
             &authority,
             request,
-            PublicationIntent::unrestricted(None),
+            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             limits(),
             &original,
             &cancellation,
@@ -1519,7 +1519,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
             &objects,
             &authority,
             request,
-            PublicationIntent::unrestricted(None),
+            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             admitted,
             &original,
             &cancellation,
@@ -1596,8 +1596,12 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let evidence =
         acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter())
             .expect("fresh evidence has fully initialized unique backing");
-    let intent = PublicationIntent::unrestricted(Some(Digest::from_bytes([59; 32])))
-        .with_original_evidence(Some(evidence));
+    let intent = PublicationIntent {
+        operation_context: Some(Digest::from_bytes([59; 32])),
+        original_evidence: Some(evidence),
+        fingerprint_permit: None,
+        permit: PublicationPermit::Unrestricted,
+    };
     let mut guard = |_: &crate::NativeMaterializationWork| {
         std::future::ready(Ok::<(), NativePublicationTestError>(()))
     };
@@ -1687,7 +1691,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
             generation_root: changed_root,
             ..request
         },
-        PublicationIntent::unrestricted(None),
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         &original,
         &cancellation,
@@ -1772,7 +1776,7 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     };
     let evidence = b"immutable original operation data";
     let mut bytes = Vec::new();
-    write_publication_payload_with_evidence(
+    write_publication_payload(
         &mut bytes,
         volume_id,
         root,
@@ -1883,7 +1887,7 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     ));
     let large_evidence = vec![7; 4_096];
     let mut large = Vec::new();
-    write_publication_payload_with_evidence(
+    write_publication_payload(
         &mut large,
         volume_id,
         root,

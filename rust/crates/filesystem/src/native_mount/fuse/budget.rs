@@ -123,7 +123,7 @@ pub(super) fn fuse_owned_source_chunk(
     chunk: crate::kernel::OwnedSourceChunk,
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
-    if chunk.is_intrinsic() {
+    if chunk.intrinsic {
         return Ok(FuseOwned::empty(chunk));
     }
     let bytes = chunk.logical_owned_bytes;

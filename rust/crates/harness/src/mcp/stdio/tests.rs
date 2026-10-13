@@ -178,10 +178,11 @@ fn malformed_foreign_callback_and_truncated_inputs_cannot_replay() {
 fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
     let (init, op) = ids();
     let nested = format!("{}0{}", "[".repeat(192), "]".repeat(192));
-    let expected: Value = crate::contract::json_from_slice(nested.as_bytes()).unwrap();
+    let result = format!("{{\"tools\":[],\"_meta\":{{\"nested\":{nested}}}}}");
+    let expected: Value = crate::contract::json_from_slice(result.as_bytes()).unwrap();
     let mut transcript = initialized(init);
     transcript.extend_from_slice(
-        format!("\u{feff}{{\"jsonrpc\":\"2.0\",\"id\":\"{op}\",\"result\":{nested}}}\r\n")
+        format!("\u{feff}{{\"jsonrpc\":\"2.0\",\"id\":\"{op}\",\"result\":{result}}}\r\n")
             .as_bytes(),
     );
     for width in [1, 2, 3, 17, transcript.len()] {

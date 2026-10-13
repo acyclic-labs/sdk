@@ -407,13 +407,13 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
     assert!(
         root.entries
             .iter()
-            .any(|entry| entry.name.unicode_text().as_deref() == Some("notes"))
+            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some("notes"))
     );
     assert!(
         !root
             .entries
             .iter()
-            .any(|entry| entry.name.unicode_text().as_deref() == Some(".system"))
+            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some(".system"))
     );
     let (_, notes) = storage
         .list_private_directory("notes", Some(&generation), None, 8)
@@ -422,7 +422,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         notes
             .entries
             .iter()
-            .any(|entry| entry.name.unicode_text().as_deref() == Some("one.txt"))
+            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some("one.txt"))
     );
     let limits = Limits {
         file_bytes: 4_096,
@@ -457,7 +457,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         .await?;
     assert_eq!(pinned_notes.entries.len(), 1);
     assert_eq!(
-        pinned_notes.entries[0].name.unicode_text().as_deref(),
+        pinned_notes.entries[0].name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref(),
         Some("one.txt")
     );
     let (_, current_notes) = storage
@@ -775,7 +775,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
         listed
             .entries
             .iter()
-            .any(|entry| entry.name.unicode_text().as_deref() == Some("note.txt"))
+            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some("note.txt"))
     );
     let (from_directory, body) = storage
         .read_delegated_path(&directory, "input", "input/note.txt", Some(&generation))
@@ -838,7 +838,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
         .ok_or_else(|| Error::Invalid("conversation user message is missing".into()))?;
     assert_eq!(
         first_user.id,
-        crate::turn::canonical_user_message_id(operation_id)
+        crate::turn::derived_uuid(operation_id, "user")
     );
     drop(first_aggregate);
     let replayed = storage

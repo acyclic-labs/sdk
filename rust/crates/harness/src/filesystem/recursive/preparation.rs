@@ -83,7 +83,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
         .as_ref()
         .map(|authorization| {
             crate::executor::with_history_io(io, |work| {
-                authorization.clone_with_work_and_custody(work)
+                authorization.copy(work)
             })
             .map(|(authorization, _)| authorization)
         })

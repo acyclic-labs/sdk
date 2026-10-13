@@ -10,7 +10,7 @@ use crate::{
 use acyclic_stream::BoxProviderStream;
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::VecDeque;
 
 pub(super) async fn response(
@@ -19,6 +19,9 @@ pub(super) async fn response(
     maximum_bytes: u32,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
 ) -> Result<Value> {
+    let mut spelling = [0; 36];
+    let identity = uuid::Uuid::from_bytes(operation.into_bytes());
+    let expected: &str = identity.hyphenated().encode_lower(&mut spelling);
     let mut received = 0_usize;
     // Bound input before the parser buffers it.
     let bounded = body.map(move |chunk| -> Result<Bytes> {
@@ -46,7 +49,7 @@ pub(super) async fn response(
             };
             value
         };
-        if value.get("id") == Some(&json!(operation.to_string())) {
+        if value.get("id").and_then(Value::as_str) == Some(expected) {
             return rpc_result(value, operation, None);
         }
         if value.get("method").is_none() || value.get("id").is_none() {
@@ -80,7 +83,7 @@ pub(super) async fn response(
                 event = events.next().fuse() => {
                     let Some(event) = event else {
                         stream_open = false;
-                        if !pending.iter().any(|value: &Value| value.get("id") == Some(&json!(operation.to_string()))) {
+                        if !pending.iter().any(|value: &Value| value.get("id").and_then(Value::as_str) == Some(expected)) {
                             return Err(Error::Indeterminate(operation));
                         }
                         continue;

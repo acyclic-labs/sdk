@@ -297,7 +297,7 @@ impl<'a, F: Format> Machine<'a, F> {
     fn clone_result(&mut self, query: usize, value: &F::Value, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let ordinal = self.ordered.value.get(query).ok_or_else(|| query_error(Error::InvalidRouting))?.ordinal;
         let destination = self.values.value.get_mut(ordinal).ok_or_else(|| query_error(Error::InvalidRouting))?;
-        let (cloned, allocation) = persistent_io::clone_value_with_accounting::<F>(value, self.limits.maximum_name_bytes, accounting)?;
+        let (cloned, allocation) = persistent_io::clone_value::<F>(value, self.limits.maximum_name_bytes, accounting, None, 0)?;
         let bytes = F::value_owned_bytes(&cloned);
         let cloned = Owned::new(cloned, allocation, bytes);
         let copied = WorkCounters { bytes_copied: usize_to_u64(std::mem::size_of::<F::Value>()), ..WorkCounters::UNCHARGED };
@@ -331,11 +331,11 @@ impl<'a, F: Format> Machine<'a, F> {
                 if past_upper { break; }
                 end += 1;
             }
-            let (lower, lower_allocation) = persistent_io::clone_key_with_accounting::<F>(&child.first, self.limits.maximum_name_bytes, accounting)?;
+            let (lower, lower_allocation) = persistent_io::clone_key::<F>(&child.first, self.limits.maximum_name_bytes, accounting, None, 0)?;
             let lower_bytes = F::key_owned_bytes(&lower);
             let lower = Owned::new(lower, lower_allocation, lower_bytes);
             let upper = match upper_ref {
-                Some(key) => persistent_io::clone_key_with_accounting::<F>(key, self.limits.maximum_name_bytes, accounting)
+                Some(key) => persistent_io::clone_key::<F>(key, self.limits.maximum_name_bytes, accounting, None, 0)
                     .map(|(key, allocation)| {
                         let bytes = F::key_owned_bytes(&key);
                         Some(Owned::new(key, allocation, bytes))

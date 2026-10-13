@@ -185,7 +185,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let resource = crate::core::copy_resource(reference.as_resource(), &mut quota)?;
             quota.transfer();
             drop(quota);
-            WorkspaceRef::from_resource_with_work(resource, work)
+            WorkspaceRef::from_resource(resource, work)
         })?;
         Ok(WorkspaceObservation { workspace: reference, generation: self.generation_ref_id(head.id(), Some(io))? })
     }

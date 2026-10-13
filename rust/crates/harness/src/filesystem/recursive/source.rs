@@ -305,7 +305,7 @@ where
         .map(|handle| {
             let authorization = handle
                 .authorization()
-                .clone_with_work_and_custody(&mut observer)?
+                .copy(&mut observer)?
                 .0;
             ProjectSourceReadHandle::seal(authorization, verifier, &mut observer)
         })
@@ -393,7 +393,7 @@ pub(in crate::filesystem) fn fork_request(
         crate::executor::preparation_format(format_args!("{}", parent.revision()), work)
     })?;
     let reference = crate::executor::with_history_io(io, |work| {
-        StreamRef::from_resource_with_work(
+        StreamRef::from_resource(
             ResourceRef::new(ResourceKind::Stream, provider, path, Some(version), work)?,
             work,
         )
