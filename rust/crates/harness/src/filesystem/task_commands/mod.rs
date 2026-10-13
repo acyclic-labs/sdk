@@ -231,7 +231,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             .unwrap_or(0);
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
         }
         let model = crate::model::clone_model(model, io)?;
         let context = context.copy(io)?;

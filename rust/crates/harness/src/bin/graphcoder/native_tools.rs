@@ -4,6 +4,7 @@
     reason = "private producer-authenticated binary composition"
 )]
 
+use acyclic_harness::runtime::InteractionResolver as _;
 use super::native::{AuthorityBinding, Config, Files};
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
