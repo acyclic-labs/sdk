@@ -104,6 +104,7 @@ impl NamespacePath {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        accounting.check()?;
         cancellation.check()?;
         let names = self.components.iter().chain(std::iter::once(name));
         let encoded = Self::validate_component_lengths(
@@ -134,6 +135,7 @@ impl NamespacePath {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        accounting.check()?;
         cancellation.check()?;
         let names = self
             .components
@@ -181,6 +183,7 @@ impl NamespacePath {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(String, KernelOwnedAllocation), crate::FsError> {
+        accounting.check()?;
         let mut length = usize::from(self.is_root());
         for name in &self.components {
             cancellation.check()?;
@@ -299,6 +302,7 @@ fn copy_names<'a>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(NamespacePath, KernelOwnedAllocation), crate::FsError> {
+    accounting.check()?;
     for _ in names.clone() {
         cancellation.check()?;
         accounting.charge(WorkCounters {

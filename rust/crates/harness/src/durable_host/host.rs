@@ -69,6 +69,14 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         TaskStateProvider::policy_identity(self)
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        TaskStateProvider::policy_identity_with_native_work(self, work)
+    }
+
     async fn reconcile_admission(
         &self,
         operation_id: OperationId,
@@ -313,6 +321,37 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
 
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.policy.as_ref().map(|policy| policy.identity())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        work.remaining()?;
+        if let Some(policy) = &self.policy {
+            let (identity, custody) = policy.identity_with_native_work(work)?;
+            let needed = (std::mem::size_of::<ComponentIdentity>() as u64)
+                .checked_add(identity.name.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(identity.version.capacity() as u64))
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native policy identity custody overflows",
+                })?;
+            if !custody.work().shares_ledger(work) || custody.bytes() < needed {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "policy identity differs from its original native metadata custody",
+                });
+            }
+            if self.policy_binding.as_ref() != Some(&identity) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "durable policy implementation changed after native binding",
+                });
+            }
+        }
+        Ok(self.policy_binding.as_ref())
     }
 
     async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord> {

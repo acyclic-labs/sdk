@@ -91,96 +91,88 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             };
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = context.original {
-            let cancellation = context.cancellation;
-            return async {
-                let mut accounting = KernelAccounting::native(work, cancellation);
-                accounting.check().map_err(object_error)?;
-                if let Some(value) = self
-                    .probe(object_id, &mut accounting)
-                    .map_err(object_error)?
-                {
-                    if usize_to_u64(value.bytes.len()) > maximum_bytes {
-                        return Err(ObjectStoreError::TooLarge {
-                            observed: usize_to_u64(value.bytes.len()),
-                            maximum: maximum_bytes,
-                        });
-                    }
-                    return Ok(value);
-                }
-                let read = self.store.read(object_id, maximum_bytes, context).await?;
-                self.admit(object_id, &read.bytes, 0, &mut accounting)
-                    .map_err(object_error)?;
-                Ok(read)
-            }
-            .await;
-        }
-        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut accounting = match context.original {
+            Some(work) => KernelAccounting::native(work, cancellation),
+            None => KernelAccounting::standalone(context.read_budget()?, cancellation),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let mut accounting = KernelAccounting::standalone(context.read_budget()?, cancellation);
         let result = async {
-            let mut accounting = KernelAccounting::standalone(budget, cancellation);
-            let result = async {
-                if let Some(value) = self.probe(object_id, &mut accounting)? {
-                    if usize_to_u64(value.bytes.len()) > maximum_bytes {
-                        return Err(ObjectStoreError::TooLarge {
-                            observed: usize_to_u64(value.bytes.len()),
-                            maximum: maximum_bytes,
-                        }
-                        .into());
-                    }
-                    return Ok(value);
-                }
-                let resident = self.extra_resident()?;
-                let remaining = provider_remaining(&accounting, resident)?;
-                let mut backend = crate::AuthorityWork::new(remaining, cancellation);
-                let read = self
-                    .store
-                    .read(object_id, maximum_bytes, &mut backend)
-                    .await;
-                let receipt = backend.receipt(read);
-                let receipt = match receipt {
-                    Ok(receipt) => receipt,
-                    Err(failure) => {
-                        if let Some(owner) = self.data_custody {
-                            owner.record_completed_leaf_work(*failure.work)?;
-                        }
-                        compose_backend(&mut accounting, *failure.work, resident)?;
-                        return Err(failure.error.into());
-                    }
-                };
-                if let Some(owner) = self.data_custody {
-                    owner.record_completed_leaf_work(receipt.work)?;
-                }
-                compose_backend(&mut accounting, receipt.work, resident)?;
-                let owned = match receipt.value.retention {
-                    ObjectReadRetention::Shared => 0,
-                    ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-                };
-                // Resident backend aliases coexist with a new table during growth.
-                let (allocations, work, _, _) = accounting
-                    .standalone_parts()
-                    .expect("ordinary read owns its standalone projection");
-                allocations
-                    .record_owned_bytes(
-                        resident.checked_add(owned).ok_or(WorkError::Overflow)?,
-                        work,
-                    )
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                let mut value = receipt.value;
-                if self.admit(object_id, &value.bytes, owned, &mut accounting)? {
-                    value.retention = ObjectReadRetention::Shared;
-                }
-                Ok::<_, crate::FsError>(value)
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                accounting.check()?;
             }
-            .await;
-            let work = accounting.spent();
-            result
-                .map(|value| crate::OperationReceipt { value, work })
-                .map_err(|error| ObjectFailure::new(object_error(error), work))
+            if let Some(value) = self.probe(object_id, &mut accounting)? {
+                if usize_to_u64(value.bytes.len()) > maximum_bytes {
+                    return Err(ObjectStoreError::TooLarge {
+                        observed: usize_to_u64(value.bytes.len()),
+                        maximum: maximum_bytes,
+                    }
+                    .into());
+                }
+                return Ok(value);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                let read = self.store.read(object_id, maximum_bytes, context).await?;
+                self.admit(object_id, &read.bytes, 0, &mut accounting)?;
+                return Ok(read);
+            }
+            let resident = self.extra_resident()?;
+            let remaining = provider_remaining(&accounting, resident)?;
+            let mut backend = crate::AuthorityWork::new(remaining, cancellation);
+            let read = self
+                .store
+                .read(object_id, maximum_bytes, &mut backend)
+                .await;
+            let receipt = backend.receipt(read);
+            let receipt = match receipt {
+                Ok(receipt) => receipt,
+                Err(failure) => {
+                    if let Some(owner) = self.data_custody {
+                        owner.record_completed_leaf_work(*failure.work)?;
+                    }
+                    compose_backend(&mut accounting, *failure.work, resident)?;
+                    return Err(failure.error.into());
+                }
+            };
+            if let Some(owner) = self.data_custody {
+                owner.record_completed_leaf_work(receipt.work)?;
+            }
+            compose_backend(&mut accounting, receipt.work, resident)?;
+            let owned = match receipt.value.retention {
+                ObjectReadRetention::Shared => 0,
+                ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+            };
+            // Resident backend aliases coexist with a new table during growth.
+            let (allocations, work, _, _) = accounting
+                .standalone_parts()
+                .expect("ordinary read owns its standalone projection");
+            allocations
+                .record_owned_bytes(
+                    resident.checked_add(owned).ok_or(WorkError::Overflow)?,
+                    work,
+                )
+                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+            let mut value = receipt.value;
+            if self.admit(object_id, &value.bytes, owned, &mut accounting)? {
+                value.retention = ObjectReadRetention::Shared;
+            }
+            Ok::<_, crate::FsError>(value)
         }
         .await;
-        context.accept(result)
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return result.map_err(object_error);
+        }
+        let work = accounting.spent();
+        context.accept(
+            result
+                .map(|value| crate::OperationReceipt { value, work })
+                .map_err(|error| ObjectFailure::new(object_error(error), work)),
+        )
     }
 
     async fn read_many(

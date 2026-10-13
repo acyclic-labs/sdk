@@ -53,6 +53,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             machines,
             clock,
             policy: None,
+            policy_binding: None,
             effects: None,
             session_limits: None,
             resource_creation: Vec::new(),
@@ -241,7 +242,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
-        validate_policy_identity(&policy.identity(), None)?;
+        let identity = policy.identity();
+        validate_policy_identity(&identity, None)?;
+        self.policy_binding = Some(identity);
         self.policy = Some(policy);
         Ok(self)
     }

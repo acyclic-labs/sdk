@@ -2,7 +2,6 @@ use acyclic_stream::OwnedBytes;
 
 pub(super) enum NativeDemandCarrier<'a> {
     Borrowed(&'a mut crate::demand::DemandWork),
-    Shared(&'a Arc<crate::demand::NativeDemandReadMeter>),
     Native(&'a crate::NativeMaterializationWork),
 }
 
@@ -13,7 +12,6 @@ impl NativeDemandCarrier<'_> {
     ) -> T {
         match self {
             Self::Borrowed(work) => operation(work),
-            Self::Shared(meter) => operation(&mut meter.lock()),
             Self::Native(work) => work.with_original_leaf(operation),
         }
     }
