@@ -7,7 +7,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let fixture = crate::durable_host::tests::created_fixture::CreationFixture::new().await?;
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
-        .expect("finite test budget");
+        .expect("fixture ledger fits its budget");
     let owner_io = crate::filesystem::PreparationIo::from_native_work(&native)?;
     let owner = fixture
         .host
@@ -76,7 +76,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         drop(custody);
     }
     let independent = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
-        .expect("finite test budget");
+        .expect("fixture ledger fits its budget");
     let mut foreign_io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
         &independent,
     )?);
@@ -148,7 +148,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         },
         &cancellation,
     )
-    .expect("finite test budget");
+    .expect("fixture ledger fits its budget");
     let mut denied_io =
         HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&denied)?);
     assert!(matches!(
@@ -165,7 +165,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     ));
     let cancelled_token = CancellationToken::new();
     let cancelled = NativeMaterializationWork::new(guarded_publication_budget(), &cancelled_token)
-        .expect("finite test budget");
+        .expect("fixture ledger fits its budget");
     cancelled_token.cancel();
     let mut cancelled_io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
         &cancelled,

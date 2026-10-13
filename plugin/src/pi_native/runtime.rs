@@ -335,7 +335,9 @@ impl PiNativeInvocation {
             binding.project_volumes.keys().map(String::as_str),
             false,
         )?;
-        manifest.validate()?;
+        manifest.validate(Some(
+            &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        ))?;
         let scratch = manifest
             .volumes
             .iter()

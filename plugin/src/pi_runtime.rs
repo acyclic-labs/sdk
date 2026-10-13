@@ -154,7 +154,9 @@ impl PiTaskRuntime {
     ) -> acyclic_harness::Result<Self> {
         authority.validate(
             journal,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
         )?;
         let (mut tools, tools_custody) = ToolRegistry::new(work)?;
         let mut tools_custody = Some(tools_custody);
@@ -182,7 +184,7 @@ impl PiTaskRuntime {
         let fork_machine = Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new());
         let mut tasks = TaskRegistry::default();
         tasks.register(machine.definition(work)?)?;
-        tasks.register(fork_machine.definition()?)?;
+        tasks.register(fork_machine.definition::<serde_json::Value, serde_json::Value>()?)?;
         let definition =
             tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);
@@ -283,7 +285,9 @@ impl PiTaskRuntime {
                 VolumeOperation::Write,
             )))
         {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let grant = volume.capability(operation, &mut Some(&mut io))?;
             if !authority.scope.grants().contains(&grant) {
                 return Err(acyclic_harness::Error::NativeBoundary {
@@ -302,18 +306,15 @@ impl PiTaskRuntime {
             authority.maximum_payload_bytes,
             work,
         )?;
-        let record = self
-            .runtime
-            .harness()
-            .registered_admission(
-                operation,
-                &self.definition.identity().name,
-                &self.definition.identity().version,
-                value,
-                None,
-                Some(self.definition.identity().digest),
-                work,
-            )?;
+        let record = self.runtime.harness().registered_admission(
+            operation,
+            &self.definition.identity().name,
+            &self.definition.identity().version,
+            value,
+            None,
+            Some(self.definition.identity().digest),
+            work,
+        )?;
         self.runtime
             .task_host()
             .admit_with_native_work(record, work)?

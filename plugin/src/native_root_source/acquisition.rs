@@ -155,6 +155,9 @@ where
         } else {
             let retained = retained.ok_or_else(|| rejection(MISSING_REFERENCE))?;
             if let Some(shared) = live {
+                if shared.source.root_identity() != expected {
+                    return Err(rejection(ROOT_IDENTITY));
+                }
                 shared
                     .watcher
                     .lock()
@@ -216,16 +219,6 @@ where
         }
         Err(error) => return Err(native_watch_error(error)),
     }
-    let mut ownership = work.claim(
-        std::mem::size_of::<Mutex<NativeWatch>>() as u64,
-        1,
-        WorkCounters::UNCHARGED,
-    )?;
-    registration
-        .pending_raw_watcher
-        .as_mut()
-        .ok_or_else(|| rejection(MISSING_REFERENCE))?
-        .retain_owner_allocation(&mut ownership)?;
     let watcher = Arc::new(Mutex::new(
         registration
             .pending_raw_watcher

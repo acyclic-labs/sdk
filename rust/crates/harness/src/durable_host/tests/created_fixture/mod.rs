@@ -44,7 +44,6 @@ pub(crate) struct PreparedFilesystemChild {
     pub(crate) project: VolumeRef,
     pub(crate) seed: crate::fork::ForkSeed,
     pub(crate) report: crate::fork::ForkReport,
-    pub(crate) parent: crate::core::Reducer,
     pub(crate) parent_scope: Scope,
     pub(crate) parent_verifier: AuthorityVerifier,
 }

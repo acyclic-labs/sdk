@@ -45,7 +45,7 @@ async fn root_input_fixture(
     policy: PiOwnerPolicy,
 ) -> (
     PiOwnerConfig,
-    FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
+    Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     PiRootRequest,
 ) {
     let project = VolumeRef::new(
@@ -104,9 +104,7 @@ pub(crate) fn publish_owner(
     path: &Path,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let root =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, work)?;
-    owner.save_new_with_native_work(&root, Path::new(""), work)
+    owner.save_new(path, Path::new(""), work)
 }
 
 fn credential_fixture(policy: &PiOwnerPolicy) -> (tempfile::TempDir, PiOwnerConfig) {
@@ -194,7 +192,7 @@ async fn root_input_denial_preserves_storage_and_selected_paths() {
         if failure == "cancel" {
             query.cancellation().cancel();
         }
-        let denied = match PiOwnerConfig::load(session.path()) {
+        let denied = match PiOwnerConfig::load(session.path(), Path::new(""), &work()) {
             Ok(owner) => stage_root_command(&owner, &filesystem, &request, &query).await,
             Err(error) => Err(error),
         };
@@ -216,12 +214,12 @@ fn owner_reopen_preserves_expired_policy_and_original_authority() {
     let mut policy = policy();
     policy.run_limits.deadline_epoch_ms = Some(1);
     let (directory, owner) = credential_fixture(&policy);
-    let original = owner.authority().unwrap();
+    let original = owner.authority(&work()).unwrap();
     let bytes = fs::read(directory.path().join(OWNER_FILE)).unwrap();
     for _ in 0..2 {
-        let reopened = PiOwnerConfig::load(directory.path()).unwrap();
+        let reopened = PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap();
         assert!(reopened == owner);
-        let authority = reopened.authority().unwrap();
+        let authority = reopened.authority(&work()).unwrap();
         authority
             .verifier
             .verify(&original.signed, &mut None)
@@ -264,13 +262,16 @@ fn concurrent_initialization_publishes_one_owner() {
             .map(|handle| handle.join().unwrap())
     });
     assert_ne!(accepted[0], accepted[1]);
-    assert!(PiOwnerConfig::load(directory.path()).unwrap() == owners[usize::from(accepted[1])]);
+    assert!(
+        PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap()
+            == owners[usize::from(accepted[1])]
+    );
 }
 
 #[test]
 fn missing_or_corrupt_credentials_are_never_regenerated() {
     let directory = tempfile::tempdir().unwrap();
-    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
     assert!(!directory.path().join(OWNER_FILE).exists());
     let owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
     publish_owner(&owner, directory.path(), &work()).unwrap();
@@ -285,7 +286,7 @@ fn missing_or_corrupt_credentials_are_never_regenerated() {
         corrupt,
     ] {
         fs::write(&path, &invalid).unwrap();
-        assert!(PiOwnerConfig::load(directory.path()).is_err());
+        assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
         assert!(publish_owner(&owner, directory.path(), &work()).is_err());
         assert_eq!(fs::read(&path).unwrap(), invalid);
     }
@@ -295,7 +296,7 @@ fn missing_or_corrupt_credentials_are_never_regenerated() {
         .unwrap()
         .set_len(MAXIMUM_OWNER_BYTES + 1)
         .unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
     assert_eq!(fs::metadata(path).unwrap().len(), MAXIMUM_OWNER_BYTES + 1);
 }
 
@@ -355,7 +356,7 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
         bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
         bytes.extend_from_slice(&protected);
         fs::write(directory.path().join(OWNER_FILE), &bytes).unwrap();
-        assert!(PiOwnerConfig::load(directory.path()).is_err());
+        assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
         assert_eq!(fs::read(directory.path().join(OWNER_FILE)).unwrap(), bytes);
     }
 }
@@ -375,7 +376,7 @@ fn windows_owner_requires_protected_payload() {
     bytes.extend_from_slice(blake3::hash(&plain).as_bytes());
     bytes.extend_from_slice(&plain);
     fs::write(directory.path().join(OWNER_FILE), &bytes).unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
     assert_eq!(fs::read(directory.path().join(OWNER_FILE)).unwrap(), bytes);
 }
 
@@ -386,17 +387,17 @@ fn unix_owner_rejects_public_permissions_links_and_nonregular_files() {
     let (directory, _) = credential_fixture(&policy());
     let path = directory.path().join(OWNER_FILE);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let link = directory.path().join("hardlink");
     fs::hard_link(&path, &link).unwrap();
-    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
     fs::remove_file(link).unwrap();
     let target = directory.path().join("original");
     fs::rename(&path, &target).unwrap();
     symlink(&target, &path).unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
 }

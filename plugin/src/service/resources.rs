@@ -66,22 +66,29 @@ impl ServiceResources {
             .start(resources.fs.clone(), resources.store.clone());
         let mut entries = fs::read_dir(resources.data.join("sessions"))
             .map_err(|error| Error::Storage(display(error)))?
-            .collect::<io::Result<Vec<_>>>()
+            .filter_map(|entry| match entry {
+                Ok(entry) => match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => Some(Ok(entry.path())),
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                },
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|error| Error::Storage(display(error)))?;
-        entries.sort_by_key(|entry| {
-            let modified = ADAPTER_STATE_SLOTS.iter().filter_map(|slot| {
-                fs::metadata(entry.path().join(slot)).ok()?.modified().ok()
-            }).max().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            (modified, entry.file_name())
+        let state_modified = |path: &PathBuf| {
+            ADAPTER_STATE_SLOTS.iter()
+                .filter_map(|slot| fs::metadata(path.join(slot)).ok()?.modified().ok())
+                .max().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        };
+        entries.sort_by(|left, right| {
+            state_modified(right).cmp(&state_modified(left)).then_with(|| right.cmp(left))
         });
         let mut sessions = BTreeMap::new();
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
-        for row in entries {
-            if !row.file_type().map_err(|error| Error::Storage(display(error)))?.is_dir() {
-                continue;
-            }
-            let entry = row.path();
-            let (state, _) = crate::adapter_state::load_state(&entry).map_err(Error::Storage)?;
+        for entry in entries {
+            let loaded = crate::adapter_state::load_state(&entry).map_err(Error::Storage)?;
+            let state = &loaded.0;
             if !state.active {
                 continue;
             }

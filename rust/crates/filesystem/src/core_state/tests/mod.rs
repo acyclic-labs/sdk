@@ -48,15 +48,15 @@ const CRASH_WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([0x43; 16]);
 const CRASH_GROUPS: [std::ops::Range<usize>; 6] = [0..1, 1..2, 2..5, 5..6, 6..7, 7..8];
 
 pub(super) fn context_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
-    RecordKey::Context(id).paths(namespace)
+    RecordKey::Context(id).paths(namespace).unwrap()
 }
 
 pub(super) fn children_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
-    RecordKey::Children(id).paths(namespace)
+    RecordKey::Children(id).paths(namespace).unwrap()
 }
 
 pub(super) fn count_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
-    RecordKey::ChildCount(id).paths(namespace)
+    RecordKey::ChildCount(id).paths(namespace).unwrap()
 }
 
 pub(super) fn workspace_context(

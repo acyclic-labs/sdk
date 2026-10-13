@@ -36,7 +36,7 @@ pub(crate) struct PiRootPreparation {
 impl PiRootPreparation {
     /// Authenticates the borrowed service state without reminting root metadata.
     pub(crate) async fn load(
-        private_root: &acyclic_fs::NativeHostPrivateStateRoot,
+        private_root: &Path,
         session: &Path,
         runtime: &super::pi_runtime::PiTaskRuntime,
         filesystem: &crate::pi_native_host::PiNativeFilesystem,

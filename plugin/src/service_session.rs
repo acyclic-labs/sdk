@@ -6,7 +6,6 @@ use acyclic_harness::{
     Error as RootError, Outcome, TaskId,
     conversation::FileRef,
     filesystem::FilesystemHost,
-    runtime::{DurableTaskHost, task_id_for_admission},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 
@@ -184,7 +183,7 @@ impl PiSession {
         let owner = match &native {
             Some(native) => std::sync::Arc::clone(&native.protected),
             None => pi_owner::PiOwnerConfig::load(
-                &self.resources.private_state_root,
+                &self.resources.data,
                 &self.relative_directory,
                 work,
             )?
@@ -289,7 +288,7 @@ impl PiSession {
         }
         let relative_directory = work.path(relative_directory, None)?;
         let owner = pi_owner::PiOwnerConfig::load(
-            &resources.private_state_root,
+            &resources.data,
             &relative_directory.0,
             work,
         )?;

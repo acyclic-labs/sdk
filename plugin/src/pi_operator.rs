@@ -161,22 +161,29 @@ impl PiOperatorRequest {
         let mut session = work
             .display(session)
             .map_err(acyclic_harness::Error::from)?;
-        let mut scope = Scope::from_value_with_native_work(scope_value, work)?;
+        let decoded = json_from_value_bounded(
+            std::borrow::Cow::Borrowed(scope_value),
+            bounds,
+            std::mem::size_of::<Scope>() as u64,
+            Some(acyclic_harness::wire::ErrorCode::Invalid),
+            acyclic_harness::JsonValueSchema::None,
+            &mut |charge| operator_decode_charge(charge, work, &mut custody),
+        );
+        let scope: Scope = match decoded {
+            Ok(scope) => scope,
+            Err(error) => return Err(operator_decode_error(error, custody)),
+        };
         let mut request = (
             Self {
                 session_id: session.0,
                 body,
-                operator: scope.0,
+                operator: scope,
             },
             custody,
         );
         request
             .1
             .absorb(&mut session.1)
-            .map_err(acyclic_harness::Error::from)?;
-        request
-            .1
-            .absorb(&mut scope.1)
             .map_err(acyclic_harness::Error::from)?;
         Ok(request)
     }
@@ -558,16 +565,11 @@ pub(crate) async fn run_cli(
         })?;
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;
     let directory = crate::service::session_directory(data, &cli.session);
-    let private =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(data, &work)
-            .map_err(|cause| {
-                ControlRequestError::NativeWork(acyclic_harness::Error::from(cause))
-            })?;
     let relative = directory
         .strip_prefix(data)
         .map_err(|_| ControlRequestError::Response("Pi owner escaped its data directory".into()))?;
     let owner =
-        PiOwnerConfig::load(&private, relative, &work).map_err(ControlRequestError::NativeWork)?;
+        PiOwnerConfig::load(data, relative, &work).map_err(ControlRequestError::NativeWork)?;
     let inspect_custody;
     let inspect;
     (inspect, inspect_custody) = build_control_request(

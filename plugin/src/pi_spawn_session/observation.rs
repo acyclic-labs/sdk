@@ -66,7 +66,10 @@ impl PiSession {
         )?;
         let observation = Observation {
             operation: &commit.sdk_operation,
-            state: if outcome_value.as_ref().is_some_and(Outcome::is_terminal) {
+            state: if outcome_value
+                .as_ref()
+                .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
+            {
                 "completed"
             } else if created {
                 "pending"

@@ -32,7 +32,7 @@ impl PiSession {
                     .and_then(Value::as_str)
                     .ok_or_else(|| invalid("Pi control requires its original session identity"))?;
                 let owner = pi_owner::PiOwnerConfig::load(
-                    &self.resources.private_state_root,
+                    &self.resources.data,
                     &self.relative_directory,
                     &work,
                 )?;
@@ -40,11 +40,20 @@ impl PiSession {
                 let caller = request
                     .arguments
                     .get("caller")
-                    .cloned()
-                    .map(serde_json::from_value::<acyclic_harness::core::Scope>)
-                    .transpose()
-                    .map_err(|error| RootError::Invalid(display(error)))?;
-                let task = if let Some(scope) = &caller {
+                    .map(|value| {
+                        let bytes = pi_root_provider::canonical_pi_value(value, MAXIMUM_CONTROL_MESSAGE_BYTES as u64, &work)?;
+                        pi_root_provider::guarded_pi_decode::<acyclic_harness::core::Scope>(
+                            &bytes.0,
+                            MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+                            MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+                            acyclic_harness::wire::ErrorCode::Invalid,
+                            acyclic_harness::JsonValueSchema::None,
+                            0,
+                            &work,
+                        )
+                    })
+                    .transpose()?;
+                let task = if let Some((scope, _)) = &caller {
                     pi_caller::verify(&owner, &self.state, scope, session, &work)?.task_id
                 } else {
                     if event != "SessionStart" || session != self.state.root_session_id {

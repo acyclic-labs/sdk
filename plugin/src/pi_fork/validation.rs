@@ -13,8 +13,13 @@ impl<'a> PiForkCoordinator<'a> {
         {
             let work = &self.work;
             plan.request
-                .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
-            plan.preparation.validate_with_native_work(work)?;
+                .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
+            plan.preparation
+                .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
         }
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &plan.request.child.input,

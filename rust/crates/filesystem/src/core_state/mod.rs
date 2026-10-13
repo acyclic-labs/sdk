@@ -6,8 +6,9 @@ use crate::workspace_context::{
     update_context_children,
 };
 use crate::{
-    LazyOverlay, LazyOverlayId, LazyWorkspaceState, LazyWorkspaceStore, MaterializationJournal,
-    MaterializationJournalStore, OperationId, WorkspaceContext, WorkspaceContextDiscardOutcome,
+    GitCompatState, GitCompatStore, LazyOverlay, LazyOverlayId, LazyWorkspaceState,
+    LazyWorkspaceStore, MaterializationJournal, MaterializationJournalStore, MultiRootPublication,
+    MultiRootPublicationStore, OperationId, WorkspaceContext, WorkspaceContextDiscardOutcome,
     WorkspaceContextId, WorkspaceContextStore, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceLineageStore,
 };
@@ -26,6 +27,9 @@ use uuid::Uuid;
 
 const RECORD_LOCK_DEADLINE: Duration = Duration::from_secs(5);
 const RECORD_LOCK_RETRY: Duration = Duration::from_millis(5);
+const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
+const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
+const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
 const LAZY_WORKSPACE_FAMILY: &str = "lazy-workspaces";
 const MATERIALIZATION_FAMILY: &str = "materialization";
 const OWNER_LOCK: &str = "owner.lock";
@@ -140,6 +144,11 @@ enum Admission {
         _lock: OwnerLock,
     },
     Owned(Arc<Owner>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MultiRootParentClaim {
+    operation_id: OperationId,
 }
 
 impl LocalCoreStateStore {
@@ -280,6 +289,58 @@ impl LocalCoreStateStore {
             acyclic_native_runtime::run_blocking_io(move || operation(store.namespace()?), meter)
                 .map_err(&runtime_error)?;
         task.await.map_err(runtime_error)?
+    }
+
+    /// Loads one journaled record without blocking an async executor.
+    async fn load_record<T: DeserializeOwned + Send + 'static>(
+        &self,
+        family: &'static str,
+        key: [u8; 16],
+    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        self.transaction(move |namespace| read_locked(&mut namespace.record(family, &key)?))
+            .await
+    }
+
+    /// Replaces one journaled record only at `expected_revision` (`0` means absent).
+    async fn compare_and_swap_record<T>(
+        &self,
+        family: &'static str,
+        key: [u8; 16],
+        expected_revision: u64,
+        replacement: T,
+    ) -> Result<bool, LocalCoreStateStoreError>
+    where
+        T: DeserializeOwned + Serialize + Revisioned + Send + 'static,
+    {
+        self.transaction(move |namespace| {
+            compare_and_swap(
+                &mut namespace.record(family, &key)?,
+                expected_revision,
+                &replacement,
+            )
+        })
+        .await
+    }
+
+    /// Removes one journaled record only at the expected revision.
+    async fn compare_and_delete_record<T: DeserializeOwned + Revisioned>(
+        &self,
+        family: &'static str,
+        key: [u8; 16],
+        expected_revision: u64,
+    ) -> Result<bool, LocalCoreStateStoreError> {
+        self.transaction(move |namespace| {
+            let mut paths = namespace.record(family, &key)?;
+            with_lock(&mut paths, |paths| {
+                let current = read_recoverable::<T>(paths)?;
+                if current.as_ref().map_or(0, |(value, _)| value.revision()) != expected_revision {
+                    return Ok(false);
+                }
+                remove_record(paths)?;
+                Ok(true)
+            })
+        })
+        .await
     }
 
     /// Lists materialization operation ids with durable recovery state.
@@ -533,6 +594,7 @@ pub use journal::LocalMaterializationActionCompletion;
 mod decode;
 use decode::*;
 mod nodes;
+mod publications;
 use nodes::*;
 mod collection;
 mod lazy_log;

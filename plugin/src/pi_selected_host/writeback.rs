@@ -196,7 +196,7 @@ impl PiControlHost<'_> {
             .transpose()?;
         let descriptor = crate::pi_operator::PiPreparedApproval {
             version: 1,
-            session: &binding.native_session_id,
+            session: binding.native_session_id.as_str(),
             command: PiSelectedCommand::normalized(input, key),
             operation,
             approval_digest: &approval_data.0,
@@ -207,7 +207,9 @@ impl PiControlHost<'_> {
             journal: &journal,
             canonical_digest_input: &approval_data.1,
             root_path: &root_display.0,
-            source_path: source_display.as_ref().map_or("", |(value, _)| value),
+            source_path: source_display
+                .as_ref()
+                .map_or("", |(value, _)| value.as_str()),
         };
         crate::pi_operator_host::open_prepared_approval(
             &self.runtime,

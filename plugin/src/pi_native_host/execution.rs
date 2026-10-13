@@ -58,7 +58,9 @@ impl PiNativeCommandHost {
     ) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
         self.child_admission(task, work).await?;
         let observed = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -116,7 +118,7 @@ impl PiNativeCommandHost {
     pub(super) async fn effect_progress(
         &self,
         bound: &BoundEffect,
-        mut observed: (EffectStatus, NativeAllocation),
+        mut observed: (EffectStatus, Option<NativeAllocation>),
     ) -> Result<TaskCommandProgress> {
         if !matches!(
             &observed.0,
@@ -125,7 +127,8 @@ impl PiNativeCommandHost {
             return Ok(TaskCommandProgress::Indeterminate);
         }
         let task = bound.owner.task_id();
-        let work = self.preparation_work(&self.registered_entry(task)?).await?;
+        let entry = self.registered_entry(task)?;
+        let work = self.preparation_work(&entry).await?;
         let maximum = bound
             .context
             .scope()
@@ -145,7 +148,9 @@ impl PiNativeCommandHost {
             )?,
             _ => return Err(Error::Indeterminate(bound.command)),
         };
-        completed.1.absorb(&mut observed.1)?;
+        if let Some(custody) = &mut observed.1 {
+            completed.1.absorb(custody)?;
+        }
         let (value, custody) = completed;
         Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
     }
@@ -288,11 +293,11 @@ impl TaskCommandHost for PiNativeCommandHost {
                         &recovery,
                         recovery
                             .effects
-                            .reconcile_task_effect_with_native_work(
+                            .reconcile_task_effect(
                                 &recovery.owner,
                                 recovery.command,
                                 &recovery.plan.0,
-                                &recovery.work,
+                                Some(&recovery.work),
                             )
                             .await?,
                     )
@@ -364,11 +369,11 @@ impl TaskCommandHost for PiNativeCommandHost {
                     &bound,
                     bound
                         .effects
-                        .reconcile_task_effect_with_native_work(
+                        .reconcile_task_effect(
                             &bound.owner,
                             bound.command,
                             &bound.plan.0,
-                            &bound.work,
+                            Some(&bound.work),
                         )
                         .await?,
                 )

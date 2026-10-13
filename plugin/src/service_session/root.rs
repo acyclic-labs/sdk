@@ -20,13 +20,13 @@ impl PiSession {
             return Err(invalid("Pi root has no original task binding"));
         };
         let owner = pi_owner::PiOwnerConfig::load(
-            &self.resources.private_state_root,
+            &self.resources.data,
             &self.relative_directory,
             work,
         )?
         .into_native_shared(work)?;
         let preparation = pi_root_inputs::PiRootPreparation::load(
-            &self.resources.private_state_root,
+            &self.resources.data,
             &self.relative_directory,
             &self.runtime,
             &self.filesystem,
@@ -136,15 +136,17 @@ impl PiSession {
         {
             return Err(invalid("Pi original scratch creation was substituted"));
         }
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-        let read_context = self.runtime.runtime.harness().durable_context(
-            binding.task_id, acyclic_harness::OperationId::from_bytes(binding.task_id.into_bytes()), Some(&io),
-        ).await?;
-        let read_owner = self.runtime.runtime.task_host()
-            .readonly_journal_owner(binding.task_id, work).await?
-            .into_native_shared(work)?;
-        let read = (read_owner, read_context);
-        let observer = self.root_observer(Some(Arc::clone(&read.1)), work).await?;
+        let read = self
+            .runtime
+            .runtime
+            .harness()
+            .durable_context(
+                binding.task_id,
+                acyclic_harness::OperationId::from_bytes(binding.task_id.into_bytes()),
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )
+            .await?;
+        let observer = self.root_observer(Some(Arc::clone(&read)), work).await?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
             work,
             cancellation: work.cancellation(),
@@ -177,7 +179,7 @@ impl PiSession {
                     &root.path,
                     SharedRootAdmission::Resume(expected),
                     work,
-                    || observer.verify_created_source(&read.0, key, &allocation.0.1, work),
+                    || observer.verify_created_source(key, &allocation.0.1, work),
                 )
                 .await?;
             if physical.source.root_identity().to_bytes() != creation.native_root_identity {

@@ -132,7 +132,7 @@ impl PiWritebackRoot {
         self.write_guard.check_write(work)?.await?;
         let identity = self
             .provider
-            .verify_created_source(&self.owner, &self.key, &self.allocation, work)
+            .verify_created_source(&self.key, &self.allocation, work)
             .await?;
         if identity != self.identity {
             return Err(selected_unauthorized(
