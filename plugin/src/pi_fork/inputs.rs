@@ -62,7 +62,7 @@ impl<'a> PiForkCoordinator<'a> {
             .await?;
         return actual
             .1
-            .read_file_with_native_work(reference, work)
+            .read_file(reference, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
             .await;
     }
 

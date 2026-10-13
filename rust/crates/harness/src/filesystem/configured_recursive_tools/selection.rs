@@ -179,12 +179,12 @@ where
             drop(
                 context
                     .task()
-                    .read_file_with_native_work(file, work)
+                    .read_file(file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?,
             );
             return Ok(());
         }
-        drop(context.task().read_file(file).await?);
+        drop(context.task().read_file(file, None).await?);
         Ok(())
     }
     pub(super) async fn select_source(

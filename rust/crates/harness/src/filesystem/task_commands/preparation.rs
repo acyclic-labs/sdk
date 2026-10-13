@@ -73,7 +73,7 @@ where
                 let owner = self
                     .runtime
                     .task_host()
-                    .journal_owner_with_native_work(task, fence, work)
+                    .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?
                     .into_native_shared(work)?;
                 let preparation = owner

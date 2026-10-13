@@ -221,53 +221,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             {
                 return Ok(false);
             }
-            let mut native = None;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                let observed = ({
-                    let mut authority = crate::AuthorityWork::native((original), (cancellation));
-                    self.inner
-                        .authority
-                        .find_operation(
-                            (volume_authority_id(target.id)),
-                            (witness.operation_id),
-                            &mut authority,
-                        )
-                        .await
-                        .map(|value| (value, KernelOwnedAllocation::Standalone))
-                })
-                .map_err(FsError::from)?;
-                native = Some((
-                    observed.0,
-                    observed.1,
-                ));
-            }
-            let observed = match native {
-                Some(observed) => observed,
-                None => {
-                    let observed = self
-                        .observe_volume_operation(
-                            target.id,
-                            witness.operation_id,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await;
-                    let completed = match &observed {
-                        Ok(receipt) => receipt.work,
-                        Err(failure) => *failure.work,
-                    };
-                    *accounting
-                        .standalone_parts()
-                        .expect("standalone join verification")
-                        .1 = completed;
-                    (
-                        observed.map_err(WorkspaceError::engine)?.value,
-                        KernelOwnedAllocation::Standalone,
-                    )
-                }
-            };
-            let Some(commit) = observed.0.as_ref() else {
+            let mut authority = authority_work(&accounting, cancellation)?;
+            let observed = self
+                .inner
+                .authority
+                .find_operation(
+                    volume_authority_id(target.id),
+                    witness.operation_id,
+                    &mut authority,
+                )
+                .await;
+            record_authority_work(&mut accounting, &authority)?;
+            let observed = observed.map_err(FsError::from)?;
+            let Some(commit) = observed.as_ref() else {
                 return Ok(false);
             };
             let generation = generation_from_record(commit, target.id, &mut accounting)?;

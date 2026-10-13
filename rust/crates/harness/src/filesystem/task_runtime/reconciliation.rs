@@ -55,7 +55,7 @@ where
                 let fence = observed::lease_fence(lease, io)?;
                 self.owner_observed(task, &fence, true, io).await?;
                 let admission = self.admission_observed(task, io).await?;
-                if admission.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.host.now_unix_millis() >= deadline) {
+                if admission.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(io) = io {
                         let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native reconciliation requires original work"))?;
@@ -103,7 +103,7 @@ where
                         if !shared.as_ref().original_task_binding_matches(task, &fence) {
                             return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native reconciliation differs from original task binding"));
                         }
-                        let body = shared.as_ref().read_file_with_native_work(&command.payload, work).await?;
+                        let body = shared.as_ref().read_file(&command.payload, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
                         let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<serde_json::Value>, &body, crate::wire::ErrorCode::Storage)?);
                         drop(body);
                         commands.reconcile_with_native_work(
@@ -111,13 +111,13 @@ where
                             observed::clone_command(command, Some(io))?, payload, work,
                         )?.await?
                     } else {
-                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                             .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                         commands.reconcile(context.context().clone(), fence.clone(), command.clone(), payload).await?
                     };
                     #[cfg(target_arch = "wasm32")]
                     let progress = {
-                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+                        let payload = crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                             .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                         commands.reconcile(context.context().clone(), fence.clone(), command.clone(), payload).await?
                     };
@@ -131,7 +131,7 @@ where
                                 if !work.shares_ledger(custody.work()) {
                                     return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native result differs from original work"));
                                 }
-                                self.host.verify_native_command_result(task, &fence, custody.work()).await?;
+                                self.host.verify_owner(task, &fence, false, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(custody.work())?.history_io())).await?;
                             }
                         }
                         TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => return Ok(WorkerTurn::Reconciling),

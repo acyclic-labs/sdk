@@ -67,14 +67,16 @@ impl LocalCoreStateStore {
                 }
                 let mut generations = Vec::new();
                 for workspace in workspaces {
-                    let Some(state) = log.get::<LazyWorkspaceState>(root, workspace)? else {
+                    let Some(state) = log.get::<LazyWorkspaceState>(root, workspace, None)? else {
                         continue;
                     };
                     if let Some(origin) = state.fork_origin {
                         generations.push((origin.snapshot.authored_generation, origin.config));
                     }
                     if let Some(roots) = state.selected_import_roots {
-                        generations.extend(roots.map(|(snapshot, config)| (snapshot.authored_generation, config)));
+                        generations.extend(
+                            roots.map(|(snapshot, config)| (snapshot.authored_generation, config)),
+                        );
                     }
                 }
                 Ok(generations)
@@ -109,8 +111,8 @@ impl LocalCoreStateStore {
                 // A logged absence stays on disk as `null`.
                 let mut recorded = BTreeMap::new();
                 for workspace in workspaces {
-                    let lineage = log.get::<WorkspaceLineageRecord>(root, workspace)?;
-                    let lazy = log.get::<LazyWorkspaceState>(root, workspace)?;
+                    let lineage = log.get::<WorkspaceLineageRecord>(root, workspace, None)?;
+                    let lazy = log.get::<LazyWorkspaceState>(root, workspace, None)?;
                     let git = read_locked::<GitCompatState>(
                         &mut root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes())?,
                     )?;
@@ -138,8 +140,7 @@ impl LocalCoreStateStore {
                                 .or(state.parent_workspace_id)
                         }))
                         .collect();
-                    if let Some(roots) = lazy.and_then(|state| state.selected_import_roots)
-                    {
+                    if let Some(roots) = lazy.and_then(|state| state.selected_import_roots) {
                         for parent in roots.map(|(snapshot, _)| snapshot.workspace_id) {
                             if parent != workspace && !parents.contains(&parent) {
                                 parents.push(parent);
@@ -204,7 +205,7 @@ impl LocalCoreStateStore {
                 let mut overlays = Vec::new();
                 let mut shadows = Vec::new();
                 for workspace in workspaces {
-                    let Some(state) = log.get::<LazyWorkspaceState>(root, workspace)? else {
+                    let Some(state) = log.get::<LazyWorkspaceState>(root, workspace, None)? else {
                         continue;
                     };
                     overlays.push(state.overlay);

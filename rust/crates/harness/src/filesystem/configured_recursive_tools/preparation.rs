@@ -72,17 +72,15 @@ where
             ));
         }
         if let Some(checkpoint) = &preparation.source_checkpoint {
-            let bytes = 'read: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                    break 'read reader.read_file_with_native_work(checkpoint, work).await?;
+            let ordinary;
+            let content_io = match io {
+                Some(io) => io,
+                None => {
+                    ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+                    &ordinary
                 }
-                reader
-                    .read_file_measured(checkpoint, self.config.content_budget, cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value
             };
+            let bytes = reader.read_file(checkpoint, Some(content_io)).await?;
             let record: RecursiveForkSourceIntent = match io {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
