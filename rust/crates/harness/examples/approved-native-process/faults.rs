@@ -199,7 +199,7 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )
             .await?,
         );
-        super::recover_on(
+        super::recovery::run(
             stream,
             filesystem,
             &evidence.restart,
@@ -267,7 +267,7 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
         acyclic_stream::LocalStream::open(storage.path().join("coordinator"), Default::default())
             .await?,
     );
-    super::recover_on(stream.clone(), filesystem.clone(), &seed, None, true).await?;
+    super::recovery::run(stream.clone(), filesystem.clone(), &seed, None, true).await?;
     verify_pending_task(stream.clone(), filesystem, &seed).await?;
     super::verify_mcp_calls(&seed.request, true)?;
     println!(
@@ -309,7 +309,7 @@ async fn verify_pending_task(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let issuer = super::issuer();
     let files = FilesystemHost::new(filesystem, seed.destination.provider(), None)?;
-    let task = super::runtime(
+    let task = super::task::open(
         stream.clone(),
         files.clone(),
         seed.results_volume.clone(),
@@ -349,10 +349,9 @@ async fn verify_pending_task(
             "cancellation reported a terminal outcome for the unknown native attempt".into(),
         );
     }
-    let recovery = super::recovered_effects(stream, files, &task, seed, &issuer).await?;
-    if recovery
-        .effects
-        .reconcile_task_effect(&recovery.owner, seed.command, &seed.plan, None)
+    let (owner, effects, _) = super::recovery::effects(stream, files, &task, seed, &issuer).await?;
+    if effects
+        .reconcile_task_effect(&owner, seed.command, &seed.plan, None)
         .await
         .map(|result| result.0)?
         != EffectStatus::Indeterminate
