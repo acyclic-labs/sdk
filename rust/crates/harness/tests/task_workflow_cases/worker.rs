@@ -62,7 +62,7 @@ pub(super) async fn worker_restart_with_options(
     let agent = AgentId::from_bytes([21; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
-        "private",
+        "private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -515,7 +515,7 @@ pub(super) async fn worker_restart_with_options(
             }
             clock.0.store(200, Ordering::SeqCst);
             if cancel_wait {
-                runtime.task_host().cancel(task, None).await?;
+                runtime.task_host().cancel(task).await?;
                 assert!(!runtime.poll_task_wake(task, None).await?);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert_eq!(
@@ -598,7 +598,7 @@ pub(super) async fn worker_restart_with_options(
             assert!(
                 runtime
                     .task_host()
-                    .resume_workflow(task, 2, input.clone(), IdempotencyKey::new("wrong-revision")?, None)
+                    .resume_workflow(task, 2, input.clone(), IdempotencyKey::new("wrong-revision")?, None, &mut None)
                     .await
                     .is_err()
             );
@@ -661,11 +661,11 @@ pub(super) async fn worker_restart_with_options(
             } else {
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?, None)
+                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?, None, &mut None)
                     .await?;
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?, None)
+                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?, None, &mut None)
                     .await?;
             }
         }
@@ -797,12 +797,7 @@ pub(super) async fn worker_restart_with_options(
                     assert!(matches!(
                         runtime
                             .commands()
-                            .execute(
-                                context,
-                                LeaseFence::from(&lease.reservation),
-                                command,
-                                wrong
-                            )
+                            .execute(context.as_ref().clone(), LeaseFence::from(&lease.reservation), command, wrong)
                             .await,
                         Err(Error::NotFound(_))
                     ));
@@ -847,7 +842,7 @@ pub(super) async fn worker_restart_with_options(
                     assert!(matches!(
                         runtime
                             .commands()
-                            .execute(context.clone(), fence.clone(), command.clone(), payload)
+                            .execute(context.as_ref().clone(), fence.clone(), command.clone(), payload)
                             .await?,
                         TaskCommandProgress::Ready(_)
                     ));
@@ -860,7 +855,7 @@ pub(super) async fn worker_restart_with_options(
                     assert!(matches!(
                         runtime
                             .commands()
-                            .execute(context, fence, command, changed)
+                            .execute(context.as_ref().clone(), fence, command, changed)
                             .await,
                         Err(Error::Conflict(_))
                     ));
@@ -956,12 +951,7 @@ pub(super) async fn worker_restart_with_options(
                             assert!(matches!(
                                 runtime
                                     .commands()
-                                    .execute(
-                                        context.clone(),
-                                        LeaseFence::from(&lease.reservation),
-                                        command.clone(),
-                                        denied
-                                    )
+                                    .execute(context.as_ref().clone(), LeaseFence::from(&lease.reservation), command.clone(), denied)
                                     .await,
                                 Err(Error::Unauthorized(_))
                             ));
@@ -974,12 +964,7 @@ pub(super) async fn worker_restart_with_options(
                                 assert!(matches!(
                                     runtime
                                         .commands()
-                                        .execute(
-                                            context.clone(),
-                                            LeaseFence::from(&lease.reservation),
-                                            command.clone(),
-                                            pending.clone()
-                                        )
+                                        .execute(context.as_ref().clone(), LeaseFence::from(&lease.reservation), command.clone(), pending.clone())
                                         .await,
                                     Ok(TaskCommandProgress::Pending)
                                 ));
@@ -1010,12 +995,7 @@ pub(super) async fn worker_restart_with_options(
                     assert!(matches!(
                         runtime
                             .commands()
-                            .execute(
-                                context,
-                                LeaseFence::from(&lease.reservation),
-                                command,
-                                wrong
-                            )
+                            .execute(context.as_ref().clone(), LeaseFence::from(&lease.reservation), command, wrong)
                             .await,
                         Err(Error::NotFound(_))
                     ));
@@ -1113,7 +1093,7 @@ pub(super) async fn worker_restart_with_options(
             let Some(acyclic_harness::Outcome::Succeeded(result)) = &retained.outcome else {
                 return Err(Error::Invalid("missing result".into()));
             };
-            assert_eq!(reader.read(result).await?.as_ref(), b"7");
+            assert_eq!(reader.read(result, 65_536, None)?.await?.as_ref(), b"7");
             assert!(coordinator.pull(&worker).await?.is_none());
             assert_completed_dispatches(command, &model, &tool);
         } else {
@@ -1168,28 +1148,7 @@ pub(super) async fn worker_restart_with_options(
             }
         }
         if with_mail_send || (with_mail_receive && reopened) {
-            let inbox = runtime.task_host().inbox(task, 0, 1024).await?;
-            assert_eq!(inbox.len(), if with_mail_send { 72 } else { 2 });
-            let first = inbox
-                .first()
-                .ok_or_else(|| Error::NotFound("committed mail item".into()))?;
-            assert_eq!(reader.read(&first.payload).await?.as_ref(), b"7");
-            if with_mail_send {
-                assert!(
-                    runtime
-                        .task_host()
-                        .send_mail(
-                            task,
-                            &LeaseFence::from(&lease.reservation),
-                            task,
-                            OperationId::from_bytes([99; 16]),
-                            first.payload.clone(),
-                            None
-                        )
-                        .await
-                        .is_err()
-                );
-            }
+            mail::assert_mail(&runtime, task, reader.as_ref(), with_mail_send, &lease).await?;
         }
     }
     if with_policy && with_tool {
@@ -1197,3 +1156,6 @@ pub(super) async fn worker_restart_with_options(
     }
     Ok(())
 }
+
+#[path = "worker_mail.rs"]
+mod mail;
