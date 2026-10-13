@@ -10,92 +10,47 @@ impl<P: StreamProvider> StreamAggregate<P> {
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<Option<(crate::core::EffectState, u64)>> {
         if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work
-                .as_ref()
-                .is_some_and(|work| work.original_native_work().is_some())
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "effect read bounds must be positive",
-                });
-            }
-            return Err(Error::Invalid("effect read bounds must be positive".into()));
+            return Err(guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "effect read bounds must be positive",
+            ));
         }
         if let Some(state) = self.reducer.effect(effect) {
-            crate::executor::json::json_byte_length(state, limits.maximum_bytes, work).map(|_| ())?;
+            crate::executor::json::json_byte_length(state, limits.maximum_bytes, work)
+                .map(|_| ())?;
             return crate::wire_codec::CodecQuota::produce(work, |quota| {
                 crate::core::copy(state, quota, |value: &crate::core::EffectState, work| {
-    value.request.validate(work)?;
-    value.result_schema.validate(work)?;
-    if let crate::core::EffectStatus::Succeeded { result } = &value.status {
-        result.validate(work)?;
-    }
-    crate::core::owned_effect(value)
-})
+                    value.request.validate(work)?;
+                    value.result_schema.validate(work)?;
+                    if let crate::core::EffectStatus::Succeeded { result } = &value.status {
+                        result.validate(work)?;
+                    }
+                    crate::core::owned_effect(value)
+                })
             })
             .map(Some);
         }
-        let reader = HistoryReader::new(
-            &self.client,
-            self.reducer.authority(),
-            self.reducer.event_verifier(),
-            work,
-        )?;
-        let reader_bytes = if work.is_some() {
-            reader.logical_owned_bytes(work)?
-        } else {
-            0
-        };
-        let authority = match work.as_deref_mut() {
-            Some(observer) => observer.clone_authority(self.reducer.authority()),
-            None => Ok(self.reducer.authority().clone()),
-        };
-        let authority = match authority {
-            Ok(authority) => authority,
-            Err(error) => {
-                drop(reader);
-                if let Some(observer) = work.as_deref_mut() {
-                    let _ = observer.release_owned(reader_bytes);
-                }
-                return Err(error);
-            }
-        };
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let cursor = HistoryCursor {
-            authority,
+            authority: crate::core::copy_authority(self.reducer.authority(), &mut quota)?,
             after_revision: 0,
             through_revision: self.reducer.revision(),
         };
-        let cursor_bytes = if work.is_some() {
-            cursor.authority.id.capacity() as u64
-        } else {
-            0
-        };
-        let result = reader
-            .effect(
-                &cursor,
-                effect,
-                limits,
-                work.as_mut()
-                    .map(|observer| &mut **observer as &mut dyn history::HistoryIo),
-            )
-            .await;
+        let result = history::project_effect(
+            &self.client,
+            self.reducer.event_verifier(),
+            &cursor,
+            effect,
+            limits,
+            quota.work(),
+        )
+        .await;
         drop(cursor);
-        drop(reader);
-        let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_owned(cursor_bytes + reader_bytes),
-            None => Ok(()),
-        };
-        match result {
-            Ok(state) => {
-                released?;
-                Ok(state)
-            }
-            Err(error) => {
-                let _ = released;
-                Err(error)
-            }
-        }
+        let released = quota.relinquish(quota.retained());
+        let result = result?;
+        released?;
+        Ok(result)
     }
 
     /// Resolves one archived operation through its atomically published canonical location.
