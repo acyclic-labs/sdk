@@ -410,9 +410,10 @@ pub(super) fn create_special(
                 } else {
                     u32::from(libc::S_IFBLK)
                 };
-                let device_number = super::device::join_device(major, minor).map_err(|errno| {
-                    MaterializeError::Io(std::io::Error::from_raw_os_error(errno))
-                })?;
+                let device_number = crate::native_mount::device::join_device(major, minor)
+                    .map_err(|errno| {
+                        MaterializeError::Io(std::io::Error::from_raw_os_error(errno))
+                    })?;
                 host_root
                     .create_device_held(
                         super::work::host_path(destination),

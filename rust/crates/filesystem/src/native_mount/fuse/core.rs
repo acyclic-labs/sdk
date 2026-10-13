@@ -50,7 +50,7 @@ fn verify_guard(
     if let Some(guard) = guard {
         let work = work.ok_or(NativeMountError::ControlPending)?;
         crate::native_mount::adapter::CallbackRuntime::existing()?
-            .verify_native_callback_guard(guard.as_ref(), work)?;
+            .verify_callback(work, || guard.check(work))?;
     }
     Ok(())
 }
