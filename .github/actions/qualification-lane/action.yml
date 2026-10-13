@@ -89,6 +89,7 @@ runs:
         key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
+          ${{ startsWith(inputs.lane, 'windows-') && format('sdk-sccache-v5-windows-{0}-{1}-{2}-', steps.sccache.outputs.scope, runner.os, runner.arch) || '' }}
           ${{ inputs.lane == 'linux-arm64-bindings' && format('sdk-sccache-v5-linux-arm64-{0}-{1}-{2}-', steps.sccache.outputs.scope, runner.os, runner.arch) || '' }}
 
     - name: Enable compiler cache
@@ -164,7 +165,7 @@ runs:
         BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
         TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}
         LLVM_PATH: ${{ runner.temp }}/llvm
-      run: .\scripts\qualify-ci.ps1 -Lane windows
+      run: .\scripts\qualify-ci.ps1 -Lane "${{ inputs.lane }}"
 
     # Step wall times, the slowest tests and compiler cache statistics, kept
     # briefly even when the lane fails so slow steps and tests stay visible.

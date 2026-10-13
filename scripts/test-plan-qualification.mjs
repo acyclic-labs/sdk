@@ -598,7 +598,7 @@ test("ARM native binding production runs independently and all original ARM chec
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
  assert.match(workflow,/name: Find linux-arm64-bindings marker/);assert.match(workflow,/name: Record linux-arm64-bindings/);
  assert.match(workflow,/needs: \[ plan, qualification \]/);assert.match(workflow,/test "\$RESULT" = success/);
- assert.ok(matrix.length<=12,"all ARM work fits in the simultaneous matrix");
+ assert.ok(matrix.length<=15,"all ARM work fits in the simultaneous matrix");
  const action=readFileSync(".github/actions/qualification-lane/action.yml","utf8");
  assert.match(action,/inputs\.lane == 'linux-arm64-bindings' && format\('sdk-sccache-v5-linux-arm64-/);
 });
@@ -614,12 +614,43 @@ test("the workspace gate, docs and generation run as independent required matrix
  const matrix=chooseLanes(lanes,{force:true,marker:everywhere,retained:retainedAll}).matrix;
  for(const name of ["gate","docs","generation"])assert.equal(matrix.filter(lane=>lane.lane===name).length,1);
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
- assert.match(workflow,/max-parallel: 12/);
- assert.ok(matrix.length<=12,"all full lanes can start together");
+ assert.match(workflow,/max-parallel: 15/);
+ assert.ok(matrix.length<=15,"all full lanes can start together");
  for(const name of ["docs","generation"]){
   assert.match(workflow,new RegExp("name: Find "+name+" marker"));
   assert.match(workflow,new RegExp("name: Record "+name));
  }
  assert.match(workflow,/needs: \[ plan, qualification \]/);
  assert.match(workflow,/test "\$RESULT" = success/);
+});
+
+test("Windows native audits are independent required lanes without moving publication outputs", () => {
+  const matrix = chooseLanes(lanes, { force: true, marker: everywhere, retained: retainedAll }).matrix;
+  const names = ["windows-napi", "windows-arm64", "windows-clippy"];
+  for (const name of names) {
+    const selected = matrix.filter(lane => lane.lane === name);
+    assert.equal(selected.length, 1);
+    assert.equal(selected[0].runner, "blacksmith-4vcpu-windows-2025");
+    assert.equal(selected[0].scope, "full");
+    assert.equal(selected[0].inputs, "rust");
+    assert.equal(selected[0].artifact, "");
+  }
+  assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
+  const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
+  assert.doesNotMatch(script, /Start-Background|Complete-Background/);
+  for (const command of ["cargo test --workspace --all-features --locked", "cargo test -p acyclic-plugin --all-features --locked --test fork_join",
+    "bun test --parallel=4 --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "bun run check"])
+    assert.ok(script.includes(command), command);
+  assert.match(script, /test-qualify-ci-windows\.ps1/);
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  assert.match(workflow, /max-parallel: 15/);
+  assert.ok(matrix.length <= 15);
+  for (const name of names) {
+    assert.ok(workflow.includes(`name: Find ${name} marker`));
+    assert.ok(workflow.includes(`name: Record ${name}`));
+  }
+  assert.match(workflow, /test "\$RESULT" = success/);
+  const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
+  assert.ok(action.includes('qualify-ci.ps1 -Lane "${{ inputs.lane }}"'));
+  assert.match(action, /startsWith\(inputs.lane, 'windows-'\).*sdk-sccache-v5-windows-/);
 });

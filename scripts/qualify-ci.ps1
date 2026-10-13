@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('windows')]
+    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy')]
     [string] $Lane
 )
 
@@ -11,34 +11,6 @@ Set-StrictMode -Version Latest
 New-Item -ItemType Directory -Force -Path `
     $env:SDK_TEMP_DIR, $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR, `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
-. .\scripts\ensure-bun.ps1
-bun install --frozen-lockfile
-
-# Independent builds run beside the main test build in their own target
-# directories so Cargo's build lock never serializes them; the shared compiler
-# cache still deduplicates identical crates across them.
-function Start-Background([string] $Name, [string] $Command) {
-    $log = Join-Path $env:SDK_TEMP_DIR "background-$Name.log"
-    $script = "`$ErrorActionPreference = 'Stop'; `$PSNativeCommandUseErrorActionPreference = `$true; $Command"
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-    $process = Start-Process -FilePath (Get-Process -Id $PID).Path `
-        -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded `
-        -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
-    # Cache the handle now so ExitCode stays readable after the process exits.
-    $null = $process.Handle
-    [pscustomobject]@{ Name = $Name; Process = $process; Log = $log }
-}
-function Complete-Background($Task) {
-    $Task.Process.WaitForExit()
-    Write-Host "::group::$($Task.Name)"
-    foreach ($path in $Task.Log, "$($Task.Log).err") {
-        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path | Write-Host }
-    }
-    Write-Host '::endgroup::'
-    if ($Task.Process.ExitCode -ne 0) {
-        throw "$($Task.Name) failed with exit code $($Task.Process.ExitCode)"
-    }
-}
 
 $clangDirectories = @()
 if ($env:LLVM_PATH) {
@@ -63,10 +35,32 @@ if (-not $clangDirectory) {
 }
 $env:PATH = "$clangDirectory;$env:PATH"
 $env:CC_aarch64_pc_windows_msvc = Join-Path $clangDirectory 'clang.exe'
-rustup target add aarch64-pc-windows-msvc
 cargo fetch --locked
 
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
+switch ($Lane) {
+    'windows-napi' {
+        cargo build -p acyclic-fs-napi --locked --target-dir "$CargoTargetDir-napi"
+        return
+    }
+    'windows-arm64' {
+        rustup target add aarch64-pc-windows-msvc
+        cargo check -p acyclic-fs -p acyclic-fs-napi --all-features `
+            --target aarch64-pc-windows-msvc --locked --target-dir "$CargoTargetDir-aarch64"
+        return
+    }
+    'windows-clippy' {
+        $env:CARGO_TARGET_DIR = "$CargoTargetDir-clippy"
+        cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
+        node scripts/clippy-feature-sets.mjs
+        return
+    }
+}
+
+& .\scripts\test-qualify-ci-windows.ps1
+. .\scripts\ensure-bun.ps1
+bun install --frozen-lockfile
+
 $wasmBindgenRoot = Join-Path $env:TOOLS_DIR 'cargo'
 $wasmBindgenBin = Join-Path $wasmBindgenRoot 'bin\wasm-bindgen.exe'
 # The CLI must match the wasm-bindgen crate pinned in the workspace manifest.
@@ -102,17 +96,6 @@ node scripts/build-stream-native.mjs build `
 Copy-Item -LiteralPath (Join-Path $StreamNativeTargetDir 'stream-native-build-inputs.receipt.json') -Destination (Join-Path $StreamNativeRoot 'producer-receipt.json')
 node scripts/build-stream-native.mjs stage --bundle $StreamNativeBundle
 node scripts/build-stream-native.mjs check
-$napi = Start-Background napi `
-    "cargo build -p acyclic-fs-napi --locked --target-dir '$CargoTargetDir-napi'"
-$arm64 = Start-Background aarch64 @"
-cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked --target-dir '$CargoTargetDir-aarch64'
-"@
-$clippy = Start-Background clippy @"
-`$env:CARGO_TARGET_DIR = '$CargoTargetDir-clippy'
-cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
-node scripts/clippy-feature-sets.mjs
-"@
-
 # The test build links dozens of test executables; LLVM's linker links them far
 # faster than link.exe. Release and binding builds above keep the default
 # linker so their outputs match publication builds.
@@ -154,7 +137,3 @@ cargo build --offline --locked -p acyclic-actors --example conformance-certifica
 bun test --parallel=4 --reporter=junit `
     --reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
-
-Complete-Background $clippy
-Complete-Background $napi
-Complete-Background $arm64

@@ -110,6 +110,36 @@
     "scope": "full"
   },
   {
+    "lane": "windows-napi",
+    "runner": "blacksmith-4vcpu-windows-2025",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "scope": "full"
+  },
+  {
+    "lane": "windows-arm64",
+    "runner": "blacksmith-4vcpu-windows-2025",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "scope": "full"
+  },
+  {
+    "lane": "windows-clippy",
+    "runner": "blacksmith-4vcpu-windows-2025",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "scope": "full"
+  },
+  {
     "lane": "macos",
     "runner": "blacksmith-6vcpu-macos-15",
     "workers": 4,
