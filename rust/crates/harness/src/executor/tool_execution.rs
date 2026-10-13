@@ -248,11 +248,30 @@ impl StockExecution<'_> {
                 }
             };
             let execution = if claimed {
-                stock_execute_tool(tool, &mut context, &invocation, self.io)
-                    .await
-                    .map(Some)
+                stock_tool_call(
+                    &mut context,
+                    self.io,
+                    |context| tool.executor.execute(invocation.clone(), context),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    |context, work| {
+                        tool.executor
+                            .execute_with_native_context(context, &invocation, work)
+                    },
+                )
+                .await
+                .map(Some)
             } else {
-                stock_reconcile_tool(tool, &mut context, &invocation, self.io).await
+                stock_tool_call(
+                    &mut context,
+                    self.io,
+                    |context| tool.executor.reconcile(invocation.clone(), context),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    |context, work| {
+                        tool.executor
+                            .reconcile_with_native_context(context, &invocation, work)
+                    },
+                )
+                .await
             };
             let result = match execution {
                 Ok(Some(result)) => result,

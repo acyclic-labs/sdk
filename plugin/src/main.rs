@@ -25,6 +25,7 @@ mod pi_conversation;
 mod pi_fork;
 mod pi_fork_host;
 mod pi_inspection;
+mod pi_host;
 mod pi_mail;
 mod pi_native;
 mod pi_native_host;
@@ -53,7 +54,7 @@ mod util;
 
 use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::demand::{
-    DemandDirectoryObserver, DemandSource, FilteredDemandSource, SourceReference,
+    DemandDirectoryObserver, DemandSource, SourceReference,
 };
 use acyclic_fs::kernel::{FileKind, NamespacePath};
 use acyclic_fs::model::{
@@ -65,7 +66,7 @@ use acyclic_fs::{
     Generation, GitCommand, GitCommandOutput, GitCompatRepository, GitDirtyState,
     GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef,
     GitIgnorePolicy, GitPublicationRecord, GitTreeRef, IdempotencyKey, JoinOutcome, LazyMount,
-    LazyWorkspace, LineageMultiRootPublicationAuthorizer, LivePublicationObservation,
+    LazyWorkspace, LineageMultiRootPublicationAuthorizer,
     LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
     MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
     MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,

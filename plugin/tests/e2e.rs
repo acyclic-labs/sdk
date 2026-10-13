@@ -14,7 +14,7 @@ use std::fs;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use support::{
     ACYCLIC, BoundedOutput, PackagedPlugin, RequestFingerprint, ScriptedProvider, ServiceGuard,
     assert_service_absent, command, installed_host_binary, isolated_state, make_read_only,

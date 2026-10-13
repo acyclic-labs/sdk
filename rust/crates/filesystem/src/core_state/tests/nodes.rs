@@ -2,97 +2,62 @@ use super::*;
 
 #[tokio::test(flavor = "current_thread")]
 async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
-    let directory = tempfile::tempdir().expect("local state directory");
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
-    let held_id = workspace();
-    let other_id = WorkspaceId::from_bytes([0x55; 16]);
-    let namespace = store.namespace().expect("admitted namespace");
+    let held_id = OperationId::from_bytes([4; 16]);
+    let other_id = OperationId::from_bytes([0x55; 16]);
+    let namespace = store.namespace().unwrap();
     let paths = namespace
-        .record(GIT_COMPAT_NAMESPACE, &held_id.into_bytes())
-        .expect("record paths");
-    std::fs::create_dir_all(paths.directory()).expect("lock directory");
+        .record(MATERIALIZATION_FAMILY, &held_id.into_bytes())
+        .unwrap();
+    std::fs::create_dir_all(paths.directory()).unwrap();
     let held = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(&paths.lock)
-        .expect("held record lock");
-    held.lock_exclusive().expect("hold record lock");
+        .unwrap();
+    held.lock_exclusive().unwrap();
 
-    let contender = tokio::spawn(async move { GitCompatStore::load(&store, held_id).await });
+    let contender =
+        tokio::spawn(async move { MaterializationJournalStore::load(&store, held_id).await });
     let unrelated = LocalCoreStateStore::new(directory.path());
     tokio::time::timeout(
         Duration::from_secs(2),
-        GitCompatStore::load(&unrelated, other_id),
+        MaterializationJournalStore::load(&unrelated, other_id),
     )
     .await
-    .expect("unrelated record must not stall")
-    .expect("unrelated record load");
+    .unwrap()
+    .unwrap();
     assert!(matches!(
-        contender.await.expect("contender task"),
+        contender.await.unwrap(),
         Err(LocalCoreStateStoreError::LockTimeout(path)) if path == paths.lock
     ));
-    FileExt::unlock(&held).expect("release held lock");
-}
-
-#[tokio::test]
-async fn state_survives_reopen() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let store = LocalCoreStateStore::new(directory.path());
-    let state = WorkspaceLineageRecord {
-        version: 1,
-        revision: 1,
-        ready: true,
-        workspace_id: workspace(),
-        workspace_name: "durable".to_owned(),
-        parent_workspace_id: None,
-        parent_workspace_name: None,
-        fork_generation: crate::GenerationId::new(Digest::from_bytes([3; 32])),
-        initial_generation: crate::GenerationId::new(Digest::from_bytes([3; 32])),
-    };
-    assert!(
-        WorkspaceLineageStore::compare_and_swap(&store, workspace(), 0, state.clone())
-            .await
-            .expect("initial write")
-    );
-    let reopened = LocalCoreStateStore::new(directory.path());
-    assert_eq!(
-        WorkspaceLineageStore::load(&reopened, workspace())
-            .await
-            .expect("reopen"),
-        Some(state)
-    );
+    FileExt::unlock(&held).unwrap();
 }
 
 #[tokio::test]
 async fn lazy_overlay_load_rejects_content_address_mismatch() {
     let cancellation = crate::CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut accounting = unbounded_accounting(&cancellation);
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
     let empty = LazyOverlayId::from_bytes([0; 32]);
     let (overlay, node) = linked_overlay("/original", empty, empty);
-    let allocation = accounting
-        .claim_owned(node.owned_bytes(), 0)
-        .expect("overlay allocation");
+    let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
     store
         .put_lazy_overlay(overlay, (node, allocation), &mut accounting)
         .await
-        .expect("persist overlay");
+        .unwrap();
     let (_, tampered) = linked_overlay("/tampered", empty, empty);
     let paths = store
         .namespace()
-        .expect("admitted namespace")
+        .unwrap()
         .record("lazy-overlays", &overlay.into_bytes())
-        .expect("record paths")
+        .unwrap()
         .current;
-    std::fs::write(
-        &paths,
-        serde_json::to_vec(&tampered).expect("serialize tampered overlay"),
-    )
-    .expect("tamper overlay");
+    std::fs::write(&paths, serde_json::to_vec(&tampered).unwrap()).unwrap();
     assert!(matches!(
         LocalCoreStateStore::new(directory.path())
             .load_lazy_overlay(overlay, &mut accounting)
@@ -104,17 +69,14 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
 #[tokio::test]
 async fn empty_nodes_are_implied_without_being_stored() {
     let cancellation = crate::CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut accounting = unbounded_accounting(&cancellation);
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
-    let overlay = LazyOverlayId::from_bytes(
-        content_address(&LazyOverlay::default()).expect("empty overlay address"),
-    );
+    let overlay = LazyOverlayId::from_bytes(content_address(&LazyOverlay::default()).unwrap());
     let shadow: crate::LazyShadowId = serde_json::from_value(serde_json::json!(
-        content_address(&crate::LazyShadow::default()).expect("empty shadow address")
+        content_address(&crate::LazyShadow::default()).unwrap()
     ))
-    .expect("empty shadow id");
+    .unwrap();
     store
         .put_lazy_overlay(
             overlay,
@@ -125,7 +87,7 @@ async fn empty_nodes_are_implied_without_being_stored() {
             &mut accounting,
         )
         .await
-        .expect("put empty overlay");
+        .unwrap();
     store
         .put_lazy_shadow(
             shadow,
@@ -136,11 +98,9 @@ async fn empty_nodes_are_implied_without_being_stored() {
             &mut accounting,
         )
         .await
-        .expect("put empty shadow");
+        .unwrap();
     assert_eq!(
-        std::fs::read_dir(directory.path())
-            .expect("store root")
-            .count(),
+        std::fs::read_dir(directory.path()).unwrap().count(),
         0,
         "empty nodes are never written"
     );
@@ -148,7 +108,7 @@ async fn empty_nodes_are_implied_without_being_stored() {
         store
             .load_lazy_overlay(overlay, &mut accounting)
             .await
-            .expect("empty overlay")
+            .unwrap()
             .as_ref()
             .map(|(value, _)| value),
         Some(&LazyOverlay::default())
@@ -157,7 +117,7 @@ async fn empty_nodes_are_implied_without_being_stored() {
         store
             .load_lazy_shadow(shadow, &mut accounting)
             .await
-            .expect("empty shadow")
+            .unwrap()
             .as_ref()
             .map(|(value, _)| value),
         Some(&crate::LazyShadow::default())
@@ -165,44 +125,8 @@ async fn empty_nodes_are_implied_without_being_stored() {
 }
 
 #[tokio::test]
-async fn git_compatibility_delete_is_revision_fenced_and_durable() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let store = LocalCoreStateStore::new(directory.path());
-    assert!(
-        GitCompatStore::load(&store, workspace())
-            .await
-            .expect("absent Git state")
-            .is_none()
-    );
-    let mut state = GitCompatState::new("main", workspace());
-    state.revision = 1;
-    assert!(
-        GitCompatStore::compare_and_swap(&store, workspace(), 0, state)
-            .await
-            .expect("write Git state")
-    );
-    assert!(
-        !GitCompatStore::compare_and_delete(&store, workspace(), 0)
-            .await
-            .expect("reject stale delete")
-    );
-    assert!(
-        GitCompatStore::compare_and_delete(&store, workspace(), 1)
-            .await
-            .expect("delete Git state")
-    );
-    let reopened = LocalCoreStateStore::new(directory.path());
-    assert!(
-        GitCompatStore::load(&reopened, workspace())
-            .await
-            .expect("load deleted Git state")
-            .is_none()
-    );
-}
-
-#[tokio::test]
 async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_on_restart() {
-    let directory = tempfile::tempdir().expect("native core namespace");
+    let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xb1; 16]);
     let mut state = lazy_state(id, 1);
     let snapshot = crate::LazySnapshotRef::new(
@@ -223,25 +147,25 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         crate::WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .expect("original native meter");
+    .unwrap();
     work.charge(crate::WorkCounters {
         bytes_hashed: 5,
         ..Default::default()
     })
-    .expect("original prior producer");
+    .unwrap();
     let mut accounting = crate::kernel::KernelAccounting::native(&work, work.cancellation());
     let store = LocalCoreStateStore::new(directory.path());
     assert!(
         store
             .compare_and_swap_lazy_workspace(id, 0, state.clone(), &mut accounting)
             .await
-            .expect("native original CAS")
+            .unwrap()
     );
     let first = store
         .load_lazy_workspace(id, &mut accounting)
         .await
-        .expect("native original load")
-        .expect("actual state");
+        .unwrap()
+        .unwrap();
     assert_eq!(&first, &state);
     assert_eq!(work.receipt().bytes_hashed, 5);
     let before = work.receipt().object_bytes_written;
@@ -251,7 +175,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         !store
             .compare_and_swap_lazy_workspace(id, 0, stale, &mut accounting)
             .await
-            .expect("original CAS miss")
+            .unwrap()
     );
     assert_eq!(work.receipt().object_bytes_written, before);
     drop(store);
@@ -259,8 +183,8 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     let original = restarted
         .load_lazy_workspace(id, &mut accounting)
         .await
-        .expect("real backend restart")
-        .expect("original retained state");
+        .unwrap()
+        .unwrap();
     assert_eq!(original.selected_import_roots, state.selected_import_roots);
     assert_eq!(original.source, state.source);
     assert_eq!(original.workspace_id, id);
@@ -268,36 +192,22 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
 
 #[tokio::test]
 async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancellation() {
-    let directory = tempfile::tempdir().expect("native core namespace");
+    let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xb5; 16]);
     let store = LocalCoreStateStore::new(directory.path());
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(
-                id,
-                0,
-                lazy_state(id, 1),
-                &mut crate::kernel::KernelAccounting::standalone(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
-            )
-            .await
-            .expect("durable fixture")
-    );
+    assert!(swap_binding(&store, 0, lazy_state(id, 1)).await);
     drop(store);
     let cancellation = crate::CancellationToken::new();
     let budget = crate::WorkBudget {
         source_bytes_read: 7,
         ..crate::WorkBudget::UNBOUNDED
     };
-    let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
-        .expect("original finite meter");
+    let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).unwrap();
     work.charge(crate::WorkCounters {
         bytes_hashed: 5,
         ..Default::default()
     })
-    .expect("prior actual work");
+    .unwrap();
     let mut accounting = crate::kernel::KernelAccounting::native(&work, work.cancellation());
     let restarted = LocalCoreStateStore::new(directory.path());
     let error = restarted
@@ -310,9 +220,7 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
     ));
     assert_eq!(work.receipt().source_bytes_read, 7);
     assert_eq!(work.receipt().bytes_hashed, 5);
-    work.receipt()
-        .verify(budget)
-        .expect("all actual spent prefix");
+    work.receipt().verify(budget).unwrap();
     let before = work.receipt();
     cancellation.cancel();
     assert!(matches!(
@@ -324,15 +232,14 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
 
 #[tokio::test]
 async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
     let workspace = WorkspaceId::from_bytes([41; 16]);
     let overlay = LazyOverlayId::from_bytes([42; 32]);
     let shadow = crate::LazyShadowId::from_bytes([43; 32]);
     let cancellation = crate::CancellationToken::new();
     cancellation.cancel();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let mut accounting = unbounded_accounting(&cancellation);
     let errors = [
         store
             .load_lazy_workspace(workspace, &mut accounting)
@@ -351,7 +258,7 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
             .load_lazy_overlay(overlay, &mut accounting)
             .await
             .err()
-            .expect("cancelled overlay read"),
+            .unwrap(),
         store
             .put_lazy_overlay(
                 overlay,
@@ -367,7 +274,7 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
             .load_lazy_shadow(shadow, &mut accounting)
             .await
             .err()
-            .expect("cancelled shadow read"),
+            .unwrap(),
         store
             .put_lazy_shadow(
                 shadow,
@@ -389,7 +296,7 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
     assert_eq!(accounting.spent(), crate::WorkCounters::UNCHARGED);
     assert!(
         std::fs::read_dir(directory.path())
-            .expect("namespace entries")
+            .unwrap()
             .next()
             .is_none()
     );
@@ -400,9 +307,8 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let cancellation = crate::CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut accounting = unbounded_accounting(&cancellation);
+    let directory = tempfile::tempdir().unwrap();
     let workspaces = [
         WorkspaceId::from_bytes([0x61; 16]),
         WorkspaceId::from_bytes([0x62; 16]),
@@ -417,14 +323,11 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                 &mut accounting
             )
             .await
-            .expect("seed binding")
+            .unwrap()
         );
     }
     drop(seed);
-
-    // Every binding is durable but uncached, so first loads race their
-    // fills against concurrent writes.
-    let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
+    let owner = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     let committed = Arc::new(workspaces.map(|workspace_id| (workspace_id, AtomicU64::new(1))));
     let tasks = (0..8_usize)
         .map(|task| {
@@ -432,21 +335,17 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
             let committed = Arc::clone(&committed);
             tokio::spawn(async move {
                 let cancellation = crate::CancellationToken::new();
-                let mut accounting = crate::kernel::KernelAccounting::standalone(
-                    crate::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                );
+                let mut accounting = unbounded_accounting(&cancellation);
                 let mut wins = 0_u64;
                 for round in 0..64_usize {
-                    let (workspace_id, floor) = committed
-                        .get((task + round) % committed.len())
-                        .expect("binding slot");
+                    let (workspace_id, floor) =
+                        committed.get((task + round) % committed.len()).unwrap();
                     let floor_before_load = floor.load(Ordering::SeqCst);
                     let current = owner
                         .load_lazy_workspace(*workspace_id, &mut accounting)
                         .await
-                        .expect("load binding")
-                        .expect("binding is present");
+                        .unwrap()
+                        .unwrap();
                     assert!(
                         current.revision >= floor_before_load,
                         "load returned revision {} after revision {floor_before_load} committed",
@@ -466,7 +365,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                             &mut accounting,
                         )
                         .await
-                        .expect("swap binding")
+                        .unwrap()
                     {
                         floor.fetch_max(revision, Ordering::SeqCst);
                         wins += 1;
@@ -478,7 +377,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
         .collect::<Vec<_>>();
     let mut wins = 0;
     for task in tasks {
-        wins += task.await.expect("contender task");
+        wins += task.await.unwrap();
     }
 
     let mut advanced = 0;
@@ -487,8 +386,8 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
         let state = owner
             .load_lazy_workspace(*workspace_id, &mut accounting)
             .await
-            .expect("load final binding")
-            .expect("final binding is present");
+            .unwrap()
+            .unwrap();
         assert_eq!(state.revision, floor.load(Ordering::SeqCst));
         advanced += state.revision - 1;
         cached.push(state);
@@ -505,137 +404,8 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
             durable
                 .load_lazy_workspace(state.workspace_id, &mut accounting)
                 .await
-                .expect("load durable binding"),
+                .unwrap(),
             Some(state)
         );
     }
-}
-
-/// Collection removes every node no lazy workspace reaches, keeps every node one does, and a node put again after removal is stored again.
-#[tokio::test(flavor = "multi_thread")]
-async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
-    let cancellation = crate::CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let store = LocalCoreStateStore::open_owned(directory.path()).expect("owned store");
-    let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
-    let (leaf, leaf_node) = linked_overlay("/a", empty, empty);
-    let (root, root_node) = linked_overlay("/b", leaf, empty);
-    let (orphan, orphan_node) = linked_overlay("/old", empty, empty);
-    for (id, node) in [
-        (leaf, leaf_node),
-        (root, root_node),
-        (orphan, orphan_node.clone()),
-    ] {
-        let allocation = accounting
-            .claim_owned(node.owned_bytes(), 0)
-            .expect("overlay allocation");
-        store
-            .put_lazy_overlay(id, (node, allocation), &mut accounting)
-            .await
-            .expect("put overlay");
-    }
-    let empty_shadows = crate::LazyShadowId::from_bytes(
-        content_address(&crate::LazyShadow::Empty).expect("empty shadow"),
-    );
-    // Collection walks the index, not the records it holds.
-    let record = vec![1, 2, 3];
-    let metadata = crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default());
-    let shadow = crate::LazyShadow::Node {
-        file_id: crate::foundation::FileId::from_bytes([7; 16]),
-        priority: 0,
-        record: record.clone(),
-        metadata,
-        left: empty_shadows,
-        right: empty_shadows,
-    };
-    let shadow_id =
-        crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow address"));
-    let allocation = accounting
-        .claim_owned(shadow.owned_bytes(), 0)
-        .expect("shadow allocation");
-    store
-        .put_lazy_shadow(shadow_id, (shadow, allocation), &mut accounting)
-        .await
-        .expect("put shadow");
-    let orphan_shadow = crate::LazyShadow::Node {
-        file_id: crate::foundation::FileId::from_bytes([8; 16]),
-        priority: 0,
-        record,
-        metadata,
-        left: empty_shadows,
-        right: empty_shadows,
-    };
-    let orphan_shadow_id = crate::LazyShadowId::from_bytes(
-        content_address(&orphan_shadow).expect("orphan shadow address"),
-    );
-    let allocation = accounting
-        .claim_owned(orphan_shadow.owned_bytes(), 0)
-        .expect("orphan allocation");
-    store
-        .put_lazy_shadow(
-            orphan_shadow_id,
-            (orphan_shadow, allocation),
-            &mut accounting,
-        )
-        .await
-        .expect("put orphan shadow");
-    let mut state = lazy_state(workspace(), 1);
-    state.overlay = root;
-    state.shadows = shadow_id;
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(workspace(), 0, state, &mut accounting)
-            .await
-            .expect("bind lazy workspace")
-    );
-
-    assert_eq!(store.collect_lazy_nodes().await.expect("collect"), 2);
-    let reopened = LocalCoreStateStore::new(directory.path());
-    drop(store);
-    for id in [root, leaf] {
-        assert!(
-            reopened
-                .load_lazy_overlay(id, &mut accounting)
-                .await
-                .expect("load")
-                .is_some()
-        );
-    }
-    assert!(
-        reopened
-            .load_lazy_shadow(shadow_id, &mut accounting)
-            .await
-            .expect("load")
-            .is_some()
-    );
-    assert!(
-        reopened
-            .load_lazy_overlay(orphan, &mut accounting)
-            .await
-            .expect("load")
-            .is_none()
-    );
-    assert!(
-        reopened
-            .load_lazy_shadow(orphan_shadow_id, &mut accounting)
-            .await
-            .expect("load")
-            .is_none()
-    );
-    let allocation = accounting
-        .claim_owned(orphan_node.owned_bytes(), 0)
-        .expect("reinsert allocation");
-    reopened
-        .put_lazy_overlay(orphan, (orphan_node, allocation), &mut accounting)
-        .await
-        .expect("put again");
-    assert!(
-        reopened
-            .load_lazy_overlay(orphan, &mut accounting)
-            .await
-            .expect("load")
-            .is_some()
-    );
 }

@@ -77,9 +77,10 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     fn native_commit(
         &self,
         request: CommitRequest,
+        deadline: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
-        self.0.native_commit(request, meter)
+        self.0.native_commit(request, deadline, meter)
     }
 }
 

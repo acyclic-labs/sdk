@@ -3,7 +3,7 @@ use crate::conversation::ContentPublisher;
 
 #[tokio::test]
 async fn b08_one_intent_keeps_recipient_and_payload() -> Result<()> {
-    let stream = Arc::new(crate::test_stream::LostSessionAck::default());
+    let stream = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
     let f = Fixture::new(
         stream.clone(),
         acyclic_fs::Fs::memory(),

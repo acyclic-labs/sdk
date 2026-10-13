@@ -747,59 +747,6 @@ async fn deferred_mutations_wait_for_the_next_flush() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-/// Spans and events by name, each with its fields as text.
-type Captured = Arc<Mutex<Vec<(&'static str, Vec<(&'static str, String)>)>>>;
-
-struct Capture(Captured, Mutex<std::collections::HashMap<u64, usize>>);
-
-struct Fields<'a>(&'a mut Vec<(&'static str, String)>);
-
-impl tracing::field::Visit for Fields<'_> {
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.0.push((field.name(), value.to_owned()));
-    }
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.push((field.name(), format!("{value:?}")));
-    }
-}
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
-    fn on_new_span(
-        &self,
-        attributes: &tracing::span::Attributes<'_>,
-        id: &tracing::span::Id,
-        _: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        let mut fields = Vec::new();
-        attributes.record(&mut Fields(&mut fields));
-        let names = attributes
-            .metadata()
-            .fields()
-            .iter()
-            .map(|field| field.name());
-        fields.extend(names.map(|name| (name, String::new())));
-        let mut captured = self.0.lock().unwrap();
-        self.1.lock().unwrap().insert(id.into_u64(), captured.len());
-        captured.push((attributes.metadata().name(), fields));
-    }
-    fn on_record(
-        &self,
-        id: &tracing::span::Id,
-        values: &tracing::span::Record<'_>,
-        _: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        let index = self.1.lock().unwrap().get(&id.into_u64()).copied();
-        let mut captured = self.0.lock().unwrap();
-        let span = index.and_then(|index| captured.get_mut(index)).unwrap();
-        values.record(&mut Fields(&mut span.1));
-    }
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        let mut fields = Vec::new();
-        event.record(&mut Fields(&mut fields));
-        self.0.lock().unwrap().push(("event", fields));
-    }
-}
-
 #[tokio::test]
 async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -925,5 +872,24 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
         assert_eq!(captured.closed("origin_parent"), 1);
         assert_eq!(other.closed("foreign_parent"), 0);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn follow_out_of_range_is_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let path = StreamPath::new("follow/range")?;
+    provider
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"record")],
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await?;
+    let mut records = provider.follow(path, 2).await?;
+    assert_eq!(records.next().await, Some(Err(StreamError::OutOfRange)));
+    assert!(records.next().await.is_none());
     Ok(())
 }

@@ -19,7 +19,13 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
             code: ErrorCode::Unauthorized,
             reason: "root source is not selected by its original admission",
         })?;
-    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
+    current_owner.require_volume_grant(
+        project,
+        VolumeOperation::Read,
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
+    )?;
     context
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
@@ -46,7 +52,12 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         reason: "root source has no original configured binding",
     })?;
     current_owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     let identity = work.root_identity(Path::new(path))?;
     if let Some(expected) = expected {
@@ -64,7 +75,12 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
     current_owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     Ok(identity)
 }
@@ -164,7 +180,13 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     current_owner: &TaskJournalOwner<LocalStream>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
+    current_owner.require_volume_grant(
+        project,
+        VolumeOperation::Read,
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
+    )?;
     context
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
@@ -271,12 +293,16 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     }
     let state = provider
         .store
-        .load_lazy_workspace_with_native_work(snapshot.workspace_id, work)
+        .load_lazy_workspace(
+            snapshot.workspace_id,
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            },
+        )
         .await?
         .ok_or_else(|| PiRootProvider::native_failure("root source lazy binding is absent"))?;
-    state
-        .as_state()
-        .validate_root_binding(snapshot.workspace_id, input.0)?;
+    state.validate_root_binding(snapshot.workspace_id, input.0)?;
     let identity = work.root_identity(Path::new(&paths[key]))?;
     if identity.to_bytes() != root.native_root_identity
         || !provider

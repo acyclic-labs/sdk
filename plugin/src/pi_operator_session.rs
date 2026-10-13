@@ -15,11 +15,10 @@ impl PiSession {
             &work,
         )?;
         self.runtime.verify_owner_with_native_work(&owner, &work)?;
-        let cancellation = work.cancellation();
         let request =
             pi_operator::PiOperatorRequest::from_value_with_native_work(arguments, &work)?;
-        pi_operator::verify_request(&owner, &self.state.root_session_id, &request.0, &work)?;
         if event == "OperatorInspect" {
+            pi_operator::verify_request(&owner, &self.state.root_session_id, &request.0, &work)?;
             if self.roots.is_empty() {
                 self.restore_root_sources(&work).await?;
             }
@@ -56,14 +55,9 @@ impl PiSession {
         if self.roots.is_empty() {
             self.restore_root_sources(&work).await?;
         }
-        let command = pi_operator_host::stage_operator_command(
-            &self.runtime,
-            &owner,
-            &self.filesystem,
-            &request.0,
-            &work,
-        )
-        .await?;
+        let command =
+            pi_operator_host::stage_operator_command(&owner, &self.filesystem, &request.0, &work)
+                .await?;
         let native = self.native_host_with_native_work(&work)?;
         self.command_host(&work, Some(native))?
             .control_command_with_native_work(command.0)
@@ -128,32 +122,15 @@ impl PiSession {
                 code: acyclic_harness::wire::ErrorCode::Invalid,
                 reason: "writeback status requires its bounded original selected paths",
             })?;
-        let retained = selected.iter().try_fold(
-            selected.len() as u64 * std::mem::size_of::<String>() as u64,
-            |bytes, path| {
-                let path = path
-                    .as_str()
-                    .filter(|path| !path.is_empty() && path.len() <= 4096)
-                    .ok_or(RootError::NativeBoundary {
-                        code: acyclic_harness::wire::ErrorCode::Invalid,
-                        reason: "writeback status path exceeds its original bounds",
-                    })?;
-                Ok::<_, RootError>(bytes + path.len() as u64)
-            },
-        )?;
-        let _paths_custody = work
-            .claim(retained, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(|cause| RootError::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        let mut paths = Vec::with_capacity(selected.len());
-        for path in selected {
-            let path = path.as_str().ok_or(RootError::NativeBoundary {
+        if selected.iter().any(|path| {
+            !path
+                .as_str()
+                .is_some_and(|path| !path.is_empty() && path.len() <= 4096)
+        }) {
+            return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Invalid,
                 reason: "writeback status path exceeds its original bounds",
-            })?;
-            paths.push(path.to_owned());
+            });
         }
         pi_operator_host::passive_status(
             &self.runtime,
@@ -167,7 +144,7 @@ impl PiSession {
             operation,
             source,
             root,
-            &paths,
+            selected,
             work,
         )
         .await

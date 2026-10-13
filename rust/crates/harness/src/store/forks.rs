@@ -143,7 +143,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 ));
             }
         }
-        let mut custody = crate::wire_codec::CodecQuota::observed(work)?;
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         let seed = report.into_seed(custody.work())?;
         let vector_slots = seed.resources.capacity() as u64
             * std::mem::size_of::<crate::fork::CapturedResource>() as u64
@@ -156,8 +156,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let box_slots = std::mem::size_of::<ForkSeed>() as u64;
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.admit_allocation(box_slots)?;
+            observer.retain_owned(box_slots)?;
         }
-        custody.retain(box_slots)?;
+        custody.adopt(box_slots)?;
         let seed = Box::new(seed);
         let command = Command {
             operation_id: seed.operation_id,
@@ -243,7 +244,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<()> {
-        let mut quota = crate::wire_codec::CodecQuota::observed(work)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         seed.validate(quota.work())?;
         #[cfg(feature = "filesystem")]
         let parent_agent = if let Some(owner) = owner {

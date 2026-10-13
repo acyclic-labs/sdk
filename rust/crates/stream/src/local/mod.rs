@@ -88,7 +88,6 @@ include!("follow_state.rs");
 include!("journal_type.rs");
 
 include!("prepared_frame.rs");
-include!("native_reads.rs");
 include!("native_mutations.rs");
 include!("prepared_commit.rs");
 

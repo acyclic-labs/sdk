@@ -43,21 +43,21 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let agent = AgentId::from_bytes([141; 16]);
     let project = VolumeRef::new(
         provider.clone(),
-        "project",
+        "project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("review".into()),
         &mut None,
     )?;
     let source = VolumeRef::new(
         provider.clone(),
-        "source",
+        "source".into(),
         VolumeClass::Project,
         project.owner().clone(),
         &mut None,
     )?;
     let private = VolumeRef::new(
         provider.clone(),
-        "private",
+        "private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -390,7 +390,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         }
         assert_eq!(
             host.read(
-                &workspace_ref(provider.clone(), &project.storage_name()?)?,
+                &workspace_ref(provider.clone(), &project.storage_name(&mut None)?)?,
                 None,
                 "/concurrent.txt",
                 128
@@ -401,7 +401,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         );
         assert_eq!(
             host.read(
-                &workspace_ref(provider.clone(), &project.storage_name()?)?,
+                &workspace_ref(provider.clone(), &project.storage_name(&mut None)?)?,
                 None,
                 "/shared.txt",
                 128
@@ -411,9 +411,12 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             b"custom resolution"
         );
         assert_eq!(
-            host.resolve(&workspace_ref(provider.clone(), &source.storage_name()?)?)
-                .await?
-                .generation,
+            host.resolve(&workspace_ref(
+                provider.clone(),
+                &source.storage_name(&mut None)?
+            )?)
+            .await?
+            .generation,
             source_head
         );
     }

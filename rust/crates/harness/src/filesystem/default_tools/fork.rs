@@ -4,20 +4,18 @@ use crate::executor::stock_string_copy;
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     RecursiveExecutor<P, A, O>
 {
-    pub(super) async fn publish_fork(
+    pub(super) async fn run_fork(
         &self,
         context: &ToolContext,
         owner: &(
             Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<FilesystemWorkflowJournal<P, A, O>>,
+            Arc<TaskJournalOwner<P>>,
         ),
         fork: &RecursiveForkToolPlan,
-        report: Option<&ForkReport>,
         cancellation: &CancellationToken,
         output_io: Option<&super::super::PreparationIo>,
-    ) -> Result<Value> {
-        let (_, workflow) = owner;
-        let journal_owner = workflow.owner.as_ref().expect("validated tool owner");
+    ) -> Result<Option<Value>> {
+        let (runtime, journal_owner) = owner;
         let temporary_io = recursive_temporary_io(output_io)?;
         let io = temporary_io.as_ref();
         let intent = RecursiveForkSourceIntent {
@@ -46,14 +44,12 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             )
             .await?;
         validate_fork_binding(context, &fork.arguments, &binding, cancellation, io).await?;
-        reject_if(
+        deny(
             !recursive_encoded_equal(&binding.source.request, &fork.request.payload, io)?
                 || binding.child_message_pointer != fork.child_message_pointer
                 || binding.child_message_file_pointer != fork.child_message_file_pointer
                 || fork.request.source_checkpoint.as_ref() != Some(&binding.source_checkpoint),
             io,
-            crate::wire::ErrorCode::Unauthorized,
-            "restored fork source differs from original authenticated cut",
         )?;
         let command = fork.request.command.as_ref().ok_or_else(|| {
             recursive_reject(
@@ -77,19 +73,49 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             binding.input_files,
             io,
         )?;
-        reject_if(
-            restored != fork.request,
-            io,
-            crate::wire::ErrorCode::Unauthorized,
-            "restored child, source or allowances changed",
-        )?;
-        let report = report.ok_or_else(|| {
-            recursive_reject(
+        deny(restored != fork.request, io)?;
+        if self
+            .admit(
+                context,
+                owner,
+                &fork.preparation,
+                derived(context.operation_id(), "prepare", io)?,
                 io,
-                crate::wire::ErrorCode::Invalid,
-                "fork publication has no canonical report",
             )
-        })?;
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let before = io
+            .map(super::super::PreparationIo::owned_bytes)
+            .transpose()?;
+        let same = runtime
+            .admission_observed(fork.preparation.task_id(), io)
+            .await?
+            == fork.preparation;
+        recursive_release_since(io, before)?;
+        deny(!same, io)?;
+        let report = match runtime
+            .outcome_observed(fork.preparation.task_id(), io)
+            .await?
+        {
+            Some(Outcome::Succeeded(value)) => decode::<ForkReport>(&value, io)?,
+            Some(Outcome::Failed { message }) => return Err(outcome_error(message, io)?),
+            Some(Outcome::Cancelled) => {
+                return Err(recursive_reject(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "preparation cancelled; child not admitted and allocation may remain uncertain",
+                ));
+            }
+            None | Some(Outcome::Indeterminate { .. }) => return Ok(None),
+        };
+        crate::executor::with_history_io(io, |work| report.validate(work))?;
+        deny(
+            !recursive_encoded_equal(&report.request, &fork.request.payload, io)?,
+            io,
+        )?;
         let expected =
             crate::executor::with_history_io(io, |work| report.copy(work)?.0.into_seed(work))?;
         let copied = crate::executor::with_history_io(io, |work| {
@@ -130,12 +156,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     "acknowledged fork publication has no canonical seed",
                 )
             })?;
-        reject_if(
-            seed != &expected,
-            io,
-            crate::wire::ErrorCode::Unauthorized,
-            "acknowledged fork seed changed original prepared report",
-        )?;
+        deny(seed != &expected, io)?;
         binding
             .child_conversation
             .bind_published_child(
@@ -146,6 +167,39 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 &mut Some(&mut history),
             )
             .await?;
-        encode(seed, output_io)
+        if self
+            .admit(
+                context,
+                owner,
+                &fork.request.child,
+                derived(context.operation_id(), "child-admit", io)?,
+                io,
+            )
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        #[derive(Serialize)]
+        struct Admitted<'a> {
+            status: &'static str,
+            id: crate::AgentId,
+            task: TaskId,
+            source: TaskId,
+            operation_id: OperationId,
+            seed: &'a ForkSeed,
+        }
+        encode(
+            &Admitted {
+                status: "admitted",
+                id: fork.arguments.id,
+                task: fork.request.child.task_id(),
+                source: fork.arguments.source.unwrap_or(fork.caller),
+                operation_id: report.request.operation_id,
+                seed,
+            },
+            output_io,
+        )
+        .map(Some)
     }
 }

@@ -334,7 +334,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
         read(&mut source, id, 0, 19, &cancel).await?.as_ref(),
         b"actual source bytes"
     );
-    let before = candidate.pinned_reader()?;
+    let before = candidate.read_file_record_by_id(id, B, &cancel).await?.value;
     cancel.cancel();
     assert!(
         candidate
@@ -351,7 +351,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
     let fresh = CancellationToken::new();
     assert_eq!(
         candidate.read_file_record_by_id(id, B, &fresh).await?.value,
-        before.file_records_by_id(&[id], B, &fresh).await?.value[0].unwrap()
+        before
     );
     Ok(())
 }
@@ -455,32 +455,4 @@ async fn detached_payload_bounds_and_authority_volume_identity_fail_closed() -> 
         })
     ));
     assert_authority_volume_identity_fails_closed().await
-}
-
-#[tokio::test]
-async fn one_reader_answers_a_batch_of_identities() -> TestResult {
-    let cancel = CancellationToken::new();
-    let (_, mut writer) = fixture(config(), &cancel).await?;
-    let mut identities = Vec::new();
-    for name in ["a", "b"] {
-        let id = create(&mut writer, name, OwnedBytes::from_static(b"x"), &cancel).await?;
-        identities.push(writer.read_file_record_by_id(id, B, &cancel).await?.value);
-    }
-    let reader = writer.pinned_reader()?;
-    let records = reader
-        .file_records_by_id(
-            &[
-                identities[1].file_id,
-                FileId::from_bytes([192; 16]),
-                identities[0].file_id,
-            ],
-            B,
-            &cancel,
-        )
-        .await?;
-    assert_eq!(
-        records.value,
-        vec![Some(identities[1]), None, Some(identities[0])]
-    );
-    Ok(())
 }

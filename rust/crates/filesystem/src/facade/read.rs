@@ -26,32 +26,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    /// Looks up file records by stable identity, reading each distinct
-    pub async fn file_records_by_id(
-        &self,
-        file_ids: &[FileId],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Vec<Option<FileRecord>>> {
-        let lookup = lookup_file_records(
-            &self.volume.fs.inner.objects,
-            self.root.file_table,
-            file_ids,
-            self.volume.config.limits.maximum_paths_per_batch,
-            DecodeLimits::for_volume(self.volume.config),
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            OperationFailure::new(FsError::FileRecord(failure.error), *failure.work)
-        })?;
-        Ok(OperationReceipt {
-            value: lookup.value,
-            work: lookup.work,
-        })
-    }
-
     /// Reads one authenticated record's range, preserving intrinsic byte custody.
     pub async fn read_record_range<W: FsWork>(
         &self,

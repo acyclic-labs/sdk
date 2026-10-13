@@ -5,15 +5,15 @@ impl StreamProvider for LocalStream {
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.visible(self.inner.provider.inspect_idempotency(idempotency_key))
-            .await
+            .await?
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.visible(self.inner.provider.tail(path)).await
+        self.visible(self.inner.provider.tail(path)).await?
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.visible(self.inner.provider.bounds(path)).await
+        self.visible(self.inner.provider.bounds(path)).await?
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -96,7 +96,7 @@ impl StreamProvider for LocalStream {
             let mut state = FollowState {
                 provider: self.clone(),
                 path,
-                next: from,
+                cursor: crate::memory::HistoryCursor::at(from),
                 changed: self.inner.changed.subscribe(),
                 done: false,
                 span: span.clone(),
@@ -106,41 +106,34 @@ impl StreamProvider for LocalStream {
                 return Err(error);
             }
             Ok(span
-                .scope(stream::unfold(state, |mut state| async move {
-                    if state.done {
-                        return None;
-                    }
-                    loop {
-                        match state
-                            .provider
-                            .read_visible(ReadRequest {
-                                path: state.path.clone(),
-                                from: state.next,
-                                limit: 1,
-                            })
-                            .await
-                        {
-                            Ok(mut records) => match records.next().await {
-                                Some(Ok(record)) => {
-                                    state.next = record.sequence.saturating_add(1);
-                                    return Some((Ok(record), state));
-                                }
-                                Some(Err(error)) => {
-                                    state.failed(&error);
-                                    return Some((Err(error), state));
-                                }
-                                None => {}
-                            },
-                            Err(error) => {
-                                state.failed(&error);
-                                return Some((Err(error), state));
+                .scope(stream::try_unfold(state, |mut state| async move {
+                    let result = async {
+                        loop {
+                            if let Some(record) = state
+                                .provider
+                                .visible(
+                                    state
+                                        .provider
+                                        .inner
+                                        .provider
+                                        .next_follow_record(&state.path, &mut state.cursor),
+                                )
+                                .await??
+                            {
+                                return Ok(record);
                             }
-                        }
-                        if state.changed.changed().await.is_err() {
-                            state.failed(&StreamError::Unavailable);
-                            return Some((Err(StreamError::Unavailable), state));
+                            state
+                                .changed
+                                .changed()
+                                .await
+                                .map_err(|_| StreamError::Unavailable)?;
                         }
                     }
+                    .await;
+                    if let Err(error) = &result {
+                        state.failed(error);
+                    }
+                    Ok(Some((result?, state)))
                 }))
                 .boxed())
         })
@@ -148,7 +141,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.visible(self.inner.provider.children(request)).await
+        self.visible(self.inner.provider.children(request)).await?
     }
 
     async fn children_page(
@@ -156,53 +149,18 @@ impl StreamProvider for LocalStream {
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
         self.visible(self.inner.provider.children_page(request))
-            .await
+            .await?
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.commit",
-            items = request.mutations.len(),
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            self.exclusive(&span, |stream| async move {
-                let frame = stream.prepare(&Command::Commit(request.clone()))?;
-                let outcome = stream.inner.provider.commit(request).await?;
-                stream.persist(frame).await?;
-                Ok(outcome)
-            })
-            .await
-        })
-        .await
+        commit(self, request, None).await
     }
-
     async fn commit_before(
         &self,
         request: CommitRequest,
-        deadline_unix_millis: u64,
+        deadline: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.commit",
-            items = request.mutations.len(),
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            self.exclusive(&span, move |stream| async move {
-                let frame = stream.prepare(&Command::Commit(request.clone()))?;
-                let outcome = stream
-                    .inner
-                    .provider
-                    .commit_before(request, deadline_unix_millis)
-                    .await?;
-                stream.persist(frame).await?;
-                Ok(outcome)
-            })
-            .await
-        })
-        .await
+        commit(self, request, Some(deadline)).await
     }
 
     async fn read_commit(
@@ -210,7 +168,7 @@ impl StreamProvider for LocalStream {
         commit_id: crate::CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
         self.visible(self.inner.provider.read_commit(commit_id))
-            .await
+            .await?
     }
     fn native_tail(
         &self,
@@ -218,10 +176,11 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, u64> {
         let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(
-            &original,
-            self.native_visible(self.inner.provider.native_tail(path, meter)),
-        )
+        crate::NativeProviderFuture::new(&original, async move {
+            self.visible(self.inner.provider.native_tail(path, meter))
+                .await
+                .unwrap_or_else(|error| Ok(Err(error)))
+        })
     }
     fn native_bounds(
         &self,
@@ -229,10 +188,11 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, StreamBounds> {
         let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(
-            &original,
-            self.native_visible(self.inner.provider.native_bounds(path, meter)),
-        )
+        crate::NativeProviderFuture::new(&original, async move {
+            self.visible(self.inner.provider.native_bounds(path, meter))
+                .await
+                .unwrap_or_else(|error| Ok(Err(error)))
+        })
     }
     fn native_read(
         &self,
@@ -240,10 +200,11 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
         let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(
-            &original,
-            self.native_visible(self.inner.provider.native_read(request, meter)),
-        )
+        crate::NativeProviderFuture::new(&original, async move {
+            self.visible(self.inner.provider.native_read(request, meter))
+                .await
+                .unwrap_or_else(|error| Ok(Err(error)))
+        })
     }
     fn native_inspect_idempotency(
         &self,
@@ -251,10 +212,11 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(
-            &original,
-            self.native_visible(self.inner.provider.native_inspect_idempotency(key, meter)),
-        )
+        crate::NativeProviderFuture::new(&original, async move {
+            self.visible(self.inner.provider.native_inspect_idempotency(key, meter))
+                .await
+                .unwrap_or_else(|error| Ok(Err(error)))
+        })
     }
     fn native_append(
         &self,
@@ -266,22 +228,14 @@ impl StreamProvider for LocalStream {
     fn native_commit(
         &self,
         request: CommitRequest,
+        deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        LocalStream::guarded_commit(self, request, None, meter, || {
+        LocalStream::guarded_commit(self, request, deadline, meter, || {
             futures::future::ready(Ok(()))
         })
     }
-    fn native_commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        LocalStream::guarded_commit(self, request, Some(deadline), meter, || {
-            futures::future::ready(Ok(()))
-        })
-    }
+
     fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
@@ -304,4 +258,32 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         self.prepare_commit(request, maximum, meter)
     }
+}
+
+async fn commit(
+    stream: &LocalStream,
+    request: CommitRequest,
+    deadline: Option<u64>,
+) -> Result<CommitOutcome, StreamError> {
+    let span = obs::OperationSpan::new(tracing::info_span!(
+        "acyclic.stream.commit",
+        items = request.mutations.len(),
+        outcome = Empty,
+        error.kind = Empty,
+    ));
+    span.scope(async {
+        stream
+            .exclusive(&span, move |stream| async move {
+                let frame = stream.prepare(&Command::Commit(request.clone()))?;
+                let (outcome, _claim) = stream
+                    .inner
+                    .provider
+                    .commit_inner(request, deadline)
+                    .await?;
+                stream.persist(frame).await?;
+                Ok(outcome)
+            })
+            .await
+    })
+    .await
 }
