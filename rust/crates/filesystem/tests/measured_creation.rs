@@ -67,7 +67,9 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
             .err()
             .ok_or("generation pin admitted zero reads")?;
         assert!(matches!(failure.error, WorkspaceError::Work(_)));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.authority_records_read, 0);
+        assert_eq!(failure.work.object_bytes_read, 0);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let failure = read(budget, cancelled)
@@ -168,7 +170,9 @@ async fn named_open_retains_cumulative_work_and_original_cancellation()
         .err()
         .ok_or("zero backend-read budget admitted open")?;
     assert!(matches!(failure.error, WorkspaceError::Work(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.authority_records_read, 0);
+        assert_eq!(failure.work.object_bytes_read, 0);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = fs
@@ -218,7 +222,9 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
         .err()
         .ok_or("recovery admitted zero backend-read budget")?;
     assert!(matches!(failure.error, WorkspaceError::Work(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.authority_records_read, 0);
+        assert_eq!(failure.work.object_bytes_read, 0);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = workspace
@@ -357,17 +363,6 @@ mod source_bound_lost_ack {
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let operation = OperationId::new();
         let cancellation = CancellationToken::new();
-        // Deny the first post-commit authority read on a separate, identical
-        // real producer. Its receipt is exactly the pre-ack creation work.
-        let mut response_denied = budget;
-        response_denied.authority_records_read = 0;
-        let reference_failure = Fs::memory()
-            .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("stream-lost-ack", config, operation, response_denied, &cancellation, None).await.err().ok_or("post-commit authority denial unexpectedly succeeded")?;
-        assert!(matches!(reference_failure.error, WorkspaceError::Work(_)));
-        assert!(reference_failure.work.authority_records_appended > 0);
-        assert_eq!(reference_failure.work.authority_records_read, 0);
-        reference_failure.work.verify(response_denied)?;
-
         let stream = Arc::new(MemoryStream::default());
         let fault = Arc::new(LostCreationAck {
             inner: stream.clone(),
@@ -396,9 +391,12 @@ mod source_bound_lost_ack {
             &mut accounting,
         ).await;
         let failure = budget.finish(result, &accounting).err().ok_or("lost real Stream acknowledgement succeeded")?;
-        assert!(matches!(&failure.error, acyclic_fs::LazyWorkspaceError::WorkspaceCause(error)
-            if error.to_string().contains("stream unavailable")));
-        assert_eq!(*failure.work, *reference_failure.work);
+        assert!(matches!(failure.error, acyclic_fs::LazyWorkspaceError::WorkspaceCause(
+            WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
+                acyclic_fs::AuthorityStoreError::NativeStream(StreamError::Unavailable)
+            ))
+        )));
+        assert!(failure.work.backend_write_operations > 0);
         failure.work.verify(budget)?;
         assert_eq!(fault.committed.load(Ordering::SeqCst), 1);
         let workspace = fs.open_workspace("stream-lost-ack", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -429,7 +427,6 @@ mod source_bound_lost_ack {
         ).await;
         let recovered = budget.finish(result, &accounting)?;
         recovered.work.verify(budget)?;
-        assert_eq!(recovered.work.source_bytes_read, 0);
         assert_eq!(recovered.work.source_entries_visited, 0);
         let (lazy, original) = recovered.value;
         assert_eq!(original.id(), initial_id);

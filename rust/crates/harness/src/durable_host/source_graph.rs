@@ -101,9 +101,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if let Some(parent) = &state.spec.parent {
                 operation = parent.operation_id;
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
-                        items: 1,
-                    })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if operation == anchor {
                     return Err(crate::store::guarded_boundary(
@@ -141,20 +139,24 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         budget: &mut SourceBudget,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
         #[cfg(not(target_arch = "wasm32"))]
         if source.parent.is_none()
             && source.resource_proofs.is_empty()
-            && let Some(original) = work
+            && let Some(original) = quota
+                .work()
                 .as_deref()
                 .and_then(|io| io.original_native_work())
                 .cloned()
         {
-            budget.charge(1, 0, work)?;
-            let read = project.capability(crate::conversation::VolumeOperation::Read, work)?;
-            let digest = source.canonical_digest_with_work(work)?;
+            budget.charge(1, 0, quota.work())?;
+            let read =
+                project.capability(crate::conversation::VolumeOperation::Read, quota.work())?;
+            quota.adopt(read.capacity() as u64)?;
+            let digest = source.canonical_digest_with_work(quota.work())?;
             let mut allowed = false;
             for provider in &self.resource_creation {
-                budget.charge(1, 0, work)?;
+                budget.charge(1, 0, quota.work())?;
                 for (snapshot, binding) in provider
                     .root_bootstrap_sources(source.operation_id)
                     .into_iter()
@@ -189,15 +191,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                             .any(|binding| &binding.volume == project);
                 }
             }
-            let retained = read.capacity() as u64;
             drop(read);
-            work.as_deref_mut()
-                .expect("native observer")
-                .release_owned(retained)?;
             return Ok(allowed);
         }
         use std::borrow::Cow;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut pending = Vec::new();
         let mut current = Some((Cow::Borrowed(source), Vec::new(), 0));
         while let Some((admission, mut path, held)) = current.take().or_else(|| pending.pop()) {
@@ -401,7 +398,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         self.verify_project_source_authorization(record, parent, &mut work)
             .await?;
-        let copied = record.clone_with_work_and_custody(&mut work)?.0;
+        let copied = record.copy(&mut work)?.0;
         ProjectSourceReadHandle::seal(copied, &self.verifier, &mut work)
     }
 
@@ -412,7 +409,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        record.verify_scope_with_work(&self.verifier, quota.work())?;
+        record.verify_scope(&self.verifier, quota.work())?;
         if &record.owner != self.verifier.audience() || record.caller_task != parent {
             return Err(crate::store::guarded_boundary(
                 quota.work(),

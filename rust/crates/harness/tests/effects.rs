@@ -5,7 +5,7 @@
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 
-#[path = "support/stream.rs"]
+#[path = "support/stream/mod.rs"]
 mod test_stream;
 
 use acyclic_fs::Fs;
@@ -255,7 +255,8 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 result_schema: schema,
             },
             None,
-         false)
+            false,
+        )
         .await?;
     aggregate = StreamAggregate::open(
         &stream,
@@ -368,7 +369,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .store(false, Ordering::SeqCst);
     provider
         .hide_effect_transition_position
-        .store(4, Ordering::SeqCst);
+        .store(3, Ordering::SeqCst);
     assert!(
         probe_reader
             .effect(&original_cut, effect_id, limits, None)
@@ -405,9 +406,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         causal_parent: None,
                         action: Action::TransitionLifecycle {
                             to: if retained.is_multiple_of(2) {
-                                LifecycleState::Active
-                            } else {
                                 LifecycleState::Waiting
+                            } else {
+                                LifecycleState::Active
                             },
                             reason: None,
                         },

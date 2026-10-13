@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskSpawner as _;
 use acyclic_harness::{
     filesystem::{
         BorrowedNativeVolumeBinding, FilesystemContentVerifier, FilesystemInteractionHost,

@@ -180,10 +180,7 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
         let mut prepared = commit_request(key, retained, &mut work);
         add_condition(
             &mut prepared,
-            acyclic_stream::CommitCondition::Tail {
-                path: path.clone(),
-                expected: 0,
-            },
+            acyclic_stream::CommitCondition::Absent { path: path.clone() },
         )
         .expect("original guarded condition");
         add_record(
@@ -231,9 +228,11 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
         client.native_only.store(false, Ordering::SeqCst);
         let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str())
             .expect("original canonical stream");
-        assert_eq!(
-            stream.tail().await.expect("actual immutable tail"),
-            expected_tail
-        );
+        let tail = stream.tail().await;
+        if expected_tail == 0 {
+            assert_eq!(tail, Err(acyclic_stream::StreamError::NotFound));
+        } else {
+            assert_eq!(tail.expect("actual immutable tail"), expected_tail);
+        }
     }
 }

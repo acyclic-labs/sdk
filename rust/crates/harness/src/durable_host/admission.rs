@@ -53,6 +53,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             machines,
             clock,
             policy: None,
+            policy_binding: None,
             effects: None,
             session_limits: None,
             resource_creation: Vec::new(),
@@ -65,19 +66,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         limits.validate(&mut None)?;
         self.session_limits = Some(limits);
         Ok(self)
-    }
-
-    /// Admits through the existing task path while retaining the parent's lease.
-    pub async fn admit_owned(
-        &self,
-        admission: TaskAdmissionRecord,
-        fence: crate::scheduler::LeaseFence,
-    ) -> Result<Admission<TaskId>> {
-        let parent = admission
-            .parent
-            .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-        self.verify_owner(parent, &fence, false, &mut None).await?;
-        self.admit_record(admission, Some(fence)).await
     }
 
     #[allow(
@@ -100,7 +88,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.root_scope
             .narrow(scope.grants().clone(), scope.limits())?
             .with_run_limits(scope.run_limits(), &mut None)?;
-        self.validate_parent_scope(parent, &scope).await?;
+        self.validate_parent_scope(parent, &scope, &mut None)
+            .await?;
         if parent.is_some() {
             require_descendant_grant(scope.grants(), &identity)?;
         }
@@ -241,7 +230,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
-        validate_policy_identity(&policy.identity(), None)?;
+        let identity = policy.identity();
+        validate_policy_identity(&identity, None)?;
+        self.policy_binding = Some(identity);
         self.policy = Some(policy);
         Ok(self)
     }
@@ -332,15 +323,38 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self,
         parent: Option<TaskId>,
         scope: &RuntimeScope,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(parent) = parent {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let admitted = self
-                .admission(OperationId::from_bytes(parent.into_bytes()), &mut None)
+                .admission(OperationId::from_bytes(parent.into_bytes()), quota.work())
                 .await?;
-            RuntimeScope::new(admitted.grants, admitted.limits)?
-                .with_run_limits(admitted.run_limits, &mut None)?
-                .narrow(scope.grants().clone(), scope.limits())?
-                .with_run_limits(scope.run_limits(), &mut None)?;
+            if quota.work().is_some() {
+                quota.adopt(
+                    std::mem::size_of::<TaskAdmissionRecord>() as u64
+                        + admitted.logical_owned_bytes()?,
+                )?;
+            }
+            let parent = RuntimeScope::new(admitted.grants, admitted.limits)?
+                .with_run_limits(admitted.run_limits, quota.work())?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(native) = quota
+                .work()
+                .as_deref()
+                .and_then(|io| io.original_native_work())
+            {
+                parent.validate_narrowing_with_native_work(
+                    scope.grants(),
+                    &scope.limits(),
+                    native,
+                )?;
+            } else {
+                parent.narrow(scope.grants().clone(), scope.limits())?;
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            parent.narrow(scope.grants().clone(), scope.limits())?;
+            parent.validate_run_limit_attenuation(&scope.run_limits(), quota.work())?;
         }
         Ok(())
     }

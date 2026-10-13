@@ -115,11 +115,14 @@ impl HarnessBundle {
         if let crate::Outcome::Succeeded(output) = &outcome {
             if output.text.len() as u64 > self.limits.file_bytes
                 || output.attachments.len() > self.limits.attachments
-                || crate::contract::canonical_json_bytes(&output.metadata)?.len() as u64
-                    > self.limits.file_bytes
             {
                 return Err(Error::Invalid("agent output exceeds limits".into()));
             }
+            crate::executor::json::json_byte_length(
+                &output.metadata,
+                self.limits.file_bytes,
+                &mut None,
+            )?;
             for attachment in &output.attachments {
                 attachment.validate(&mut None)?;
                 self.limits.validate_file(&attachment.file, &mut None)?;

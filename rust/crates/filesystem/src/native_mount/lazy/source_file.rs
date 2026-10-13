@@ -101,22 +101,21 @@ where
                     )
                     .await?
                     .into_mutation_phase();
-                let file = match self.current_authored(owner, carrier).await? {
-                    Some(file) => file,
-                    None => {
-                        stage_mount_promotion(
-                            &self.lazy,
-                            &self.authored,
-                            &self.path,
-                            self.expected_source,
-                            work,
-                        )
-                        .await?;
-                        self.authored
-                            .attached_file_by_id(self.expected_source, owner, carrier)
-                            .await?
-                            .ok_or(MountSourceError::Stale)?
-                    }
+                let file = if let Some(file) = self.current_authored(owner, carrier).await? {
+                    file
+                } else {
+                    stage_mount_promotion(
+                        &self.lazy,
+                        &self.authored,
+                        &self.path,
+                        self.expected_source,
+                        work,
+                    )
+                    .await?;
+                    self.authored
+                        .attached_file_by_id(self.expected_source, owner, carrier)
+                        .await?
+                        .ok_or(MountSourceError::Stale)?
                 };
                 let result = operation(file.0.as_ref());
                 let bytes = file.1;
@@ -135,8 +134,13 @@ where
         length: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.source_file.read_range(offset, length, &mut crate::kernel::KernelAccounting::native(work, work.cancellation()))
-        .map_err(mount_demand_error)
+        self.source_file
+            .read_range(
+                offset,
+                length,
+                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+            )
+            .map_err(mount_demand_error)
     }
 }
 
@@ -194,7 +198,10 @@ where
                 }
             };
             if length == 0 {
-                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::new(), 0));
+                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                    OwnedBytes::new(),
+                    0,
+                ));
             }
             self.read_source(offset, length, work)
         })
@@ -368,7 +375,7 @@ where
             if output.bytes.len() as u64 != data_length {
                 return Err(MountSourceError::Stale);
             }
-            if !output.is_intrinsic() {
+            if !output.intrinsic {
                 return Err(MountSourceError::NativeUnsupported);
             }
             work.charge(crate::WorkCounters {
@@ -385,7 +392,7 @@ where
             let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
             let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
             let mut spans = scratch.vec(1)?;
-            let (bytes, _, _) = output.into_owned_parts();
+            let bytes = output.bytes;
             spans.push(crate::native_mount::MountSparseSpan {
                 relative_offset: 0,
                 bytes,

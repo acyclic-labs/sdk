@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskSpawner as _;
 
 pub(super) async fn worker_restart_with_options(
     command: WorkerCommand,
@@ -20,8 +21,11 @@ pub(super) async fn worker_restart_with_options(
     let with_command = command != WorkerCommand::Wait;
     let with_mail_send = command == WorkerCommand::MailSend;
     let with_mail_receive = command == WorkerCommand::MailReceive;
-    let with_two_waits = command == WorkerCommand::TimerThenMail;
-    let with_timer = matches!(command, WorkerCommand::Timer | WorkerCommand::TimerThenMail);
+    let with_two_waits = command == WorkerCommand::TimerThenTimer;
+    let with_timer = matches!(
+        command,
+        WorkerCommand::Timer | WorkerCommand::TimerThenTimer
+    );
     let uncertain = matches!(
         command,
         WorkerCommand::Model
@@ -398,10 +402,12 @@ pub(super) async fn worker_restart_with_options(
                     deadline_unix_ms: 200,
                 })
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-                let mail = serde_json::to_vec(&MailReceiveTaskCommand { after: 0 })
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let second_timer = serde_json::to_vec(&TimerTaskCommand {
+                    deadline_unix_ms: 300,
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?;
                 json!({"timer":payloads.stage(operation, "two-waits-timer", &timer, None)?.await?,
-                    "mail":payloads.stage(operation, "two-waits-mail", &mail, None)?.await?})
+                    "second_timer":payloads.stage(operation, "two-waits-second-timer", &second_timer, None)?.await?})
             } else if with_command {
                 let payload = if with_mail_send {
                     serde_json::to_value(MailSendTaskCommand {
@@ -633,11 +639,7 @@ pub(super) async fn worker_restart_with_options(
                         Some(OperationId::from_bytes([27; 16]))
                     );
                     assert!(!runtime.poll_task_wake(task, None).await?);
-                    let file = payloads.stage(operation, "second-wait-mail", b"7", None)?.await?;
-                    runtime
-                        .task_host()
-                        .send(task, task, OperationId::from_bytes([30; 16]), file)
-                        .await?;
+                    clock.0.store(300, Ordering::SeqCst);
                     assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                     assert!(!runtime.poll_task_wake(task, None).await?);
                 }

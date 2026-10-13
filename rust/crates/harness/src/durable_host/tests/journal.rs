@@ -540,7 +540,13 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
         )?
         .await?;
     assert_eq!(journal.replay(attempt, 0, 8, None)?.await?.len(), 3);
-    assert!(f.host.admit(f.admission(2, json!(0))).await.is_err());
+    let mut child = f.admission(2, json!(0));
+    child.parent = Some(TaskId::from_bytes([1; 16]));
+    child.run_limits.max_steps = Some(1);
+    assert!(matches!(
+        f.host.admit_owned(child, (&lease.reservation).into()).await,
+        Err(Error::Conflict(_))
+    ));
     assert_eq!(
         f.host
             .observe_admission(TaskId::from_bytes([1; 16]))
@@ -554,11 +560,23 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
 
 #[tokio::test]
 async fn expired_deadline_rejects_fresh_execution_publication() -> Result<()> {
-    let f = fixture::fixture().await?;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Clock(AtomicU64);
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let mut f = fixture::fixture().await?;
+    let clock = Arc::new(Clock(AtomicU64::new(0)));
+    Arc::get_mut(&mut f.host)
+        .expect("unique fixture host")
+        .clock = clock.clone();
     let mut admission = f.admission(1, json!(0));
     admission.run_limits.deadline_epoch_ms = Some(1);
     f.host.admit(admission).await?;
     f.claim(1, "expired").await?;
+    clock.0.store(1, Ordering::SeqCst);
     let operation = OperationId::from_bytes([2; 16]);
     let journal = f.execution(f.owner(1).await?, operation)?;
     assert!(matches!(

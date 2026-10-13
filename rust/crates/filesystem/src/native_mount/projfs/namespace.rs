@@ -10,7 +10,7 @@ pub(in crate::native_mount) struct ProjFsNamespaceOutcome {
     pub(in crate::native_mount) capture_failure: Option<NativeMountError>,
     pub(in crate::native_mount) cleanup_failure: Option<NativeMountError>,
     pub(in crate::native_mount) qualification: Option<ProjFsNamespaceQualification>,
-    pub(in crate::native_mount) state: ProjectorState,
+    pub(super) state: ProjectorState,
     pub(super) callbacks: Arc<Mutex<PostOperationFailures>>,
 }
 

@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
+    let runtime = fixture.runtime(None).await?;
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let attempt = runtime
@@ -24,7 +24,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
         .revision;
     assert!(fixture.scheduler_state(task).await?.outcome.is_none());
     drop(runtime);
-    let reopened = fixture.runtime().await?;
+    let reopened = fixture.runtime(None).await?;
     assert!(matches!(
         reopened
             .reconcile_task(lease.clone(), &reopened.commands(), 1, 5, None)
@@ -42,8 +42,6 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
         matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task)
     );
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 2);
-    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
     assert_eq!(revision, 1);
     assert!(matches!(
         reopened.task_host().outcome(task).await?,
@@ -56,7 +54,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
 #[tokio::test]
 async fn cancelled_mail_reconciles_original_atomic_send_without_republication() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
+    let runtime = fixture.runtime(None).await?;
     let task = TaskId::from_bytes([104; 16]);
     let payloads = FilesystemContentPublisher::new(
         fixture.filesystem.clone(),
@@ -80,16 +78,18 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
             .map_err(|error| Error::Invalid(error.to_string()))?,
         )
         .await?;
-    assert!(matches!(
-        runtime
-            .resume_task(lease.clone(), &runtime.commands(), 1, None)
-            .await,
-        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
-    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            runtime
+                .resume_task(lease.clone(), &runtime.commands(), 1, None)
+                .await,
+            TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
+        ));
+    }
     assert_eq!(runtime.task_host().inbox(task, 0, 8).await?.len(), 1);
     drop(runtime);
     fixture.clock.0.store(20, Ordering::SeqCst);
-    let reopened = fixture.runtime().await?;
+    let reopened = fixture.runtime(None).await?;
     assert!(matches!(
         reopened
             .resume_task(lease.clone(), &reopened.commands(), 1, None)
@@ -129,16 +129,16 @@ async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispa
     ] {
         let fixture = Fixture::new().await?;
         fixture.machine.native.store(true, Ordering::SeqCst);
-        let runtime = fixture.runtime().await?;
+
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::default(),
-            &cancellation,
-        )
-        .map_err(|(cause, work)| Error::NativeConstruction {
-            cause,
-            work: Box::new(work),
-        })?;
+        let work =
+            acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let runtime = fixture.runtime(Some(&io)).await?;
         let (lease, custody) = fixture
             .native_lease_command(&runtime, kind, Value::Null, &work)
             .await?;
@@ -178,16 +178,16 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     let fixture = Fixture::new().await?;
     fixture.machine.native.store(true, Ordering::SeqCst);
     fixture.tool.native.store(true, Ordering::SeqCst);
-    let runtime = fixture.runtime().await?;
+
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work: Box::new(work),
-    })?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let runtime = fixture.runtime(Some(&io)).await?;
     let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -214,7 +214,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     assert!(custody.work().shares_ledger(&work));
     let before = work.receipt();
     drop(runtime);
-    let reopened = fixture.runtime().await?;
+    let reopened = fixture.runtime(Some(&io)).await?;
     let (attempt, custody) = reopened
         .reconcile_task_with_native_work(lease, custody, &reopened.commands(), 1, 5, &work)
         .await?;

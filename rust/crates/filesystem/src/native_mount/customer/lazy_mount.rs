@@ -322,10 +322,10 @@ where
             drop(owner.take());
             Ok(proof)
         })();
-        if result.is_err() {
-            if let Some(session) = owner.as_mut() {
-                session.record_measured_cleanup_failure();
-            }
+        if result.is_err()
+            && let Some(session) = owner.as_mut()
+        {
+            session.record_measured_cleanup_failure();
         }
         result
     }

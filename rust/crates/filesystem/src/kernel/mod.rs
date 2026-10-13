@@ -8,7 +8,7 @@ mod attribute_list;
 mod attribute_mutation;
 mod blob;
 mod checkpoint;
-mod closure;
+pub(crate) mod closure;
 pub(crate) mod codec;
 mod export;
 mod extent;
@@ -58,13 +58,9 @@ pub use persistent_btree::Child;
 pub(crate) use attribute_list::list_attributes_async_with_accounting;
 pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use blob::PreparedBlobDemandFailure;
+pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use closure::{
-    prove_generation_closure_with_native_work, prove_record_closure_with_native_work,
-};
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
@@ -82,7 +78,6 @@ pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };
 pub(crate) use persistent_point::split_allocation;
-pub(crate) use publication::contextual_publication_fingerprint_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
 pub(crate) use range::plan_extent_range_with_accounting;
@@ -110,7 +105,6 @@ pub use blob::{
 pub use checkpoint::{CheckpointError, CheckpointFailure, CheckpointRequest, build_checkpoint};
 #[cfg(feature = "s3-http")]
 pub(crate) use closure::prove_blob_closure_async;
-pub(crate) use closure::prove_record_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
 };
@@ -194,8 +188,7 @@ pub use path_access::{
     observe_path_async, observe_paths_async,
 };
 pub(crate) use path_access::{
-    lookup_path_async_with_accounting, lookup_paths_async_with_accounting,
-    lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting,
+    PathQueries, PathBatchMode, lookup_path_async_with_accounting, lookup_paths_with_accounting, observe_path_async_with_accounting,
     observe_paths_async_with_accounting,
 };
 pub(crate) use persistent_point::retire_allocation;
@@ -206,12 +199,11 @@ pub(crate) use publication::contextual_publication_fingerprint;
 #[cfg(test)]
 pub(crate) use publication::encode_publication_payload;
 pub use publication::{
-    PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
+    PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation,
 };
 pub(crate) use publication::{
-    PublicationIntent, decode_publication_evidence_with_accounting,
-    publish_generation_async_guarded, publish_generation_async_with_permit,
+    decode_publication_evidence_with_accounting, publish_generation_async_guarded,
 };
 pub use publication_evidence::{
     GenerationPublicationEvidence, GenerationPublicationProjection, PublicationEvidenceError,

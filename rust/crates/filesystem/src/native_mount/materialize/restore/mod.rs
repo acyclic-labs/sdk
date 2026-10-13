@@ -2,14 +2,14 @@ use super::*;
 
 pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     lock: Option<File>,
-    work: crate::NativeMaterializationWork,
+    mut work: crate::NativeMaterializationWork,
     operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, E> + Send + 'static,
 ) -> Result<Result<T, E>, std::io::Error> {
     let observer = work.runtime_meter();
     let operation = move || {
         // A cancelled waiter must not release the fence while host I/O continues.
         let _restore_lock = lock;
-        operation(&mut work.clone())
+        operation(&mut work)
     };
     let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))?;
     task.await
@@ -37,10 +37,10 @@ pub(super) fn prepare_restore(
     let allocation_work = destination_root.1.work().clone();
     let root = HostRoot::open(&destination_root.0, work).map_err(MaterializeError::from)?;
     let actual = root.identity();
-    if let Some(expected) = expected_root_identity {
-        if actual != expected {
-            return Err(MaterializeError::AllocationChanged { expected, actual });
-        }
+    if let Some(expected) = expected_root_identity
+        && actual != expected
+    {
+        return Err(MaterializeError::AllocationChanged { expected, actual });
     }
     // No parent creation, lock creation, recovery, or stage mutation precedes
     // the identity check on the capability that owns the destination writes.
@@ -145,10 +145,10 @@ pub(super) fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    match crate::native_host::entry_identity(&destination_parent.directory, name, work)
+    if let Some(_) = crate::native_host::entry_identity(&destination_parent.directory, name, work)
         .map_err(MaterializeError::from)?
     {
-        Some(_) => match replacement {
+        match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(
                 &destination_parent.directory,
                 name,
@@ -165,42 +165,41 @@ pub(super) fn publish_restore(
                 relative,
                 work,
             )?,
-        },
-        None => {
+        }
+    } else {
+        {
+            #[cfg(unix)]
             {
-                #[cfg(unix)]
-                {
+                crate::native_host::rename_held(
+                    &(stage_parent).directory,
+                    name,
+                    &(destination_parent).directory,
+                    name,
+                    acyclic_native_runtime::RenameMode::Replace,
+                    None,
+                    work,
+                )
+            }
+            #[cfg(windows)]
+            {
+                crate::native_host::with_wide_path(name, work, |name, work| {
                     crate::native_host::rename_held(
-                        &(stage_parent).directory,
+                        &stage_parent.directory,
                         name,
-                        &(destination_parent).directory,
+                        &destination_parent.directory,
                         name,
                         acyclic_native_runtime::RenameMode::Replace,
                         None,
                         work,
                     )
-                }
-                #[cfg(windows)]
-                {
-                    crate::native_host::with_wide_path(name, work, |name, work| {
-                        crate::native_host::rename_held(
-                            &stage_parent.directory,
-                            name,
-                            &destination_parent.directory,
-                            name,
-                            acyclic_native_runtime::RenameMode::Replace,
-                            None,
-                            work,
-                        )
-                    })
-                }
+                })
             }
-            .map_err(MaterializeError::from)?;
-            crate::native_host::sync_directory_held(&destination_parent.directory, work)
-                .map_err(MaterializeError::from)?;
-            crate::native_host::sync_directory_held(&stage_parent.directory, work)
-                .map_err(MaterializeError::from)?;
         }
+        .map_err(MaterializeError::from)?;
+        crate::native_host::sync_directory_held(&destination_parent.directory, work)
+            .map_err(MaterializeError::from)?;
+        crate::native_host::sync_directory_held(&stage_parent.directory, work)
+            .map_err(MaterializeError::from)?;
     }
     Ok(())
 }
@@ -256,7 +255,7 @@ pub(super) fn create_restore_stage(
         )?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}")
-            .expect("String formatting cannot fail");
+            .map_err(|_| MaterializeError::InvalidOptions)?;
         work.record(delta).map_err(MaterializeError::from)?;
         let name = (PathBuf::from(name), allocation);
         match {

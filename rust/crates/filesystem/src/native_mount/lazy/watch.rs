@@ -21,20 +21,42 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    fn source_changed(&self, changes: &[SourceChange], accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
-        if let Some(original) = accounting.native_work() { return self.record(changes, original.clone()).map_err(demand_error); }
+    fn source_changed(
+        &self,
+        changes: &[SourceChange],
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        if let Some(original) = accounting.native_work() {
+            return self.record(changes, original.clone()).map_err(demand_error);
+        }
         let cancellation = match &*accounting {
-            crate::kernel::KernelAccounting::Standalone { cancellation, .. } | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. } | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => (*cancellation).clone(),
+            crate::kernel::KernelAccounting::Standalone { cancellation, .. }
+            | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. }
+            | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => {
+                (*cancellation).clone()
+            }
         };
         let budget = accounting.remaining().map_err(DemandError::from)?;
-        let work = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, completed)| {
-            let failure: crate::demand::DemandResult<()> = Err(crate::OperationFailure::new(demand_error(MountSourceError::NativeWork(error)), completed));
-            crate::demand::accept_source_result(failure, accounting).unwrap_err()
-        })?;
+        let work = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(
+            |(error, completed)| {
+                let failure: crate::demand::DemandResult<()> = Err(crate::OperationFailure::new(
+                    demand_error(MountSourceError::NativeWork(error)),
+                    completed,
+                ));
+                crate::demand::accept_source_result(failure, accounting).unwrap_err()
+            },
+        )?;
         let result = self.record(changes, work.clone()).map_err(demand_error);
-        crate::demand::accept_source_result(result.map(|value| crate::OperationReceipt { value, work: work.receipt() }).map_err(|error| crate::OperationFailure::new(error, work.receipt())), accounting)
+        crate::demand::accept_source_result(
+            result
+                .map(|value| crate::OperationReceipt {
+                    value,
+                    work: work.receipt(),
+                })
+                .map_err(|error| crate::OperationFailure::new(error, work.receipt())),
+            accounting,
+        )
     }
-
 }
 
 impl<A, O, D, S> SourceChangeRecorder<A, O, D, S>
@@ -69,11 +91,8 @@ where
                 .try_fold((0usize, 0usize, 0usize), |(n, s, l), change| {
                     crate::native_host::NativeHostWork::check(&source)
                         .map_err(mount_demand_error)?;
-                    work.charge(crate::WorkCounters {
-                        items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    })
-                    .map_err(MountSourceError::NativeWork)?;
+                    work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                        .map_err(MountSourceError::NativeWork)?;
                     let extra = match change {
                         SourceChange::Entry(path) => 1 + usize::from(!path.is_root()),
                         _ => 0,
@@ -106,11 +125,8 @@ where
                 .cancellation()
                 .check()
                 .map_err(|_| MountSourceError::Cancelled)?;
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            })
-            .map_err(MountSourceError::NativeWork)?;
+            work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                .map_err(MountSourceError::NativeWork)?;
             match change {
                 SourceChange::Name(path) | SourceChange::Entry(path) => {
                     let mut append = |depth, output: &mut Vec<crate::kernel::NamespacePath>| {

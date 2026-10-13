@@ -244,7 +244,7 @@ async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dy
             )
             .await?
             .value
-            .bytes()
+            .bytes
             .as_ref(),
         b"target"
     );
@@ -407,7 +407,7 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
     for entry in &page.value.entries {
         let name = entry
             .name
-            .unicode_text()
+            .unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value)
             .ok_or("listed name is not Unicode")?
             .to_string();
         let looked_up = provider

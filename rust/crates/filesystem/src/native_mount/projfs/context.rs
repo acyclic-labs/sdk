@@ -33,14 +33,6 @@ impl Drop for NativeMountWorkScope {
     }
 }
 
-pub(super) fn same_work(
-    left: &crate::NativeMaterializationWork,
-    right: &crate::NativeMaterializationWork,
-) -> bool {
-    let mut activation = super::super::NativeMountMeterActivation::default();
-    activation.enter(left).is_ok() && activation.enter(right).is_ok()
-}
-
 impl Runtime {
     pub(super) fn native_work(
         &self,

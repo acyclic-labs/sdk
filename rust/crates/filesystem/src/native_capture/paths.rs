@@ -76,10 +76,7 @@ pub(super) fn clone_capture_paths(
     for path in paths {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(1),
         )?;
         if let Some(policy) = policy
             && capture_excludes(policy, path, meter)?
@@ -114,10 +111,7 @@ pub(super) fn capture_has_duplicate_paths(
     for pair in paths.windows(2) {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(1),
         )?;
         if matches!(pair, [left, right] if left == right) {
             return Ok(true);
@@ -136,10 +130,7 @@ pub(super) fn canonical_subtree_roots_measured(
     for root in &sorted {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(1),
         )?;
         for _ in root.components() {
             capture_charge(
@@ -151,16 +142,13 @@ pub(super) fn canonical_subtree_roots_measured(
             )?;
         }
     }
+    let empty = NamespacePath::new(Vec::new(), crate::model::VolumeLimits::default())?;
     let mut failure = None;
     sorted.dedup_by(|root, ancestor| {
         if failure.is_some() || !root.is_within(ancestor) {
             return false;
         }
-        let removed = std::mem::replace(
-            root,
-            NamespacePath::new(Vec::new(), crate::model::VolumeLimits::default())
-                .expect("an empty namespace path is valid"),
-        );
+        let removed = std::mem::replace(root, empty.clone());
         failure = capture_drop_path(removed, meter).err();
         true
     });

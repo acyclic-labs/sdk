@@ -993,11 +993,9 @@ async fn published_generation_for_key<A: AsyncAuthorityStore, O: AsyncObjectStor
         operation_id: source_volume_operation_id(key, operation),
         generation_root: published.generation_root,
     };
-    if commit.fingerprint
-        != contextual_publication_fingerprint(
-            request,
-            source_volume_operation_context(key, operation),
-        )
+    let cancellation = CancellationToken::new();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    if commit.fingerprint != contextual_publication_fingerprint(request, source_volume_operation_context(key, operation), &mut accounting).map_err(engine)?
     {
         return Err(SourceError::IdempotencyConflict);
     }

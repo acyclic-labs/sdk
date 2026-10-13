@@ -159,8 +159,6 @@ fn errno(error: &MountSourceError) -> i32 {
         MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NativeWork(error) => native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
-        MountSourceError::WorkspacePrefixFailure { source, .. } => native_workspace_errno(source),
-        MountSourceError::NativeWorkspaceCause(cause, _) => native_workspace_errno(cause),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
         MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
@@ -182,8 +180,7 @@ fn errno(error: &MountSourceError) -> i32 {
         MountSourceError::Metadata(_) => libc::EIO,
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
         MountSourceError::NativeWatchOriginalIo(_)
-        | MountSourceError::NativeWatchOriginalBackend(_)
-        | MountSourceError::NativeWatchStartupFailed { .. } => libc::EIO,
+        | MountSourceError::NativeWatchOriginalBackend(_) => libc::EIO,
     }
 }
 

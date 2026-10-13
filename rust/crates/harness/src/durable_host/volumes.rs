@@ -114,21 +114,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ));
             }
             for content in &receipt.content {
-                let mut allocated = false;
-                for operation in &receipt.operations {
-                    if let Some(io) = quota.work().as_deref_mut() {
-                        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
-                            items: 1,
-                        })?;
-                    }
-                    allocated |= operation == "read" || operation == "write";
-                }
-                if !allocated
-                    || !matches!(
-                        content.volume.class(),
-                        VolumeClass::Project | VolumeClass::AgentPrivate
-                    )
-                {
+                if !matches!(
+                    content.volume.class(),
+                    VolumeClass::Project | VolumeClass::AgentPrivate
+                ) {
                     continue;
                 }
                 let origin = receipt.origin.intended_child;
@@ -148,7 +137,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     receipt.allocation_generation.as_resource(),
                     &mut quota,
                 )?;
-                let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
+                let generation = GenerationRef::from_resource(reference, quota.work())?;
                 let snapshot = (origin, TaskVolumeSnapshot { volume, generation });
                 if !Self::proof_contains(&snapshots, &snapshot, quota.work())? {
                     let retained = Self::reserve_proof_slots(&mut snapshots, quota.work())?;

@@ -55,21 +55,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
             }
-            let lookup = lookup_paths_async_with_accounting(
+            let lookup = lookup_paths_with_accounting(
                 &self.volume.fs.inner.objects,
                 &self.root,
-                paths,
+                crate::kernel::PathQueries::Owned(paths),
                 self.volume.config,
                 &mut accounting,
                 cancellation,
                 None,
+                crate::kernel::PathBatchMode::NoFollow,
             )
             .await?;
             let mut handles = Owned::<Vec<Option<ResolvedFile<A, O>>>>::allocate(
-                lookup.value().entries.len(),
+                lookup.0.entries.len(),
                 &mut accounting,
             )?;
-            for entry in &lookup.value().entries {
+            for entry in &lookup.0.entries {
                 let file = if let Some(record) = entry.record {
                     let metadata = read_record_metadata_to_file_root_with_accounting(
                         &self.volume,

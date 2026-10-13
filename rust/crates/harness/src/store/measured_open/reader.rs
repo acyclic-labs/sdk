@@ -71,19 +71,41 @@ async fn native_history_pages_preserve_original_provider_prefixes_and_custody() 
         let denied = NativeMaterializationWork::new(narrow, &cancellation)
             .expect("original finite denied ledger");
         provider.reset_io();
-        assert!(matches!(
-            async {
-                let mut io = crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(&denied)?,
-                );
-                let value = reader
-                    .read_page(&cursor, default_projection_read_limits(), Some(&mut io))
-                    .await?;
-                io.return_staged_output()?;
-                Ok::<_, Error>((value, io.into_custody()?))
-            }
-            .await,
-            Err(Error::NativeWork { custody: None, .. })
+        let error = async {
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&denied)?,
+            );
+            let value = reader
+                .read_page(&cursor, default_projection_read_limits(), Some(&mut io))
+                .await?;
+            io.return_staged_output()?;
+            Ok::<_, Error>((value, io.into_custody()?))
+        }
+        .await
+        .expect_err("the original quota must deny the page");
+        let cause = match error {
+            Error::NativeWork {
+                cause,
+                custody: None,
+            } => cause,
+            Error::NativeFilesystem {
+                source,
+                custody: None,
+            } => match *source {
+                acyclic_fs::FsError::NativeKernel(cause) => cause,
+                other => panic!("unexpected filesystem cause: {other:?}"),
+            },
+            other => panic!("unexpected page denial: {other:?}"),
+        };
+        let counter = if narrow.output_bytes == 0 {
+            "output_bytes"
+        } else {
+            "authority_bytes_read"
+        };
+        assert!(matches!(cause,
+            acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded { counter: denied_counter, .. }
+            ) if denied_counter == counter
         ));
         let receipt = denied.receipt();
         assert_eq!(

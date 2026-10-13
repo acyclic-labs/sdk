@@ -5,7 +5,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
 -> Result<()> {
     for expired_before_dispatch in [true, false] {
         let fixture = Fixture::new().await?;
-        let runtime = fixture.runtime().await?;
+        let runtime = fixture.runtime(None).await?;
         let lease = fixture.admit(&runtime).await?;
         let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
         runtime.task_host().start_task(&lease, &mut None).await?;
@@ -62,7 +62,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         );
         drop(execution);
         drop(runtime);
-        let reopened = fixture.runtime().await?;
+        let reopened = fixture.runtime(None).await?;
         let execution = reopened
             .stock_execution(
                 task,
@@ -105,7 +105,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
 async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlement() -> Result<()> {
     let fixture = Fixture::new().await?;
     fixture.machine.native.store(true, Ordering::SeqCst);
-    let runtime = fixture.runtime().await?;
+
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock),
         generated: AtomicUsize::new(0),
@@ -120,14 +120,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work: Box::new(work),
-    })?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let runtime = fixture.runtime(Some(&io)).await?;
     let input = super::super::super::ModelTaskCommand {
         input: crate::model::ModelContent::Text("question".into()),
         selected_context: None,
@@ -178,7 +178,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let before = work.receipt();
     drop(commands);
     drop(runtime);
-    let reopened = fixture.runtime().await?;
+    let reopened = fixture.runtime(Some(&io)).await?;
     let commands = reopened.commands().with_model(
         &model,
         provider.clone(),
@@ -224,7 +224,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
 -> Result<()> {
     let fixture = Fixture::new().await?;
     fixture.machine.native.store(true, Ordering::SeqCst);
-    let runtime = fixture.runtime().await?;
+
     let input = super::super::super::ModelTaskCommand {
         input: crate::model::ModelContent::Text("must not dispatch".into()),
         selected_context: None,
@@ -248,14 +248,14 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work: Box::new(work),
-    })?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let runtime = fixture.runtime(Some(&io)).await?;
     let commands = runtime.commands().with_model(
         &model,
         provider.clone(),
@@ -298,7 +298,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
 async fn native_stock_model_configuration_denies_before_copy_or_provider_on_original_work()
 -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
+    let runtime = fixture.runtime(None).await?;
     let model = Model::new(
         "synthetic".into(),
         "original-config".into(),
@@ -314,17 +314,18 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
     });
     for cancelled in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = acyclic_fs::WorkBudget::default();
-        if !cancelled {
-            budget.peak_allocation_bytes =
-                acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
-        }
+        let budget = acyclic_fs::WorkBudget {
+            allocation_operations: 1,
+            peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ..Default::default()
+        };
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
             |(cause, work)| Error::NativeConstruction {
                 cause,
                 work: Box::new(work),
             },
         )?;
+        let io = PreparationIo::from_native_work(&work)?;
         if cancelled {
             cancellation.cancel();
         }
@@ -334,9 +335,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
             provider.clone(),
             &context,
             &compaction,
-            Some(&super::super::super::PreparationIo::from_native_work(
-                &work,
-            )?),
+            Some(&io),
         );
         assert!(result.as_ref().is_err_and(Error::is_native_failure));
         assert_eq!(
@@ -359,7 +358,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
 async fn native_stock_model_configuration_retains_original_custody_and_rejects_foreign_rebinding()
 -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
+    let runtime = fixture.runtime(None).await?;
     let model = Model::new(
         "synthetic".into(),
         "original-config".into(),
@@ -374,14 +373,12 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
         reconciled: AtomicUsize::new(0),
     });
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work: Box::new(work),
-    })?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
     let before = work.receipt();
     let commands = runtime.commands().with_model(
         &model,
@@ -394,14 +391,12 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
     )?;
     assert!(work.receipt().allocation_operations > before.allocation_operations);
     assert!(work.receipt().bytes_copied > before.bytes_copied);
-    let foreign = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work: Box::new(work),
-    })?;
+    let foreign =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
     let before = foreign.receipt();
     let result = commands.with_model(
         &model,
@@ -428,16 +423,15 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
 #[tokio::test]
 async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_source() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work: Box::new(work),
-    })?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let runtime = fixture.runtime(Some(&io)).await?;
     let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
     runtime
         .task_host()

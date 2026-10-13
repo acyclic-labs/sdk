@@ -60,14 +60,9 @@ impl Drop for ReadAdmission {
 pub(crate) struct ViewGateReadAdmissions {
     first: Option<ReadAdmission>,
     more: Vec<ReadAdmission>,
-    reconstructed: bool,
 }
 
 impl ViewGateReadAdmissions {
-    pub(crate) fn budget_reconstructed(&mut self) {
-        self.reconstructed = true;
-    }
-
     fn entries(&self) -> impl Iterator<Item = &ReadAdmission> {
         self.first.iter().chain(self.more.iter())
     }
@@ -122,19 +117,16 @@ impl ViewGateReadAdmissions {
         budget: &mut crate::WorkBudget,
     ) -> Result<(), crate::WorkError> {
         let mut completed = 0_u64;
-        let mut active = 0_u64;
         for entry in self.first.iter_mut().chain(self.more.iter_mut()) {
             let Some(index) = entry.slot else { continue };
-            let (readers, finished) = {
+            let finished = {
                 let state = entry
                     .gate
                     .state
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 match state.reader_slots.get(index).and_then(Option::as_ref) {
-                    Some(ReadSlot::Meter {
-                        readers, finished, ..
-                    }) => (*readers, *finished),
+                    Some(ReadSlot::Meter { finished, .. }) => *finished,
                     _ => return Err(crate::WorkError::Overflow),
                 }
             };
@@ -151,29 +143,11 @@ impl ViewGateReadAdmissions {
             completed = completed
                 .checked_add(newly_finished)
                 .ok_or(crate::WorkError::Overflow)?;
-            active = active
-                .checked_add(readers as u64)
-                .ok_or(crate::WorkError::Overflow)?;
         }
-        if self.reconstructed {
-            work.admit(
-                &crate::WorkCounters {
-                    items_examined: active,
-                    ..crate::WorkCounters::default()
-                },
-                budget,
-            )?;
-            budget.items_examined = budget
-                .items_examined
-                .checked_sub(active)
-                .ok_or(crate::WorkError::Overflow)?;
-        } else {
-            budget.items_examined = budget
-                .items_examined
-                .checked_add(completed)
-                .ok_or(crate::WorkError::Overflow)?;
-        }
-        self.reconstructed = false;
+        budget.items_examined = budget
+            .items_examined
+            .checked_add(completed)
+            .ok_or(crate::WorkError::Overflow)?;
         work.verify(*budget)?;
         Ok(())
     }

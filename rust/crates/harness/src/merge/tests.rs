@@ -171,13 +171,13 @@ fn native_partial_merge_copy_retires_new_fields_without_releasing_existing_custo
     let held = io.clone_text("held")?;
     assert!(matches!(
         crate::wire_codec::CodecQuota::produce(&mut Some(&mut io), |quota| receipt.copy(quota)),
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_copied",
-                ..
-            }),
-            ..
-        })
+        Err(Error::NativeFilesystem { source, custody: None })
+            if matches!(*source, acyclic_fs::FsError::NativeKernel(
+                NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                    counter: "bytes_copied",
+                    ..
+                })
+            ))
     ));
     let guard = io.into_custody()?;
     assert_eq!(guard.bytes(), held.capacity() as u64);

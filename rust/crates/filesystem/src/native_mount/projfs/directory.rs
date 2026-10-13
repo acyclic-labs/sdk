@@ -42,10 +42,7 @@ pub(super) fn projected_entry(
     let Some(info) = basic(lookup.node, Some(lookup.metadata)) else {
         return Ok(None);
     };
-    let copied = crate::WorkCounters {
-        bytes_copied: component.len() as u64,
-        ..crate::WorkCounters::UNCHARGED
-    };
+    let copied = crate::materializer::NativeResourceCredit::Copy.delta(component.len() as u64);
     projection.work.admit(copied)?;
     let mut allocation = projection.work.claim(
         (component.len() as u64)
@@ -68,7 +65,7 @@ pub(super) fn projected_entry(
             .source
             .as_ref()
             .read_link(&directory.child(component.clone()), projection.work)?;
-        if symlink_extended(target.bytes()).is_none() {
+        if symlink_extended(&target.bytes).is_none() {
             return Ok(None);
         }
         Some(target)
@@ -80,7 +77,7 @@ pub(super) fn projected_entry(
             projection,
             directory,
             lookup.metadata.windows_attributes,
-            target.bytes(),
+            &target.bytes,
         )
     });
     Ok(Some(ProjectedEntry {
@@ -148,7 +145,7 @@ pub(super) fn resolves_to_directory(
             ) else {
                 return false;
             };
-            decode_utf16_name(next.bytes())
+            decode_utf16_name(&next.bytes)
                 .is_some_and(|next| resolves_to_directory(projection, &parent, &next, hops + 1))
         }
         _ => false,
@@ -206,10 +203,9 @@ pub(super) fn source_listing(
             projection.work,
         )?;
         for entry in page_entries {
-            projection.work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
+            projection
+                .work
+                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
             let lookup = MountLookup {
                 node: entry.node,
                 metadata: entry.metadata,
@@ -226,10 +222,9 @@ pub(super) fn source_listing(
                 let mut high = entries.0.len();
                 let mut collision = false;
                 while low < high {
-                    projection.work.charge(crate::WorkCounters {
-                        items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    })?;
+                    projection
+                        .work
+                        .charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
                     let middle = low + (high - low) / 2;
                     // SAFETY: both names include NUL and retain their allocations.
                     let order = unsafe {
@@ -249,11 +244,11 @@ pub(super) fn source_listing(
                     }
                 }
                 if !collision {
-                    projection.work.charge(crate::WorkCounters {
-                        bytes_copied: ((entries.0.len() - low) * size_of::<ProjectedEntry>())
-                            as u64,
-                        ..crate::WorkCounters::UNCHARGED
-                    })?;
+                    projection
+                        .work
+                        .charge(crate::materializer::NativeResourceCredit::Copy.delta(
+                            ((entries.0.len() - low) * size_of::<ProjectedEntry>()) as u64,
+                        ))?;
                     entries.0.insert(low, projected);
                 }
             }
@@ -263,10 +258,9 @@ pub(super) fn source_listing(
         };
         let next_ownership = ownership.split_owned_payload(next.capacity() as u64)?;
         for (previous, _) in &cursors.0 {
-            projection.work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
+            projection
+                .work
+                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
             if previous == &next {
                 return Err(MountSourceError::Invalid(
                     "directory listing repeated a cursor".to_owned().into(),

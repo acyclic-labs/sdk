@@ -28,8 +28,7 @@ impl ObjectContentStore {
         file: &FileRef,
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let grant = ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
-        grant.require_file_read(file, None)?;
+        ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
         self.read_content(file, maximum_bytes).await
     }
 

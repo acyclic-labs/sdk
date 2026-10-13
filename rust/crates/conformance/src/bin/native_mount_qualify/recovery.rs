@@ -83,43 +83,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         }
         fs::create_dir(mount)?;
         let runtime = tokio::runtime::Runtime::new()?;
-        runtime.block_on(async {
-            eprintln!("qualification phase: reopening durable crash workspace");
-            let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
-            let workspace = engine
-                .open_workspace(
-                    "crash-owner",
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
-            if workspace
-                .read(
-                    "/alive.txt",
-                    16,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?
-                .as_ref()
-                != b"alive"
-            {
-                return Err::<(), Failure>("durable workspace lost crash fixture".into());
-            }
-            eprintln!("qualification phase: remounting the original ProjFS destination");
-            let resumed = workspace.mount(mount, MountOptions::read_write()).await?;
-            eprintln!("qualification phase: reading durable ProjFS content");
-            let contents = fs::read(mount.join("alive.txt"))?;
-            resumed.unmount().await?;
-            if contents != b"alive" {
-                return Err::<(), Failure>("recovered mount lost the durable workspace".into());
-            }
-            Ok::<(), Failure>(())
-        })?;
+        runtime.block_on(verify_remounted_workspace(crash_root, mount))?;
         if !preserved.is_dir() {
             return Err("recovered mount discarded the preserved residue".into());
         }
@@ -195,4 +159,43 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     })
+}
+
+#[cfg(windows)]
+async fn verify_remounted_workspace(crash_root: &Path, mount: &Path) -> Result<(), Failure> {
+    eprintln!("qualification phase: reopening durable crash workspace");
+    let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
+    let workspace = engine
+        .open_workspace(
+            "crash-owner",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
+    if workspace
+        .read(
+            "/alive.txt",
+            16,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?
+        .as_ref()
+        != b"alive"
+    {
+        return Err::<(), Failure>("durable workspace lost crash fixture".into());
+    }
+    eprintln!("qualification phase: remounting the original ProjFS destination");
+    let resumed = workspace.mount(mount, MountOptions::read_write()).await?;
+    eprintln!("qualification phase: reading durable ProjFS content");
+    let contents = fs::read(mount.join("alive.txt"))?;
+    resumed.unmount().await?;
+    if contents != b"alive" {
+        return Err::<(), Failure>("recovered mount lost the durable workspace".into());
+    }
+    Ok::<(), Failure>(())
 }

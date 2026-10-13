@@ -1,6 +1,6 @@
 use super::*;
 use crate::conversation::{ContentGrant, FileRef};
-use crate::runtime::{TaskSpawner as _, TaskStateProvider};
+use crate::runtime::TaskSpawner as _;
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
     FilesystemTaskRuntime::open(
@@ -220,7 +220,8 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
         old_generation.as_resource().key(),
         None,
         None,
-    )?.0;
+    )?
+    .0;
     assert!(
         owner
             .list(&project, "src", "src", &wrong_generation, None, 1)
@@ -248,7 +249,18 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     let parent = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     for id in [121, 122, 123] {
-        let child = runtime.harness().registered_admission(OperationId::from_bytes([id; 16]), "test.deadline", "1", json!({}), Some((parent, &fixture.scope)), None, None)?.0;
+        let child = runtime
+            .harness()
+            .registered_admission(
+                OperationId::from_bytes([id; 16]),
+                "test.deadline",
+                "1",
+                json!({}),
+                Some((parent, &fixture.scope)),
+                None,
+                None,
+            )?
+            .0;
         assert!(matches!(
             runtime
                 .task_host()
@@ -275,7 +287,18 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
             .is_err()
     );
     assert!(runtime.children(parent, None, None, 0).await.is_err());
-    let child = runtime.harness().registered_admission(OperationId::from_bytes([124; 16]), "test.deadline", "1", json!({}), Some((parent, &fixture.scope)), None, None)?.0;
+    let child = runtime
+        .harness()
+        .registered_admission(
+            OperationId::from_bytes([124; 16]),
+            "test.deadline",
+            "1",
+            json!({}),
+            Some((parent, &fixture.scope)),
+            None,
+            None,
+        )?
+        .0;
     assert!(matches!(
         runtime.task_host().admit_owned(child, fence).await?,
         Admission::Accepted(_)
@@ -423,11 +446,12 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     runtime.task_host().start_task(&lease, &mut None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(ModelFixture(AtomicUsize::new(0)));
+    let turn = OperationId::from_bytes([130; 16]);
     let execution = runtime
         .stock_execution(
             task,
             LeaseFence::from(&lease.reservation),
-            OperationId::from_bytes([130; 16]),
+            turn,
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
@@ -643,7 +667,10 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         "restore-concurrent",
     )
     .await?;
-    let paths = vec!["src/a.txt".into()];
+    let paths = vec![
+        "src/a.txt".into(),
+        crate::filesystem::content_metadata_path_io("src/a.txt", true, None)?,
+    ];
     assert!(matches!(
         workspace
             .restore_paths_from(
@@ -934,7 +961,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         .stock_execution(
             task,
             LeaseFence::from(&lease.reservation),
-            input.operation_id,
+            turn,
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),

@@ -21,17 +21,24 @@ macro_rules! typed_reference {
         impl $name {
             $($constructor)*
 
-            pub(crate) fn from_resource_with_work(
+            pub(crate) fn from_resource(
                 resource: ResourceRef,
                 work: &mut Option<&mut dyn HistoryIo>,
             ) -> Result<Self> {
-                let value = Self(resource);
-                value.validate(work)?;
-                Ok(value)
+                if let Some(io) = work.as_deref_mut() {
+                    io.check_cancellation()?;
+                }
+                // ResourceRef already owns validated immutable fields.
+                if resource.kind() != ResourceKind::$kind {
+                    return Err(invalid("typed resource kind mismatch"));
+                }
+                Ok(Self(resource))
             }
+
             pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
                 self.0.logical_owned_bytes()
             }
+
             /// Borrows the shared provider-neutral representation.
             #[must_use]
             pub const fn as_resource(&self) -> &ResourceRef {

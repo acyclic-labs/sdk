@@ -26,14 +26,14 @@ impl ToolPolicy for OpaqueRouter {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn native_work(
+pub(super) fn native_work(
     cancellation: &acyclic_fs::CancellationToken,
 ) -> acyclic_fs::NativeMaterializationWork {
     acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(256, 16_384),
+        acyclic_fs::performance::work_budget(256, 65_536),
         cancellation,
     )
-        .expect("fixture ledger")
+    .expect("fixture ledger")
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -247,7 +247,12 @@ fn native_policy_identity_denies_cancelled_and_exhausted_copy_before_strings() -
         acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
     assert!(matches!(
         policy.identity_with_native_work(&work),
-        Err(Error::NativeWork { .. })
+        Err(Error::NativeFilesystem { source, custody: None })
+            if matches!(*source, acyclic_fs::FsError::NativeKernel(
+                acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_copied", .. }
+                )
+            ))
     ));
     let work = native_work(&cancellation);
     cancellation.cancel();
@@ -314,7 +319,7 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
     ));
     let mut io =
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
-    let prompt = io.clone_text("Approve ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»?")?;
+    let prompt = io.clone_text("Approve \u{03bb}?")?;
     let request = Interaction::Approval {
         prompt,
         operation_id: OperationId::new(),
