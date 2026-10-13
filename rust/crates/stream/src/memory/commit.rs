@@ -354,7 +354,9 @@ impl MemoryStream {
         }
         drop(conflicts);
         drop(output_claim);
-        validate_commit_authority(state, &request)?;
+        crate::preparation::authority(&request, |path| {
+            state.paths.get(path).map(|path| path.tail)
+        })?;
         reserve_coordinated(state, &request, self.limits)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
