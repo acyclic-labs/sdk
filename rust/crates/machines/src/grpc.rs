@@ -2353,6 +2353,7 @@ mod tests {
         }));
         (
             OperationService {
+                guest: None,
                 expected_key: key,
                 expected_operation: operation,
                 recovered: recovered_suspend(operation, operation, machine),
