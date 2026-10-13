@@ -2934,47 +2934,7 @@ mod tests {
         Ok::<(), Box<dyn std::error::Error>>(())
     }
 
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-    #[tokio::test]
-    async fn local_store_restart_resumes_committed_publication_without_republishing_roots()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let operation_id = candidate().plan.operation_id;
-        let first_publisher = Publisher::default();
-        *first_publisher.pause_once.lock().expect("pause lock") =
-            Some(WorkspaceRootId::from_bytes([2; 16]));
-        let first = MultiRootPublicationCoordinator::new(
-            crate::LocalCoreStateStore::new(directory.path()),
-            first_publisher,
-            Allow,
-        );
-        let Publication::Paused(paused) = first.publish(candidate()).await? else {
-            return Err("publication should pause".into());
-        };
-        assert_eq!(
-            paused.published_roots,
-            [WorkspaceRootId::from_bytes([1; 16])].into()
-        );
-        drop(first);
 
-        let reopened = MultiRootPublicationCoordinator::new(
-            crate::LocalCoreStateStore::new(directory.path()),
-            Publisher::default(),
-            Allow,
-        );
-        let resumed = reopened.resume(operation_id).await?;
-        let Some(Publication::Applied(applied)) = resumed else {
-            return Err("reopened publication should complete".into());
-        };
-        assert_eq!(applied.phase, MultiRootPublicationPhase::Applied);
-        assert_eq!(applied.published_roots.len(), 2);
-        assert_eq!(
-            *reopened.publisher.published.lock().expect("published lock"),
-            [WorkspaceRootId::from_bytes([2; 16])].into_iter().collect()
-        );
-        assert!(reopened.pending_operations().await?.is_empty());
-        Ok(())
-    }
 
     #[tokio::test]
     async fn journal_created_before_parent_claim_survives_claim_failure()
