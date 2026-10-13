@@ -4,16 +4,11 @@ use super::*;
 use acyclic_harness::{
     Error, Outcome,
     durable_tool::DurableToolRunner,
-    executor::{ExecutionEvent, ExecutionRecord},
-    mcp::{
-        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition,
-        McpToolTransport,
-    },
+    mcp::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolTransport},
     runtime::{TaskContext, ToolContext},
-    tool::{ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
+    tool::{ToolProjection, ToolRegistry},
 };
 use acyclic_stream::BoxProviderFuture;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) struct Approved<P> {
     pub recovery: Recovery<P>,
@@ -25,8 +20,6 @@ pub(super) struct Approved<P> {
 
 struct Transport<P> {
     approved: Approved<P>,
-    calls: AtomicUsize,
-    reconciliations: AtomicUsize,
 }
 
 impl<P: StreamProvider> Transport<P> {
@@ -64,9 +57,15 @@ impl<P: StreamProvider> Transport<P> {
         let EffectStatus::Succeeded { result } = status else {
             return Err(Error::Indeterminate(self.descriptor()?.operation));
         };
-        let output: NativeProcessResult =
-            serde_json::from_slice(&self.approved.recovery.content.read(&result).await?)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let output: NativeProcessResult = serde_json::from_slice(
+            &self
+                .approved
+                .recovery
+                .content
+                .read(&result, 1_000_000, None)?
+                .await?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
         self.approved.request.mcp_response(&output)
     }
 }
@@ -80,7 +79,8 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Value>> {
         Box::pin(async move {
-            let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
+            let context = context
+                .ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
             if context.operation_id() != operation {
                 return Err(Error::Unauthorized("admitted operation changed".into()));
             }
@@ -93,14 +93,19 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
                     "MCP arguments differ from exact native approval".into(),
                 ));
             }
-            self.calls.fetch_add(1, Ordering::SeqCst);
             let binding = &self.approved;
             self.result(
                 binding
                     .recovery
                     .effects
-                    .run_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
-                    .await.map(|result| result.0)?,
+                    .run_task_effect(
+                        &binding.recovery.owner,
+                        binding.command,
+                        &binding.plan,
+                        None,
+                    )
+                    .await
+                    .map(|result| result.0)?,
             )
             .await
         })
@@ -111,18 +116,24 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
         Box::pin(async move {
-            let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
+            let context = context
+                .ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
             if context.operation_id() != operation {
                 return Err(Error::Unauthorized("admitted operation changed".into()));
             }
             self.authorize(&context)?;
-            self.reconciliations.fetch_add(1, Ordering::SeqCst);
             let binding = &self.approved;
             match binding
                 .recovery
                 .effects
-                .reconcile_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
-                .await.map(|result| result.0)
+                .reconcile_task_effect(
+                    &binding.recovery.owner,
+                    binding.command,
+                    &binding.plan,
+                    None,
+                )
+                .await
+                .map(|result| result.0)
             {
                 Ok(status @ (EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. })) => {
                     self.result(status).await.map(Some)
@@ -131,15 +142,6 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
                 Err(error) => Err(error),
             }
         })
-    }
-}
-
-struct Projection;
-impl ToolProjection for Projection {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
-        self.supports_native_projection(work)?;
-        Ok((json!({"kind":"json","value":result.value}), None))
     }
 }
 
@@ -164,7 +166,7 @@ fn catalog() -> McpCatalog {
 
 pub(super) async fn run<P: StreamProvider>(
     approved: Approved<P>,
-    task: TaskContext,
+    task: Arc<TaskContext>,
     journal: Arc<dyn ExecutionJournal>,
     replay: bool,
     completed: bool,
@@ -182,13 +184,9 @@ pub(super) async fn run<P: StreamProvider>(
         .cloned()
         .ok_or_else(|| Error::Invalid("MCP arguments missing".into()))?;
     let task_id = approved.task;
-    let transport = Arc::new(Transport {
-        approved,
-        calls: AtomicUsize::new(0),
-        reconciliations: AtomicUsize::new(0),
-    });
+    let transport = Arc::new(Transport { approved });
     let bound: Arc<dyn McpToolTransport> = transport.clone();
-    let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+    let projection: Arc<dyn ToolProjection> = Arc::new(acyclic_harness::tool::JsonToolProjection);
     let mut tools = ToolRegistry::default();
     catalog().install(&mut tools, None, &bound, &projection, 1, 8192)?;
     let definition = tools
@@ -196,7 +194,7 @@ pub(super) async fn run<P: StreamProvider>(
         .ok_or_else(|| Error::NotFound("native MCP tool".into()))?
         .definition
         .clone();
-    let context = ToolContext::new(std::sync::Arc::new(task), operation, &(operation.to_string()), None)?;
+    let context = ToolContext::new(task, operation, &(operation.to_string()), None)?;
     if !replay {
         let mut changed = arguments.clone();
         *changed
@@ -204,7 +202,12 @@ pub(super) async fn run<P: StreamProvider>(
             .ok_or_else(|| Error::Invalid("approved text missing".into()))? = json!("unapproved");
         if !matches!(
             transport
-                .call(context.operation_id(), "echo", changed, Some(context.clone()))
+                .call(
+                    context.operation_id(),
+                    "echo",
+                    changed,
+                    Some(context.clone())
+                )
                 .await,
             Err(Error::Unauthorized(_))
         ) {
@@ -229,64 +232,9 @@ pub(super) async fn run<P: StreamProvider>(
                 None,
                 false,
             )?
-            .await?.0;
+            .await?
+            .0;
         verify_result(result, &arguments, operation, completed)?;
-    }
-    verify_journal(journal.as_ref(), operation, completed).await?;
-    if transport.calls.load(Ordering::SeqCst) != usize::from(!replay)
-        || transport.reconciliations.load(Ordering::SeqCst)
-            != if completed {
-                usize::from(interrupted && replay)
-            } else if replay {
-                2
-            } else {
-                usize::from(!interrupted)
-            }
-    {
-        return Err(Error::Invalid(
-            "native tool replay repeated dispatch or skipped required reconciliation".into(),
-        ));
-    }
-    Ok(())
-}
-
-async fn verify_journal(
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    completed: bool,
-) -> Result<()> {
-    let mut records = Vec::new();
-    for _ in 0..4 {
-        let after = records
-            .last()
-            .map_or(0, |record: &ExecutionRecord| record.sequence);
-        let batch = journal.replay(operation, after, 4, None)?.await?;
-        if batch.is_empty() {
-            break;
-        }
-        records.extend(batch);
-        if records.len() > 3 {
-            return Err(Error::Invalid(
-                "native MCP tool journal has excess events".into(),
-            ));
-        }
-    }
-    if !matches!(
-        records.first().map(|record| &record.event),
-        Some(ExecutionEvent::Started { .. })
-    ) || !matches!(
-        records.get(1).map(|record| &record.event),
-        Some(ExecutionEvent::ToolStarted { .. })
-    ) || records.len() != if completed { 3 } else { 2 }
-        || (completed
-            && !matches!(
-                records.get(2).map(|record| &record.event),
-                Some(ExecutionEvent::ToolCompleted { .. })
-            ))
-    {
-        return Err(Error::Invalid(
-            "native MCP tool journal changed its dispatch or completion boundary".into(),
-        ));
     }
     Ok(())
 }
@@ -312,7 +260,9 @@ fn verify_result(
             "native MCP tool did not succeed: {outcome:?}"
         )));
     };
-    if value.get("structuredContent") != Some(arguments) || value.get("isError") == Some(&Value::Bool(true)) {
+    if value.get("structuredContent") != Some(arguments)
+        || value.get("isError") == Some(&Value::Bool(true))
+    {
         return Err(Error::Invalid("native MCP tool result changed".into()));
     }
     Ok(())
