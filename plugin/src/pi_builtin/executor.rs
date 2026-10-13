@@ -18,6 +18,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
     fn execute<'a>(
         &'a self,
         _invocation: acyclic_harness::tool::ToolInvocation,
+        _context: Option<acyclic_harness::runtime::ToolContext>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_harness::tool::ToolResult>> {
         Box::pin(async {
             Err(denied(
@@ -29,6 +30,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
     fn reconcile<'a>(
         &'a self,
         _invocation: acyclic_harness::tool::ToolInvocation,
+        _context: Option<acyclic_harness::runtime::ToolContext>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<acyclic_harness::tool::ToolResult>>>
     {
         Box::pin(async {

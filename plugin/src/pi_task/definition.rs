@@ -14,8 +14,20 @@ impl PiTaskMachine {
             bytes_hashed: source_bytes,
             ..acyclic_fs::WorkCounters::default()
         })?;
-        let mut identity =
-            MachineIdentity::new_with_native_work("acyclic.pi", "1", machine_digest(), work)?;
+        let mut name = work.display("acyclic.pi")?;
+        let mut version = work.display("1")?;
+        name.1.absorb(&mut version.1)?;
+        let mut identity = (
+            MachineIdentity {
+                name: name.0,
+                version: version.0,
+                digest: machine_digest(),
+            },
+            name.1,
+        );
+        identity.0.validate(&mut Some(
+            &mut &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        ))?;
         let mut schema = crate::pi_root_provider::guarded_pi_decode(
             STATE_SCHEMA.as_bytes(),
             NATIVE_METADATA_MAXIMUM,

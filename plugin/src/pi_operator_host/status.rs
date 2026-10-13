@@ -36,7 +36,7 @@ pub(super) struct PiPendingResponse<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) root: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) paths: Option<&'a [String]>,
+    pub(super) paths: Option<&'a [Value]>,
 }
 #[derive(Serialize)]
 pub(super) struct PiPassiveRpcResponse<'a, T: Serialize> {
@@ -70,11 +70,13 @@ pub(super) async fn observe_writeback(
     let (journal, id) =
         conversation_journal(filesystem, stream, protected, &descriptor.into(), work)?;
     let operation = acyclic_fs::OperationId::from_bytes(descriptor.operation.into_bytes());
-    let store = resources.store.materialization_with_work(work.clone());
+    let store = resources.store.materialization(work.clone());
     let native = acyclic_fs::MaterializationJournalStore::load(&store, operation)
         .await
         .map_err(|error| match error {
-            acyclic_fs::LocalCoreStateStoreError::MaterializationWork(cause) => Error::from(cause),
+            acyclic_fs::LocalCoreStateStoreError::LazyWork(source) => {
+                crate::pi_fork_host::native_lazy_error(source)
+            }
             source => Error::NativeWorkspacePublication {
                 source: acyclic_fs::NativeWorkspacePublicationError::State(source),
                 custody: None,
@@ -140,7 +142,7 @@ pub(crate) async fn passive_status(
     sdk_operation: &str,
     source: acyclic_harness::TaskId,
     root: &str,
-    paths: &[String],
+    paths: &[Value],
     work: &NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     if caller != protected.policy().root_task {
@@ -172,7 +174,13 @@ pub(crate) async fn passive_status(
         || prepared.command.caller != caller
         || prepared.command.source != source
         || prepared.command.root.as_deref() != Some(root)
-        || prepared.command.paths != paths
+        || prepared.command.paths.len() != paths.len()
+        || prepared
+            .command
+            .paths
+            .iter()
+            .zip(paths)
+            .any(|(expected, supplied)| supplied.as_str() != Some(expected.as_str()))
     {
         return Err(denied(
             "passive status changed the original operation's selected source, Root or paths",

@@ -21,10 +21,10 @@ use acyclic_harness::{
     effect_host::TaskEffectPlan,
     filesystem::{
         BorrowedNativeVolumeBinding, EFFECT_TASK_COMMAND_KIND, NATIVE_PROCESS_EFFECT_KIND,
-        NativeExistingLazyVolume, NativePreparationRoot, NativeProcessRequest, NativeViewManifest,
-        NativeViewOptions, NativeVolumeMapping, NativeVolumeNamespace, NativeVolumeView,
+        NativePreparationRoot, NativeProcessRequest, NativeViewManifest, NativeViewOptions,
+        NativeVolumeMapping, NativeVolumeNamespace, NativeVolumeView,
     },
-    runtime::{NativeVolumeCallbackGuard, TaskContext},
+    runtime::TaskContext,
     workflow::WorkflowCommand,
 };
 use serde::{Deserialize, Serialize};

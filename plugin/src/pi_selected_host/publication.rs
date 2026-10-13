@@ -78,17 +78,12 @@ impl PiControlHost<'_> {
         let destination_guard = if let Some(live) = &live {
             Some(
                 live.context
-                    .volume_callback_guard(&live.owner, &live.original_work)
-                    .await?
-                    .for_volume(&live.owner, volume, true, &publication_work)?,
+                    .volume_callback(&live.owner, volume, true, &publication_work)?,
             )
         } else {
             None
         };
-        let caller_guard = context
-            .volume_callback_guard(owner, source._custody.0.work())
-            .await?
-            .for_volume(owner, volume, true, &publication_work)?;
+        let caller_guard = context.volume_callback(owner, volume, true, &publication_work)?;
         caller_guard.check_write(&publication_work)?.await?;
         if let Some(guard) = &destination_guard {
             guard.check_write(&publication_work)?.await?;

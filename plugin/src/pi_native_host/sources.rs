@@ -34,7 +34,11 @@ impl PiNativeCommandHost {
         observed: bool,
     ) -> Result<()> {
         let original_work = prepared._metadata_custody.work().clone();
-        prepared.report.validate_with_native_work(&original_work)?;
+        prepared
+            .report
+            .validate(&mut Some(&mut &PreparationIo::from_native_work(
+                &original_work,
+            )?))?;
         let binding = &prepared.binding;
         binding.validate_with_native_work(
             None,
@@ -454,7 +458,7 @@ impl PiNativeCommandHost {
         if !outcome
             .0
             .as_ref()
-            .is_some_and(|outcome| outcome.is_terminal())
+            .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
         {
             let original_work = entry
                 .handles

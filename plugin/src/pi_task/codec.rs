@@ -97,7 +97,7 @@ pub(super) fn native_metadata_quota<T>(
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn native_metadata<T: serde::de::DeserializeOwned>(
     value: &impl Serialize,
-    schema: acyclic_harness::JsonValueSchema,
+    schema: &'static acyclic_harness::JsonValueSchema,
     label_bytes: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(T, acyclic_fs::NativeAllocation)> {

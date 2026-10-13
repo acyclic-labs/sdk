@@ -55,7 +55,9 @@ impl<'a> PiForkCoordinator<'a> {
                 )?,
                 _ => return Ok(None),
             };
-            report.0.validate_with_native_work(work)?;
+            report
+                .0
+                .validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?;
             if !self.same_payload(&plan.request.payload, &report.0.request)? {
                 return Err(Error::NativeBoundary {
                     code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -168,8 +170,8 @@ impl<'a> PiForkCoordinator<'a> {
                 &child_verifier.0,
                 &mut Some(&mut io),
             )?;
-            let seed = report.0.clone_with_native_work(work)?;
-            let seed_value = seed.0.into_seed()?;
+            let seed = report.0.copy(&mut Some(&mut io))?;
+            let seed_value = seed.0.into_seed(&mut Some(&mut io))?;
             child
                 .verify_published_child_with_work(
                     &parent,
@@ -335,10 +337,12 @@ impl<'a> PiForkCoordinator<'a> {
                 )),
             )
             .await?;
-        let snapshot = Snapshot::decode_with_native_work(
+        let mut snapshot_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let snapshot = Snapshot::decode(
             checkpoint.as_ref(),
             plan.request.maximum_bytes,
-            work,
+            &mut Some(&mut snapshot_io),
         )?;
         if snapshot.authority != request.0.parent || snapshot.revision != request.0.parent_revision
         {
@@ -354,7 +358,13 @@ impl<'a> PiForkCoordinator<'a> {
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let reducer = Reducer::restore_native(snapshot, verifier.0, SchemaRegistry::new(), work)?;
+        let reducer = Reducer::restore(
+            snapshot,
+            verifier.0,
+            SchemaRegistry::new(),
+            &mut Some(&mut snapshot_io),
+        )?;
+        snapshot_io.absorb_native_custody(verifier.1)?;
         let source_read = match &request.0.authorized_source {
             Some(authorization) => {
                 let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
@@ -380,15 +390,23 @@ impl<'a> PiForkCoordinator<'a> {
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
-            "local", "stream", "1", work,
+        let mut provider_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let reference = acyclic_harness::resources::ProviderRef::new(
+            provider_io.clone_text("local")?,
+            provider_io.clone_text("stream")?,
+            provider_io.clone_text("1")?,
+            &mut Some(&mut provider_io),
         )?;
+        let provider = (reference, provider_io.into_custody()?);
         let restored = acyclic_harness::filesystem::restore_recursive_fork_source(
             self.filesystem.clone(),
             &self.stream,
             (
                 reducer,
-                Some(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+                Some(PreparationIo::from_native_custody(
+                    snapshot_io.into_custody()?,
+                )),
             ),
             &verifier.0,
             &authority.0.2,

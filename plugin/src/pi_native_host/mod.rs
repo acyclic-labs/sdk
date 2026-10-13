@@ -10,7 +10,6 @@ use crate::{
     pi_task::{NATIVE_LAUNCH_TASK_COMMAND_KIND, PiTaskExecution, PiTaskInput},
 };
 use acyclic_fs::NativeAllocation;
-use acyclic_fs::native_mount::NativeMountSession;
 use acyclic_fs::{
     CancellationToken, Digest, GenerationId, LazySnapshotRef, MeasuredResult,
     NativeMaterializationWork, OperationReceipt, PublicationPermit, WorkBudget, WorkCounters,
@@ -28,10 +27,9 @@ use acyclic_harness::{
     effects::EffectRegistry,
     filesystem::{
         BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
-        NativeProcessAuthority, NativeProcessProvider, NativePublicationCleanup,
-        NativeRecordedPreparation, NativeVolumeNamespace, NativeVolumeView,
-        RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection,
-        TaskWorkerAttempt, workspace_ref,
+        NativeProcessAuthority, NativeProcessProvider, NativeRecordedPreparation,
+        NativeVolumeNamespace, NativeVolumeView, RecursiveSourceSnapshot, TaskCommandHost,
+        TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt, workspace_ref,
     },
     fork::ForkReport,
     resources::GenerationRef,
@@ -124,16 +122,25 @@ pub(crate) fn validate_child_binding(
     Ok(())
 }
 
-fn generation(file: &acyclic_harness::conversation::FileRef) -> Result<GenerationRef> {
+fn generation(
+    file: &acyclic_harness::conversation::FileRef,
+    work: &NativeMaterializationWork,
+) -> Result<(GenerationRef, NativeAllocation)> {
     let mut digest = [0; 32];
     hex::decode_to_slice(file.version(), &mut digest)
         .map_err(|_| Error::Invalid("Pi session lacks its exact immutable generation".into()))?;
-    GenerationRef::new(file.volume().provider().clone(), digest.into(), None)
+    GenerationRef::new(file.volume().provider(), &digest, None, Some(work))
+        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))
 }
 
 fn history_limits(context: &TaskContext) -> Result<HistoryReadLimits> {
     let limits = HistoryReadLimits {
-        maximum_events: context.scope().limits().context_messages,
+        maximum_events: context
+            .scope()
+            .limits()
+            .context_messages
+            .try_into()
+            .map_err(|_| unauthorized("Pi native history event limit exceeds the SDK count"))?,
         maximum_bytes: context
             .scope()
             .limits()

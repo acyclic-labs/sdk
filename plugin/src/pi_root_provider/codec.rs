@@ -86,7 +86,7 @@ fn encode_pi<T>(
     });
     match result {
         Ok(value) => Ok((value, custody)),
-        Err(Error::NativeEncode {
+        Err(Error::NativeJson {
             code,
             source,
             custody: None,
@@ -97,7 +97,7 @@ fn encode_pi<T>(
             if custody.bytes() != 0 {
                 diagnostic.absorb(&mut custody)?;
             }
-            Err(Error::NativeEncode {
+            Err(Error::NativeJson {
                 code,
                 source,
                 custody: Some(diagnostic),
@@ -168,7 +168,7 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
     operation: OperationId,
     label: &str,
     maximum_owned_bytes: u64,
-    value_schema: JsonValueSchema,
+    value_schema: &'static JsonValueSchema,
     schema_label_bytes: u64,
     context: &TaskContext,
     work: &NativeMaterializationWork,
@@ -238,7 +238,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     maximum_bytes: u64,
     maximum_owned_bytes: u64,
     code: ErrorCode,
-    value_schema: JsonValueSchema,
+    value_schema: &'static JsonValueSchema,
     schema_label_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
@@ -297,11 +297,11 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
             )?)?;
             Ok((value, custody))
         }
-        Err(Error::NativeDecode {
+        Err(Error::NativeJson {
             code,
             source,
             custody: None,
-        }) => Err(Error::NativeDecode {
+        }) => Err(Error::NativeJson {
             code,
             source,
             custody: Some(custody),

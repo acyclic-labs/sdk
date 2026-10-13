@@ -281,7 +281,7 @@ impl Serialize for PiCallerEnvironment<'_> {
     }
 }
 
-fn require_caller_environment(environment: &BTreeMap<String, String>) -> Result<()> {
+pub(super) fn require_caller_environment(environment: &BTreeMap<String, String>) -> Result<()> {
     if environment
         .get("ACYCLIC_PI_CALLER")
         .is_none_or(String::is_empty)

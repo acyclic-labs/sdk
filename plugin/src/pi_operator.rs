@@ -69,7 +69,7 @@ pub(crate) struct PiOperatorFileEvidence {
     pub(crate) maximum_bytes: u32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PiOperatorBody {
     Inspect {
@@ -150,7 +150,7 @@ impl PiOperatorRequest {
             std::borrow::Cow::Borrowed(body_value),
             bounds,
             0,
-            acyclic_harness::wire::ErrorCode::Invalid,
+            Some(acyclic_harness::wire::ErrorCode::Invalid),
             acyclic_harness::JsonValueSchema::None,
             &mut |charge| operator_decode_charge(charge, work, &mut custody),
         );
@@ -498,11 +498,11 @@ fn operator_decode_error(error: Error, custody: NativeAllocation) -> Error {
             cause,
             custody: Some(custody),
         },
-        Error::NativeDecode {
+        Error::NativeJson {
             code,
             source,
             custody: None,
-        } => Error::NativeDecode {
+        } => Error::NativeJson {
             code,
             source,
             custody: Some(custody),

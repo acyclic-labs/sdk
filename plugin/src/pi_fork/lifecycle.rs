@@ -184,7 +184,9 @@ impl<'a> PiForkCoordinator<'a> {
             }
             None | Some(Outcome::Indeterminate { .. }) => return Ok(None),
         };
-        report.0.validate_with_native_work(work)?;
+        report
+            .0
+            .validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?;
         if !self.same_payload(&plan.request.payload, &report.0.request)? {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -538,29 +540,32 @@ impl<'a> PiForkCoordinator<'a> {
             )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
+        let verifier_io = PreparationIo::from_native_work(work)?;
         let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
-            acyclic_harness::filesystem::FilesystemForkVerifier::new_with_native_work(
+            acyclic_harness::filesystem::FilesystemForkVerifier::new(
                 self.filesystem.clone(),
                 plan.request.maximum_bytes,
-                &verifier.0,
-                &authority.0.2,
-                work,
-            )?
-            .into_native_shared(work)?;
-        let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
-            "local", "stream", "1", work,
+                None,
+                Some((&verifier.0, &authority.0.2, &verifier_io)),
+            )?;
+        let mut provider_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let provider = acyclic_harness::resources::ProviderRef::new(
+            provider_io.clone_text("local")?,
+            provider_io.clone_text("stream")?,
+            provider_io.clone_text("1")?,
+            &mut Some(&mut provider_io),
         )?;
+        let stream_provider = (provider, provider_io.into_custody()?);
         let history: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
-            acyclic_harness::fork::StreamHistoryForkVerifier::new_with_native_work(
+            acyclic_harness::fork::StreamHistoryForkVerifier::new(
                 &stream_provider.0,
-                work,
-            )?
-            .into_native_shared(work)?;
-        let forks = acyclic_harness::fork::CompositeForkVerifier::new_with_native_work(
+                &mut Some(&mut &verifier_io),
+            )?;
+        let forks = acyclic_harness::fork::CompositeForkVerifier::new(
             &[filesystem, history],
-            work,
-        )?
-        .into_native_shared(work)?;
+            &mut Some(&mut &verifier_io),
+        )?;
         let parent = {
             let mut io = acyclic_harness::store::HistoryWork::new(
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,

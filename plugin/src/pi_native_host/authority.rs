@@ -111,9 +111,7 @@ impl PiNativeCommandHost {
             .journal_owner(
                 task,
                 fence,
-                Some(&acyclic_harness::executor::PreparationIo::from_native_work(
-                    work,
-                )?),
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
             )
             .await?
             .into_native_shared(work)?;
@@ -175,14 +173,14 @@ impl PiNativeCommandHost {
             .journal_owner(
                 owner.task_id(),
                 &context.owned_task_fence()?,
-                Some(&acyclic_harness::executor::PreparationIo::from_native_work(
-                    work,
-                )?),
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
             )
             .await?;
-        Journal::for_task_with_native_work(
+        let io = PreparationIo::from_native_work(work)?;
+        Journal::for_task(
             journal_owner,
             command,
+            context.id(),
             self.filesystem.clone(),
             &self.protected.policy().journal,
             &storage.verifier,
@@ -191,14 +189,14 @@ impl PiNativeCommandHost {
                 .policy()
                 .maximum_payload_bytes
                 .min(context.scope().limits().file_bytes),
-            work,
+            Some(&io),
         )?
-        .with_interaction_owner_with_native_work(
+        .with_interaction_owner(
             &interaction_verifier.0,
             &SchemaRegistry::new(),
             &conversation.0.2,
             &result.volume,
-            work,
+            Some(&io),
         )?
         .into_native_shared(work)
     }
@@ -242,7 +240,9 @@ impl PiNativeCommandHost {
         &self,
         context: &TaskContext,
         input: &PiTaskInput,
-        provider: &Arc<NativeProcessProvider<LocalStream>>,
+        provider: &Arc<
+            NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
+        >,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Effects>> {
         let content = self.result_bindings(context, input)?.reader;
@@ -252,11 +252,10 @@ impl PiNativeCommandHost {
             context.scope().grants(),
             work,
         )?;
-        let mut registry = EffectRegistry::new(Some(work))?
-            .with_result_resolver_with_native_work(content.clone(), work)?;
-        registry.register_with_native_work(provider.clone(), work)?;
+        let mut registry = EffectRegistry::new(Some(work), Some(content.clone()))?;
+        registry.register(provider.clone(), Some(work))?;
         let ((audience, issuer, scope), custody) = authorization;
-        Effects::new_with_native_work(
+        Effects::new(
             self.stream.clone(),
             audience,
             issuer,
@@ -264,10 +263,10 @@ impl PiNativeCommandHost {
             SchemaRegistry::new(),
             content,
             registry,
-            custody,
-            work,
+            Some(custody),
+            Some(work),
         )?
-        .into_arc_with_native_work(work)
+        .into_arc(work)
     }
 
     pub(super) async fn original_effect(
@@ -406,8 +405,8 @@ impl PiNativeCommandHost {
         };
         let retained = {
             let handles = entry.handles.lock().await;
-            if handles.scratch_gate.reservation.is_none()
-                || handles.project_gate.reservation.is_none()
+            if !matches!(&handles.scratch_gate.reservation, Some((_, _, Some(_))))
+                || !matches!(&handles.project_gate.reservation, Some((_, _, Some(_))))
             {
                 return Ok(None);
             }

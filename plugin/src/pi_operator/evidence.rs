@@ -57,7 +57,7 @@ pub(crate) async fn read_imported_selected_files(
         return Err(denied("file evidence changed its original selected import"));
     }
     let capability = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
-    let grants = acyclic_harness::Capabilities::new_with_native_work([capability.as_str()], work)?;
+    let grants = acyclic_harness::Capabilities::copy([capability.as_str()], work)?;
     let authorization = protected.conversation_authority_with_native_work(
         binding.task_id,
         binding.agent_id,

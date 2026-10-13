@@ -213,7 +213,7 @@ impl<'a> PiForkCoordinator<'a> {
     pub(super) fn native_copy<T: serde::de::DeserializeOwned, S: Serialize>(
         &self,
         value: &S,
-        schema: acyclic_harness::JsonValueSchema,
+        schema: &'static acyclic_harness::JsonValueSchema,
         work: &NativeMaterializationWork,
     ) -> Result<(T, acyclic_fs::NativeAllocation)> {
         let maximum = self.owner.policy().maximum_payload_bytes;
@@ -275,12 +275,13 @@ impl<'a> PiForkCoordinator<'a> {
                 )),
             )
             .await?;
-        acyclic_harness::resources::GenerationRef::new_with_native_work(
+        acyclic_harness::resources::GenerationRef::new(
             volume.provider(),
             head.id().digest().as_bytes(),
             None,
-            work,
+            Some(work),
         )
+        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))
     }
 
     #[allow(

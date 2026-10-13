@@ -1,11 +1,10 @@
 //! Native lifetime ownership in the existing session actor and task journals.
 
 use super::*;
-use TaskWorkerAttempt;
-use WorkPull;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::store::HistoryIo;
 use acyclic_harness::{Error, Result as RootResult};
+use acyclic_harness::{distributed::WorkPull, filesystem::TaskWorkerAttempt};
 use std::future::Future;
 
 async fn join_native_job<T>(
@@ -735,7 +734,16 @@ async fn original_native_first_dispatch_pending(
         return Ok(false);
     }
     let outcome = host.outcome_with_native_work(task, work)?.await?;
-    if host.cancellation_requested(task, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?)).await? || outcome.0.is_some() {
+    if host
+        .cancellation_requested(
+            task,
+            Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                work,
+            )?),
+        )
+        .await?
+        || outcome.0.is_some()
+    {
         return Ok(false);
     }
     let limits = acyclic_harness::store::HistoryReadLimits {
@@ -778,8 +786,6 @@ async fn original_native_first_dispatch_pending(
             acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
         )),
     )?;
-    let observed = history
-        .effect(&pin, effect, limits, Some(&mut io))
-        .await?;
+    let observed = history.effect(&pin, effect, limits, Some(&mut io)).await?;
     Ok(observed.is_none())
 }

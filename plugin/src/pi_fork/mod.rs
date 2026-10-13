@@ -52,11 +52,11 @@ pub(crate) fn project_snapshot(
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
     let native = crate::pi_root_provider::guarded_pi_value(&frozen, maximum, work)?;
-    let generation = acyclic_harness::resources::GenerationRef::new_with_native_work(
+    let generation = acyclic_harness::resources::GenerationRef::new(
         project.provider(),
         frozen.authored_generation.digest().as_bytes(),
         None,
-        work,
+        Some(work),
     )?;
     let mut io = acyclic_harness::store::HistoryWork::new(
         acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
@@ -69,7 +69,11 @@ pub(crate) fn project_snapshot(
             native_snapshot: Some(native.0),
         },
         slot,
-        [native.1, generation.1, io.into_custody()?],
+        [
+            native.1,
+            generation.1.expect("native generation custody"),
+            io.into_custody()?,
+        ],
     );
     for allocation in &mut owned.2 {
         owned.1.absorb(allocation)?;

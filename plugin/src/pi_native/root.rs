@@ -221,23 +221,15 @@ impl PiNativeRoot {
         binding: &PiTaskBinding,
         root_key: &str,
         workspace: &crate::LocalLazyWorkspace,
-        filesystem: Arc<crate::pi_native_host::PiNativeFilesystem>,
         original_generation: &acyclic_harness::resources::GenerationRef,
         authority: &(AuthorityVerifier, Scope, acyclic_fs::NativeAllocation),
-        publication: PublicationPermit,
         writable: bool,
         retained: &mut Option<Arc<crate::LocalSingleMount>>,
         retained_allocation: &mut Option<acyclic_fs::NativeAllocation>,
-        startup_owner: &mut Option<acyclic_fs::native_mount::NativeMountSession>,
         original_volume_work: &NativeMaterializationWork,
         meter: &NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<(
-        NativeVolumeMapping,
-        NativeExistingLazyVolume,
-        NativeVolumeCallbackGuard<acyclic_stream::LocalStream>,
-        acyclic_fs::NativeAllocation,
-    )> {
+    ) -> Result<(NativeVolumeMapping, acyclic_fs::NativeAllocation)> {
         let context = shared.as_ref();
         if !authority.2.work().shares_ledger(meter) || !original_volume_work.shares_ledger(meter) {
             return Err(acyclic_harness::Error::from(
@@ -289,18 +281,25 @@ impl PiNativeRoot {
         }
         let allocation = self.witnessed_allocation()?;
         let route = native_root_route(root_key, meter)?;
-        let mut path = meter.join_path(&allocation.root, Path::new(&route.0))?;
+        let mut path = meter.path(&allocation.root, Some(Path::new(&route.0)))?;
         if meter.root_identity(&allocation.root)? != allocation.expected_identity {
             return Err(Error::Conflict(
                 "Pi original native allocation was replaced".into(),
             ));
         }
-        let callback_guard = shared.volume_callback_guard(owner, meter).await?;
-        let actual = filesystem
-            .open_volume_with_native_work(volume, original_volume_work)
-            .await?;
+        let callback_guard =
+            shared.volume_callback(owner, volume, writable, original_volume_work)?;
+        let mut volume_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
+        );
+        if volume.storage_name(&mut Some(&mut volume_io))? != workspace.workspace().name().as_str()
+        {
+            return Err(invalid(
+                "Pi mounted workspace differs from its selected volume",
+            ));
+        }
         if retained.is_none() {
-            if startup_owner.is_some() || retained_allocation.is_some() {
+            if retained_allocation.is_some() {
                 return Err(Error::Indeterminate(OperationId::from_bytes(
                     self.task.into_bytes(),
                 )));
@@ -317,42 +316,26 @@ impl PiNativeRoot {
                 acyclic_fs::MountOptions::read_only()
             }
             .publication(acyclic_fs::MountPublication::Manual);
-            let source_guard =
-                callback_guard.for_volume(owner, volume, writable, original_volume_work)?;
             let mut allocation = original_volume_work.claim(
                 std::mem::size_of::<crate::LocalSingleMount>() as u64,
                 1,
                 acyclic_fs::WorkCounters::default(),
             )?;
-            let mut slot = Arc::<crate::LocalSingleMount>::new_uninit();
             let mut mount = match workspace
                 .mount_with_work(
                     path.0.as_path(),
                     options,
-                    Some(source_guard),
+                    Some(Arc::clone(&callback_guard)),
                     &original_volume_work,
                     cancellation,
                 )
                 .await
             {
                 Ok(mount) => mount,
-                Err(acyclic_fs::native_mount::MountLifecycleError::Native(
-                    acyclic_fs::native_mount::NativeMountError::StartupFailed(failure),
-                )) => {
-                    let (cause, owner) = failure.into_parts();
-                    *startup_owner = Some(owner);
-                    return Err(Error::from(
-                        acyclic_fs::native_mount::MountLifecycleError::Native(cause),
-                    ));
-                }
                 Err(cause) => return Err(Error::from(cause)),
             };
             let custody_failure = mount.retain_payload_allocation(&mut allocation).err();
-            Arc::get_mut(&mut slot)
-                .expect("new original mount slot is exclusive")
-                .write(mount);
-            // SAFETY: the exclusive slot contains the successful SDK mount.
-            *retained = Some(unsafe { slot.assume_init() });
+            *retained = Some(Arc::new(mount));
             if let Some(cause) = custody_failure {
                 *retained_allocation = Some(allocation);
                 if retained
@@ -379,7 +362,7 @@ impl PiNativeRoot {
             .snapshot_with_work(&original_volume_work, cancellation)
             .await
             .map_err(Error::from)?;
-        if snapshot.workspace_id != actual.id()
+        if snapshot.workspace_id != workspace.workspace().id()
             || snapshot.authored_generation.digest().as_bytes().as_slice()
                 != original_generation.as_resource().key()
         {
@@ -408,33 +391,14 @@ impl PiNativeRoot {
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
         let mut volume_copy = (volume_copy, volume_io.into_custody()?);
         let reference = original_generation.as_resource();
-        let mut generation_copy = acyclic_harness::resources::GenerationRef::new_with_native_work(
+        let mut generation_copy = acyclic_harness::resources::GenerationRef::new(
             reference.provider(),
             reference.key(),
             reference.version(),
-            meter,
-        )?;
+            Some(meter),
+        )
+        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))?;
         let namespace = NativeVolumeNamespace::LazyMount { snapshot };
-        let declaration = BorrowedNativeVolumeBinding {
-            host: filesystem.as_ref(),
-            volume,
-            generation: original_generation,
-            namespace: &namespace,
-            path: &route.0,
-            writable,
-            verifier: &authority.0,
-            scope: &authority.1,
-            publication,
-        };
-        let existing = NativeExistingLazyVolume::capture_with_native_work(
-            mount,
-            owner,
-            &declaration,
-            &callback_guard,
-            meter,
-            original_volume_work,
-        )?
-        .await?;
         let mut metadata = meter.claim(0, 0, acyclic_fs::WorkCounters::default())?;
         metadata.absorb(&mut volume_copy.1)?;
         metadata.absorb(&mut generation_copy.1)?;
@@ -448,8 +412,6 @@ impl PiNativeRoot {
                 writable,
                 authority_revision,
             },
-            existing,
-            callback_guard,
             metadata,
         ))
     }
@@ -464,8 +426,7 @@ impl PiNativeRoot {
             crate::LocalAuthorityBackend,
             crate::LocalObjectBackend,
         >],
-        guards: &'a [NativeVolumeCallbackGuard<acyclic_stream::LocalStream>],
-        existing_lazy: &'a [Option<&'a NativeExistingLazyVolume>],
+        guards: &'a [Arc<TaskContext>],
         meter: &'a NativeMaterializationWork,
     ) -> Result<()> {
         owner
@@ -497,25 +458,8 @@ impl PiNativeRoot {
                 reason: "Pi mixed declaration differs from its retained original creator",
             });
         }
-        let view = NativeVolumeView::prepare(
-            owner,
-            guards,
-            allocation,
-            options,
-            bindings,
-            existing_lazy,
-            meter,
-        )?
-        .await?;
-        let prepared = view.preparation();
-        if prepared.task != self.task
-            || prepared.journal.plan.operation_id != self.packet.operation_id()
-        {
-            return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Conflict,
-                reason: "Pi mixed view belongs to another original preparation operation",
-            });
-        }
+        let view =
+            NativeVolumeView::prepare(owner, guards, allocation, options, bindings, meter)?.await?;
         owner
             .verify(
                 false,
@@ -524,7 +468,11 @@ impl PiNativeRoot {
                 )),
             )
             .await?;
-        self.view = Some(view.into_arc_with_native_work(meter)?);
+        meter.charge(WorkCounters {
+            allocation_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        self.view = Some(Arc::new(view));
         Ok(())
     }
 }
@@ -600,9 +548,9 @@ pub(crate) async fn native_root<'a>(
         code: acyclic_harness::wire::ErrorCode::Invalid,
         reason: "Pi native view has no original task namespace",
     })?;
-    let mut operation_root = meter.join_path(task_directory, Path::new("preparation"))?;
-    let target = meter.join_path(&operation_root.0, Path::new("target"))?;
-    let backup = meter.join_path(&operation_root.0, Path::new("backup"))?;
+    let mut operation_root = meter.path(task_directory, Some(Path::new("preparation")))?;
+    let target = meter.path(&operation_root.0, Some(Path::new("target")))?;
+    let backup = meter.path(&operation_root.0, Some(Path::new("backup")))?;
     fn relative<'p>(path: &'p Path, data: &Path) -> Result<&'p Path> {
         path.strip_prefix(data).map_err(|_| Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -625,7 +573,7 @@ pub(crate) async fn native_root<'a>(
     );
     let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
     let mut scratch = (scratch, scratch_io.into_custody()?);
-    let mut view_root = meter.copy_path(&options.root)?;
+    let mut view_root = meter.path(&options.root, None)?;
     let mut custody = meter.claim(
         std::mem::size_of::<PiNativeRoot>() as u64,
         0,

@@ -51,10 +51,7 @@ impl PiWritebackRoot {
             .project_volumes
             .get(key)
             .ok_or_else(|| selected_unauthorized("writeback lost its project"))?;
-        let write_guard = context
-            .volume_callback_guard(&owner, work)
-            .await?
-            .for_volume(&owner, volume, true, work)?;
+        let write_guard = context.volume_callback(&owner, volume, true, work)?;
         let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
         let volume = volume.copy(&mut Some(&mut io))?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
@@ -96,7 +93,7 @@ impl PiWritebackRoot {
             ));
         }
         let key = work.display(key)?;
-        let root_path = work.copy_path(path)?;
+        let root_path = work.path(path, None)?;
         let operation_directory = crate::util::root_materialization_directory_with_native_work(
             path,
             acyclic_fs::OperationId::from_bytes(operation.into_bytes()),

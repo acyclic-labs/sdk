@@ -183,10 +183,11 @@ pub(crate) async fn read_prepared_approval(
         "selected-writeback",
         work,
     )?;
-    let (context, _context_custody) = runtime
+    let io = PreparationIo::from_native_work(work)?;
+    let context = runtime
         .runtime
         .harness()
-        .durable_context_with_native_work(root, OperationId::from_bytes(root.into_bytes()), work)
+        .durable_context(root, OperationId::from_bytes(root.into_bytes()), Some(&io))
         .await?;
     let descriptor: Option<(PiPreparedApproval, _)> =
         crate::pi_root_provider::read_pi_input_with_native_work(

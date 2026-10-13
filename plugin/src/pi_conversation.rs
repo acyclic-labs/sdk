@@ -33,7 +33,7 @@ pub(crate) async fn bind_task_conversation(
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     if authority.0.id
-        != uuid::Uuid::from_bytes(owner.task_id().into_bytes())
+        != &*uuid::Uuid::from_bytes(owner.task_id().into_bytes())
             .hyphenated()
             .encode_lower(&mut [0; 36])
     {

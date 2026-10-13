@@ -6,7 +6,9 @@ fn pi_input_write_grant_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(ContentGrant, NativeAllocation)> {
     let authority = owner.authority(work)?;
-    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
     let grant = ContentGrant::verify(
         &authority.verifier,
         &authority.signed,
@@ -25,7 +27,7 @@ fn validate_pi_input_media(
     display_name: &str,
     media_type: &str,
 ) -> Result<()> {
-    owner.policy().limits.validate_file(file)?;
+    owner.policy().limits.validate_file(file, &mut None)?;
     if file.volume() != &owner.policy().journal
         || file.path() != path
         || file.display_name() != display_name
@@ -218,18 +220,20 @@ pub(super) async fn observe_pi_input_at(
         .policy()
         .maximum_payload_bytes
         .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
     let result = filesystem
-        .content_for_operation_with_native_work(
+        .content_for_operation(
             &owner.policy().journal,
             &grant.0,
             &coordinates.key.0,
             &coordinates.path.0,
             maximum,
-            work,
+            Some(&io),
         )
         .await;
     match result {
-        Ok(Some((reference, custody))) => {
+        Ok(Some(reference)) => {
+            let custody = acyclic_harness::store::HistoryWork::new(io).into_custody()?;
             if let Err(error) = validate_pi_input_media(
                 owner,
                 &reference,
@@ -244,7 +248,8 @@ pub(super) async fn observe_pi_input_at(
                 Ok(Some((reference, custody)))
             }
         }
-        result => result,
+        Ok(None) => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -264,8 +269,9 @@ pub(super) async fn publish_pi_input_with_native_coordinates<T: Serialize>(
     let (bytes, bytes_custody) = guarded_pi_bytes(value, maximum, work)?;
     let encoded = (bytes, bytes_custody);
     let length = encoded.0.len() as u64;
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
     let result = filesystem
-        .put_content_with_native_work(
+        .put_content(
             &owner.policy().journal,
             &grant.0,
             &coordinates.path.0,
@@ -274,9 +280,16 @@ pub(super) async fn publish_pi_input_with_native_coordinates<T: Serialize>(
             &coordinates.display_name.0,
             maximum,
             &coordinates.key.0,
-            work,
+            None,
+            Some(&io),
         )
-        .await;
+        .await
+        .and_then(|reference| {
+            Ok((
+                reference,
+                acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+            ))
+        });
     drop(encoded);
     let result = match result {
         Ok((reference, custody)) => {
@@ -334,7 +347,12 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
             reason: "root artifact exceeds original header bounds or media type",
         });
     }
-    let bytes = context.read_file(reference, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)).await?;
+    let bytes = context
+        .read_file(
+            reference,
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        )
+        .await?;
     let maximum_owned = std::mem::size_of::<T>() as u64;
     let decoded = guarded_pi_decode(
         bytes.as_ref(),

@@ -49,21 +49,11 @@ pub(crate) async fn validate_approval_request(
 
 /// Signed responder authority stays in Root-only input storage.
 pub(crate) async fn stage_operator_command(
-    runtime: &PiTaskRuntime,
     protected: &PiOwnerConfig,
     filesystem: &Arc<PiNativeFilesystem>,
     request: &PiOperatorRequest,
     work: &NativeMaterializationWork,
 ) -> Result<(WorkflowCommand, acyclic_fs::NativeAllocation)> {
-    validate_approval_request(
-        runtime,
-        filesystem,
-        protected,
-        &request.session_id,
-        request,
-        work,
-    )
-    .await?;
     let root = protected.policy().root_task;
     let operation_id = derived(
         original_operation(root, root, request.body.operation(), work)?,
@@ -103,7 +93,6 @@ pub(crate) async fn inspect_operator(
     request: &PiOperatorRequest,
     work: &NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    pi_operator::verify_request(protected, session, request, work)?;
     let PiOperatorBody::Inspect {
         operation,
         project_files,

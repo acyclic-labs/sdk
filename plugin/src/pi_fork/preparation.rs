@@ -80,7 +80,7 @@ impl<'a> PiForkCoordinator<'a> {
         let verifier = authority.0.1.verifier(&mut Some(&mut io))?;
         let mut parent = StreamAggregate::open(
             &self.stream,
-            authority.0.0.copy(&mut Some(&mut io))?,
+            io.clone_authority(&authority.0.0)?,
             verifier.copy(&mut Some(&mut io))?,
             SchemaRegistry::new(),
             None,
@@ -139,12 +139,13 @@ impl<'a> PiForkCoordinator<'a> {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi source handle is not its originally admitted project",
         })?;
-        let generation = acyclic_harness::resources::GenerationRef::new_with_native_work(
+        let generation = acyclic_harness::resources::GenerationRef::new(
             project.provider(),
             frozen.authored_generation.digest().as_bytes(),
             None,
-            work,
-        )?;
+            Some(work),
+        )
+        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))?;
         let scratch = &caller.binding.scratch.volume;
         let private_generation = self
             .native_generation(context, owner, scratch, work)
@@ -167,12 +168,13 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "Pi caller has no actual project binding",
             })?;
         let caller_generation = if original_caller_project == project {
-            acyclic_harness::resources::GenerationRef::new_with_native_work(
+            acyclic_harness::resources::GenerationRef::new(
                 project.provider(),
                 frozen.authored_generation.digest().as_bytes(),
                 None,
-                work,
-            )?
+                Some(work),
+            )
+            .map(|(reference, custody)| (reference, custody.expect("native generation custody")))?
         } else {
             self.native_generation(context, owner, original_caller_project, work)
                 .await?
@@ -313,9 +315,15 @@ impl<'a> PiForkCoordinator<'a> {
             Arc::clone(owner),
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         )?;
-        let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
-            "local", "stream", "1", work,
+        let mut provider_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let provider = acyclic_harness::resources::ProviderRef::new(
+            provider_io.clone_text("local")?,
+            provider_io.clone_text("stream")?,
+            provider_io.clone_text("1")?,
+            &mut Some(&mut provider_io),
         )?;
+        let stream_provider = (provider, provider_io.into_custody()?);
         let source_binding = acyclic_harness::filesystem::recursive_fork_source_with_native_work(
             self.filesystem.clone(),
             &self.stream,
@@ -408,7 +416,7 @@ impl<'a> PiForkCoordinator<'a> {
                 context.scope(),
                 work,
             )?;
-        let mut child_grants = Capabilities::new_with_native_work(
+        let mut child_grants = Capabilities::copy(
             child
                 .0
                 .grants

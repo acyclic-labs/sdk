@@ -29,9 +29,20 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     {
         return Err(invalid());
     }
-    current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
+    current_owner.require_volume_grant(
+        &binding.scratch.volume,
+        VolumeOperation::Write,
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
+    )?;
     current_owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     let preparation = load_original_preparation_with_native_work(
         &owner,
@@ -100,7 +111,9 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody()?)
     };
@@ -229,20 +242,19 @@ impl PiRootProvider {
         let operation =
             self.creation_operation_with_native_work(effect, attempt, resource, work)?;
         let name = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
         self.fs
-            .workspace_for_creation_operation_with_native_work(
-                &name.0,
-                config,
-                operation,
-                work,
-                work.cancellation(),
-            )
+            .workspace_for_creation_operation(&name.0, config, operation, work, work.cancellation())
             .await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })
+            .map_err(|source| Error::NativeWorkspace {
+                source,
+                custody: None,
+            })
     }
 
     pub(super) fn scratch_creation_with_native_work(
@@ -253,13 +265,13 @@ impl PiRootProvider {
         let digest = generation.id().digest().into_bytes();
         let volume = &self.preparation.request.binding.scratch.volume;
         let (reference, custody) =
-            GenerationRef::new_with_native_work(volume.provider(), &digest, None, work)?;
+            GenerationRef::new(volume.provider(), &digest, None, Some(work))?;
         let scratch = (
             PiScratchCreation {
                 workspace_id: generation.workspace().id().into_bytes(),
                 generation: reference,
             },
-            custody,
+            custody.expect("native generation custody"),
         );
         scratch.0.validate(volume)?;
         Ok(scratch)
@@ -312,14 +324,18 @@ impl PiRootProvider {
                 };
                 let Some(state) = self
                     .store
-                    .load_lazy_workspace_with_native_work(generation.workspace().id(), work)
+                    .load_lazy_workspace(
+                        generation.workspace().id(),
+                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        },
+                    )
                     .await?
                 else {
                     return Ok(None);
                 };
-                state
-                    .as_state()
-                    .validate_root_binding(generation.workspace().id(), input.0)?;
+                state.validate_root_binding(generation.workspace().id(), input.0)?;
                 let observed = work.root_identity(Path::new(path))?;
                 if observed.to_bytes() != input.1 {
                     return Err(Self::native_failure("root native identity was substituted"));

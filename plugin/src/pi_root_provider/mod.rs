@@ -168,7 +168,7 @@ pub(crate) fn service_resources_with_native_work(
     resources: &ServiceResources,
     work: &NativeMaterializationWork,
 ) -> Result<(ServiceResources, NativeAllocation)> {
-    let data = work.copy_path(&resources.data)?;
+    let data = work.path(&resources.data, None)?;
     let mut binary = work.display(&resources.binary_identity)?;
     let mut instance = work.display(&resources.instance_id)?;
     let mut owned = (

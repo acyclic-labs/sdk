@@ -621,7 +621,7 @@ fn invalid(message: &'static str) -> Error {
 /// Closed first-party recovery DTOs consume their owned Value rather than cloning it.
 fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     value: serde_json::Value,
-    schema: acyclic_harness::JsonValueSchema,
+    schema: &'static acyclic_harness::JsonValueSchema,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
@@ -661,11 +661,11 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
             )?)?;
             Ok((value, custody))
         }
-        Err(Error::NativeDecode {
+        Err(Error::NativeJson {
             code,
             source,
             custody: None,
-        }) => Err(Error::NativeDecode {
+        }) => Err(Error::NativeJson {
             code,
             source,
             custody: Some(custody),

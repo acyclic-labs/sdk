@@ -84,7 +84,7 @@ impl PiControlHost<'_> {
             work,
         )
         .await?;
-        let options_path = work.copy_path(&root.operation_directory)?;
+        let options_path = work.path(&root.operation_directory, None)?;
         let options = acyclic_fs::MaterializeOptions::native(options_path.0);
         let generations = build_writeback_generations(
             &root,
@@ -101,11 +101,8 @@ impl PiControlHost<'_> {
             let journal = acyclic_fs::MaterializationJournalStore::load(&store, fs_operation)
                 .await
                 .map_err(|error| match error {
-                    acyclic_fs::LocalCoreStateStoreError::MaterializationWork(cause) => {
-                        Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
+                    acyclic_fs::LocalCoreStateStoreError::LazyWork(source) => {
+                        crate::pi_fork_host::native_lazy_error(source)
                     }
                     source => Error::NativeWorkspacePublication {
                         source: acyclic_fs::NativeWorkspacePublicationError::State(source),

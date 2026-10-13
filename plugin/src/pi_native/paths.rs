@@ -17,10 +17,10 @@ pub(crate) fn planned_native_paths(
     work.remaining()?;
     let route = native_root_route(root_key, work)?;
     let task = native_task_directory(resources, root_session, task, work)?;
-    let mut view = work.join_path(&task.0, Path::new("view"))?;
-    let session = work.join_path(&view.0, Path::new("scratch"))?;
-    let mut cwd = work.join_path(&view.0, Path::new(&route.0))?;
-    let mut session_file = work.join_path(&session.0, Path::new("session.jsonl"))?;
+    let mut view = work.path(&task.0, Some(Path::new("view")))?;
+    let session = work.path(&view.0, Some(Path::new("scratch")))?;
+    let mut cwd = work.path(&view.0, Some(Path::new(&route.0)))?;
+    let mut session_file = work.path(&session.0, Some(Path::new("session.jsonl")))?;
     let custody = work.claim(
         std::mem::size_of::<PiNativePaths>() as u64,
         0,
@@ -94,7 +94,7 @@ fn native_task_directory(
     let relative = work.display(&format_args!(
         "sessions{separator}{session_hash}{separator}agents{separator}{task_hash}"
     ))?;
-    work.join_path(&resources.data, Path::new(&relative.0))
+    work.path(&resources.data, Some(Path::new(&relative.0)))
         .map_err(acyclic_harness::Error::from)
 }
 
@@ -112,7 +112,7 @@ pub(crate) fn native_view_options(
         ));
     }
     let task = native_task_directory(resources, root_session, task, work)?;
-    let view = work.join_path(&task.0, Path::new("view"))?;
+    let view = work.path(&task.0, Some(Path::new("view")))?;
     Ok((
         NativeViewOptions {
             root: view.0,

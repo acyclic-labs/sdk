@@ -71,10 +71,7 @@ impl crate::pi_host::PiControlHost<'_> {
         )?;
         if !reconcile {
             let capability = work.display(&format_args!("interaction:respond:{id}"))?;
-            let grants = Capabilities::new_with_native_work(
-                ["interaction:resolve", capability.0.as_str()],
-                work,
-            )?;
+            let grants = Capabilities::copy(["interaction:resolve", capability.0.as_str()], work)?;
             let responder = self.protected.conversation_authority_with_native_work(
                 root,
                 self.protected.policy().agent,

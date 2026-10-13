@@ -317,7 +317,7 @@ pub(crate) async fn approve_command(
         .iter()
         .map(String::as_str)
         .eq(["read", "write", "edit"])
-        || require_caller_environment(&invocation.environment).is_err()
+        || super::runtime::require_caller_environment(&invocation.environment).is_err()
     {
         return Err(Error::Unauthorized(
             "Pi native approval changed original protected host settings".into(),

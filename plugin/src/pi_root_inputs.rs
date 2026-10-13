@@ -55,16 +55,16 @@ impl PiRootPreparation {
         let context = match context {
             Some(context) => context,
             None => {
-                let original = runtime
+                let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+                runtime
                     .runtime
                     .harness()
-                    .durable_context_with_native_work(
+                    .durable_context(
                         binding.task_id,
                         OperationId::from_bytes(binding.task_id.into_bytes()),
-                        work,
+                        Some(&io),
                     )
-                    .await?;
-                original.0.into_native_shared(original.1, work)?
+                    .await?
             }
         };
         if context.durable_task_id() != Some(admitted.0.binding.task_id) {

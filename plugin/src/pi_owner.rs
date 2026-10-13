@@ -57,7 +57,7 @@ impl PiOwnerPolicy {
             acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
         );
         let journal = self.journal.copy(&mut Some(&mut io))?;
-        let grants = self.grants.clone_with_native_work(work)?;
+        let grants = Capabilities::copy(self.grants.iter(), work)?;
         combine_native_metadata((
             Self {
                 root_task: self.root_task,
@@ -203,7 +203,7 @@ impl PiOwnerConfig {
                     .journal
                     .capability(VolumeOperation::Write, &mut Some(&mut io))?,
             ];
-            Capabilities::new_with_native_work(
+            Capabilities::copy(
                 self.policy
                     .grants
                     .iter()
@@ -226,7 +226,7 @@ impl PiOwnerConfig {
         )?;
         drop(storage);
         let mut scope = RuntimeScope::new_with_native_work(
-            self.policy.grants.clone_with_native_work(work)?,
+            Capabilities::copy(self.policy.grants.iter(), work)?,
             self.policy.limits,
             work,
         )?;
@@ -434,8 +434,8 @@ impl PiOwnerConfig {
         })?;
         let digest = blake3::hash(&protected.bytes);
         let leaf = work.display(&format_args!(".pi-owner-{}.next", uuid::Uuid::new_v4()))?;
-        let temporary = work.join_path(session, Path::new(&leaf.0))?;
-        let destination = work.join_path(session, Path::new(OWNER_FILE))?;
+        let temporary = work.path(session, Some(Path::new(&leaf.0)))?;
+        let destination = work.path(session, Some(Path::new(OWNER_FILE)))?;
         work.publish_private_state_file_with_native_work(
             root,
             &temporary.0,
@@ -457,7 +457,7 @@ impl PiOwnerConfig {
     ) -> Result<Self> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         work.validate_private_state_directory(root, session)?;
-        let path = work.join_path(session, Path::new(OWNER_FILE))?;
+        let path = work.path(session, Some(Path::new(OWNER_FILE)))?;
         let mut file = work.open_state_file_with_native_work(
             root,
             &path.0,
@@ -550,7 +550,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
             reason: "Pi root allocation provider identity differs",
         });
     }
-    let mut providers = EffectRegistry::new(Some(work))?.with_result_resolver(content.clone());
+    let mut providers = EffectRegistry::new(Some(work), Some(content.clone()))?;
     providers.register(provider, Some(work))?;
     let ((audience, issuer, scope), custody) = authorization;
     ConversationEffectHost::new(
@@ -564,7 +564,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
         Some(custody),
         Some(work),
     )?
-    .into_arc_with_native_work(work)
+    .into_arc(work)
 }
 
 // Drop tuple payloads before their allocation guards.

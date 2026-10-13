@@ -77,8 +77,10 @@ pub(crate) fn issue(
             });
         }
     };
-    let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+    let capabilities = Capabilities::copy([CALLER_CAPABILITY], work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
     let value = authority.issuer.issue(
         identity_text,
         &capabilities.0,
@@ -148,7 +150,9 @@ pub(crate) fn verify<'a>(
     let authority = owner.authority(work)?;
     let verified = authority.verifier.verify(
         scope,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
     );
     drop(authority);
     verified?;
