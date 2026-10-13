@@ -8,14 +8,13 @@ use super::native::{AuthorityBinding, Config, Files};
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Error, Result, TaskId,
-    conversation::{ConversationMessage, VolumeRef},
+    conversation::VolumeRef,
     filesystem::{
         ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
         ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
         ForkPreparationLimits,
     },
     runtime::TaskAdmissionRecord,
-    store::HistoryReadLimits,
     workflow::WorkflowCommand,
 };
 use acyclic_stream::LocalStream;
@@ -34,7 +33,7 @@ pub struct NativeToolsConfig {
     #[serde(default)]
     pub forks: Vec<NativeToolFork>,
     #[serde(default)]
-    pub merges: Vec<NativeToolMerge>,
+    pub merges: Vec<ConfiguredRecursiveMerge>,
     /// Original finite producer allowance for cumulative checkpoint IO.
     pub content_budget: acyclic_fs::WorkBudget,
     #[serde(default)]
@@ -68,30 +67,12 @@ pub struct NativeToolFork {
     pub result_volume: Option<VolumeRef>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeToolMerge {
-    pub caller: TaskId,
-    pub source: TaskId,
-    pub notice: ConversationMessage,
-}
-
 /// Translate the trusted native configuration into the existing SDK source.
 pub fn source(
     config: &Config,
     stream: std::sync::Arc<LocalStream>,
     files: Arc<Files>,
 ) -> Result<Arc<Source>> {
-    if config.tools.callers.len() > 64
-        || config.tools.forks.len() > 64
-        || config.tools.merges.len() > 64
-        || config.fork_sources.len() > 64
-        || config.tools.commands.len() > 64
-    {
-        return Err(Error::Invalid(
-            "native tools exceed the finite producer binding limit".into(),
-        ));
-    }
     let configured = ConfiguredRecursiveToolsConfig {
         callers: config
             .tools
@@ -135,21 +116,9 @@ pub fn source(
                 })
             })
             .collect::<Result<Vec<_>>>()?,
-        merges: config
-            .tools
-            .merges
-            .iter()
-            .map(|merge| ConfiguredRecursiveMerge {
-                caller: merge.caller,
-                source: merge.source,
-                notice: merge.notice.clone(),
-            })
-            .collect(),
+        merges: config.tools.merges.clone(),
         stream_provider: config.stream_provider.clone(),
-        history_limits: HistoryReadLimits {
-            maximum_events: 256,
-            maximum_bytes: 4 * 1024 * 1024,
-        },
+        history_limits: super::native::HISTORY_LIMITS,
         inherited_messages: 64,
         inherited_references: 64,
         content_budget: config.tools.content_budget,
@@ -165,14 +134,7 @@ pub fn source(
 }
 
 fn authority_binding(binding: &AuthorityBinding) -> ConfiguredRecursiveAuthorityBinding {
-    ConfiguredRecursiveAuthorityBinding::new(
-        acyclic_harness::core::AuthorityIssuer::new(
-            &binding.issuer,
-            binding.key,
-            binding.authority.clone(),
-        ),
-        binding.scope.clone(),
-    )
+    ConfiguredRecursiveAuthorityBinding { issuer: acyclic_harness::core::AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()), scope: binding.scope.clone() }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -230,7 +192,7 @@ impl super::native::NativeSession {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner_with_native_work(caller, &fence, &work)
+            .journal_owner(caller, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
             .await?
             .into_native_shared(&work)?;
         let reader = FilesystemContentVerifier::new(
@@ -240,16 +202,16 @@ impl super::native::NativeSession {
             super::terminal::MAX_FRAME_BYTES as u64,
             Some(&io),
         )?;
-        let result_volume = self
+        let entry = self
             .config
             .tools
             .callers
             .iter()
             .find(|entry| entry.task == caller)
-            .and_then(|entry| entry.result_volume.as_ref())
-            .ok_or_else(|| {
-                Error::Unsupported("native command requires separate result storage".into())
-            })?;
+            .ok_or_else(|| Error::NotFound("native caller private volume".into()))?;
+        let result_volume = entry.result_volume.as_ref().ok_or_else(|| {
+            Error::Unsupported("native command requires separate result storage".into())
+        })?;
         let results = FilesystemContentPublisher::new(
             self.files.clone(),
             result_volume,
@@ -258,14 +220,6 @@ impl super::native::NativeSession {
             super::terminal::MAX_FRAME_BYTES as u64,
             Some(&io),
         )?;
-        let caller_private = &self
-            .config
-            .tools
-            .callers
-            .iter()
-            .find(|entry| entry.task == caller)
-            .ok_or_else(|| Error::NotFound("native caller private volume".into()))?
-            .private_volume;
         let approvals = Arc::new(FilesystemInteractionHost::new(
             self.stream.clone(),
             self.files.clone(),
@@ -273,7 +227,7 @@ impl super::native::NativeSession {
             &verifier,
             &SchemaRegistry::default(),
             &binding.scope,
-            caller_private,
+            &entry.private_volume,
             super::terminal::MAX_FRAME_BYTES as u64,
             Some(&io),
         )?);
@@ -316,11 +270,7 @@ impl super::native::NativeSession {
                     None,
                 )
                 .await?;
-            return Ok(format!(
-                "command-approval-json={}\n",
-                serde_json::to_string(&receipt)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-            ));
+            return super::native::json_line("command-approval", &receipt);
         }
         let bytes = reader
             .read(
@@ -344,14 +294,8 @@ impl super::native::NativeSession {
             .runtime
             .task_context_with_native_work(caller, &fence, &work)
             .await?;
-        let mut guards = Vec::new();
-        for _ in &request.view.volumes {
-            guards.push(
-                native_context
-                    .volume_callback_guard_with_native_work(&owner, &work)
-                    .await?,
-            );
-        }
+        native_context.verify_volume_owner(&owner, &work).await?;
+        let guards: Vec<_> = request.view.volumes.iter().map(|_| Arc::clone(&native_context)).collect();
         let volumes = request
             .view
             .volumes
@@ -360,7 +304,7 @@ impl super::native::NativeSession {
                 let path = mapping
                     .path
                     .strip_prefix(&request.view.options.root)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .map_err(super::native::invalid)?
                     .to_str()
                     .ok_or_else(|| Error::Invalid("native volume path encoding".into()))?;
                 Ok(BorrowedNativeVolumeBinding {
@@ -397,10 +341,7 @@ impl super::native::NativeSession {
         let process_verifier = verifier.copy(&mut Some(&mut process_io))?;
         let authority = NativeProcessAuthority {
             verifier: process_verifier,
-            history_limits: HistoryReadLimits {
-                maximum_events: 256,
-                maximum_bytes: 4 * 1024 * 1024,
-            },
+            history_limits: super::native::HISTORY_LIMITS,
             content: reader.clone(),
             result_content: reader.clone(),
             results,
@@ -439,9 +380,6 @@ impl super::native::NativeSession {
         let (status, _status_custody) = effects
             .run_task_effect(&owner, operation, &configured.plan, Some(&work))
             .await?;
-        Ok(format!(
-            "command-json={}\n",
-            serde_json::to_string(&status).map_err(|error| Error::Invalid(error.to_string()))?
-        ))
+        super::native::json_line("command", &status)
     }
 }

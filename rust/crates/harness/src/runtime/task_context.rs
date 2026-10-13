@@ -1,7 +1,6 @@
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
-
 pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()>;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -76,7 +75,6 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
 }
 
 /// Capability-scoped context passed to live task code.
-
 pub struct TaskContext {
     pub(super) harness: Arc<AgentHarness>,
     pub(super) task_id: OperationId,
@@ -88,15 +86,8 @@ pub struct TaskContext {
     pub(super) model_steps: Arc<(AtomicUsize, Option<NativeCustody>)>,
     pub(super) owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
     pub(super) output_content: Option<ContentBindings>,
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(super) native_root_output: std::sync::OnceLock<(
-        Arc<crate::filesystem::NativeRootOutputSource>,
-        ContentBindings,
-    )>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_metadata_source: Option<native_context::NativeMetadataSource>,
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(super) working_view: std::sync::OnceLock<Arc<dyn crate::filesystem::NativeTaskWorkingView>>,
+    pub(super) native_purpose: Option<IssuedContextPurpose>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -113,13 +104,9 @@ impl Clone for TaskContext {
             owned_interactions: self.owned_interactions.clone(),
             owned_mailbox: self.owned_mailbox.clone(),
             output_content: self.output_content.clone(),
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            native_root_output: self.native_root_output.clone(),
             model_steps: Arc::clone(&self.model_steps),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_metadata_source: None,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            working_view: std::sync::OnceLock::new(),
+            native_purpose: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         }
@@ -127,83 +114,27 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
-    /// Selects a trusted host-provided output binding under the unchanged task authority.
-
-    pub fn with_content_bindings(mut self, binding: ContentBindings) -> Result<Self> {
-        let writer = binding
-            .writer
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("output binding has no writer".into()))?;
-        if !self.scope.grants().contains(
-            &writer
-                .volume()
-                .capability(VolumeOperation::Write, &mut None)?,
-        ) {
-            return Err(Error::Unauthorized(
-                "task cannot select this output volume".into(),
-            ));
-        }
-        if let Some(sealed) = self.scope.created_content(Some(writer.volume())) {
-            if sealed
-                .writer
-                .as_ref()
-                .is_none_or(|original| !Arc::ptr_eq(original, writer))
-                || !Arc::ptr_eq(&sealed.reader, &binding.reader)
-            {
-                return Err(Error::Unauthorized(
-                    "output differs from authenticated created binding".into(),
-                ));
-            }
-        }
+    /// Selects an authenticated created destination without widening task authority.
+    pub async fn with_output_volume(self: &Arc<Self>, volume: &VolumeRef) -> Result<Arc<Self>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            self.native_metadata_source = None;
-        }
-        self.output_content = Some(binding);
-        Ok(self)
-    }
-
-    /// Selects an existing authenticated created destination without cloning the harness, widening grants or acquiring another owner reservation.
-
-    pub fn with_output_volume(self, volume: &VolumeRef) -> Result<Self> {
-        let binding = self
-            .scope
-            .created_content(Some(volume))
-            .ok_or_else(|| {
-                Error::Unauthorized("output volume has no admitted creation binding".into())
-            })?
-            .clone();
-        self.with_content_bindings(binding)
-    }
-
-    /// Returns only the exact creator-authenticated handles already admitted to this task.
-
-    pub fn created_content_bindings(&self, volume: &VolumeRef) -> Result<ContentBindings> {
-        volume.validate(&mut None)?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            if !self
-                .scope
-                .grants()
-                .contains(&volume.capability(operation, &mut None)?)
-            {
-                return Err(Error::Unauthorized(
-                    "task lacks original created-content read/write authority".into(),
-                ));
-            }
+        if let Some(io) = self.preparation_io()? {
+            return self
+                .project_output_volume(
+                    volume,
+                    io.original_native_work().expect("original context work"),
+                )
+                .await;
         }
         let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
-            Error::Unauthorized("volume has no authenticated task creation binding".into())
+            Error::Unauthorized("output volume has no admitted creation binding".into())
         })?;
-        if binding
-            .writer
-            .as_ref()
-            .is_none_or(|writer| writer.volume() != volume)
-        {
-            return Err(Error::Unauthorized(
-                "created content lacks its exact admitted writer".into(),
-            ));
-        }
-        Ok(binding.clone())
+        self.bound_content_writer(Some(binding), &self.scope, None)?;
+        let mut context = self.as_ref().clone();
+        context.output_content = Some(binding.clone());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        return context.into_shared();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        Ok(Arc::new(context))
     }
 
     #[cfg(feature = "filesystem")]
@@ -219,14 +150,13 @@ impl TaskContext {
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            self.native_metadata_source = None;
+            self.native_purpose = None;
         }
         self.owned_mailbox = Some(mailbox);
         Ok(self)
     }
 
     /// Returns only the original owner fence already bound to this exact task context.
-
     #[cfg(feature = "filesystem")]
     pub fn owned_task_fence(&self) -> Result<crate::scheduler::LeaseFence> {
         let owner = self
@@ -270,20 +200,18 @@ impl TaskContext {
         self.owned_interactions = Some(router);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            self.native_metadata_source = None;
+            self.native_purpose = None;
         }
         Ok(self)
     }
 
     /// Returns this invocation's stable local operation identity.
-
     #[must_use]
     pub const fn id(&self) -> OperationId {
         self.task_id
     }
 
     /// Admitted durable owner, absent for a process-local task.
-
     #[must_use]
     pub const fn durable_task_id(&self) -> Option<TaskId> {
         self.durable_task
@@ -299,14 +227,12 @@ impl TaskContext {
     }
 
     /// Returns the exact effective authority and bounds.
-
     #[must_use]
     pub const fn scope(&self) -> &RuntimeScope {
         &self.scope
     }
 
     /// Produces an attenuated view for descendants and tool calls.
-
     pub fn scoped(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
         let mut child = self.clone();
         child.scope = self.scope.narrow(grants, limits)?;
@@ -314,7 +240,6 @@ impl TaskContext {
     }
 
     /// Attenuates task execution bounds for this context and its descendants.
-
     pub fn scoped_run_limits(&self, limits: TaskRunLimits) -> Result<Self> {
         let mut child = self.clone();
         child.scope = self.scope.clone().with_run_limits(limits, &mut None)?;
@@ -326,7 +251,6 @@ impl TaskContext {
     }
 
     /// Overrides only this live task's model binding for itself and local descendants.
-
     pub fn scoped_model(
         &self,
         grants: Capabilities,
@@ -344,42 +268,17 @@ impl TaskContext {
         Ok(child)
     }
 
-    /// Places newly admitted descendants on another qualified provider.
-
-    pub fn scoped_execution(
-        &self,
-        grants: Capabilities,
-        limits: Limits,
-        execution: Arc<dyn ExecutionProvider>,
-    ) -> Result<Self> {
-        if self.durable_task.is_some() {
-            return Err(Error::Unsupported(
-                "durable execution override requires a recorded effect".into(),
-            ));
-        }
-        let mut child = self.scoped(grants, limits)?;
-        child.harness = self.harness.scoped_execution(
-            child.scope.grants().clone(),
-            child.scope.limits(),
-            execution,
-        )?;
-        Ok(child)
-    }
-
     /// Resolves one registered task without widening its scope.
-
     pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
         self.harness.task(name)
     }
 
     /// Resolves one pinned tool contract.
-
     pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
         self.harness.tool(name)
     }
 
     /// Spawns a local child; durable work must use stable host admission instead.
-
     pub async fn spawn<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -408,7 +307,6 @@ impl TaskContext {
     }
 
     /// Returns a separately cancellable bounded group for additional local work.
-
     #[must_use]
     pub fn group(&self) -> RuntimeGroup {
         RuntimeGroup {
@@ -424,7 +322,6 @@ impl TaskContext {
     }
 
     /// Admits a durable child using an explicit stable operation identity.
-
     pub async fn admit<I, O>(
         &self,
         operation_id: OperationId,
@@ -509,7 +406,7 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     prefix: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
-    let digest = crate::contract::canonical_json_digest(
+    let digest = crate::executor::json::canonical_json_digest(
         value,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
@@ -518,7 +415,7 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     let mut capability = [0; "directory:read:".len() + 64];
     let end = prefix.len() + digest.len();
     if let Some(io) = work.as_deref_mut() {
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         io.copy_bytes(end as u64)?;
     }
     capability[..prefix.len()].copy_from_slice(prefix.as_bytes());

@@ -1,5 +1,5 @@
 mod extensions;
-#[path = "history.rs"]
+#[path = "history/mod.rs"]
 mod history_tests;
 mod interactions;
 #[cfg(feature = "filesystem")]
@@ -259,3 +259,5 @@ fn schemas() -> SchemaRegistry {
     );
     schemas
 }
+
+use projections::projection_command;

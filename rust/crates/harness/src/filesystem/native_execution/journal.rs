@@ -30,6 +30,98 @@ pub(super) async fn read<P: StreamProvider>(
     result
 }
 
+/// Reads only the authenticated preparation's original task and fence.
+pub(crate) fn preparation_owner<'a, P: StreamProvider>(
+    witness: &'a crate::durable_host::TaskAdmissionReadonlyWitness<P>,
+    work: &'a NativeMaterializationWork,
+) -> Result<
+    crate::NativeFutureBundle<
+        'a,
+        Option<(
+            crate::TaskId,
+            crate::scheduler::LeaseFence,
+            NativeAllocation,
+        )>,
+    >,
+> {
+    use super::preparation_record::Intent;
+    if !work.remaining()?.has_finite_allowances() {
+        return Err(invalid());
+    }
+    crate::NativeFutureBundle::new(work, || async move {
+        let Some(journal) = read(witness, work).await? else {
+            return Ok(None);
+        };
+        if journal.custody.is_none() {
+            return Err(invalid());
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        let acyclic_fs::MaterializationIntent::NativePreparation {
+            selection,
+            original,
+        } = &journal.plan.intent
+        else {
+            return Err(invalid());
+        };
+        let (intent, mut custody) = native_decoded(io.decode(
+            std::marker::PhantomData::<Intent>,
+            original,
+            crate::wire::ErrorCode::Storage,
+        )?)?;
+        intent.manifest.validate(Some(&io))?;
+        if intent.task != witness.task()
+            || selection.len() != intent.manifest.volumes.len()
+            || journal.plan.edits.iter().any(|edit| {
+                !matches!(edit, acyclic_fs::MaterializationEdit::Install { image, .. }
+                if image.as_slice() == acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX)
+            })
+        {
+            return Err(invalid());
+        }
+        for (selected, mapping) in selection.iter().zip(&intent.manifest.volumes) {
+            let provider = io.encode(
+                mapping.volume.provider(),
+                work.remaining()?.bytes_encoded,
+                true,
+            )?;
+            if provider.as_slice() != selected.provider_identity
+                || selected.generation.digest().as_bytes().as_slice()
+                    != mapping.generation.as_resource().key()
+            {
+                return Err(invalid());
+            }
+        }
+        if let Some(scratch) = witness.scratch_proof() {
+            if crate::runtime::task_id_for_admission(scratch.origin().intended_child) != intent.task
+                || !intent
+                    .manifest
+                    .volumes
+                    .iter()
+                    .any(|mapping| mapping.writable && &mapping.volume == scratch.volume())
+            {
+                return Err(invalid());
+            }
+        }
+        witness.verify_with_native_work(work).await?;
+        drop(journal);
+        let Intent {
+            task,
+            original_fence,
+            ..
+        } = intent;
+        let bytes = (std::mem::size_of::<(
+            crate::TaskId,
+            crate::scheduler::LeaseFence,
+            NativeAllocation,
+        )>() as u64)
+            .checked_add(original_fence.reservation_id.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(original_fence.placement.capacity() as u64))
+            .ok_or_else(invalid)?;
+        custody.resize(bytes)?;
+        Ok(Some((task, original_fence, custody)))
+    })
+}
+
 pub(super) fn path(
     task: crate::TaskId,
     work: &NativeMaterializationWork,
@@ -44,7 +136,7 @@ pub(super) fn path(
         .map_err(Error::from)
 }
 
-async fn read_record<P: StreamProvider>(
+pub(super) async fn read_record<P: StreamProvider>(
     client: &Arc<P>,
     task: crate::TaskId,
     work: &NativeMaterializationWork,
@@ -57,34 +149,27 @@ async fn read_record<P: StreamProvider>(
     let bounds =
         match crate::store::operations::bounds_with_work(client, &path, &mut observer).await? {
             Ok(bounds) => bounds,
-            Err(error)
-                if matches!(
-                    crate::distributed::sdk_source(&error),
-                    acyclic_stream::StreamError::NotFound
-                ) =>
-            {
+            Err(error) if matches!(&error, acyclic_stream::StreamError::NotFound) => {
                 return Ok(None);
             }
-            Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
+            Err(error) => {
+                return Err(crate::store::operations::stream_error_with_work(
+                    error, &observer,
+                ));
+            }
         };
     let Some(sequence) = bounds.tail.checked_sub(1) else {
         return Ok(None);
     };
-    let stream = crate::store::operations::stream(client, path.as_str(), &mut observer)?;
-    let mut records =
-        crate::store::operations::read_records(client, stream.0.path(), sequence, 1, &mut observer)
-            .await?
-            .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
-    let record = records.next(&mut observer).await?.ok_or_else(invalid)?;
-    if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(invalid());
-    }
+    let record = crate::store::operations::one_record(client, &path, sequence, &mut observer)
+        .await?
+        .ok_or_else(invalid)?;
     let (mut journal, mut custody) = native_decoded(io.decode(
         std::marker::PhantomData::<MaterializationJournal>,
         &record.value,
         crate::wire::ErrorCode::Storage,
     )?)?;
-    custody.substitute(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
+    custody.resize(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
     if record.sequence != sequence
         || journal.revision != bounds.tail
         || !journal.is_valid_for(operation)
@@ -125,7 +210,7 @@ pub(super) struct Store<P: StreamProvider> {
 impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
     type Error = Error;
     type ActionCompletion<'a>
-        = crate::NativeFutureBundle<'a, MaterializationJournal>
+        = crate::NativeFutureBundle<'static, MaterializationJournal>
     where
         Self: 'a;
 
@@ -179,7 +264,7 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
             || !replacement
                 .custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(&self.work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(&self.work))
         {
             return Err(invalid());
         }

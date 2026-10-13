@@ -24,16 +24,15 @@ impl Producer {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner_with_native_work(caller.task, &fence, &work)
+            .journal_owner(caller.task, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
             .await?
             .into_native_shared(&work)?;
         let context = self
             .runtime
             .task_context_with_native_work(caller.task, &fence, &work)
             .await?;
-        let guards = [context
-            .volume_callback_guard_with_native_work(&owner, &work)
-            .await?];
+        context.verify_volume_owner(&owner, &work).await?;
+        let guards = [Arc::clone(&context)];
         let namespace = self.root.join("native-command-view");
         let preparation = self.root.join("native-command-preparation");
         for directory in [
@@ -44,7 +43,7 @@ impl Producer {
         ] {
             tokio::fs::create_dir_all(directory)
                 .await
-                .map_err(|error| Error::Storage(error.to_string()))?;
+                .map_err(storage)?;
         }
         let options = NativeViewOptions {
             root: namespace.clone(),
@@ -112,7 +111,7 @@ impl Producer {
             &caller.binding,
             &caller.private,
             "command/request.json",
-            &serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?,
+            &serde_json::to_vec(&request).map_err(invalid)?,
             "application/json",
             "request.json",
             "native-command-request",
@@ -140,7 +139,7 @@ impl Producer {
             &caller.binding,
             &caller.private,
             "command/approval.json",
-            &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
+            &serde_json::to_vec(&interaction).map_err(invalid)?,
             "application/json",
             "approval.json",
             "native-command-approval",
@@ -168,11 +167,7 @@ impl Producer {
             }),
         };
         interactions
-            .open(
-                OperationId::new(),
-                caller.binding.scope.clone(),
-                ticket.clone(),
-            )
+            .open(OperationId::new(), caller.binding.scope.clone(), ticket)
             .await?;
         let plan = TaskEffectPlan {
             provider: "graphcoder.native".into(),
@@ -294,7 +289,6 @@ impl Producer {
         label: &str,
         source: Option<TaskId>,
     ) -> Result<Option<Caller>> {
-        let execute = source.is_none();
         let agent = AgentId::new();
         let child_authority = Authority {
             kind: AggregateKind::Conversation,
@@ -353,7 +347,7 @@ impl Producer {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
                 self.files.clone(),
                 &self.config.owner.authority,
-                graph_root,
+                graph_root, None,
                 None,
             )?;
             let service_issuer = AuthorityIssuer::new(
@@ -364,26 +358,17 @@ impl Producer {
             let owner = Arc::new(
                 self.runtime
                     .task_host()
-                    .journal_owner(parent.task, LeaseFence::from(&parent.lease.reservation))
+                    .journal_owner(parent.task, &(LeaseFence::from(&parent.lease.reservation)), None)
                     .await?
                     .with_invocation_cancellation(&self.cancellation),
             );
             Some(
                 owner
-                    .authorize_project_source(
-                        &context,
-                        &service_issuer,
-                        &policy,
-                        source_task,
-                        operation,
-                        acyclic_harness::source_authorization::ProjectSourceSnapshot {
+                    .authorize_project_source(&context, &service_issuer, policy.as_ref(), source_task, operation, &(acyclic_harness::source_authorization::ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: selected.generation.clone(),
                             native_snapshot: None,
-                        },
-                        16 * 1024 * 1024,
-                        16 * 1024 * 1024,
-                    )
+                        }), 16 * 1024 * 1024, 16 * 1024 * 1024, None)
                     .await?,
             )
         } else {
@@ -419,10 +404,7 @@ impl Producer {
                 inherited_messages: 64,
                 inherited_bytes: PAYLOAD_BYTES,
                 inherited_references: 64,
-                history_limits: HistoryReadLimits {
-                    maximum_events: 256,
-                    maximum_bytes: 4 * 1024 * 1024,
-                },
+                history_limits: HISTORY_LIMITS,
             },
             source_read,
             &self.cancellation,
@@ -435,7 +417,6 @@ impl Producer {
         let checkpoint = ForkSourceConfig {
             caller: parent.task,
             owner: parent.binding.clone(),
-            project: parent.project.clone(),
             snapshot: parent
                 .aggregate
                 .reducer()
@@ -443,17 +424,11 @@ impl Producer {
                 .0,
             request: binding.request.clone(),
         };
-        let checkpoint_path = self
-            .root
-            .join("inputs")
-            .join(format!("{label}-source.json"));
-        persist(&checkpoint_path, &checkpoint).await?;
         self.config.fork_sources.push(checkpoint);
         let mut child = self.template.clone();
         child.operation_id = child_operation;
         child.parent = Some(parent.task);
-        child.input = serde_json::to_value(&self.planned_commands[label])
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        child.input = serde_json::to_value(&self.planned_commands[label]).map_err(invalid)?;
         // Parent-owned scratch rights never become generic child rights.
         let mut grants = COMMON_GRANTS
             .iter()
@@ -480,22 +455,14 @@ impl Producer {
             grants.push(grant.capability()?);
         }
         child.grants = Capabilities::new(grants);
-        let fork_bytes = serde_json::to_vec(&binding.request)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let fork_bytes = serde_json::to_vec(&binding.request).map_err(invalid)?;
         if fork_bytes.len() as u64 > PAYLOAD_BYTES {
             return Err(Error::Invalid(
                 "retained fork command exceeds fixture artifact bound".into(),
             ));
         }
         let command_file = context
-            .stage_file_once(
-                OperationId::new(),
-                &format!(".qualification-forks/{operation}.json"),
-                &fork_bytes,
-                "application/json",
-                "fork-request.json",
-            )
-            .await?;
+            .stage_file_once(OperationId::new(), &format!(".qualification-forks/{operation}.json"), &fork_bytes, "application/json", "fork-request.json", None).await.map(|(file, _)| file)?;
         let command = WorkflowCommand {
             operation_id: operation,
             kind: FORK_PREPARE_TASK_COMMAND_KIND.into(),
@@ -507,11 +474,7 @@ impl Producer {
             preparation_task,
             child,
             command,
-            ForkPreparationLimits {
-                resources: 3,
-                work: 16 * 1024 * 1024,
-                bytes: 16 * 1024 * 1024,
-            },
+            FORK_LIMITS,
             None,
             vec![command_file, self.planned_commands[label].payload.clone()],
         )?;
@@ -529,22 +492,16 @@ impl Producer {
             .root
             .join("inputs")
             .join(format!("{label}-report.json"));
-        let preparation_lease_path = self
-            .root
-            .join("inputs")
-            .join(format!("{label}-preparation-lease.json"));
         self.preparations.push(json!({ "label": label, "parent": parent.task, "operation": preparation_operation,
-            "task": preparation_task, "child_task_operation": child_operation, "child_agent": agent,
-            "request": request_path, "report": if execute { Some(report_path.clone()) } else { None },
-            "projected_reference_grants": projected_reference_grants,
-            "source_snapshot": checkpoint_path, "executed": execute,
-            "original_lease": if execute { Some(preparation_lease_path.clone()) } else { None } }));
+            "task": preparation_task, "child_task_operation": child_operation,
+            "request": request_path, "report": if source.is_none() { Some(report_path.clone()) } else { None },
+            "executed": source.is_none() }));
         let child_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, child_authority.clone());
         let grants = Capabilities::new(request.child.grants.iter().map(str::to_owned).chain([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
         ]));
-        let purpose = if execute {
+        let purpose = if source.is_none() {
             "explicit-trusted-created-child"
         } else {
             "explicit-trusted-pending-child"
@@ -555,19 +512,14 @@ impl Producer {
             key: TEST_KEY,
             scope: child_issuer.issue(purpose, &grants, Some(agent), None, &mut None)?,
         };
-        if !execute {
-            self.config.observed_authorities.push(owner.clone());
+        if source.is_some() {
             self.config.tools.forks.push(NativeToolFork {
                 caller: parent.task,
                 child: owner,
                 project,
                 private_volume: private,
                 admission: request.child.clone(),
-                limits: ForkPreparationLimits {
-                    resources: 3,
-                    work: 16 * 1024 * 1024,
-                    bytes: 16 * 1024 * 1024,
-                },
+                limits: FORK_LIMITS,
                 result_volume: Some(result),
             });
             return Ok(None);
@@ -585,7 +537,6 @@ impl Producer {
             ));
         }
         let preparation_lease = claim(&self.runtime, preparation_task, &self.worker).await?;
-        persist(&preparation_lease_path, &preparation_lease).await?;
         let commands = self.runtime.commands().with_fork_preparer(binding.preparer);
         let attempt = self
             .runtime
@@ -595,9 +546,7 @@ impl Producer {
             return Err(error);
         }
         let report: ForkReport = match self.runtime.task_host().outcome(preparation_task).await? {
-            Some(Outcome::Succeeded(value)) => {
-                serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?
-            }
+            Some(Outcome::Succeeded(value)) => serde_json::from_value(value).map_err(invalid)?,
             Some(Outcome::Failed { message }) => {
                 return Err(Error::Conflict(format!(
                     "real fork {label} failed: {message}"
@@ -652,11 +601,9 @@ impl Producer {
         persist(
             &report_path,
             &json!({ "report": report, "seed": seed,
-            "child": self.runtime.task_host().observe_admission(child_task).await?,
-            "parent_lease": parent.lease, "preparation_lease": preparation_lease }),
+            "child": self.runtime.task_host().observe_admission(child_task).await? }),
         )
         .await?;
-        self.config.observed_authorities.push(owner.clone());
         println!(
             "native-scenario real-fork label={label} parent={} preparation={preparation_task} child={child_task}",
             parent.task

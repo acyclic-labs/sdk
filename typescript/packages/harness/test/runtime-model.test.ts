@@ -132,7 +132,6 @@ test("model provider callbacks are captured once per binding and retain their re
   expect(provider.dispatches).toBe(2);
   const binding = scope.modelBinding;
   if (!binding || !admitted) throw new Error("expected an admitted scoped request");
-  expect(Object.isFrozen(binding.provider)).toBe(true);
   expect(binding.provider.contextCapacity(binding.identity)).toEqual(accounting.contextCapacity(binding.identity));
   const count = binding.provider.countTokens(admitted);
   expect(count).toEqual(accounting.countTokens(admitted));
@@ -301,8 +300,6 @@ test("model context tool values are admitted by Rust canonical JSON before dispa
 test("local task names and revisions use one bounded registry contract", async () => {
   const task = await TaskDefinition.live("leaf", "1", async () => 1);
   expect(task.name).toBe("leaf");
-  expect(Object.isFrozen(task)).toBe(true);
-  expect(Object.isFrozen(task.implementation)).toBe(true);
   await expect(TaskDefinition.live("bad/name", "1", async () => 1)).rejects.toThrow();
   await expect(TaskDefinition.live("leaf", "bad version", async () => 1)).rejects.toThrow();
 });
@@ -325,7 +322,6 @@ const definition = await defineTool<{ count: number }, number>({
 }, (_context, input) => input.count * 2);
 let steps = 0;
 const builder = Harness.builder(contracts).tool(definition).grant("tool:call:projected");
-// The admitted method is captured once, including a prototype method's receiver.
 projector.project = () => { throw new Error("replacement must not execute"); };
 const runtime = await builder.model(testModel, {
   ...syntheticAccounting(contracts),

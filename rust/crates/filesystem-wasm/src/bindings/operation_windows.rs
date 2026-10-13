@@ -153,7 +153,6 @@ fn generation(value: &[u8]) -> Result<acyclic_fs::GenerationId, JsValue> {
 
 #[wasm_bindgen]
 impl BrowserFs {
-    /// Opens a coordinator on the exact persistent authority; construction acquires no lease.
     #[wasm_bindgen(js_name = operationWindows)]
     pub fn operation_windows(&self) -> Result<BrowserOperationWindowCoordinator, JsValue> {
         let engine = self.engine.as_ref().ok_or_else(closed_error)?;
@@ -172,7 +171,6 @@ impl BrowserFs {
 
 #[wasm_bindgen]
 impl BrowserOperationWindowCoordinator {
-    /// Opens an overlapping lease through the shared Rust transition.
     pub async fn begin(
         &self,
         workspace_id: &[u8],
@@ -200,7 +198,6 @@ impl BrowserOperationWindowCoordinator {
             .and_then(ts)
     }
 
-    /// Extends the exact live lease; its previous publication permit is fenced.
     pub async fn renew(
         &self,
         lease: Ts<BrowserOperationWindowLease>,
@@ -219,7 +216,6 @@ impl BrowserOperationWindowCoordinator {
             .and_then(ts)
     }
 
-    /// Coalesces an authenticated parent advance.
     #[wasm_bindgen(js_name = observeParent)]
     pub async fn observe_parent(
         &self,
@@ -235,7 +231,6 @@ impl BrowserOperationWindowCoordinator {
             .map_err(js_error)
     }
 
-    /// Closes a lease; the final closer owns reconciliation.
     pub async fn finish(
         &self,
         lease: Ts<BrowserOperationWindowLease>,
@@ -261,7 +256,6 @@ impl BrowserOperationWindowCoordinator {
         )
     }
 
-    /// Inspects the current durable phase without acquiring authority.
     pub async fn inspect(
         &self,
         workspace_id: &[u8],
@@ -298,7 +292,6 @@ impl BrowserOperationWindowCoordinator {
         )
     }
 
-    /// Closes and completes deferred workspace reconciliation through the existing coordinator.
     #[wasm_bindgen(js_name = finishWorkspace)]
     pub async fn finish_workspace(
         &self,
@@ -332,7 +325,6 @@ impl BrowserOperationWindowCoordinator {
         )
     }
 
-    /// Recovers expired leases and interrupted reconciliation without rerunning external effects.
     #[wasm_bindgen(js_name = recoverWorkspace)]
     pub async fn recover_workspace(
         &self,

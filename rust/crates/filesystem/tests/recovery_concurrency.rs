@@ -9,21 +9,20 @@
     reason = "test fixtures use explicit fatal assertions to keep exhaustive state-machine cases readable"
 )]
 
-use acyclic_fs::{
-    Digest, GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
-    MaterializationError, MaterializationIntent, MaterializationJournal, MaterializationJournalStore,
-    MaterializationPhase, MaterializationPlan, MaterializationPreimage,
-    MaterializationRecovery, MemoryMaterializationJournalStore,
-    MemoryMaterializationJournalStoreError,
-    OperationId, OperationWindowCoordinator, OperationWindowError, OperationWindowFinish,
-    OperationWindowPhase, OperationWindowSnapshot, OperationWindowStore, WorkspaceId,
-};
+use acyclic_fs::materializer::MaterializationObservation;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork,
-    NativeTreeMaterializationBackend, WorkBudget,
+    CancellationToken, NativeMaterializationWork, NativeTreeMaterializationBackend, WorkBudget,
 };
-use acyclic_fs::materializer::MaterializationObservation;
+use acyclic_fs::{
+    Digest, GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
+    MaterializationError, MaterializationIntent, MaterializationJournal,
+    MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
+    MaterializationPreimage, MaterializationRecovery, MemoryMaterializationJournalStore,
+    MemoryMaterializationJournalStoreError, OperationId, OperationWindowCoordinator,
+    OperationWindowError, OperationWindowFinish, OperationWindowPhase, OperationWindowSnapshot,
+    OperationWindowStore, WorkspaceId,
+};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -317,7 +316,9 @@ enum CrashStoreError {
 
 #[cfg(not(target_arch = "wasm32"))]
 struct CrashActionCompletion<'a> {
-    actual: Option<<MemoryMaterializationJournalStore as MaterializationJournalStore>::ActionCompletion<'a>>,
+    actual: Option<
+        <MemoryMaterializationJournalStore as MaterializationJournalStore>::ActionCompletion<'a>,
+    >,
     before_write: Option<MaterializationJournal>,
     store: &'a CrashJournalStore,
     // Freeze the relative write ordinal from admission through the real action.
@@ -328,22 +329,32 @@ struct CrashActionCompletion<'a> {
 impl std::future::Future for CrashActionCompletion<'_> {
     type Output = Result<MaterializationJournal, CrashStoreError>;
 
-    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
         if let Some(journal) = this.before_write.take() {
             drop(this.actual.take());
             return std::task::Poll::Ready(Err(CrashStoreError::InjectedCrash(journal)));
         }
         let Some(actual) = this.actual.as_mut() else {
-            return std::task::Poll::Ready(Err(MemoryMaterializationJournalStoreError::Unavailable.into()));
+            return std::task::Poll::Ready(Err(
+                MemoryMaterializationJournalStoreError::Unavailable.into(),
+            ));
         };
-        let std::task::Poll::Ready(result) = std::future::Future::poll(std::pin::Pin::new(actual), context) else {
+        let std::task::Poll::Ready(result) =
+            std::future::Future::poll(std::pin::Pin::new(actual), context)
+        else {
             return std::task::Poll::Pending;
         };
         drop(this.actual.take());
         std::task::Poll::Ready(result.map_err(CrashStoreError::from).and_then(|journal| {
-            if this.store.did_write() { Err(CrashStoreError::InjectedCrash(journal)) }
-            else { Ok(journal) }
+            if this.store.did_write() {
+                Err(CrashStoreError::InjectedCrash(journal))
+            } else {
+                Ok(journal)
+            }
         }))
     }
 }
@@ -352,7 +363,10 @@ impl MaterializationJournalStore for CrashJournalStore {
     type Error = CrashStoreError;
 
     #[cfg(not(target_arch = "wasm32"))]
-    type ActionCompletion<'a> = CrashActionCompletion<'a> where Self: 'a;
+    type ActionCompletion<'a>
+        = CrashActionCompletion<'a>
+    where
+        Self: 'a;
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn prepare_action<'a>(
@@ -370,7 +384,10 @@ impl MaterializationJournalStore for CrashJournalStore {
         };
         let actual = self.inner.prepare_action(journal).await?;
         Ok(CrashActionCompletion {
-            actual: Some(actual), before_write, store: self, _write_gate: write_gate,
+            actual: Some(actual),
+            before_write,
+            store: self,
+            _write_gate: write_gate,
         })
     }
 
@@ -378,7 +395,10 @@ impl MaterializationJournalStore for CrashJournalStore {
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
-        self.inner.load(operation_id).await.map_err(CrashStoreError::from)
+        self.inner
+            .load(operation_id)
+            .await
+            .map_err(CrashStoreError::from)
     }
 
     async fn compare_and_swap(
@@ -396,8 +416,10 @@ impl MaterializationJournalStore for CrashJournalStore {
                 return Err(CrashStoreError::InjectedCrash(replacement));
             }
         }
-        let (stored, replacement) = self.inner
-            .compare_and_swap(operation_id, expected_revision, replacement).await?;
+        let (stored, replacement) = self
+            .inner
+            .compare_and_swap(operation_id, expected_revision, replacement)
+            .await?;
         if stored && self.did_write() {
             return Err(CrashStoreError::InjectedCrash(replacement));
         }
@@ -454,7 +476,10 @@ impl MaterializationBackend for TreeBackend {
             }
             _ => return Err(TreeBackendError),
         };
-        Ok(MaterializationPreimage { image, custody: None })
+        Ok(MaterializationPreimage {
+            image,
+            custody: None,
+        })
     }
 
     async fn apply(
@@ -703,7 +728,10 @@ fn assert_original_forward_journal(
     durable_writes: usize,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
-    assert!(packet.custody.is_none(), "ordinary tree fixture alone permits receipt copies");
+    assert!(
+        packet.custody.is_none(),
+        "ordinary tree fixture alone permits receipt copies"
+    );
     let journal = &packet;
     let edits = original.edits.len();
     assert_eq!(&journal.plan, original);
@@ -711,7 +739,10 @@ fn assert_original_forward_journal(
         journal.revision,
         u64::try_from(durable_writes).expect("small journal revision")
     );
-    assert_eq!(journal.preimages.len(), durable_writes.saturating_sub(1).min(edits));
+    assert_eq!(
+        journal.preimages.len(),
+        durable_writes.saturating_sub(1).min(edits)
+    );
     assert_eq!(
         journal.applied,
         u32::try_from(durable_writes.saturating_sub(edits + 3).min(edits))
@@ -744,7 +775,14 @@ async fn restart_completes_from_every_forward_journal_boundary() {
             let operation = plan(u8::try_from(boundary).expect("small boundary"));
             let materializer = JournaledMaterializer::new(store.clone(), backend.clone());
             assert!(matches!(
-                materializer.apply(operation.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await,
+                materializer
+                    .apply(operation.clone(), &mut || std::future::ready(Ok::<
+                        (),
+                        MaterializationError<_, _>,
+                    >(
+                        ()
+                    )))
+                    .await,
                 Err(MaterializationError::Store(_))
             ));
             drop(materializer);
@@ -766,20 +804,38 @@ async fn restart_completes_from_every_forward_journal_boundary() {
                 assert_eq!(backend.snapshot(), source_tree());
             }
             let recovered = restarted
-                .recover(operation.operation_id, MaterializationRecovery::Complete, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+                .recover(
+                    operation.operation_id,
+                    MaterializationRecovery::Complete,
+                    &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
+                )
                 .await
                 .expect("restart recovery");
             let recovered = if retained.is_some() {
                 recovered.expect("durable journal")
             } else {
                 assert!(recovered.is_none());
-                restarted.apply(operation.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await.expect("retry undurable intent")
+                restarted
+                    .apply(operation.clone(), &mut || {
+                        std::future::ready(Ok::<(), MaterializationError<_, _>>(()))
+                    })
+                    .await
+                    .expect("retry undurable intent")
             };
             assert_eq!(recovered.plan, operation);
             assert_eq!(recovered.phase, MaterializationPhase::Applied);
             assert_eq!(backend.snapshot(), expected);
             assert_eq!(
-                restarted.apply(operation, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await.expect("duplicate replay").phase,
+                restarted
+                    .apply(operation, &mut || std::future::ready(Ok::<
+                        (),
+                        MaterializationError<_, _>,
+                    >(
+                        ()
+                    )))
+                    .await
+                    .expect("duplicate replay")
+                    .phase,
                 MaterializationPhase::Applied
             );
         }
@@ -799,7 +855,14 @@ async fn restart_rolls_back_every_partial_forward_boundary() {
             let operation = plan(u8::try_from(boundary + 0x10).expect("small boundary"));
             let materializer = JournaledMaterializer::new(store.clone(), backend.clone());
             assert!(matches!(
-                materializer.apply(operation.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await,
+                materializer
+                    .apply(operation.clone(), &mut || std::future::ready(Ok::<
+                        (),
+                        MaterializationError<_, _>,
+                    >(
+                        ()
+                    )))
+                    .await,
                 Err(MaterializationError::Store(_))
             ));
             drop(materializer);
@@ -820,7 +883,11 @@ async fn restart_rolls_back_every_partial_forward_boundary() {
                 assert_eq!(durable_writes, 0);
             }
             let recovered = restarted
-                .recover(operation.operation_id, MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+                .recover(
+                    operation.operation_id,
+                    MaterializationRecovery::RollBack,
+                    &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
+                )
                 .await
                 .expect("partial rollback recovery");
             if let Some(journal) = recovered {
@@ -846,7 +913,9 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
             let backend = TreeBackend::source();
             let operation = plan(u8::try_from(boundary + 8).expect("small boundary"));
             JournaledMaterializer::new(store.clone(), backend.clone())
-                .apply(operation.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+                .apply(operation.clone(), &mut || {
+                    std::future::ready(Ok::<(), MaterializationError<_, _>>(()))
+                })
                 .await
                 .expect("initial apply");
             assert_eq!(backend.snapshot(), target_tree());
@@ -854,7 +923,11 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
             let materializer = JournaledMaterializer::new(store.clone(), backend.clone());
             assert!(matches!(
                 materializer
-                    .recover(operation.operation_id, MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+                    .recover(
+                        operation.operation_id,
+                        MaterializationRecovery::RollBack,
+                        &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(()))
+                    )
                     .await,
                 Err(MaterializationError::Store(_))
             ));
@@ -869,7 +942,11 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
                 .expect("durable journal");
             assert_eq!(retained.plan, operation);
             let recovered = restarted
-                .recover(operation.operation_id, MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+                .recover(
+                    operation.operation_id,
+                    MaterializationRecovery::RollBack,
+                    &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
+                )
                 .await
                 .expect("restart rollback")
                 .expect("durable journal");
@@ -878,7 +955,11 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
             assert_eq!(backend.snapshot(), expected);
             assert_eq!(
                 restarted
-                    .recover(operation.operation_id, MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+                    .recover(
+                        operation.operation_id,
+                        MaterializationRecovery::RollBack,
+                        &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(()))
+                    )
                     .await
                     .expect("duplicate rollback")
                     .expect("terminal journal")
@@ -891,7 +972,10 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
 
 #[tokio::test]
 async fn capture_failures_reopen_original_partial_intent_without_physical_edits() {
-    for recovery in [MaterializationRecovery::Complete, MaterializationRecovery::RollBack] {
+    for recovery in [
+        MaterializationRecovery::Complete,
+        MaterializationRecovery::RollBack,
+    ] {
         // Fail before the first capture and at each later path in this install,
         // remove, rename plan. Only successfully persisted captures may survive.
         for ordinal in 1..=plan(0).edits.len() {
@@ -901,12 +985,23 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             let original = plan(u8::try_from(0x60 + ordinal).expect("small capture ordinal"));
             let materializer = JournaledMaterializer::new(store.clone(), backend.clone());
             assert!(matches!(
-                materializer.apply(original.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await,
+                materializer
+                    .apply(original.clone(), &mut || std::future::ready(Ok::<
+                        (),
+                        MaterializationError<_, _>,
+                    >(
+                        ()
+                    )))
+                    .await,
                 Err(MaterializationError::Backend(_))
             ));
             drop(materializer);
 
-            let receipts = backend.receipts.lock().expect("actual backend receipts").clone();
+            let receipts = backend
+                .receipts
+                .lock()
+                .expect("actual backend receipts")
+                .clone();
             assert_eq!(receipts.capture_attempts, original.edits[..ordinal]);
             assert_eq!(receipts.captures.len(), ordinal - 1);
             assert!(receipts.applications.is_empty());
@@ -924,7 +1019,12 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             let captured: Vec<_> = original.edits[..ordinal - 1]
                 .iter()
                 .cloned()
-                .zip(retained.preimages.iter().map(|preimage| preimage.image.clone()))
+                .zip(
+                    retained
+                        .preimages
+                        .iter()
+                        .map(|preimage| preimage.image.clone()),
+                )
                 .collect();
             assert_eq!(receipts.captures, captured);
             let inspected = restarted
@@ -933,7 +1033,10 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                 .expect("inspect only retained physical endpoints")
                 .expect("same original journal");
             assert_eq!(inspected.journal, retained);
-            assert_eq!(inspected.root, acyclic_fs::MaterializationRootObservation::Unverified);
+            assert_eq!(
+                inspected.root,
+                acyclic_fs::MaterializationRootObservation::Unverified
+            );
             assert_eq!(
                 inspected.preparation,
                 acyclic_fs::MaterializationPreparationObservation::Unverified
@@ -964,11 +1067,21 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             changed_order.edits.reverse();
             for changed in [changed_from, changed_to, changed_image, changed_order] {
                 assert!(matches!(
-                    restarted.apply(changed, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await,
+                    restarted
+                        .apply(changed, &mut || std::future::ready(Ok::<
+                            (),
+                            MaterializationError<_, _>,
+                        >(
+                            ()
+                        )))
+                        .await,
                     Err(MaterializationError::PlanConflict)
                 ));
                 assert_eq!(
-                    restarted.load(original.operation_id).await.expect("query after conflict")
+                    restarted
+                        .load(original.operation_id)
+                        .await
+                        .expect("query after conflict")
                         .as_ref(),
                     Some(&retained)
                 );
@@ -982,7 +1095,9 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
 
             // Recover the original operation, never allocate a substitute plan.
             let recovered = restarted
-                .recover(original.operation_id, recovery, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+                .recover(original.operation_id, recovery, &mut || {
+                    std::future::ready(Ok::<(), MaterializationError<_, _>>(()))
+                })
                 .await
                 .expect("recover partially captured original plan")
                 .expect("original journal");
@@ -995,10 +1110,16 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                     assert_eq!(recovered.preimages[..ordinal - 1], retained.preimages);
                     #[cfg(not(target_arch = "wasm32"))]
                     assert!(recovered.custody.is_none(), "ordinary receipt copy only");
-                    let expected_receipts: Vec<_> = original.edits
+                    let expected_receipts: Vec<_> = original
+                        .edits
                         .iter()
                         .cloned()
-                        .zip(recovered.preimages.iter().map(|preimage| preimage.image.clone()))
+                        .zip(
+                            recovered
+                                .preimages
+                                .iter()
+                                .map(|preimage| preimage.image.clone()),
+                        )
                         .collect();
                     assert_eq!(final_receipts.captures, expected_receipts);
                     assert_eq!(final_receipts.applications, expected_receipts);
@@ -1019,13 +1140,23 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                     assert!(final_receipts.applications.is_empty());
                     assert!(final_receipts.restorations.is_empty());
                     assert!(matches!(
-                        restarted.apply(original.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await,
+                        restarted
+                            .apply(original.clone(), &mut || std::future::ready(Ok::<
+                                (),
+                                MaterializationError<_, _>,
+                            >(
+                                ()
+                            )))
+                            .await,
                         Err(MaterializationError::PlanConflict)
                     ));
                 }
             }
             assert_eq!(
-                restarted.load(original.operation_id).await.expect("query recovered original"),
+                restarted
+                    .load(original.operation_id)
+                    .await
+                    .expect("query recovered original"),
                 Some(recovered)
             );
         }
@@ -1043,12 +1174,14 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         let forward_plan = plan(u8::try_from(0x40 + ordinal).expect("small ordinal"));
         let forward_backend = MutationCrashBackend::after_apply(forward_tree.clone(), ordinal);
         assert!(matches!(
-            JournaledMaterializer::new(
-                forward_store.clone(),
-                forward_backend.clone(),
-            )
-            .apply(forward_plan.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
-            .await,
+            JournaledMaterializer::new(forward_store.clone(), forward_backend.clone(),)
+                .apply(forward_plan.clone(), &mut || std::future::ready(Ok::<
+                    (),
+                    MaterializationError<_, _>,
+                >(
+                    ()
+                )))
+                .await,
             Err(MaterializationError::Backend(_))
         ));
         let restarted = JournaledMaterializer::new(forward_store, forward_tree.clone());
@@ -1059,21 +1192,38 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             .expect("forward journal");
         assert_eq!(retained.plan, forward_plan);
         assert_eq!(retained.phase, MaterializationPhase::Applying);
-        assert_eq!(retained.applied, u32::try_from(ordinal - 1).expect("small ordinal"));
+        assert_eq!(
+            retained.applied,
+            u32::try_from(ordinal - 1).expect("small ordinal")
+        );
         #[cfg(not(target_arch = "wasm32"))]
         assert!(retained.custody.is_none(), "ordinary receipt copy only");
-        let expected_receipts: Vec<_> = forward_plan.edits
+        let expected_receipts: Vec<_> = forward_plan
+            .edits
             .iter()
             .cloned()
-            .zip(retained.preimages.iter().map(|preimage| preimage.image.clone()))
+            .zip(
+                retained
+                    .preimages
+                    .iter()
+                    .map(|preimage| preimage.image.clone()),
+            )
             .collect();
-        let receipts = forward_backend.receipts.lock().expect("forward receipts").clone();
+        let receipts = forward_backend
+            .receipts
+            .lock()
+            .expect("forward receipts")
+            .clone();
         assert_eq!(receipts.capture_attempts, forward_plan.edits);
         assert_eq!(receipts.captures, expected_receipts);
         assert_eq!(receipts.applications, expected_receipts[..ordinal]);
         assert!(receipts.restorations.is_empty());
         let completed = restarted
-            .recover(forward_plan.operation_id, MaterializationRecovery::Complete, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+            .recover(
+                forward_plan.operation_id,
+                MaterializationRecovery::Complete,
+                &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
+            )
             .await
             .expect("complete after unrecorded mutation")
             .expect("forward journal");
@@ -1086,20 +1236,20 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         let rollback_tree = TreeBackend::source();
         let rollback_plan = plan(u8::try_from(0x50 + ordinal).expect("small ordinal"));
         JournaledMaterializer::new(rollback_store.clone(), rollback_tree.clone())
-            .apply(rollback_plan.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+            .apply(rollback_plan.clone(), &mut || {
+                std::future::ready(Ok::<(), MaterializationError<_, _>>(()))
+            })
             .await
             .expect("prepare rollback fixture");
         let rollback_backend = MutationCrashBackend::after_restore(rollback_tree.clone(), ordinal);
         assert!(matches!(
-            JournaledMaterializer::new(
-                rollback_store.clone(),
-                rollback_backend.clone(),
-            )
-            .recover(
-                rollback_plan.operation_id,
-                MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
-            )
-            .await,
+            JournaledMaterializer::new(rollback_store.clone(), rollback_backend.clone(),)
+                .recover(
+                    rollback_plan.operation_id,
+                    MaterializationRecovery::RollBack,
+                    &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
+                )
+                .await,
             Err(MaterializationError::Backend(_))
         ));
         let restarted = JournaledMaterializer::new(rollback_store, rollback_tree.clone());
@@ -1110,17 +1260,30 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             .expect("rollback journal");
         assert_eq!(retained.plan, rollback_plan);
         assert_eq!(retained.phase, MaterializationPhase::RollingBack);
-        assert_eq!(retained.restored, u32::try_from(ordinal - 1).expect("small ordinal"));
+        assert_eq!(
+            retained.restored,
+            u32::try_from(ordinal - 1).expect("small ordinal")
+        );
         #[cfg(not(target_arch = "wasm32"))]
         assert!(retained.custody.is_none(), "ordinary receipt copy only");
-        let expected_restores: Vec<_> = rollback_plan.edits
+        let expected_restores: Vec<_> = rollback_plan
+            .edits
             .iter()
             .cloned()
-            .zip(retained.preimages.iter().map(|preimage| preimage.image.clone()))
+            .zip(
+                retained
+                    .preimages
+                    .iter()
+                    .map(|preimage| preimage.image.clone()),
+            )
             .rev()
             .take(ordinal)
             .collect();
-        let receipts = rollback_backend.receipts.lock().expect("rollback receipts").clone();
+        let receipts = rollback_backend
+            .receipts
+            .lock()
+            .expect("rollback receipts")
+            .clone();
         assert_eq!(receipts.restorations, expected_restores);
         assert!(receipts.capture_attempts.is_empty());
         assert!(receipts.captures.is_empty());
@@ -1128,7 +1291,8 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         let rolled_back = restarted
             .recover(
                 rollback_plan.operation_id,
-                MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
+                MaterializationRecovery::RollBack,
+                &mut || std::future::ready(Ok::<(), MaterializationError<_, _>>(())),
             )
             .await
             .expect("rollback after unrecorded restoration")
@@ -1147,7 +1311,9 @@ async fn immutable_materialization_plan_rejects_conflicting_replay() {
     let materializer = JournaledMaterializer::new(store, backend);
     let original = plan(0x30);
     materializer
-        .apply(original.clone(), &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
+        .apply(original.clone(), &mut || {
+            std::future::ready(Ok::<(), MaterializationError<_, _>>(()))
+        })
         .await
         .expect("initial apply");
     let mut altered = original;
@@ -1156,7 +1322,12 @@ async fn immutable_materialization_plan_rejects_conflicting_replay() {
         to: generation(9),
     };
     assert!(matches!(
-        materializer.apply(altered, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await,
+        materializer
+            .apply(altered, &mut || std::future::ready(Ok::<
+                (),
+                MaterializationError<_, _>,
+            >(())))
+            .await,
         Err(MaterializationError::PlanConflict)
     ));
 }
@@ -1184,12 +1355,15 @@ fn native_backend(
     let (root, custody) = work.path(&root, None).expect("funded backend root path");
     let mut custody = custody;
     let root = root;
-    let (operation, operation_custody) = work.path(&operation, None)
+    let (operation, operation_custody) = work
+        .path(&operation, None)
         .expect("funded backend operation path");
     let mut operation_custody = operation_custody;
     let operation = operation;
-    custody.absorb(&mut operation_custody).expect("same original allocation context");
-    NativeTreeMaterializationBackend::new(root, operation, Some(custody), work.clone(), true)
+    custody
+        .absorb(&mut operation_custody)
+        .expect("same original allocation context");
+    NativeTreeMaterializationBackend::new(root, operation, custody, work.clone())
         .expect("real original-resource backend")
 }
 
@@ -1203,26 +1377,36 @@ async fn native_prepared_packet(
     let (path, path_custody) = work.copy_bytes(b"file").expect("real paid path copy");
     let mut path_custody = path_custody;
     let path = path;
-    let mut custody = work.claim(std::mem::size_of::<MaterializationEdit>() as u64, u64::from((std::mem::size_of::<MaterializationEdit>() as u64) != 0), acyclic_fs::WorkCounters::default())
+    let mut custody = work
+        .claim(
+            std::mem::size_of::<MaterializationEdit>() as u64,
+            u64::from((std::mem::size_of::<MaterializationEdit>() as u64) != 0),
+            acyclic_fs::WorkCounters::default(),
+        )
         .expect("admit plan vector before allocation");
     let path = path; // Retire path data before either possible owning guard.
     let mut edits = Vec::with_capacity(1);
-    custody.reconcile_capacity(
-        (edits.capacity() * std::mem::size_of::<MaterializationEdit>()) as u64,
-    ).expect("retain actual vector capacity before any late refusal");
-    custody.absorb(&mut path_custody).expect("same original paid plan");
+    custody
+        .reconcile_capacity((edits.capacity() * std::mem::size_of::<MaterializationEdit>()) as u64)
+        .expect("retain actual vector capacity before any late refusal");
+    custody
+        .absorb(&mut path_custody)
+        .expect("same original paid plan");
     edits.push(MaterializationEdit::Remove {
         path: String::from_utf8(path).expect("static valid UTF-8 without copying"),
     });
     let plan = MaterializationPlan {
         operation_id: OperationId::from_bytes([case; 16]),
         intent: MaterializationIntent::GenerationTransition {
-            from: generation(1), to: generation(2),
+            from: generation(1),
+            to: generation(2),
         },
         edits,
     };
     JournaledMaterializer::new(store.clone(), backend.clone())
-        .prepare(plan, Some(custody)).await.expect("production-owned original journal")
+        .prepare(plan, Some(custody))
+        .await
+        .expect("production-owned original journal")
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1236,72 +1420,142 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
             let budget = finite_native_budget();
             let original = NativeMaterializationWork::new(budget, &cancellation)
                 .expect("one original finite work ledger");
-            let work = original.native_volume_work(budget).expect("original native resource");
+            let work = original
+                .native_volume_work(budget)
+                .expect("original native resource");
             let backend = native_backend(directory.path(), &work);
             let store = CrashJournalStore::default();
             let journal = native_prepared_packet(&store, &backend, &work, 0x71).await;
             let operation_id = journal.plan.operation_id;
             let last_durable_work = journal.work;
             let payload = journal.plan.edits.as_ptr();
-            let packet_bytes = journal.custody.as_ref().expect("production Some custody").bytes();
-            assert!(journal.custody.as_ref().expect("original custody").work()
-                .shares_allocation_context(&work));
+            let packet_bytes = journal
+                .custody
+                .as_ref()
+                .expect("production Some custody")
+                .bytes();
+            assert!(
+                journal
+                    .custody
+                    .as_ref()
+                    .expect("original custody")
+                    .work()
+                    .shares_allocation_context(&work)
+            );
             let file = directory.path().join("root/file");
-            let mut output = std::fs::OpenOptions::new().write(true).open(&file)
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
                 .expect("fixture output before admission");
             store.fail_at_relative_write(1, after_write);
             let before_admission = original.receipt();
-            let completion = store.prepare_action(journal).await
+            let completion = store
+                .prepare_action(journal)
+                .await
                 .expect("genuine Memory completion accepted before the physical action");
             assert!(original.receipt().bytes_copied > before_admission.bytes_copied);
-            assert_eq!(std::fs::read(&file).expect("unchanged before acceptance"), b"before");
-            acyclic_native_runtime::write_all_at(&output, 0, b"after!", Some((work.runtime_meter().as_ref(), false))).expect("actual original-resource action");
+            assert_eq!(
+                std::fs::read(&file).expect("unchanged before acceptance"),
+                b"before"
+            );
+            acyclic_native_runtime::write_all_at(
+                &output,
+                0,
+                b"after!",
+                Some((work.runtime_meter().as_ref(), false)),
+            )
+            .expect("actual original-resource action");
             if cancel_after_action {
                 cancellation.cancel();
             }
             let live_prefix = original.receipt();
             let durable_prefix = work.journal_work().expect("pure original durable prefix");
             let error = completion.await.expect_err("real before/after write seam");
-            assert_eq!(original.receipt(), live_prefix, "no allocation, copy, or admission after action");
+            assert_eq!(
+                original.receipt(),
+                live_prefix,
+                "no allocation, copy, or admission after action"
+            );
             let CrashStoreError::InjectedCrash(packet) = error else {
                 panic!("expected the injected crash to retain its real owned packet");
             };
-            let custody = packet.custody.as_ref().expect("native fault never becomes ordinary None");
+            let custody = packet
+                .custody
+                .as_ref()
+                .expect("native fault never becomes ordinary None");
             assert!(custody.work().shares_allocation_context(&work));
             let retained_packet_bytes = custody.bytes();
-            assert_eq!(retained_packet_bytes,
+            assert_eq!(
+                retained_packet_bytes,
                 acyclic_fs::materializer::journal_owned_bytes(&packet)
-                    .expect("actual packet capacities"));
+                    .expect("actual packet capacities")
+            );
             assert_eq!(packet.revision, 1 + u64::from(after_write));
-            assert_eq!(packet.work, if after_write { durable_prefix } else { last_durable_work });
+            assert_eq!(
+                packet.work,
+                if after_write {
+                    durable_prefix
+                } else {
+                    last_durable_work
+                }
+            );
             if after_write {
                 assert_eq!(retained_packet_bytes, packet_bytes);
-                assert_eq!(packet.plan.edits.as_ptr(), payload, "actual completion returns its input");
+                assert_eq!(
+                    packet.plan.edits.as_ptr(),
+                    payload,
+                    "actual completion returns its input"
+                );
             }
-            assert_eq!(store.state.lock().expect("fault state").writes, 1 + usize::from(after_write));
+            assert_eq!(
+                store.state.lock().expect("fault state").writes,
+                1 + usize::from(after_write)
+            );
             assert!(live_prefix.output_bytes > last_durable_work.output_bytes);
-            assert_eq!(std::fs::read(&file).expect("independent physical observation"), b"after!");
-            live_prefix.verify(budget).expect("full observed prefix fits the original finite budget");
+            assert_eq!(
+                std::fs::read(&file).expect("independent physical observation"),
+                b"after!"
+            );
+            live_prefix
+                .verify(budget)
+                .expect("full observed prefix fits the original finite budget");
             store.clear_failure();
             if cancel_after_action {
-                assert!(matches!(
-                    store.load(operation_id).await,
-                    Err(CrashStoreError::Memory(MemoryMaterializationJournalStoreError::NativeWork(
-                        acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                    )))
-                ), "cold reads never replace the cancelled original meter with an unbounded one");
+                assert!(
+                    matches!(
+                        store.load(operation_id).await,
+                        Err(CrashStoreError::Memory(
+                            MemoryMaterializationJournalStoreError::NativeWork(
+                                acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                            )
+                        ))
+                    ),
+                    "cold reads never replace the cancelled original meter with an unbounded one"
+                );
             } else {
                 // Reopen the consumer, not a replacement journal engine or ledger.
                 let reopened = JournaledMaterializer::new(store.clone(), backend.clone());
-                let retained = reopened.load(operation_id).await.expect("real same-store reopen")
+                let retained = reopened
+                    .load(operation_id)
+                    .await
+                    .expect("real same-store reopen")
                     .expect("original durable journal");
                 assert_eq!(&retained, &packet);
-                assert!(retained.custody.as_ref().expect("funded reopened packet").work()
-                    .shares_allocation_context(&work));
+                assert!(
+                    retained
+                        .custody
+                        .as_ref()
+                        .expect("funded reopened packet")
+                        .work()
+                        .shares_allocation_context(&work)
+                );
             }
             let live_bytes = original.live_allocation_bytes();
             drop(packet);
-            assert_eq!(original.live_allocation_bytes(), live_bytes - retained_packet_bytes);
+            assert_eq!(
+                original.live_allocation_bytes(),
+                live_bytes - retained_packet_bytes
+            );
         }
     }
 }
@@ -1314,33 +1568,68 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
     let budget = finite_native_budget();
     let original = NativeMaterializationWork::new(budget, &CancellationToken::new())
         .expect("original finite meter");
-    let work = original.native_volume_work(budget).expect("original native resource");
+    let work = original
+        .native_volume_work(budget)
+        .expect("original native resource");
     let backend = native_backend(directory.path(), &work);
     let store = CrashJournalStore::default();
     let journal = native_prepared_packet(&store, &backend, &work, 0x72).await;
     let operation_id = journal.plan.operation_id;
     let payload = journal.plan.edits.as_ptr();
-    let completion = store.prepare_action(journal).await.expect("actual accepted Memory completion");
+    let completion = store
+        .prepare_action(journal)
+        .await
+        .expect("actual accepted Memory completion");
     // An independent actor reaches the same real Memory store, not fixture metadata.
-    let mut competitor = store.inner.load(operation_id).await.expect("actual competing load")
+    let mut competitor = store
+        .inner
+        .load(operation_id)
+        .await
+        .expect("actual competing load")
         .expect("original record");
     competitor.revision += 1;
-    let (stored, competitor) = store.inner.compare_and_swap(operation_id, 1, competitor).await
+    let (stored, competitor) = store
+        .inner
+        .compare_and_swap(operation_id, 1, competitor)
+        .await
         .expect("genuine competing CAS");
     assert!(stored);
     let before = original.receipt();
-    let error = completion.await.expect_err("actual accepted CAS sees the winner");
-    assert_eq!(original.receipt(), before, "conflict performs no late copy or allocation");
-    let CrashStoreError::Memory(MemoryMaterializationJournalStoreError::ActionConflict(packet))
-        = error else {
+    let error = completion
+        .await
+        .expect_err("actual accepted CAS sees the winner");
+    assert_eq!(
+        original.receipt(),
+        before,
+        "conflict performs no late copy or allocation"
+    );
+    let CrashStoreError::Memory(MemoryMaterializationJournalStoreError::ActionConflict(packet)) =
+        error
+    else {
         panic!("expected the intact real Memory conflict error");
     };
     assert_eq!(packet.plan.edits.as_ptr(), payload);
-    assert!(packet.custody.as_ref().expect("intact original error custody").work()
-        .shares_allocation_context(&work));
-    let retained = store.load(operation_id).await.expect("real winning record query").expect("winner");
+    assert!(
+        packet
+            .custody
+            .as_ref()
+            .expect("intact original error custody")
+            .work()
+            .shares_allocation_context(&work)
+    );
+    let retained = store
+        .load(operation_id)
+        .await
+        .expect("real winning record query")
+        .expect("winner");
     assert_eq!(&retained, &competitor);
-    assert_eq!(store.state.lock().expect("fault state").writes, 1,
-        "failed completion consumes no wrapped write ordinal");
-    original.receipt().verify(budget).expect("actual whole conflict prefix");
+    assert_eq!(
+        store.state.lock().expect("fault state").writes,
+        1,
+        "failed completion consumes no wrapped write ordinal"
+    );
+    original
+        .receipt()
+        .verify(budget)
+        .expect("actual whole conflict prefix");
 }

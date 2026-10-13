@@ -189,13 +189,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let operation = OperationId::new();
     let budget = finite_budget()?;
     let created = fs
-        .create_workspace_with_operation(
-            "measured-recovery",
-            VolumeConfig::portable(Lifecycle::Ephemeral),
-            operation,
-            budget,
-            &CancellationToken::new(),
-        )
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("measured-recovery", VolumeConfig::portable(Lifecycle::Ephemeral), operation, budget, &CancellationToken::new(), None)
         .await?;
     let workspace = created.value.workspace();
     workspace
@@ -258,6 +252,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
 #[cfg(all(feature = "distributed", feature = "native-watch", not(target_arch = "wasm32")))]
 mod source_bound_lost_ack {
     use super::*;
+    use acyclic_fs::facade::FsWork;
     use acyclic_fs::demand::{DemandSource, SourceReference, native::NativeDemandSource};
     use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
     use acyclic_fs::{
@@ -367,9 +362,7 @@ mod source_bound_lost_ack {
         let mut response_denied = budget;
         response_denied.authority_records_read = 0;
         let reference_failure = Fs::memory()
-            .create_workspace_with_operation(
-                "stream-lost-ack", config, operation, response_denied, &cancellation,
-            ).await.err().ok_or("post-commit authority denial unexpectedly succeeded")?;
+            .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("stream-lost-ack", config, operation, response_denied, &cancellation, None).await.err().ok_or("post-commit authority denial unexpectedly succeeded")?;
         assert!(matches!(reference_failure.error, WorkspaceError::Work(_)));
         assert!(reference_failure.work.authority_records_appended > 0);
         assert_eq!(reference_failure.work.authority_records_read, 0);
@@ -397,12 +390,14 @@ mod source_bound_lost_ack {
             Some(reference), None, budget, &cancellation,
         ).await?.value);
         let store = MemoryLazyWorkspaceStore::default();
-        let failure = LazyWorkspace::attach_with_operation_measured(
+        let mut accounting = budget.accounting(&cancellation);
+        let result = LazyWorkspace::attach(
             &fs, "stream-lost-ack", source.clone(), store.clone(), config, operation,
-            budget, &cancellation,
-        ).await.err().ok_or("lost real Stream acknowledgement succeeded")?;
-        assert!(matches!(&failure.error, acyclic_fs::LazyWorkspaceError::Workspace(message)
-            if message.contains("stream unavailable")));
+            &mut accounting,
+        ).await;
+        let failure = budget.finish(result, &accounting).err().ok_or("lost real Stream acknowledgement succeeded")?;
+        assert!(matches!(&failure.error, acyclic_fs::LazyWorkspaceError::WorkspaceCause(error)
+            if error.to_string().contains("stream unavailable")));
         assert_eq!(*failure.work, *reference_failure.work);
         failure.work.verify(budget)?;
         assert_eq!(fault.committed.load(Ordering::SeqCst), 1);
@@ -410,7 +405,7 @@ mod source_bound_lost_ack {
         let initial = workspace.operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("lost acknowledgement did not retain original allocation")?;
         let initial_id = initial.id();
         let workspace_id = initial.workspace_id();
-        assert!(store.load_lazy_workspace(workspace_id).await?.is_none());
+        assert!(store.load_lazy_workspace(workspace_id, &mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.is_none());
         workspace.write_text("/later.txt", "head after lost acknowledgement").await?;
         let head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial_id);
@@ -427,10 +422,12 @@ mod source_bound_lost_ack {
             Some(reference), None, budget, &cancellation,
         ).await?.value);
         assert_eq!(source.reference(), reference);
-        let recovered = LazyWorkspace::attach_with_operation_measured(
+        let mut accounting = budget.accounting(&cancellation);
+        let result = LazyWorkspace::attach(
             &reopened, "stream-lost-ack", source, store.clone(), config, operation,
-            budget, &cancellation,
-        ).await?;
+            &mut accounting,
+        ).await;
+        let recovered = budget.finish(result, &accounting)?;
         recovered.work.verify(budget)?;
         assert_eq!(recovered.work.source_bytes_read, 0);
         assert_eq!(recovered.work.source_entries_visited, 0);
@@ -438,11 +435,9 @@ mod source_bound_lost_ack {
         assert_eq!(original.id(), initial_id);
         assert_eq!(original.workspace_id(), workspace_id);
         assert_eq!(lazy.workspace().head(WorkBudget::UNBOUNDED, &cancellation).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-        assert_eq!(lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-            WorkBudget::UNBOUNDED, &cancellation,
-        )).await?.source, reference);
+        assert_eq!(lazy.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.source, reference);
         assert_eq!(
-            store.load_lazy_workspace(workspace_id).await?.ok_or("binding absent after restart")?.source,
+            store.load_lazy_workspace(workspace_id, &mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.ok_or("binding absent after restart")?.source,
             reference
         );
         let mut changed_config = config;
@@ -451,9 +446,7 @@ mod source_bound_lost_ack {
             (config, OperationId::new()),
             (changed_config, operation),
         ] {
-            let failure = reopened.create_workspace_with_operation(
-                "stream-lost-ack", requested_config, requested_operation, budget, &cancellation,
-            ).await.err().ok_or("restart accepted a foreign or reconfigured original creation")?;
+            let failure = reopened.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("stream-lost-ack", requested_config, requested_operation, budget, &cancellation, None).await.err().ok_or("restart accepted a foreign or reconfigured original creation")?;
             assert!(matches!(&failure.error, WorkspaceError::Engine(message)
                 if message == "volume creation was rejected by authority state"));
             failure.work.verify(budget)?;

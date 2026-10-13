@@ -36,7 +36,7 @@ pub(crate) async fn observe_root_allocation(
     reason = "actual caller, original protected creator and bounded producers"
 )]
 pub(crate) async fn bind_root_output_context_with_native_work(
-    context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: Arc<acyclic_harness::runtime::TaskContext>,
     current_owner: &Arc<TaskJournalOwner<LocalStream>>,
     owner: Arc<PiOwnerConfig>,
     resources: &ServiceResources,
@@ -45,26 +45,22 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     binding: &crate::PiTaskBinding,
     root: &PiRootIntent,
     work: &NativeMaterializationWork,
-) -> Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
+) -> Result<Arc<acyclic_harness::runtime::TaskContext>> {
     work.admit(WorkCounters::UNCHARGED)?;
     let invalid = || Error::NativeBoundary {
         code: ErrorCode::Unauthorized,
         reason: "root output context differs from its original admitted task scope",
     };
-    if context.context().durable_task_id() != Some(current_owner.task_id())
+    if context.durable_task_id() != Some(current_owner.task_id())
         || current_owner.task_id() != owner.policy().root_task
-        || context.context().scope().grants() != &owner.policy().grants
+        || context.scope().grants() != &owner.policy().grants
         || binding.task_id != owner.policy().root_task
     {
         return Err(invalid());
     }
-    current_owner.require_volume_grant(
-        &binding.scratch.volume,
-        VolumeOperation::Write,
-        &mut Some(&mut native_work_io(work)?),
-    )?;
+    current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
     current_owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let preparation = load_original_preparation_with_native_work(
         &owner,
@@ -133,9 +129,9 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         work,
     )?;
     let verifier = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let source = filesystem
         .root_output_source(
@@ -262,9 +258,9 @@ impl PiRootProvider {
         let operation =
             self.creation_operation_with_native_work(effect, attempt, resource, work)?;
         let name = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         self.fs
             .workspace_for_creation_operation_with_native_work(

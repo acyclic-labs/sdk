@@ -1,4 +1,4 @@
-use super::{McpToolResult, McpToolTransport, rpc};
+use super::McpToolTransport;
 use crate::{
     Error, Result,
     runtime::{RuntimeScope, ToolContext},
@@ -14,7 +14,6 @@ pub(super) struct RemoteTool {
     pub(super) output_schema: Option<Value>,
     pub(super) transport: Arc<dyn McpToolTransport>,
 }
-
 impl RemoteTool {
     fn authorize_context(&self, context: &ToolContext, invocation: &ToolInvocation) -> Result<()> {
         if context.operation_id() != invocation.operation_id
@@ -26,24 +25,28 @@ impl RemoteTool {
         }
         self.authorize(Some(context.task().scope()), invocation)
     }
-
-    pub(super) fn result(&self, result: McpToolResult) -> Result<ToolResult> {
-        if !result.is_error
+    pub(super) fn result(&self, result: Value) -> Result<ToolResult> {
+        let mut value = super::services::validate_result("tools/call", result, None)?;
+        if value.get("isError").and_then(Value::as_bool) != Some(true)
             && let Some(schema) = &self.output_schema
         {
-            let value = result
-                .structured_content
-                .as_ref()
+            let result = value
+                .get("structuredContent")
                 .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
-            crate::contract::validate_json_schema_value(schema, value, "MCP output", &mut None)?;
+            crate::executor::validate_json_schema_value(schema, result, "MCP output", &mut None)?;
         }
-        let value =
-            serde_json::to_value(result).map_err(|error| Error::Invalid(error.to_string()))?;
-        rpc::check::<rmcp::model::CallToolResult>(&value, None)?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.retain(|key, value| {
+                matches!(
+                    key.as_str(),
+                    "content" | "structuredContent" | "isError" | "_meta"
+                ) && (key != "_meta" || !value.is_null())
+            });
+            fields.entry("isError").or_insert(Value::Bool(false));
+        }
         Ok(ToolResult { value })
     }
 }
-
 impl ToolExecutor for RemoteTool {
     fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
         if !scope.is_some_and(|scope| {
@@ -56,67 +59,38 @@ impl ToolExecutor for RemoteTool {
         }
         Ok(())
     }
-
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
+            if let Some(context) = &context {
+                self.authorize_context(context, &invocation)?;
+            }
             self.result(
                 self.transport
                     .call(
                         invocation.operation_id,
                         &self.name,
                         invocation.arguments,
-                        None,
+                        context,
                     )
                     .await?,
             )
         })
     }
-
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
+            if let Some(context) = &context {
+                self.authorize_context(context, &invocation)?;
+            }
             self.transport
-                .reconcile(invocation.operation_id, None)
-                .await?
-                .map(|result| self.result(result))
-                .transpose()
-        })
-    }
-
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            self.authorize_context(&context, &invocation)?;
-            self.result(
-                self.transport
-                    .call(
-                        invocation.operation_id,
-                        &self.name,
-                        invocation.arguments,
-                        Some(context),
-                    )
-                    .await?,
-            )
-        })
-    }
-
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move {
-            self.authorize_context(&context, &invocation)?;
-            self.transport
-                .reconcile(invocation.operation_id, Some(context))
+                .reconcile(invocation.operation_id, context)
                 .await?
                 .map(|result| self.result(result))
                 .transpose()

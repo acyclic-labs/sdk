@@ -429,10 +429,10 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     source.write_text("/shared", "base").await?;
     let selected = source.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let child = source
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "child",
             ForkOptions::from_generation(selected.clone(), IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| {
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), &mut |_| {
                 std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
             },
         )
@@ -477,10 +477,10 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
 
     source.write_text("/source-only", "source").await?;
     let retry = source
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "child",
             ForkOptions::from_generation(selected, IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| {
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), &mut |_| {
                 std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
             },
         )

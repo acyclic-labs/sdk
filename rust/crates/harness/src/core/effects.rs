@@ -1,4 +1,3 @@
-//! effects semantics.
 use super::*;
 /// Strength advertised by an external effect provider.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -69,7 +68,14 @@ pub struct EffectAttestation {
 
 impl EffectAttestation {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| copying::copy_observation(self, quota))
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            copy(self, quota, |value: &EffectAttestation, work| {
+                if let EffectStatus::Succeeded { result } = &value.status {
+                    result.validate(work)?;
+                }
+                owned_bytes(value)
+            })
+        })
     }
 }
 
@@ -119,7 +125,7 @@ pub(in crate::core) fn effect_request_digest_with_work(
     request: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(
+    crate::executor::json::canonical_json_digest(
         &(provider, guarantee, effect_kind, request),
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,

@@ -77,7 +77,6 @@ pub(crate) fn scope_metadata_boundary(
 }
 
 /// Builds the two identities that durable hosts retain for one resumable task.
-
 pub fn task_admission_identities(
     name: &str,
     version: &str,
@@ -130,7 +129,7 @@ pub(crate) fn validate_task_schemas(
             "resumable task output schema cannot accept every value",
         ),
     ] {
-        crate::contract::compile_json_schema(schema, label, work)?;
+        crate::executor::compile_json_schema(schema, label, work)?;
         if resumable
             && (schema == &Value::Bool(true)
                 || schema.as_object().is_some_and(serde_json::Map::is_empty))
@@ -181,7 +180,6 @@ pub(super) fn validate_identity(
 }
 
 /// Runs closed physical field producers against the original preparation ledger.
-
 pub(super) fn task_copy_with_io<T>(
     io: Option<&crate::executor::PreparationIo>,
     copy: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
@@ -214,7 +212,9 @@ pub(super) fn task_copy_value(
     source: &Value,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
-    task_copy_with_io(io, |quota| crate::core::copy_value(source, quota))
+    task_copy_with_io(io, |quota| crate::core::copy(source, quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+}))
 }
 
 pub(super) fn task_copy_component(

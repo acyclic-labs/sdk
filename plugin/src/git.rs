@@ -72,7 +72,12 @@ impl PluginGitExecutor<'_> {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
                 let lazy = self
                     .lazy_current
-                    .open_related(workspace)
+                    .open_related(workspace, &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                        allocations: Default::default(),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        budget: WorkBudget::UNBOUNDED,
+                        cancellation: &CancellationToken::new(),
+                    })
                     .await
                     .map_err(display)?;
                 let snapshot_bytes = snapshot.id.into_bytes();
@@ -84,8 +89,12 @@ impl PluginGitExecutor<'_> {
                         IdempotencyKey::from_bytes(snapshot_bytes[..16].try_into().map_err(
                             |_| Self::error(format!("{operation} snapshot identity is invalid")),
                         )?),
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
+                        &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                            allocations: Default::default(),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            budget: WorkBudget::UNBOUNDED,
+                            cancellation: &CancellationToken::new(),
+                        },
                     )
                     .await
                     .map_err(display)?;
@@ -108,8 +117,8 @@ impl PluginGitExecutor<'_> {
                     .await
                     .map_err(display)?;
                 Ok(GitGenerationRef {
-                    workspace_id: exact.value.workspace_id(),
-                    generation: exact.value.id(),
+                    workspace_id: exact.workspace_id(),
+                    generation: exact.id(),
                 })
             }
         }
@@ -276,10 +285,12 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     }
                     GitTreeRef::Lazy(source) => {
                         self.lazy_current
-                            .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-                                WorkBudget::UNBOUNDED,
-                                &CancellationToken::new(),
-                            ))
+                            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                                allocations: Default::default(),
+                                work: acyclic_fs::WorkCounters::UNCHARGED,
+                                budget: WorkBudget::UNBOUNDED,
+                                cancellation: &CancellationToken::new(),
+                            })
                             .await
                             .map_err(display)?
                             == *source
@@ -338,15 +349,22 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let workspace = self.workspace(*workspace_id).await?;
                 let lazy_workspace = self
                     .lazy_current
-                    .open_related(workspace.clone())
+                    .open_related(workspace.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                        allocations: Default::default(),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        budget: WorkBudget::UNBOUNDED,
+                        cancellation: &CancellationToken::new(),
+                    })
                     .await
                     .map_err(display)?;
                 let tree = GitTreeRef::Lazy(
                     lazy_workspace
-                        .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                        ))
+                        .snapshot(&mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                            allocations: Default::default(),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            budget: WorkBudget::UNBOUNDED,
+                            cancellation: &CancellationToken::new(),
+                        })
                         .await
                         .map_err(display)?,
                 );
@@ -1217,9 +1235,14 @@ pub(crate) async fn git_apply_patch(
     }
     let patch_path = workspace_path_argument(root, patch_path)?;
     workspace
-        .read(&patch_path, 16 * 1024 * 1024)
+        .read(&patch_path, 16 * 1024 * 1024, &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: acyclic_fs::WorkCounters::UNCHARGED,
+            budget: WorkBudget::UNBOUNDED,
+            cancellation: &CancellationToken::new(),
+        })
         .await
-        .map(|bytes| Some(bytes.to_vec()))
+        .map(|chunk| Some(chunk.bytes.to_vec()))
         .map_err(display)
 }
 
@@ -1230,10 +1253,12 @@ pub(crate) async fn git_workspace_tree(
 ) -> Result<GitTreeRef, String> {
     if !git_requires_exact_workspace(argv) {
         return workspace
-            .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            ))
+            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            })
             .await
             .map(GitTreeRef::Lazy)
             .map_err(display);
@@ -1242,10 +1267,12 @@ pub(crate) async fn git_workspace_tree(
         .exactify(
             "/",
             permit.unwrap_or(PublicationPermit::Unrestricted),
-            &acyclic_fs::lazy_workspace::LazyTreapWork::new(
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            ),
+            &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            },
         )
         .await
         .map_err(display)?;
@@ -1264,8 +1291,13 @@ pub(crate) async fn git_policy(
 pub(crate) async fn git_ignore_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<GitIgnorePolicy, String> {
-    let ignore_text = match workspace.read("/.gitignore", 1024 * 1024).await {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+    let ignore_text = match workspace.read("/.gitignore", 1024 * 1024, &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: acyclic_fs::WorkCounters::UNCHARGED,
+            budget: WorkBudget::UNBOUNDED,
+            cancellation: &CancellationToken::new(),
+        }).await {
+        Ok(chunk) => String::from_utf8_lossy(&chunk.bytes).into_owned(),
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
         Err(error) => return Err(display(error)),
     };

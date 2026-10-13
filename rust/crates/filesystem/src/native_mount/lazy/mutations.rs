@@ -8,11 +8,11 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            self.promote_parents_locked(path, Some(work))?;
+            self.promote_parents_locked(path, work)?;
             let created = self
                 .authored
                 .create_file(path, metadata, absent_since, work)?;
-            self.record_rebound(&self.path(path, None)?.0)?;
+            self.record_rebound(&self.path(path, work)?.0)?;
             Ok(created)
         }
 
@@ -23,9 +23,9 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            self.promote_parents_locked(path, Some(work))?;
+            self.promote_parents_locked(path, work)?;
             let created = self.authored.create_directory(path, metadata, work)?;
-            self.record_rebound(&self.path(path, None)?.0)?;
+            self.record_rebound(&self.path(path, work)?.0)?;
             Ok(created)
         }
 
@@ -37,11 +37,11 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            self.promote_parents_locked(path, Some(work))?;
+            self.promote_parents_locked(path, work)?;
             let created = self
                 .authored
                 .create_symbolic_link(path, target, metadata, work)?;
-            self.record_rebound(&self.path(path, None)?.0)?;
+            self.record_rebound(&self.path(path, work)?.0)?;
             Ok(created)
         }
 
@@ -54,11 +54,11 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            self.promote_parents_locked(path, Some(work))?;
+            self.promote_parents_locked(path, work)?;
             let created = self
                 .authored
                 .create_special(path, kind, device, metadata, work)?;
-            self.record_rebound(&self.path(path, None)?.0)?;
+            self.record_rebound(&self.path(path, work)?.0)?;
             Ok(created)
         }
 
@@ -70,7 +70,7 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            if let Some(file) = self.detached_for_path(path)? {
+            if let Some(file) = self.detached_for_path(path, work)? {
                 return file.set_attributes(metadata, logical_bytes, work);
             }
             self.promote_locked(path, Some(work))?;
@@ -87,7 +87,7 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            if let Some(file) = self.detached_for_path(path)? {
+            if let Some(file) = self.detached_for_path(path, work)? {
                 return file.write_attribute(name, value, mode, work);
             }
             self.promote_locked(path, Some(work))?;
@@ -101,7 +101,7 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            if let Some(file) = self.detached_for_path(path)? {
+            if let Some(file) = self.detached_for_path(path, work)? {
                 return file.remove_attribute(name, work);
             }
             self.promote_locked(path, Some(work))?;
@@ -140,24 +140,26 @@ macro_rules! mutation_callbacks {
             destination_offset: u64,
             length: u64,
         ) -> Result<(), MountSourceError> {
-            let _mutation = self.mutation_lease(None, None)?;
-            if self.detached_for_path(source)?.is_some()
-                || self.detached_for_path(destination)?.is_some()
-            {
-                return Err(MountSourceError::Unsupported(
-                    "range cloning a detached identity requires identity-level clone support"
-                        .into(),
-                ));
-            }
-            self.promote_locked(source, None)?;
-            self.promote_locked(destination, None)?;
-            self.authored.clone_range(
-                source,
-                source_offset,
-                destination,
-                destination_offset,
-                length,
-            )
+            adapter::boundary(self.authored.cancellation(), |work| {
+                let _mutation = self.mutation_lease(None, Some(work))?;
+                if self.detached_for_path(source, work)?.is_some()
+                    || self.detached_for_path(destination, work)?.is_some()
+                {
+                    return Err(MountSourceError::Unsupported(
+                        "range cloning a detached identity requires identity-level clone support"
+                            .into(),
+                    ));
+                }
+                self.promote_locked(source, Some(work))?;
+                self.promote_locked(destination, Some(work))?;
+                self.authored.clone_range(
+                    source,
+                    source_offset,
+                    destination,
+                    destination_offset,
+                    length,
+                )
+            })
         }
 
         fn clone_range_by_id(
@@ -190,7 +192,7 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            let text = self.path(path, None)?.0;
+            let (text, _allocation) = self.path(path, work)?;
             let removed_id = if let Some(authored) = self.authored.lookup(path)? {
                 if self.removed_identity(&text, authored.node.file_id)? {
                     return Err(MountSourceError::NotFound);
@@ -223,7 +225,7 @@ macro_rules! mutation_callbacks {
                         )
                         .await
                         .map_err(lazy_error)?;
-                    let actual = file_id(&self.lazy, &text, &lookup, Some(work)).await?;
+                    let actual = file_id(&self.lazy, &text, &lookup, work).await?;
                     if expected.is_some_and(|expected| expected != actual) {
                         return Err(MountSourceError::Stale);
                     }
@@ -253,8 +255,8 @@ macro_rules! mutation_callbacks {
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
-            let source_text = self.path(source, None)?.0;
-            let destination_text = self.path(destination, None)?.0;
+            let (source_text, _source_allocation) = self.path(source, work)?;
+            let (destination_text, _destination_allocation) = self.path(destination, work)?;
             if self.authored.lookup(source)?.is_none() && self.is_removed(&source_text)? {
                 return Err(MountSourceError::NotFound);
             }
@@ -304,7 +306,7 @@ macro_rules! mutation_callbacks {
                 .ok_or(MountSourceError::Stale)?
                 .node
                 .file_id;
-            self.promote_parents_locked(destination, Some(work))?;
+            self.promote_parents_locked(destination, work)?;
             if self.authored.lookup(destination)?.is_none()
                 && !self.is_removed(&destination_text)?
             {
@@ -359,9 +361,9 @@ macro_rules! mutation_callbacks {
         ) -> Result<(), MountSourceError> {
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_locked(source, Some(work))?;
-            self.promote_parents_locked(destination, Some(work))?;
+            self.promote_parents_locked(destination, work)?;
             self.authored.hard_link(source, destination, work)?;
-            self.record_rebound(&self.path(destination, None)?.0)
+            self.record_rebound(&self.path(destination, work)?.0)
         }
 
         fn flush(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {

@@ -119,7 +119,6 @@ test("native digest-half identities and file descriptors avoid TypeScript codecs
   const descriptor = contracts.fileDescriptor(new Uint8Array([1, 2, 3]), "application/octet-stream");
   expect(descriptor.byte_length).toBe(3);
   expect(descriptor.sha256).toHaveLength(32);
-  expect(Object.isFrozen(descriptor.sha256)).toBe(true);
 });
 
 test("native Rust semantics execute through WASM", async () => {

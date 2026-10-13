@@ -696,7 +696,7 @@ export interface McpStdioRequest {
     /**
      * Discovery or tool call, explicitly selected by the host.
      */
-    method: McpStdioMethod;
+    method: string;
     /**
      * Exact object parameters included in approval and durable identity.
      */
@@ -1739,7 +1739,6 @@ export type ToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { 
 /**
  * The only operations this one-shot client can admit.
  */
-export type McpStdioMethod = "tools/list" | "tools/call" | "resources/list" | "resources/templates/list" | "resources/read" | "prompts/list" | "prompts/get";
 
 /**
  * Transient model-visible content. Canonical conversation storage always retains refs.

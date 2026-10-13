@@ -22,17 +22,15 @@ pub enum GitPatchError {
     },
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct UnifiedPatch {
-    pub(super) old_path: Option<String>,
-    pub(super) new_path: Option<String>,
-    pub(super) hunks: Vec<UnifiedHunk>,
+struct UnifiedPatch {
+    old_path: Option<String>,
+    new_path: Option<String>,
+    hunks: Vec<UnifiedHunk>,
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct UnifiedHunk {
-    pub(super) old_start: usize,
-    pub(super) lines: Vec<String>,
+struct UnifiedHunk {
+    old_start: usize,
+    lines: Vec<String>,
 }
 
 /// Applies a bounded UTF-8 patch under one writer permit.
@@ -148,7 +146,7 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     clippy::indexing_slicing,
     reason = "every patch line index is bounded by the surrounding length checks"
 )]
-pub(super) fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, GitPatchError> {
+fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, GitPatchError> {
     let text = std::str::from_utf8(bytes).map_err(|_| GitPatchError::NonText)?;
     if text.contains("GIT binary patch") {
         return Err(GitPatchError::Invalid(
@@ -225,7 +223,7 @@ pub(super) fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, Git
     Ok(patches)
 }
 
-pub(super) fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String>, GitPatchError> {
+fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String>, GitPatchError> {
     let value = line
         .strip_prefix(prefix)
         .ok_or_else(|| GitPatchError::Invalid(format!("missing {prefix}header")))?
@@ -248,7 +246,7 @@ pub(super) fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String
     Ok(Some(value.to_owned()))
 }
 
-pub(super) fn parse_hunk_old_start(line: &str) -> Result<usize, GitPatchError> {
+fn parse_hunk_old_start(line: &str) -> Result<usize, GitPatchError> {
     let range = line
         .strip_prefix("@@ -")
         .and_then(|line| line.split_whitespace().next())
@@ -260,7 +258,7 @@ pub(super) fn parse_hunk_old_start(line: &str) -> Result<usize, GitPatchError> {
         .ok_or_else(|| GitPatchError::Invalid("malformed hunk source range".to_owned()))
 }
 
-pub(super) fn apply_unified_hunks(
+fn apply_unified_hunks(
     path: &str,
     original: &str,
     hunks: &[UnifiedHunk],

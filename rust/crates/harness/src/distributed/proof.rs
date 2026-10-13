@@ -20,14 +20,14 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
         custody.adopt(event.logical_owned_bytes()?)?;
     }
     let SchedulerEvent::Declared { spec } = event else {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             custody.work(),
             wire::ErrorCode::Conflict,
             "declaration key does not identify a declaration",
         ));
     };
     if spec.operation_id != operation_id {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             custody.work(),
             wire::ErrorCode::Conflict,
             "declaration operation identity differs",
@@ -110,21 +110,21 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
                 event_quota.adopt(key_bytes)?;
                 if key == admission_key {
                     if declaration.is_some() {
-                        return Err(coordinator_boundary(
+                        return Err(guarded_boundary(
                             event_quota.work(),
                             wire::ErrorCode::Conflict,
                             "coordinator history repeats an idempotency key",
                         ));
                     }
                     let SchedulerEvent::Declared { spec } = event else {
-                        return Err(coordinator_boundary(
+                        return Err(guarded_boundary(
                             event_quota.work(),
                             wire::ErrorCode::Conflict,
                             "task admission does not identify a declaration",
                         ));
                     };
                     if spec.operation_id != operation {
-                        return Err(coordinator_boundary(
+                        return Err(guarded_boundary(
                             event_quota.work(),
                             wire::ErrorCode::Conflict,
                             "historical declaration identifies another operation",
@@ -139,7 +139,7 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
                     quota.adopt(owned)?;
                 } else {
                     if last_time.is_some_and(|previous| time <= previous) {
-                        return Err(coordinator_boundary(
+                        return Err(guarded_boundary(
                             event_quota.work(),
                             wire::ErrorCode::Storage,
                             "historical coordinator source identity differs",
@@ -155,7 +155,7 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
                             && reservation.placement == candidate.placement =>
                         {
                             if admitted {
-                                return Err(coordinator_boundary(
+                                return Err(guarded_boundary(
                                     event_quota.work(),
                                     wire::ErrorCode::Conflict,
                                     "historical reservation has distinct admission origins",
@@ -168,7 +168,7 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
                             fence,
                         } if *operation_id == operation && fence == candidate => {
                             if !admitted || started {
-                                return Err(coordinator_boundary(
+                                return Err(guarded_boundary(
                                     event_quota.work(),
                                     wire::ErrorCode::Conflict,
                                     "historical reservation has no unique admitted start",
@@ -186,7 +186,7 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
             quota.relinquish(raw_bytes)?;
         }
         if next == from {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Storage,
                 "historical coordinator prefix is incomplete",
@@ -194,14 +194,14 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
         }
     }
     let declaration = declaration.ok_or_else(|| {
-        coordinator_boundary(
+        guarded_boundary(
             quota.work(),
             wire::ErrorCode::NotFound,
             "original task declaration source",
         )
     })?;
     if !started {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             quota.work(),
             wire::ErrorCode::NotFound,
             "selected original reservation start",

@@ -82,11 +82,11 @@ impl ContextStage for SelectionStage {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let renderer_hold;
+        let _renderer_hold;
         let renderer = self.renderer.contract(io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            renderer_hold = match io.filter(|io| io.original_native_work().is_some()) {
+            _renderer_hold = match io.filter(|io| io.original_native_work().is_some()) {
                 Some(io) => {
                     let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
                         crate::executor::stock_boundary(
@@ -125,16 +125,10 @@ impl ContextStage for SelectionStage {
             limits: self.limits,
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            let io = io.expect("native ledger");
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             crate::executor::with_history_io(Some(io), |work| observe_value(&renderer, work))?;
-            let (value, custody) = context_contract_native(&contract, work)?;
-            drop(renderer);
-            drop(renderer_hold);
-            io.absorb_native_custody(custody)?;
-            return Ok(value);
         }
-        serde_json::to_value(contract).map_err(|error| Error::Invalid(error.to_string()))
+        context_contract(&contract, io)
     }
 
     fn apply<'a>(

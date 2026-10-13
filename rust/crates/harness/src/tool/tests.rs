@@ -9,10 +9,18 @@ use serde_json::json;
 
 struct Executor;
 impl ToolExecutor for Executor {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
         async { Ok(ToolResult { value: Value::Null }) }.boxed()
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         async { Ok(None) }.boxed()
     }
 }
@@ -134,20 +142,20 @@ fn projection_contract_is_required_validated_and_pinned() -> Result<()> {
             )
             .is_err()
     );
-    crate::contract::validate_json_schema_value(
+    crate::executor::validate_json_schema_value(
         &definition.output_schema,
         &json!({"count": 2}),
         "result",
         &mut None,
     )?;
-    crate::contract::validate_json_schema_value(
+    crate::executor::validate_json_schema_value(
         &definition.projection_schema,
         &json!({"kind":"json","value":"two"}),
         "projection",
         &mut None,
     )?;
     assert!(
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.output_schema,
             &json!("two"),
             "result",
@@ -156,7 +164,7 @@ fn projection_contract_is_required_validated_and_pinned() -> Result<()> {
         .is_err()
     );
     assert!(
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.projection_schema,
             &json!({"count": 2}),
             "projection",

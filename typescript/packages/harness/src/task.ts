@@ -11,7 +11,7 @@ import { type SelectedModelContext } from "./projection.js";
 declare const identityBrand: unique symbol;
 export type BatchId = string & { readonly [identityBrand]: "BatchId" };
 export type GroupId = string & { readonly [identityBrand]: "GroupId" };
-export type InputKey = Readonly<{ readonly batchId: BatchId; readonly index: number }>;
+export type InputKey = { readonly batchId: BatchId; readonly index: number };
 export type Outcome<Output, Identity extends string = string> =
   | { readonly kind: "succeeded"; readonly value: Output }
   | { readonly kind: "failed"; readonly error: { readonly message: string; readonly cause?: unknown } }
@@ -67,7 +67,7 @@ export async function defineRuntimeSchema<Value>(id: string,
     throw new TypeError("task schema must be a non-vacuous JSON Schema document and parser");
   }
   const detached = structuredClone(document);
-  return Object.freeze({ id, document: freezeSchema(detached), parse, [runtimeSchemaBrand]: (value: Value) => value });
+  return Object.freeze({ id, document: freezeSchema(detached), parse, [runtimeSchemaBrand]: parse });
 }
 
 export function freezeSchema<Value>(value: Value): Value {
@@ -123,28 +123,32 @@ export class TaskDefinition<Input, Output> {
   static async resumable<Input, Output, State>(name: string, revision: string, component: ResumableTask<Input, Output, State>, options: TaskDefinitionOptions<Input, Output> & Readonly<{ input: RuntimeSchema<Input>; output: RuntimeSchema<Output>; implementationDigest: string }>): Promise<TaskDefinition<Input, Output>> {
     await validateComponentLabel(name, "task name");
     await validateComponentLabel(revision, "task revision");
-    if (component.state === null || typeof component.state !== "object" || !(runtimeSchemaBrand in component.state)) {
+    const schema = component.state;
+    if (schema === null || typeof schema !== "object" || !(runtimeSchemaBrand in schema)) {
       throw new TypeError("resumable tasks require a pinned state schema");
     }
-    const state = await defineRuntimeSchema<unknown>(component.state.id, component.state.document,
-      value => component.state.parse(value));
+    const parse = schema.parse.bind(schema);
+    const state = await defineRuntimeSchema<unknown>(schema.id, schema.document, parse);
+    const initial = component.initial;
+    const transition = component.transition;
+    const outputSchema = options.output;
     const erased: ResumableTask<Input, Output> = Object.freeze({
       state,
       initial: async (input: Input): Promise<unknown> => {
-        const value = await component.initial(input);
+        const value = await initial.call(component, input);
         const validated = (await NativeContracts.create()).validateToolValue(state.document, value);
-        return component.state.parse(validated);
+        return parse(validated);
       },
       transition: async (context: TaskContext, value: unknown, previous?: Outcome<unknown>): Promise<ResumableTransition<unknown, Output>> => {
         const contracts = await NativeContracts.create();
         const validated = contracts.validateToolValue(state.document, value);
-        const next = await component.transition(context, component.state.parse(validated), previous);
+        const next = await transition.call(component, context, parse(validated), previous);
         if (next.kind === "finish") {
-          const output = contracts.validateToolValue(options.output.document, next.output);
-          return { kind: "finish", output: options.output.parse(output) };
+          const output = contracts.validateToolValue(outputSchema.document, next.output);
+          return { kind: "finish", output: outputSchema.parse(output) };
         }
         const nextState = contracts.validateToolValue(state.document, next.state);
-        const restored = component.state.parse(nextState);
+        const restored = parse(nextState);
         if (next.kind === "continue") return { kind: "continue", state: restored };
         const operationId = contracts.validateIdentity("operation", next.operationId);
         if (next.kind === "effect") {
@@ -264,8 +268,6 @@ export async function observeAdmittedTask(state: HarnessRuntimeState, taskId: Ta
 }
 
 export class Task<Output> {
-  readonly #events: TaskEvent<Output>[] = [];
-  readonly #waiters = new Set<() => void>();
   readonly #result: Promise<Outcome<Output>>;
   readonly #driver: DurableTaskDriver<Output> | undefined;
   constructor(private readonly taskId: TaskId, execution: ((signal: AbortSignal) => Promise<Output>) | DurableTaskDriver<Output>, private readonly controller = new AbortController()) {
@@ -275,18 +277,17 @@ export class Task<Output> {
       return;
     }
     this.#driver = undefined;
-    this.#events.push({ id: `${taskId}:0`, taskId, sequence: 0, event: { kind: "started" } });
     this.#result = execution(controller.signal).then<Outcome<Output>, Outcome<Output>>(
       value => ({ kind: "succeeded", value }),
       error => controller.signal.aborted ? { kind: "cancelled", receipt: { requested: true, taskId } } : { kind: "failed", error: { message: error instanceof Error ? error.message : String(error), cause: error } },
-    ).then(outcome => { const terminal: TaskEvent<Output> = { id: `${taskId}:1`, taskId, sequence: 1, event: { kind: "settled", outcome } }; this.#events.push(terminal); for (const wake of this.#waiters) wake(); this.#waiters.clear(); return outcome; });
+    );
   }
   id(): TaskId { return this.taskId; }
   result(): Promise<Outcome<Output>> { return this.#result; }
   async terminalEvent(): Promise<TaskEvent<Output>> {
     if (this.#driver) return this.#driver.terminalEvent();
-    await this.#result;
-    return this.#events[1]!;
+    return { id: `${this.taskId}:1`, taskId: this.taskId, sequence: 1,
+      event: { kind: "settled", outcome: await this.#result } };
   }
   events(fromSequence = 0): AsyncIterable<TaskEvent<Output>> {
     if (!Number.isSafeInteger(fromSequence) || fromSequence < 0) {
@@ -295,12 +296,10 @@ export class Task<Output> {
     if (!this.#driver) return this.#localEvents(fromSequence);
     return this.#hostEvents(fromSequence);
   }
-  async *#localEvents(next: number): AsyncIterable<TaskEvent<Output>> {
-    for (;;) {
-      while (next < this.#events.length) yield this.#events[next++]!;
-      if (this.#events.at(-1)?.event.kind === "settled") return;
-      await new Promise<void>(resolve => this.#waiters.add(resolve));
-    }
+  async *#localEvents(fromSequence: number): AsyncIterable<TaskEvent<Output>> {
+    if (fromSequence === 0) yield { id: `${this.taskId}:0`, taskId: this.taskId, sequence: 0, event: { kind: "started" } };
+    const terminal = await this.terminalEvent();
+    if (fromSequence <= terminal.sequence) yield terminal;
   }
   async *#hostEvents(fromSequence: number): AsyncIterable<TaskEvent<Output>> {
     let streamedTerminal: TaskEvent<Output> | undefined;
@@ -326,21 +325,22 @@ export class Task<Output> {
       || !terminal.id || !Number.isSafeInteger(terminal.sequence) || terminal.sequence < 0) {
       throw new Error("durable host returned an invalid terminal event");
     }
-    if (streamedTerminal && (streamedTerminal.id !== terminal.id || streamedTerminal.sequence !== terminal.sequence)) {
-      throw new Error("durable host task stream disagrees with its terminal event");
+    if (streamedTerminal) {
+      if (streamedTerminal.id !== terminal.id || streamedTerminal.sequence !== terminal.sequence) {
+        throw new Error("durable host task stream disagrees with its terminal event");
+      }
+      return;
     }
-    if (!streamedTerminal && terminal.sequence < fromSequence) {
+    if (terminal.sequence < fromSequence) {
       if (nextSequence !== fromSequence) {
         throw new Error("durable host returned a terminal event before its streamed events");
       }
       return;
     }
-    if (!streamedTerminal && terminal.sequence !== nextSequence) {
+    if (terminal.sequence !== nextSequence) {
       throw new Error("durable host omitted task events before its terminal event");
     }
-    if (!streamedTerminal && terminal.sequence >= fromSequence) {
-      yield terminal;
-    }
+    yield terminal;
   }
   async cancel(): Promise<CancelReceipt> { if (this.#driver) return this.#driver.cancel(); this.controller.abort(new Error("task cancellation requested")); return { requested: true, taskId: this.taskId }; }
 }

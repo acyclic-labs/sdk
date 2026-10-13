@@ -1,4 +1,3 @@
-//! reducer transition semantics.
 use super::*;
 impl Reducer {
     #[allow(clippy::too_many_lines, reason = "one arm per action")]
@@ -48,7 +47,7 @@ impl Reducer {
                     schema_digest: binding.schema_digest,
                     implementation_digest: binding.implementation_digest,
                     fork_policy: binding.fork_policy,
-                    content: copying::copy_file(content, quota)?,
+                    content: content.clone_in_quota(quota)?,
                 };
                 record.validate()?;
                 Ok(EventPayload::Custom { record })
@@ -81,12 +80,14 @@ impl Reducer {
                     schema_digest: binding.schema_digest,
                     implementation_digest: binding.implementation_digest,
                     fork_policy: binding.fork_policy,
-                    content: copying::copy_file(content, quota)?,
+                    content: content.clone_in_quota(quota)?,
                 };
                 record.validate()?;
                 Ok(EventPayload::ExtensionStateMigrated {
                     migration: ExtensionStateMigration {
-                        previous: copying::copy_reference(previous, quota)?,
+                        previous: copy(previous, quota, |value: &EventReference, _| {
+                            Ok(value.authority.id.capacity() as u64)
+                        })?,
                         record,
                     },
                 })
@@ -125,7 +126,11 @@ impl Reducer {
                     previous: copying::copy_vector(
                         &self.projection.active_extensions,
                         quota,
-                        copying::copy_dependency,
+                        |value, quota| {
+                            copy(value, quota, |value: &ExtensionDependency, _| {
+                                Ok(value.name.capacity() as u64)
+                            })
+                        },
                     )?,
                     selected,
                     configurations,
@@ -153,7 +158,12 @@ impl Reducer {
                         .projection
                         .configured_extensions
                         .get(extension)
-                        .map(|record| copying::copy_configuration(record, quota))
+                        .map(|record| {
+                            copy(record, quota, |value: &ExtensionConfiguration, work| {
+                                value.content.validate(work)?;
+                                owned_bytes(value)
+                            })
+                        })
                         .transpose()?,
                     record,
                 })
@@ -197,9 +207,9 @@ impl Reducer {
                     provider: copying::copy_text(provider, quota)?,
                     guarantee: *guarantee,
                     effect_kind: copying::copy_text(effect_kind, quota)?,
-                    request: copying::copy_file(request, quota)?,
+                    request: request.clone_in_quota(quota)?,
                     request_digest,
-                    result_schema: copying::copy_file(result_schema, quota)?,
+                    result_schema: result_schema.clone_in_quota(quota)?,
                     result_schema_digest,
                 })
             }
@@ -225,7 +235,12 @@ impl Reducer {
                     .verify_effect(observation, quota.work())?;
                 validate_effect_observation(effect, observation)?;
                 Ok(EventPayload::EffectResolved {
-                    observation: copying::copy_observation(observation, quota)?,
+                    observation: copy(observation, quota, |value: &EffectAttestation, work| {
+                        if let EffectStatus::Succeeded { result } = &value.status {
+                            result.validate(work)?;
+                        }
+                        owned_bytes(value)
+                    })?,
                 })
             }
             Action::PublishFork { seed } => {
@@ -238,19 +253,17 @@ impl Reducer {
                 self.require_conversation()?;
                 self.require_bound_conversation_if_applicable()?;
                 receipt.validate_shape(quota.work())?;
-                let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
+                let key = Self::merge_key(receipt, quota.work())?;
                 if self.projection.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
-                }
-                drop(key);
-                if let Some(io) = quota.work().as_deref_mut() {
-                    io.release_owned(key_owned)?;
                 }
                 self.projection
                     .conversation
                     .validate_append(&receipt.notice, &mut None)?;
+                copying::retain_entry::<ProjectMergeReceipt>(quota)?;
+                let receipt = receipt.copy(quota)?;
                 Ok(EventPayload::ProjectMergePublished {
-                    receipt: copying::copy_boxed(receipt.as_ref(), quota, copying::copy_receipt)?,
+                    receipt: Box::new(receipt),
                 })
             }
             Action::BindConversation { agent } => {
@@ -268,14 +281,23 @@ impl Reducer {
                     .conversation
                     .validate_append(message, &mut None)?;
                 Ok(EventPayload::ConversationMessageAppended {
-                    message: copying::copy_boxed(message.as_ref(), quota, copying::copy_message)?,
+                    message: copying::copy_boxed(
+                        message.as_ref(),
+                        quota,
+                        ConversationMessage::clone_in_quota,
+                    )?,
                 })
             }
             Action::SelectModelContext { selection } => {
                 self.require_conversation()?;
                 selection.validate(&self.projection.conversation)?;
                 Ok(EventPayload::ModelContextSelected {
-                    selection: copying::copy_selection(selection, quota)?,
+                    selection: copy(selection, quota, |value: &ModelContextSelection, work| {
+                        if let Some(file) = &value.checkpoint {
+                            file.validate(work)?;
+                        }
+                        owned_bytes(value)
+                    })?,
                 })
             }
             Action::OpenInteraction { ticket } => {
@@ -287,7 +309,10 @@ impl Reducer {
                     ));
                 }
                 Ok(EventPayload::InteractionOpened {
-                    ticket: copying::copy_ticket(ticket, quota)?,
+                    ticket: copy(ticket, quota, |value: &InteractionTicket, work| {
+                        value.request.validate(work)?;
+                        owned_bytes(value)
+                    })?,
                 })
             }
             Action::ResolveInteraction { resolution } => {
@@ -298,7 +323,15 @@ impl Reducer {
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
                 validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
                 Ok(EventPayload::InteractionResolved {
-                    resolution: copying::copy_resolution(resolution, quota)?,
+                    resolution: copy(resolution, quota, |value: &InteractionResolution, work| {
+                        if let InteractionOutcome::Answered { answer } = &value.outcome {
+                            answer.validate(work)?;
+                        }
+                        if let Some(file) = &value.detail {
+                            file.validate(work)?;
+                        }
+                        owned_bytes(value)
+                    })?,
                 })
             }
         }

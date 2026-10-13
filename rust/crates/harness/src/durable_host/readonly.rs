@@ -1,15 +1,25 @@
-//! Readonly.
+//! Sealed admission reads for original-ledger preparation inspection.
 use super::*;
+use crate::filesystem::PreparationIo;
+use crate::store::HistoryIo;
+use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+/// An authenticated admission reader that carries no execution fence or writer.
+pub struct TaskAdmissionReadonlyWitness<P> {
+    host: Arc<CoordinatorTaskHost<P>>,
+    admission: TaskAdmissionRecord,
+    scratch: Option<crate::resource_preparation::ChildScratchCreationProof>,
+    custody: NativeAllocation,
+}
+
 impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
-    pub(crate) const fn task(&self) -> TaskId {
-        TaskId::from_bytes(self.admission.operation_id.into_bytes())
+    pub(crate) fn task(&self) -> TaskId {
+        self.admission.task_id()
     }
-    pub(crate) const fn admission_operation(&self) -> OperationId {
+    pub(crate) fn admission_operation(&self) -> OperationId {
         self.admission.operation_id
     }
-    pub(crate) fn prepared_stream(&self) -> &std::sync::Arc<P> {
+    pub(crate) fn prepared_stream(&self) -> &Arc<P> {
         &self.host.stream
     }
     pub(crate) fn scratch_proof(
@@ -17,55 +27,49 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     ) -> Option<&crate::resource_preparation::ChildScratchCreationProof> {
         self.scratch.as_ref()
     }
+
     pub(crate) async fn verify_with_native_work(
         &self,
-        work: &acyclic_fs::NativeMaterializationWork,
+        work: &NativeMaterializationWork,
     ) -> Result<()> {
-        if !self._native_custody.work().shares_allocation_context(work) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "preparation admission differs from its original metadata ledger",
-            });
+        if !self.custody.work().shares_allocation_context(work) {
+            return Err(denied());
         }
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::HistoryWork::new)?;
+        let io = PreparationIo::from_native_work(work)?;
         let observed = self
             .host
-            .admission_with_work(self.admission_operation(), &mut Some(&mut io))
+            .admission(self.admission_operation(), &mut Some(&mut io.history_io()))
             .await?;
-        let matches = observed == self.admission;
-        drop(observed);
-        if !matches {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "preparation witness differs from its canonical task admission",
-            });
+        let custody = io.take_native_custody(
+            std::mem::size_of::<TaskAdmissionRecord>() as u64 + observed.logical_owned_bytes()?,
+        )?;
+        if observed != self.admission {
+            return Err(denied());
         }
+        drop(observed);
+        drop(custody);
         Ok(())
     }
 
-    fn require_query_with_native_work(
+    fn require_query(
         &self,
-        query: &Arc<crate::runtime::TaskContext>,
-        work: &acyclic_fs::NativeMaterializationWork,
+        query: &crate::runtime::TaskContext,
+        work: &NativeMaterializationWork,
     ) -> Result<()> {
-        self.host
-            .require_preparation_query_with_native_work(query, work)?;
-        let context = query.as_ref();
-        let scope = context.scope();
-        if !self._native_custody.work().shares_allocation_context(work)
-            || context.durable_task_id() != Some(self.task())
-            || context.id() != self.admission.operation_id
+        query.require_original_native_work(work)?;
+        let scope = query.scope();
+        if !self.custody.work().shares_allocation_context(work)
+            || !query.native_metadata_matches(work)
+            || !query.original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
+            || query.durable_task_id() != Some(self.task())
+            || query.id() != self.admission_operation()
             || scope.grants() != &self.admission.grants
             || scope.limits() != self.admission.limits
+            || scope.run_limits() != self.admission.run_limits
             || scope.resource_proofs() != self.admission.resource_proofs
             || scope.extensions() != self.admission.extensions.as_ref()
-            || scope.run_limits() != self.admission.run_limits
         {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "preparation query differs from its original witnessed admission",
-            });
+            return Err(denied());
         }
         Ok(())
     }
@@ -73,50 +77,37 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     pub(crate) async fn verify_query_with_native_work(
         &self,
         query: &Arc<crate::runtime::TaskContext>,
-        work: &acyclic_fs::NativeMaterializationWork,
+        work: &NativeMaterializationWork,
     ) -> Result<()> {
-        self.require_query_with_native_work(query, work)?;
+        self.require_query(query, work)?;
         self.verify_with_native_work(work).await?;
-        self.require_query_with_native_work(query, work)
+        self.require_query(query, work)
     }
 
     pub(crate) fn original_preparation_request_with_native_work<'a>(
         &'a self,
         query: &'a Arc<crate::runtime::TaskContext>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
+        work: &'a NativeMaterializationWork,
     ) -> Result<
         crate::NativeFutureBundle<
             'a,
             (
                 crate::resource_preparation::ResourcePreparationRequest,
-                acyclic_fs::NativeAllocation,
+                NativeAllocation,
             ),
         >,
     > {
-        self.require_query_with_native_work(query, work)?;
+        self.require_query(query, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.verify_query_with_native_work(query, work).await?;
-            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-                .map(crate::store::HistoryWork::new)?;
+            let io = PreparationIo::from_native_work(work)?;
             let (request, held) = crate::resource_preparation::ResourcePreparationRequest::decode(
-                &self.admission.input, &mut Some(&mut io))?;
-            let pair = (request, io.take_native_custody(held)?);
-            drop(io);
-            if let Err(error) = self.verify_query_with_native_work(query, work).await {
-                let (request, custody) = pair;
-                drop(request);
-                return Err(match error {
-                    Error::NativeWork {
-                        cause,
-                        custody: None,
-                    } => Error::NativeWork {
-                        cause,
-                        custody: Some(custody),
-                    },
-                    error => error,
-                });
-            }
-            Ok(pair)
+                &self.admission.input,
+                &mut Some(&mut io.history_io()),
+            )?;
+            let custody = io.take_native_custody(held)?;
+            self.verify_query_with_native_work(query, work).await?;
+            Ok((request, custody))
         })
     }
 
@@ -125,167 +116,107 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         query: &Arc<crate::runtime::TaskContext>,
         request: &crate::resource_preparation::ResourcePreparationRequest,
         origin: &crate::resource_preparation::ResourceCreationOrigin,
-        work: &acyclic_fs::NativeMaterializationWork,
+        work: &NativeMaterializationWork,
     ) -> Result<()> {
-        self.require_query_with_native_work(query, work)?;
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::HistoryWork::new)?;
-        let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+        self.require_query(query, work)?;
+        let io = PreparationIo::from_native_work(work)?;
+        let mut history = io.history_io();
+        let mut observer: Option<&mut dyn HistoryIo> = Some(&mut history);
         request.validate(&mut observer)?;
-        let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
-        let request_digest = crate::contract::canonical_json_digest(
+        let admitted = self.admission.canonical_digest_with_work(&mut observer)?;
+        let original = crate::executor::json::canonical_json_digest(
             &self.admission.input,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
         )?;
-        let supplied_digest = crate::contract::canonical_json_digest(
+        let supplied = crate::executor::json::canonical_json_digest(
             request,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
         )?;
-        if &origin.owner != self.host.verifier.audience()
+        if &origin.owner != &self.host.owner
             || origin.preparation_task != self.task()
             || self.admission.parent != Some(origin.parent_task)
             || request.child.parent != Some(origin.parent_task)
             || origin.intended_child != request.child.operation_id
-            || origin.admission_digest != admission_digest
+            || origin.admission_digest != admitted
             || origin.source_grants != self.admission.grants
-            || origin.request_digest != request_digest
-            || supplied_digest != request_digest
+            || origin.request_digest != original
+            || supplied != original
         {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "protected fork origin differs from its original preparation admission",
-            });
+            return Err(denied());
         }
         Ok(())
     }
 }
 
+fn denied() -> Error {
+    Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Unauthorized,
+        reason: "preparation reader differs from its authenticated admission or original ledger",
+    }
+}
+
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn verify_native_command_result(
-        &self,
-        task: TaskId,
-        fence: &crate::scheduler::LeaseFence,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::HistoryWork::new)?;
-        self.coordinator
-            .lock()
-            .await
-            .journal_condition(
-                self.verifier.audience(),
-                &self.owner_scope,
-                &self.verifier,
-                OperationId::from_bytes(task.into_bytes()),
-                fence,
-                crate::distributed::JournalWrite::Fresh,
-                &mut Some(&mut io),
-            )
-            .await
-            .map(|_| ())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn require_preparation_query_with_native_work(
-        &self,
-        query: &Arc<crate::runtime::TaskContext>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<TaskId> {
-        query.as_ref().require_original_native_work(work)?;
-        let task = query
-            .as_ref()
-            .durable_task_id()
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "preparation query has no original SDK task binding",
-            })?;
-        if !query.native_metadata_matches(work)
-            || query.as_ref().id().into_bytes() != task.into_bytes()
-            || !query
-                .as_ref()
-                .original_host_binding_matches(self, self.policy.as_deref())
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "preparation query has no original SDK host and allocation source",
-            });
-        }
-        Ok(task)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn task_preparation_readonly_witness_with_native_work<'a>(
         self: &'a Arc<Self>,
         query: &'a Arc<crate::runtime::TaskContext>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
+        work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, TaskAdmissionReadonlyWitness<P>>> {
-        let task = self.require_preparation_query_with_native_work(query, work)?;
+        query.require_original_native_work(work)?;
+        if !query.native_metadata_matches(work)
+            || !query.original_host_binding_matches(self.as_ref(), self.policy.as_deref())
+        {
+            return Err(denied());
+        }
+        let task = query.durable_task_id().ok_or_else(denied)?;
+        if query.id().into_bytes() != task.into_bytes() {
+            return Err(denied());
+        }
         crate::NativeFutureBundle::new(work, || async move {
-            let witness = self
-                .task_admission_readonly_witness_with_native_work(task, work)
+            let io = PreparationIo::from_native_work(work)?;
+            let admission = self
+                .admission(query.id(), &mut Some(&mut io.history_io()))
                 .await?;
-            witness.verify_query_with_native_work(query, work).await?;
+            let mut custody = io.take_native_custody(
+                std::mem::size_of::<TaskAdmissionRecord>() as u64
+                    + admission.logical_owned_bytes()?,
+            )?;
+            let access = query.scope().created_access();
+            let scratch = if admission.parent.is_none() && admission.resource_proofs.is_empty() {
+                None
+            } else {
+                let proof = access
+                    .as_ref()
+                    .map(|access| access.current_content(&mut Some(&mut io.history_io())))
+                    .transpose()?
+                    .flatten()
+                    .and_then(|binding| binding.scratch_creation.as_ref())
+                    .cloned()
+                    .ok_or_else(denied)?;
+                if proof.origin().intended_child.into_bytes() != task.into_bytes() {
+                    return Err(denied());
+                }
+                Some(proof)
+            };
+            custody.absorb(&mut work.claim(
+                std::mem::size_of::<TaskAdmissionReadonlyWitness<P>>() as u64,
+                1,
+                acyclic_fs::WorkCounters::default(),
+            )?)?;
+            let witness = TaskAdmissionReadonlyWitness {
+                host: self.clone(),
+                admission,
+                scratch,
+                custody,
+            };
+            witness.require_query(query, work)?;
             Ok(witness)
         })
     }
+}
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Authenticates an original task admission for bounded read-only preparation queries.
-    pub async fn task_admission_readonly_witness_with_native_work(
-        self: &Arc<Self>,
-        task: TaskId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<TaskAdmissionReadonlyWitness<P>> {
-        use crate::store::history::HistoryIo;
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::HistoryWork::new)?;
-        let admission = self
-            .admission_with_work(
-                OperationId::from_bytes(task.into_bytes()),
-                &mut Some(&mut io),
-            )
-            .await?;
-        let scratch = if admission.parent.is_none() && admission.resource_proofs.is_empty() {
-            None
-        } else {
-            let (scope, scope_bytes) = self
-                .authenticated_scope_with_work(&admission, &mut Some(&mut io))
-                .await?;
-            let access = scope.created_access();
-            let scratch = access
-                .as_ref()
-                .map(|access| access.current_content(&mut Some(&mut io)))
-                .transpose()?
-                .flatten()
-                .and_then(|binding| binding.scratch_creation.as_ref())
-                .cloned()
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "child preparation has no original scratch creation proof",
-                })?;
-            if crate::runtime::task_id_for_admission(scratch.origin().intended_child) != task {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "preparation scratch proof belongs to another task",
-                });
-            }
-            drop(access);
-            drop(scope);
-            io.release_owned(scope_bytes)?;
-            Some(scratch)
-        };
-        io.retain_owned(std::mem::size_of::<TaskAdmissionReadonlyWitness<P>>() as u64)?;
-        Ok(TaskAdmissionReadonlyWitness {
-            host: Arc::clone(self),
-            admission,
-            scratch,
-            _native_custody: io.into_custody()?,
-        })
-    }
-
+impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn readonly_fork_journal_owner_with_native_work<'a>(
         self: &'a Arc<Self>,
@@ -319,9 +250,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             cause,
             custody: Some(custody),
         };
-        let qualified = self
-            .require_preparation_query_with_native_work(query, work)
-            .and_then(|_| witness.require_query_with_native_work(query, work));
+        let qualified = witness.require_query(query, work);
         if let Err(error) = qualified {
             return Err(match error {
                 Error::NativeWork { cause, .. } => failed(claim, cause),
@@ -338,22 +267,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     witness.verify_preparation_origin_with_native_work(
                         query, &claim.1, origin, work,
                     )?;
-                    let mut io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
+                    let mut io = crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?);
                     let original = crate::distributed::original_reservation_proof(
                         &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
                         witness.admission_operation(), &origin.creation_fence,
                         &mut Some(&mut io),
                     ).await?;
-                    let owner = self.journal_owner_with_work(
-                        witness.task(), std::borrow::Cow::Borrowed(&origin.creation_fence),
-                        Some(original), &mut Some(&mut io),
-                    ).await?;
-                    if owner.original_admission_digest != origin.admission_digest {
+                    let retained = original.0.logical_owned_bytes()?;
+                    let mut owner = self.journal_owner_record(witness.task(), &origin.creation_fence, Some(original.0), Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
+                    owner.native_custody.as_mut().ok_or_else(denied)?.absorb(&mut io.take_native_custody(retained)?)?;
+                    if owner.workflow.request_digest != origin.admission_digest {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                             reason: "original Started admission differs from the protected fork claim" });
                     }
                     owner.require_task_context_binding(query.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-                    owner.verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?)).await?;
+                    owner.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?))).await?;
                     witness.verify_query_with_native_work(query, work).await?;
                     owner.into_native_shared(work)
                 }.await;
@@ -402,41 +330,91 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         #[cfg(feature = "native-execution")]
         {
-            let witness = self
-                .task_admission_readonly_witness_with_native_work(task, work)
-                .await?;
-            let observation = crate::filesystem::observe_preparation(&witness, work)?.await?;
-            let Some(recorded) = observation else {
+            let witness = self.admission_reader(task, work).await?;
+            let observation = crate::filesystem::preparation_owner(&witness, work)?.await?;
+            let Some((recorded_task, original_fence, _custody)) = observation else {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::NotFound,
                     reason: "protected original native preparation journal is unavailable",
                 });
             };
-            if recorded.task != task {
+            if recorded_task != task {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "protected native preparation belongs to another task",
                 });
             }
-            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-                .map(crate::store::HistoryWork::new)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::executor::PreparationIo::from_native_work(work)?,
+            );
             let original = crate::distributed::original_reservation_proof(
                 &self.stream,
                 self.verifier.audience(),
                 &self.owner_scope,
                 &self.verifier,
                 witness.admission_operation(),
-                &recorded.original_fence,
+                &original_fence,
                 &mut Some(&mut io),
             )
             .await?;
-            self.journal_owner_with_work(
-                task,
-                std::borrow::Cow::Borrowed(&recorded.original_fence),
-                Some(original),
-                &mut Some(&mut io),
-            )
-            .await
+            let retained = original.0.logical_owned_bytes()?;
+            let mut owner = self
+                .journal_owner_record(
+                    task,
+                    &original_fence,
+                    Some(original.0),
+                    Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                )
+                .await?;
+            owner
+                .native_custody
+                .as_mut()
+                .ok_or_else(denied)?
+                .absorb(&mut io.take_native_custody(retained)?)?;
+            Ok(owner)
         }
+    }
+}
+
+#[cfg(feature = "native-execution")]
+impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    async fn admission_reader(
+        self: &Arc<Self>,
+        task: TaskId,
+        work: &NativeMaterializationWork,
+    ) -> Result<TaskAdmissionReadonlyWitness<P>> {
+        let io = PreparationIo::from_native_work(work)?;
+        let admission = self
+            .admission(
+                OperationId::from_bytes(task.into_bytes()),
+                &mut Some(&mut io.history_io()),
+            )
+            .await?;
+        let (scope, _) = self
+            .authenticated_scope(&admission, &mut Some(&mut io.history_io()))
+            .await?;
+        let scratch = scope
+            .current_created_content(&mut Some(&mut io.history_io()))?
+            .and_then(|binding| binding.scratch_creation.as_ref())
+            .cloned();
+        if admission.parent.is_some()
+            && scratch
+                .as_ref()
+                .is_none_or(|proof| proof.origin().intended_child != admission.operation_id)
+        {
+            return Err(denied());
+        }
+        let mut custody = io.take_native_custody(io.owned_bytes()?)?;
+        custody.absorb(&mut work.claim(
+            std::mem::size_of::<TaskAdmissionReadonlyWitness<P>>() as u64,
+            1,
+            acyclic_fs::WorkCounters::default(),
+        )?)?;
+        Ok(TaskAdmissionReadonlyWitness {
+            host: self.clone(),
+            admission,
+            scratch,
+            custody,
+        })
     }
 }

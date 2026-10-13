@@ -2,6 +2,7 @@
 
 use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
+use crate::demand::NativeMountAllocationCustody;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use notifications::Observers;
 use std::cell::Cell;
@@ -109,7 +110,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation ownership for an SDK observer.
-    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
+    fn allocation_custody(&self) -> Option<Arc<NativeMountAllocationCustody>> {
         None
     }
 
@@ -177,7 +178,7 @@ pub(crate) struct ViewLedger {
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
     observers: Mutex<Observers>,
-    _custody: Option<crate::demand::NativeMountAllocationCustody>,
+    _custody: Option<Arc<NativeMountAllocationCustody>>,
 }
 
 impl ViewLedger {
@@ -203,13 +204,20 @@ impl ViewLedger {
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
+        let position = ViewStamp::next();
         let observers = self
             .observers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .live(carrier)?;
-        storage::charge(carrier, scan_work(observers.0.len() as u64))?;
-        let position = ViewStamp::next();
+            .live(carrier)
+            .and_then(|observers| {
+                storage::charge(carrier, scan_work(observers.0.len() as u64))?;
+                Ok(observers)
+            })
+            .inspect_err(|_| {
+                position.record_in(&self.unconfirmed);
+                position.record_in(&self.latest);
+            })?;
         let recorded = (|| {
             match change {
                 ViewChange::Node(id) => {
@@ -267,9 +275,12 @@ impl ViewLedger {
             }
             Ok::<_, MountSourceError>(())
         })();
+        if recorded.is_err() {
+            position.record_in(&self.unconfirmed);
+        }
         position.record_in(&self.latest);
         for observer in &observers.0 {
-            if matches!(change, ViewChange::Unconfirmed) {
+            if recorded.is_err() || matches!(change, ViewChange::Unconfirmed) {
                 observer.view_unconfirmed(position);
             } else {
                 observer.view_changed(position, ViewOrigin::current());
@@ -322,7 +333,7 @@ impl ViewLedger {
                 && storage::unchanged_since(
                     &self.bindings,
                     stamp,
-                    PathKeys::new(path).inspect(|key| terminal = *key),
+                    path_keys(path).inspect(|key| terminal = *key),
                 )
                 && storage::unchanged_since(&self.directories, stamp, [terminal])
                 && file_id.is_none_or(|file_id| {
@@ -341,7 +352,7 @@ impl ViewLedger {
         admitted_names(path.components(), work, || {
             stamp.precedes_none_of(&self.unconfirmed)
                 && stamp.precedes_none_of(&self.everything)
-                && storage::unchanged_since(&self.bindings, stamp, PathKeys::new(path))
+                && storage::unchanged_since(&self.bindings, stamp, path_keys(path))
         })
     }
 
@@ -353,7 +364,7 @@ impl ViewLedger {
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
         admitted_names(path.components(), work, || {
-            let directory = PathKeys::new(path).last().expect("path includes its root");
+            let directory = path_keys(path).last().expect("path includes its root");
             stamp.precedes_none_of(&self.unconfirmed)
                 && stamp.precedes_none_of(&self.everything)
                 && storage::unchanged_since(&self.directories, stamp, [directory])
@@ -375,32 +386,12 @@ impl ViewLedger {
     }
 }
 
-/// Keys of a path's root and every successive prefix, including the path.
-struct PathKeys<'a> {
-    components: std::slice::Iter<'a, crate::kernel::LogicalName>,
-    key: Option<u64>,
-}
-
-impl<'a> PathKeys<'a> {
-    fn new(path: &'a NamespacePath) -> Self {
-        Self {
-            components: path.components().iter(),
-            key: None,
-        }
-    }
-}
-
-impl Iterator for PathKeys<'_> {
-    type Item = u64;
-
-    fn next(&mut self) -> Option<u64> {
-        let next = match self.key {
-            None => key_of(&()),
-            Some(parent) => hash_child(parent, self.components.next()?),
-        };
-        self.key = Some(next);
-        Some(next)
-    }
+fn path_keys(path: &NamespacePath) -> impl Iterator<Item = u64> + '_ {
+    let root = key_of(&());
+    std::iter::once(root).chain(path.components().iter().scan(root, |parent, name| {
+        *parent = hash_child(*parent, name);
+        Some(*parent)
+    }))
 }
 
 fn path_key(
@@ -409,7 +400,7 @@ fn path_key(
 ) -> Result<u64, MountSourceError> {
     carrier.with_work(|work| {
         admitted_names(path.components(), work, || {
-            PathKeys::new(path).last().expect("path includes its root")
+            path_keys(path).last().expect("path includes its root")
         })
     })
 }
@@ -426,25 +417,15 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
     let bytes = name.as_bytes();
     match name.encoding() {
         NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-            if bytes.is_ascii() {
-                hasher.write_u8(1);
-                hash_ascii_fold(bytes.iter().copied(), hasher);
-                return;
-            }
             if let Ok(text) = std::str::from_utf8(bytes) {
-                hash_unicode_fold(text.chars(), hasher);
+                hash_text(text.chars(), hasher);
                 return;
             }
         }
         NameEncoding::WindowsUtf16Le => {
             if let Some(units) = crate::kernel::types::utf16le_units(bytes) {
-                if units.clone().all(|unit| unit < 0x80) {
-                    hasher.write_u8(1);
-                    hash_ascii_fold(units.map(|unit| unit as u8), hasher);
-                    return;
-                }
                 if char::decode_utf16(units.clone()).all(|value| value.is_ok()) {
-                    hash_unicode_fold(
+                    hash_text(
                         char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
                         hasher,
                     );
@@ -458,7 +439,7 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
     hasher.write(bytes);
 }
 
-fn hash_unicode_fold(text: impl Iterator<Item = char>, hasher: &mut DefaultHasher) {
+fn hash_text(text: impl Iterator<Item = char>, hasher: &mut DefaultHasher) {
     hasher.write_u8(1);
     let mut encoded = [0_u8; 4];
     for folded in text
@@ -468,23 +449,6 @@ fn hash_unicode_fold(text: impl Iterator<Item = char>, hasher: &mut DefaultHashe
     {
         hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
     }
-}
-
-/// Hashes ASCII text lowercased, exactly as the Unicode fold hashes it.
-fn hash_ascii_fold(bytes: impl Iterator<Item = u8>, hasher: &mut DefaultHasher) {
-    let mut buffer = [0_u8; 64];
-    let mut filled = 0;
-    for byte in bytes {
-        if let Some(slot) = buffer.get_mut(filled) {
-            *slot = byte.to_ascii_lowercase();
-            filled += 1;
-        }
-        if filled == buffer.len() {
-            hasher.write(&buffer);
-            filled = 0;
-        }
-    }
-    hasher.write(buffer.get(..filled).unwrap_or_default());
 }
 
 fn key_of(value: &impl Hash) -> u64 {
@@ -542,8 +506,12 @@ fn admitted_names<T>(
     work.charge(scan_work(items))
         .map_err(super::lazy::mount_demand_error)?;
     if scratch != 0 {
-        work.allocate(scratch)
-            .map_err(super::lazy::mount_demand_error)?;
+        work.claim_allocation(
+            scratch,
+            u64::from((scratch) != 0),
+            crate::WorkCounters::UNCHARGED,
+        )
+        .map_err(super::lazy::mount_demand_error)?;
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));
     let released = work

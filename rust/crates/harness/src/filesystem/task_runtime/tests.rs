@@ -40,28 +40,18 @@ struct PendingTool {
     native: AtomicBool,
 }
 impl ToolExecutor for PendingTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async { Err(Error::Unauthorized("task context required".into())) })
-    }
-    fn execute_with_context<'a>(
-        &'a self,
-        _: ToolContext,
-        _: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+
+    fn execute<'a>(&'a self, _: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task context required".into())) }); }
         Box::pin(async move {
             self.executed.fetch_add(1, Ordering::SeqCst);
             self.clock.0.store(20, Ordering::SeqCst);
             futures::future::pending().await
         })
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Err(Error::Unauthorized("task context required".into())) })
-    }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        _: ToolContext,
-        _: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+
+    fn reconcile<'a>(&'a self, _: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task context required".into())) }); }
         Box::pin(async move {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             assert_eq!(self.executed.load(Ordering::SeqCst), 1);
@@ -365,6 +355,11 @@ impl Fixture {
             machine,
         })
     }
+    async fn scheduler_state(&self, task: TaskId) -> Result<crate::scheduler::OperationState> {
+        let reader = crate::filesystem::FilesystemContentVerifier::new(self.filesystem.clone(), &self.issuer.verifier(&mut None)?, &self.signed, self.scope.limits().file_bytes, None)?;
+        let coordinator = crate::distributed::DistributedCoordinator::open(&self.stream, reader, None, &mut None).await?;
+        coordinator.scheduler().operation(OperationId::from_bytes(task.into_bytes())).cloned().ok_or_else(||Error::NotFound("fixture task".into()))
+    }
     async fn runtime(&self) -> Result<Runtime> {
         FilesystemTaskRuntime::open(
             self.stream.clone(),
@@ -418,7 +413,7 @@ impl Fixture {
                 id: "deadline-worker".into(),
                 available: ResourceRequest::default(),
                 labels: BTreeMap::new(),
-            })
+            }, None, &mut None)
             .await?
         {
             WorkPull::Claimed(lease) => Ok(lease),
@@ -433,7 +428,7 @@ impl Fixture {
         command: Value,
     ) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
-        let payloads = FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             self.filesystem.clone(),
             &(self.volume),
             &self.issuer.verifier(&mut None).expect("verifier copy"),
@@ -507,17 +502,13 @@ impl Fixture {
             )?;
             let output = runtime
                 .task_host()
-                .pull_operation(
-                    &Worker {
+                .pull_work(&Worker {
                         id: "deadline-worker".into(),
                         available: ResourceRequest::default(),
                         labels: BTreeMap::new(),
-                    },
-                    operation,
-                    &mut Some(&mut operation_io),
-                )
+                    }, Some(operation), &mut Some(&mut operation_io))
                 .await?;
-            (output, operation_io.into_custody())
+            (output, operation_io.into_custody()?)
         };
         match pulled {
             (WorkPull::Claimed(lease), custody) => Ok((lease, custody)),
@@ -611,7 +602,7 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
     assert_eq!(commands.calls.load(Ordering::SeqCst), 1);
     assert_eq!(commands.work.receipt().items_examined, 0);
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
-    let state = runtime.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(!state.cancellation_requested);
     assert_eq!(state.reservation, Some(lease.reservation));
     assert!(state.outcome.is_none());
@@ -639,7 +630,7 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
     ));
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
-    let state = reopened.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(state.cancellation_requested);
     assert_eq!(state.reservation, Some(lease.reservation.clone()));
     assert!(state.outcome.is_none());
@@ -680,9 +671,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
         .checkpoint()
         .revision;
     assert!(
-        runtime
-            .task_host()
-            .observe_task(task)
+        fixture.scheduler_state(task)
             .await?
             .outcome
             .is_none()
@@ -695,7 +684,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
             .await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { .. })
     ));
-    let unresolved = reopened.task_host().observe_task(task).await?;
+    let unresolved = fixture.scheduler_state(task).await?;
     assert!(unresolved.outcome.is_none());
     assert_eq!(unresolved.reservation, Some(lease.reservation.clone()));
     fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
@@ -714,9 +703,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
         Some(Outcome::Cancelled)
     ));
     assert!(
-        reopened
-            .task_host()
-            .observe_task(task)
+        fixture.scheduler_state(task)
             .await?
             .reservation
             .is_none()
@@ -830,7 +817,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         let runtime = fixture.runtime().await?;
         let lease = fixture.admit(&runtime).await?;
         let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-        runtime.task_host().start_task(&lease, None).await?;
+        runtime.task_host().start_task(&lease, &mut None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let turn = OperationId::from_bytes([106; 16]);
         let model = Model::new(
@@ -871,7 +858,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
             provider.generated.load(Ordering::SeqCst),
             usize::from(!expired_before_dispatch)
         );
-        let state = runtime.task_host().observe_task(task).await?;
+        let state = fixture.scheduler_state(task).await?;
         assert!(state.cancellation_requested);
         assert_eq!(state.reservation, Some(lease.reservation.clone()));
         assert!(state.outcome.is_none());
@@ -919,9 +906,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
             usize::from(!expired_before_dispatch)
         );
         assert!(
-            reopened
-                .task_host()
-                .observe_task(task)
+            fixture.scheduler_state(task)
                 .await?
                 .outcome
                 .is_none()
@@ -935,7 +920,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
-    let payloads = FilesystemSchedulerPayloadStore::new(
+    let payloads = FilesystemContentPublisher::new(
         fixture.filesystem.clone(),
         &(fixture.volume),
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
@@ -977,7 +962,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
         }
     ));
     assert_eq!(
-        reopened.task_host().observe_task(task).await?.reservation,
+        fixture.scheduler_state(task).await?.reservation,
         Some(lease.reservation.clone())
     );
     assert!(matches!(
@@ -1004,7 +989,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
-    runtime.task_host().start_task(&lease, None).await?;
+    runtime.task_host().start_task(&lease, &mut None).await?;
     let mut session = runtime.open_task(task, fence).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -1039,7 +1024,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     assert_eq!(session.checkpoint().revision, 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
-    let state = runtime.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(!state.cancellation_requested);
     assert_eq!(state.reservation, Some(lease.reservation));
     assert!(state.outcome.is_none());
@@ -1142,9 +1127,7 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
         assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
-        let state = runtime
-            .task_host()
-            .observe_task(TaskId::from_bytes(
+        let state = fixture.scheduler_state(TaskId::from_bytes(
                 original.operation.operation_id.into_bytes(),
             ))
             .await?;
@@ -1263,7 +1246,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         }
     };
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
-    let state = reopened.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(state.outcome.is_none());
     assert_eq!(state.reservation, Some(original.reservation.clone()));
     fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
@@ -1283,9 +1266,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         Some(Outcome::Cancelled)
     ));
     assert!(
-        reopened
-            .task_host()
-            .observe_task(task)
+        fixture.scheduler_state(task)
             .await?
             .reservation
             .is_none()
@@ -1443,11 +1424,12 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let witness = reopened
         .readonly_workflow_journal_with_native_work(task, &work)
         .await?;
+    let replay_io = crate::executor::PreparationIo::from_native_work(&work)?;
     let records =
-        crate::workflow::WorkflowJournal::replay_with_native_work(witness.as_ref(), 0, 64, &work)?
+        crate::workflow::WorkflowJournal::replay(witness.as_ref(), 0, 64, Some(&replay_io))?
             .await?;
     assert!(!records.0.is_empty());
-    assert!(records.1.work().shares_ledger(&work));
+    assert!(records.1.as_ref().unwrap().work().shares_ledger(&work));
     drop(records);
     drop(witness);
     drop(attempt);
@@ -1651,17 +1633,17 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
-    runtime.task_host().start_task(&lease, Some(&work)).await?;
+    runtime.task_host().start_task(&lease, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(&work)?.history_io())).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     let shared = runtime
         .task_context_with_native_work(task, &fence, &work)
         .await?;
-    assert!(shared.context().original_task_binding_matches(task, &fence));
+    assert!(shared.original_task_binding_matches(task, &fence));
     let operation = lease.operation.operation_id;
     let call_id = work.display(&operation)?;
     let tool =
-        ToolContext::new_with_native_work(Arc::clone(&shared), operation, &call_id.0, &work)?;
+        ToolContext::new(Arc::clone(&shared), operation, &call_id.0, Some(&PreparationIo::from_native_work(&work)?))?;
     drop(call_id);
     let before = work.receipt();
     tool.validate_native_mcp_context(&work)?;
@@ -1669,11 +1651,10 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     assert_eq!(work.receipt(), before);
     let read = runtime
         .harness()
-        .durable_context_with_native_work(task, operation, &work)
+        .durable_context(task, operation, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))
         .await?;
-    let read = read.0.into_native_shared(read.1, &work)?;
     let read_tool =
-        ToolContext::new_with_native_work(read, operation, "read-context-control", &work)?;
+        ToolContext::new(read, operation, "read-context-control", Some(&PreparationIo::from_native_work(&work)?))?;
     assert!(matches!(
         read_tool.validate_native_mcp_context(&work),
         Err(Error::NativeBoundary {
@@ -1700,11 +1681,11 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     let settlement = runtime
         .task_context_for_original_owner_with_native_work(task, &fence, true, &work)
         .await?;
-    let settlement_tool = ToolContext::new_with_native_work(
+    let settlement_tool = ToolContext::new(
         settlement,
         operation,
         "settlement-context-control",
-        &work,
+        Some(&PreparationIo::from_native_work(&work)?),
     )?;
     assert!(matches!(
         settlement_tool.validate_native_mcp_context(&work),

@@ -641,7 +641,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         .await?;
     assert_eq!(
         summary.source_digest,
-        crate::contract::canonical_json_digest(&source, u64::MAX, &mut None)?
+        crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?
     );
     assert_eq!(
         journal.load(&summary.output, None)?.await?.as_ref(),
@@ -735,7 +735,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
     );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 2);
-    let (_, admissions) = replay_execution(
+    let (_, admissions, _) = replay_execution(
         &journal,
         parent.operation_id,
         3,

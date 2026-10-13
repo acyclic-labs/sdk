@@ -1,10 +1,9 @@
 /** Public Harness enum spellings derived from generated Rust/protobuf types. */
 import type {
-  WasmGroupPolicy,
   WasmResourceRefWire,
   WasmVolumeRefWire,
-  AuthorityLevel as WasmAuthorityLevel,
 } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { WasmGroupPolicy as GroupPolicy, AuthorityLevel } from "../generated/wasm/acyclic_harness_wasm.js";
 import {
   AggregateKind as WireAggregateKind,
   ConversationKind as WireConversationKind,
@@ -21,8 +20,6 @@ type Mismatch<Actual, Expected> = Exclude<Actual, Expected> | Exclude<Expected, 
 /** Exact string unions emitted by the Rust WASM DTO generator. */
 export type VolumeClass = WasmVolumeRefWire["class"];
 export type ResourceKind = WasmResourceRefWire["kind"];
-export type GroupPolicy = WasmGroupPolicy;
-export type AuthorityLevel = WasmAuthorityLevel;
 
 /** Lower snake-case names are derived directly from protobuf enum members. */
 export type MessageKind = PublicEnum<typeof WireConversationKind>;

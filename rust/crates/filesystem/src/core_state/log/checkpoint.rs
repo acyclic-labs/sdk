@@ -2,18 +2,42 @@ use super::*;
 
 impl CoreLog {
     /// Makes a committed change resident; its files are written back later.
-    pub(in crate::core_state) fn apply(&mut self, change: Change) {
+    pub(in crate::core_state) fn apply(
+        &mut self,
+        change: Change,
+        installation: Option<&crate::NativeWorkReservation>,
+    ) -> Result<(), LocalCoreStateStoreError> {
         let mut residents = self
             .residents
             .write()
             .unwrap_or_else(PoisonError::into_inner);
+        let mut examined = 0;
         for record in change.0 {
             let key = record.key;
-            residents.insert(key, record.value);
-            if !self.dirty.contains(&key) {
+            let index = residents.0.iter().position(|resident| {
+                examined += 1;
+                resident.key == key
+            });
+            let dirty = self.dirty.iter().any(|candidate| {
+                examined += 1;
+                *candidate == key
+            });
+            if let Some(index) = index {
+                residents.0[index] = record;
+            } else {
+                residents.0.push(record);
+            }
+            if !dirty {
                 self.dirty.push(key);
             }
         }
+        if let Some(installation) = installation {
+            installation.record_completed(crate::WorkCounters {
+                items_examined: examined,
+                ..Default::default()
+            })?;
+        }
+        Ok(())
     }
 
     pub(in crate::core_state) fn checkpoint(
@@ -38,7 +62,7 @@ impl CoreLog {
             let paths = key.paths(root)?;
             let file = match work {
                 Some(work) => {
-                    crate::native_host::create_directories(&paths.directory, &mut &*work)?;
+                    crate::native_host::create_directories(paths.directory(), &mut &*work)?;
                     let file = materialization_open_options(
                         &paths.current,
                         &crate::native_host::NativeOpenOptions::ReadWriteCreate,
@@ -52,7 +76,7 @@ impl CoreLog {
                     file
                 }
                 None => {
-                    std::fs::create_dir_all(&paths.directory)?;
+                    std::fs::create_dir_all(paths.directory())?;
                     OpenOptions::new()
                         .create(true)
                         .truncate(true)
@@ -66,20 +90,10 @@ impl CoreLog {
                 encoded: true,
             };
             let residents = self.residents();
-            let mut value = None;
-            for record in &residents.0 {
-                if let Some(work) = work {
-                    work.charge(crate::WorkCounters {
-                        items_examined: 1,
-                        ..Default::default()
-                    })?;
-                }
-                if record.key == *key {
-                    value = record.value.as_ref();
-                    break;
-                }
-            }
-            RecordValue::write_bare(value, &mut writer).map_err(measured_json_error)?;
+            let value = residents
+                .position(*key, work)?
+                .and_then(|index| residents.0[index].value.as_ref());
+            RecordValue::write_bare(value, &mut writer)?;
             crash_point("record written", self.flushed);
             if let Some(work) = work {
                 work.charge(crate::WorkCounters {

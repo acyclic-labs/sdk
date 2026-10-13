@@ -1,4 +1,5 @@
 use super::*;
+
 fn budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::WorkBudget {
         items_examined: 1_048_576,
@@ -10,45 +11,29 @@ fn budget() -> acyclic_fs::WorkBudget {
         ..Default::default()
     }
 }
+
+fn apply_native(
+    scheduler: &mut Scheduler,
+    event: &SchedulerEvent,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    scheduler.apply(event, &mut Some(&mut io.history_io()))
+}
+
 #[test]
 fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
-    let mut scheduler = Scheduler::new();
-    scheduler.apply(
-        &scheduler.declare(spec(id(82), Orchestration::Leaf)?)?,
-        &mut None,
-    )?;
-    scheduler.apply(
-        &SchedulerEvent::SessionConfigured {
-            operation_id: id(82),
-            limits: SessionLimits {
-                active_tasks: 1,
-                total_tasks: 2,
-                depth: 1,
-                model_steps: 2,
-            },
+    let mut scheduler = session(
+        spec(id(82), Orchestration::Leaf)?,
+        SessionLimits {
+            active_tasks: 1,
+            total_tasks: 2,
+            depth: 1,
+            model_steps: 2,
         },
-        &mut None,
     )?;
-    let mut child = spec(id(83), Orchestration::Leaf)?;
-    child.parent = Some(ParentLink {
-        operation_id: id(82),
-        slot: "capacity".into(),
-    });
-    scheduler.apply(&scheduler.declare(child)?, &mut None)?;
-    scheduler.apply(
-        &SchedulerEvent::Admitted {
-            operation_id: id(82),
-            reservation: reservation(4, 2),
-        },
-        &mut None,
-    )?;
-    scheduler.apply(
-        &SchedulerEvent::Started {
-            operation_id: id(82),
-            fence: fence(4),
-        },
-        &mut None,
-    )?;
+    scheduler.apply(&scheduler.declare(child(83, 82, "capacity")?)?, &mut None)?;
+    start(&mut scheduler, id(82), reservation(4, 2))?;
     let before = scheduler.clone();
     let invalid = [
         SchedulerEvent::Started {
@@ -88,15 +73,11 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
         },
     ];
     for event in invalid {
-        assert!(before.clone().apply(&event, &mut None).is_err());
-        let cancel = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancel).expect("work");
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&work)?,
-        );
-        let error = scheduler
-            .apply(&event, &mut Some(&mut io))
-            .expect_err("invalid event");
+        rejected(&mut scheduler, &event);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work =
+            acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation).expect("work");
+        let error = apply_native(&mut scheduler, &event, &work).expect_err("invalid event");
         assert!(error.is_native_failure());
         assert_ne!(error.code(), crate::wire::ErrorCode::Unsupported);
         assert_eq!(scheduler, before);
@@ -105,32 +86,26 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
         operation_id: id(82),
         fence: fence(4),
     };
-    let cancel = acyclic_fs::CancellationToken::new();
+    let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
             bytes_copied: 0,
             ..budget()
         },
-        &cancel,
+        &cancellation,
     )
     .expect("work");
-    let mut io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
     assert!(
-        scheduler
-            .apply(&event, &mut Some(&mut io))
+        apply_native(&mut scheduler, &event, &work)
             .expect_err("copy limit")
             .is_native_failure()
     );
     assert_eq!(scheduler, before);
-    let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancel).expect("work");
-    let mut io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
-    cancel.cancel();
+    let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation).expect("work");
+    cancellation.cancel();
     let receipt = work.receipt();
     assert!(
-        scheduler
-            .apply(&event, &mut Some(&mut io))
+        apply_native(&mut scheduler, &event, &work)
             .expect_err("cancelled")
             .is_native_failure()
     );
@@ -138,6 +113,7 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
     assert_eq!(work.receipt(), receipt);
     Ok(())
 }
+
 #[test]
 fn prospective_session_uses_immutable_root_policy() -> Result<()> {
     let limits = SessionLimits {
@@ -146,43 +122,27 @@ fn prospective_session_uses_immutable_root_policy() -> Result<()> {
         depth: 1,
         model_steps: 2,
     };
-    let mut scheduler = Scheduler::new();
     let root = spec(id(89), Orchestration::Leaf)?;
-    scheduler.validate_session(&root, &limits, &mut None)?;
-    scheduler.apply(&scheduler.declare(root.clone())?, &mut None)?;
-    scheduler.apply(
-        &SchedulerEvent::SessionConfigured {
-            operation_id: root.operation_id,
-            limits,
-        },
-        &mut None,
-    )?;
+    Scheduler::new().validate_session(&root, &limits, &mut None)?;
+    let mut scheduler = session(root.clone(), limits)?;
     assert!(
         scheduler
             .validate_session(&root, &limits, &mut None)
             .is_err()
     );
-    let mut child = spec(id(90), Orchestration::Leaf)?;
-    child.parent = Some(ParentLink {
-        operation_id: root.operation_id,
-        slot: "child".into(),
-    });
+    let child = child(90, 89, "child")?;
     assert!(
         scheduler
             .validate_session(&child, &limits, &mut None)
             .is_err()
     );
     scheduler.apply(&scheduler.declare(child)?, &mut None)?;
-    assert!(
-        scheduler
-            .apply(
-                &SchedulerEvent::SessionConfigured {
-                    operation_id: id(90),
-                    limits
-                },
-                &mut None
-            )
-            .is_err()
+    rejected(
+        &mut scheduler,
+        &SchedulerEvent::SessionConfigured {
+            operation_id: id(90),
+            limits,
+        },
     );
     Ok(())
 }

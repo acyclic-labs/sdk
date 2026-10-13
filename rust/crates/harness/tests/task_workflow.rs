@@ -20,7 +20,7 @@ use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
-    FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime,
+    FilesystemInteractionHost, FilesystemContentPublisher, FilesystemTaskRuntime,
     MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
     MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND,
     TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
@@ -54,7 +54,6 @@ use acyclic_stream::{
 };
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 
@@ -111,19 +110,16 @@ struct InterruptedTool {
 }
 
 impl ToolExecutor for InterruptedTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+let Some(context) = context else { return {
         if self.model_call {
             self.executed.fetch_add(1, Ordering::SeqCst);
             return Box::pin(async { Err(Error::Storage("lost model tool result".into())) });
         }
         Box::pin(async { Err(Error::Unsupported("scoped tool context required".into())) })
-    }
-
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+    }; };
         Box::pin(async move {
             let file = serde_json::from_value(
                 invocation
@@ -133,13 +129,16 @@ impl ToolExecutor for InterruptedTool {
                     .ok_or_else(|| Error::Invalid("missing file".into()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(context.task().read_file(&file).await?.as_ref(), b"hello");
+            assert_eq!(context.task().read_file(&file, None).await?.as_ref(), b"hello");
             self.executed.fetch_add(1, Ordering::SeqCst);
             Err(Error::Storage("lost tool result".into()))
         })
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+let Some(context) = context else { return {
         if self.model_call {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             return Box::pin(async {
@@ -149,13 +148,7 @@ impl ToolExecutor for InterruptedTool {
             });
         }
         Box::pin(async { Err(Error::Unsupported("scoped reconciliation required".into())) })
-    }
-
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    }; };
         Box::pin(async move {
             let file = serde_json::from_value(
                 invocation
@@ -165,7 +158,7 @@ impl ToolExecutor for InterruptedTool {
                     .ok_or_else(|| Error::Invalid("missing file".into()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(context.task().read_file(&file).await?.as_ref(), b"hello");
+            assert_eq!(context.task().read_file(&file, None).await?.as_ref(), b"hello");
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             Ok(Some(ToolResult {
                 value: json!("tool-restored"),
@@ -939,13 +932,13 @@ async fn worker_restart_with_options(
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
             );
-            let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+            let payloads = FilesystemContentPublisher::new(
                 filesystem.clone(),
                 &volume,
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 65_536, None,
-            )?);
+            )?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
             if with_policy && !reopened {
                 Box::pin(async {
@@ -1424,7 +1417,7 @@ async fn worker_restart_with_options(
                 );
                 assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
                 if with_child {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let reference = runtime
                         .task_host()
                         .observe_admission(task)
@@ -1460,13 +1453,13 @@ async fn worker_restart_with_options(
                     ));
                 }
                 if with_mail_send {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let file = serde_json::from_value(
                         runtime.task_host().observe_admission(task).await?.input,
                     )
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                     let input: MailSendTaskCommand =
-                        serde_json::from_slice(&context.read_file(&file).await?)
+                        serde_json::from_slice(&context.read_file(&file, None).await?)
                             .map_err(|error| Error::Invalid(error.to_string()))?;
                     let fence = LeaseFence::from(&lease.reservation);
                     for index in 100..170u8 {
@@ -1586,12 +1579,12 @@ async fn worker_restart_with_options(
                     ));
                 }
                 if with_tool && !with_model_approval {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let admission = runtime.task_host().observe_admission(task).await?;
                     let file = serde_json::from_value(admission.input)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
                     let payload: ToolTaskCommand =
-                        serde_json::from_slice(&context.read_file(&file).await?)
+                        serde_json::from_slice(&context.read_file(&file, None).await?)
                             .map_err(|error| Error::Invalid(error.to_string()))?;
                     let command = WorkflowCommand {
                         operation_id: OperationId::from_bytes([26; 16]),
@@ -2013,10 +2006,9 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let input = json!(acyclic_fs::encode_merge_candidate(&candidate).map_err(|e| Error::Invalid(e.to_string()))?);
         let state = json!({"candidate":input});
         resolution_record = WorkflowRecord { operation_id: OperationId::from_bytes([146; 16]),
-            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input, u64::MAX, &mut None)?,
+            idempotency_key: IdempotencyKey::new("driver-result")?,
             prior: admission.initial.clone(), input,
-            transition: MachineTransition { state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended },
-            next: MachineCheckpoint { machine: admission.initial.machine.clone(), revision: 1, state } };
+            transition: MachineTransition { state, commands: Vec::new(), status: MachineStatus::Suspended } };
         journal.commit(0, resolution_record.idempotency_key.clone(), resolution_record.clone()).await?;
     }
     let calls = driver.0.load(Ordering::SeqCst);
@@ -2025,12 +2017,12 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
             .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", &private, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
-        let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
+        let retained = journal.admission(None)?.await?.0.ok_or_else(|| Error::NotFound("merge admission".into()))?;
         assert_eq!(retained, admission);
-        let records = journal.replay(0, 1).await?;
+        let records = journal.replay(0, 1, None)?.await?.0;
         assert_eq!(records, vec![resolution_record.clone()]);
         let record = records.first().ok_or_else(|| Error::NotFound("driver result".into()))?;
-        let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
+        let candidate = acyclic_fs::decode_merge_candidate(record.transition.state["candidate"].as_str()
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let plan = controller.prepare_project_import(&source, &source_head, Some(&target_head)).await?;
@@ -2181,13 +2173,13 @@ async fn stock_restart_with_publication_fault(
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
         let stream = stream_provider.clone();
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             filesystem.clone(),
             &volume,
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             65_536, None,
-        )?);
+        )?;
         let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
@@ -2238,9 +2230,9 @@ async fn stock_restart_with_publication_fault(
         reader.verify(&input_file).await?;
         assert!(matches!(
             harness
-                .durable_context(task, operation)
+                .durable_context(task, operation, None)
                 .await?
-                .read_file(&input_file)
+                .read_file(&input_file, None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -2430,7 +2422,7 @@ async fn stock_restart_with_publication_fault(
                 stream_provider.arm_execution(3, mode);
             }
             let interrupted = if direct_executor {
-                let admitted_context = harness.durable_context(task, operation).await?;
+                let admitted_context = harness.durable_context(task, operation, None).await?;
                 let previous = StockExecutor::new(
                     Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                     model.clone(),
@@ -2555,21 +2547,15 @@ async fn stock_restart_with_publication_fault(
             assert!(session.latest_transition().await?.is_none());
             let invalid_input = json!("bad");
             let prior = session.checkpoint().clone();
-            let (next, transition, _, _) = machines.step(
+            let (_, transition, _, _) = machines.step(
                 &prior, std::borrow::Cow::Borrowed(&invalid_input), None,
             )?;
             let invalid_record = WorkflowRecord {
                 operation_id: OperationId::from_bytes([8; 16]),
                 idempotency_key: IdempotencyKey::new("direct-invalid-output")?,
-                input_digest: Sha256::digest(
-                    serde_json::to_vec(&invalid_input)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                )
-                .into(),
                 prior,
                 input: invalid_input,
                 transition,
-                next,
             };
             assert!(
                 journal
@@ -2577,7 +2563,7 @@ async fn stock_restart_with_publication_fault(
                     .await
                     .is_err()
             );
-            assert!(journal.replay(0, 64).await?.is_empty());
+            assert!(journal.replay(0, 64, None)?.await?.0.is_empty());
             assert!(
                 session
                     .step(
@@ -2598,7 +2584,7 @@ async fn stock_restart_with_publication_fault(
             MachineStatus::Suspended
         );
         assert_eq!(session.checkpoint().revision, 1);
-        assert_eq!(journal.replay(0, 64).await?.len(), 1);
+        assert_eq!(journal.replay(0, 64, None)?.await?.0.len(), 1);
         assert!(
             session
                 .step(step, IdempotencyKey::new("suspend")?, json!(9))
@@ -2653,7 +2639,7 @@ async fn stock_restart_with_publication_fault(
                     .await
                     .is_err()
             );
-            assert_eq!(recovery_journal.replay(0, 64).await?.len(), 2);
+            assert_eq!(recovery_journal.replay(0, 64, None)?.await?.0.len(), 2);
         }
         previous_lease = Some(lease);
     }
@@ -2706,7 +2692,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),
             scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
+        let payloads = FilesystemContentPublisher::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
         let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),
             acyclic_harness::context::CompactionPolicy::Disabled);
         if phase == 0 {
@@ -2744,9 +2730,9 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         }
         if phase == 1 || phase == 2 {
             let journal = runtime.workflow_journal(task, LeaseFence::from(&lease.reservation)).await?;
-            let record = journal.replay(0, 8).await?.pop().unwrap();
+            let record = journal.replay(0, 8, None)?.await?.0.pop().unwrap();
             assert_eq!(record.transition.commands, vec![admitted_model.clone().unwrap()]);
-            assert_eq!(record.next.state["mail"], serde_json::to_value(&selected).unwrap());
+            assert_eq!(record.transition.state["mail"], serde_json::to_value(&selected).unwrap());
             let remaining = runtime.task_host().inbox(task, 1, 1).await?;
             if queued { assert_eq!(remaining[0].sequence, 2); } else { assert!(remaining.is_empty()); }
         }
@@ -2758,7 +2744,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let parcel = request.messages.iter().flat_map(|message| message.content.file_refs())
                 .find(|file| file.path() == parcel_path).ok_or_else(|| Error::NotFound("selected model parcel".into()))?;
             assert_eq!(parcel.descriptor(), selected.as_ref().unwrap().payload.descriptor());
-            assert_eq!(runtime.harness().durable_context(task, operation).await?.read_file(parcel).await?.as_ref(), b"first steering");
+            assert_eq!(runtime.harness().durable_context(task, operation, None).await?.read_file(parcel, None).await?.as_ref(), b"first steering");
         }
         if phase == 3 {
             let Some(Outcome::Succeeded(value)) = runtime.task_host().outcome(task).await? else {

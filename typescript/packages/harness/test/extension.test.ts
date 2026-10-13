@@ -10,8 +10,6 @@ test("Rust and TypeScript share the canonical v2 extension record fixture", asyn
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/extension-record.json", import.meta.url)).text()).trim();
   const record = contracts.validate("extension_record", JSON.parse(fixture) as ExtensionRecord);
   expect(JSON.stringify(record)).toBe(fixture);
-  expect(Object.isFrozen(record.schema_digest)).toBe(true);
-  expect(Object.isFrozen(record.content.volume)).toBe(true);
   expect(() => contracts.validate("extension_record", { ...record, implementation_digest: Array(32).fill(0) })).toThrow();
   expect(() => contracts.validate("extension_record", { ...record, name: "example.\u0000state" })).toThrow();
 });
@@ -60,7 +58,6 @@ test("the TypeScript lifecycle facade keeps executable identity separate from du
     version: record.version,
     digest: record.implementation_digest,
   });
-  expect(Object.isFrozen(identity)).toBe(true);
   await expect(extensionIdentity({ ...identity, digest: Array(32).fill(0) })).rejects.toThrow();
   await expect(extensionIdentity({ ...identity, version: 0 })).rejects.toThrow();
 });

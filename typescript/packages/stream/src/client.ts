@@ -58,33 +58,20 @@ export class StreamClient {
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     return this.provider.inspectIdempotency(key.slice() as IdempotencyKey);
   }
-  children(parent: string | undefined, options: { readonly limit: number } | number): AsyncIterable<{ readonly path: string }> {
-    const limit = typeof options === "number" ? options : options.limit;
-    if (parent !== undefined) validatePathValue(parent);
-    positiveInteger(limit, "limit");
-    return this.childrenAll(parent, limit);
-  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
+    const { parent, after, hierarchyVersion, limit } = request;
+    const origin = { limit, ...(parent === undefined ? {} : { parent }) };
     let authored: ChildrenPageRequest;
-    if (request.after === undefined) {
-      authored = request.hierarchyVersion === undefined
-        ? { ...(request.parent === undefined ? {} : { parent: request.parent }), limit: request.limit }
-        : { ...(request.parent === undefined ? {} : { parent: request.parent }), hierarchyVersion: request.hierarchyVersion.slice() as CommitId, limit: request.limit };
+    if (after === undefined) {
+      authored = { ...origin, ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
     } else {
-      if (request.hierarchyVersion === undefined) {
-        throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
-      }
-      authored = {
-        ...(request.parent === undefined ? {} : { parent: request.parent }),
-        after: request.after,
-        hierarchyVersion: request.hierarchyVersion.slice() as CommitId,
-        limit: request.limit,
-      };
+      if (hierarchyVersion === undefined) throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
+      authored = { ...origin, after, hierarchyVersion: hierarchyVersion.slice() as CommitId };
     }
     if (authored.parent !== undefined) validatePathValue(authored.parent);
     if (authored.after !== undefined) {
       validatePathValue(authored.after);
-      if (authored.hierarchyVersion === undefined || directParent(authored.after) !== (authored.parent ?? "")) {
+      if (directParent(authored.after) !== (authored.parent ?? "")) {
         throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
       }
     }
@@ -111,13 +98,10 @@ export class StreamClient {
       }
       previous = child.path;
     }
-    if (page.nextAfter !== undefined && page.children.length === 0) {
-      throw new StreamError("invalid_page", "provider returned an empty continuation page");
-    }
     return page;
   }
   /** Traverses all direct children, failing rather than silently skipping a concurrent hierarchy change. */
-  async *childrenAll(parent?: string, limit = StreamLimit.MAX_ITEMS): AsyncIterable<{ readonly path: string }> {
+  async *children(parent?: string, limit = StreamLimit.MAX_ITEMS): AsyncIterable<{ readonly path: string }> {
     let request: ChildrenPageRequest = { ...(parent === undefined ? {} : { parent }), limit };
     for (;;) {
       const page = await this.childrenPage(request);

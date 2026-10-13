@@ -39,16 +39,16 @@ pub(super) fn nearest_common_ancestor(
         .map(|(commit, _, _)| commit)
 }
 
-pub(super) fn resolve_object(
+pub(super) fn resolve_object<E: std::error::Error + 'static>(
     state: &GitCompatState,
     object: Option<&str>,
-) -> Result<GitCommitId, GitCompatStateError> {
+) -> Result<GitCommitId, GitCompatError<E>> {
     let object = object.unwrap_or("HEAD");
     if object == "HEAD" {
-        return visible_head(state).ok_or(GitCompatStateError::UnbornHead);
+        return visible_head(state).ok_or(GitCompatError::UnbornHead);
     }
     if let Some(branch) = state.branches.get(object) {
-        return branch.head.ok_or(GitCompatStateError::UnbornHead);
+        return branch.head.ok_or(GitCompatError::UnbornHead);
     }
     if let Some(id) = state.tags.get(object) {
         return Ok(*id);
@@ -59,7 +59,7 @@ pub(super) fn resolve_object(
         .filter(|id| id.to_hex().starts_with(object));
     match (matching.next(), matching.next()) {
         (Some(id), None) => Ok(*id),
-        _ => Err(GitCompatStateError::Unknown(object.to_owned())),
+        _ => Err(GitCompatError::UnknownObject(object.to_owned())),
     }
 }
 
@@ -71,17 +71,17 @@ pub(super) fn visible_head(state: &GitCompatState) -> Option<GitCommitId> {
         .or_else(|| state.current().ok().and_then(|branch| branch.head))
 }
 
-pub(super) fn first_parent_range(
+pub(super) fn first_parent_range<E: std::error::Error + 'static>(
     state: &GitCompatState,
     bad: GitCommitId,
     good: GitCommitId,
-) -> Result<Vec<GitCommitId>, GitCompatStateError> {
+) -> Result<Vec<GitCommitId>, GitCompatError<E>> {
     let mut range = Vec::new();
     let mut next = Some(bad);
     let mut seen = BTreeSet::new();
     while let Some(commit) = next {
         if !seen.insert(commit) {
-            return Err(GitCompatStateError::Invalid);
+            return Err(GitCompatError::InvalidState);
         }
         range.push(commit);
         if commit == good {
@@ -90,12 +90,12 @@ pub(super) fn first_parent_range(
         next = state
             .commits
             .get(&commit)
-            .ok_or(GitCompatStateError::Invalid)?
+            .ok_or(GitCompatError::InvalidState)?
             .parents
             .first()
             .copied();
     }
-    Err(GitCompatStateError::Bisect(
+    Err(GitCompatError::InvalidCommand(
         "the good commit is not a first-parent ancestor of the bad commit".to_owned(),
     ))
 }

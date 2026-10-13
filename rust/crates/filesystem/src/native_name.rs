@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 pub(crate) struct HostNameEncodingError;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::demand::{DemandError, DemandWork, NativeSourceWork, SourceDemandReadWork};
+use crate::demand::{DemandError, DemandWork,  SourceDemandReadWork};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 
@@ -21,7 +21,7 @@ enum NameWork<'a, W: SourceDemandReadWork = DemandWork> {
     Original {
         work: &'a crate::NativeMaterializationWork,
         allocation: Option<crate::materializer::NativeAllocation>,
-        source: Option<NativeSourceWork<'a>>,
+        source: Option<crate::NativeMaterializationWork>,
     },
     Source(&'a mut W),
 }
@@ -57,7 +57,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
             Self::Owned { allocations, work, budget, .. } => allocations
                 .claim_bytes(bytes, u64::from(bytes != 0), work, *budget)
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest)),
-            Self::Source(work) => work.allocate(bytes),
+            Self::Source(work) => work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED),
             Self::Original { work, allocation, .. } => {
                 *allocation = Some(work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED).map_err(original_name_error)?);
                 Ok(())
@@ -124,7 +124,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
         self.check()?;
         match self {
             Self::Owned { work, budget, .. } => work.charge(&delta, budget).map_err(Into::into),
-            Self::Source(work) => work.charge(delta),
+            Self::Source(work) => work.started_io(delta),
             Self::Original { work, .. } => work.charge(delta).map_err(original_name_error),
         }
     }
@@ -165,18 +165,6 @@ pub(crate) fn host_name_bytes_with_native_work(
     Ok((name, allocation.ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?))
 }
 
-#[cfg(windows)]
-pub(crate) fn host_wide_name_bytes_with_native_work(
-    name: &[u16], profile: FilesystemProfile, maximum_bytes: u32,
-    original: &crate::NativeMaterializationWork,
-) -> Result<((NameEncoding, Vec<u8>), crate::materializer::NativeAllocation), crate::NativeTreeMaterializationError> {
-    let mut accounting: NameWork<'_> = NameWork::Original { work: original, allocation: None, source: None };
-    let name = host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)
-        .map_err(name_native_error)?;
-    let NameWork::Original { allocation, .. } = accounting else { unreachable!() };
-    Ok((name, allocation.ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?))
-}
-
 /// Same name producer with its original source request's private stop fence.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
@@ -188,8 +176,8 @@ pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
         ).map(|name| (name, None));
     }
     let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = source.materialization_work()?;
-    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source) };
+    let original = { crate::native_host::NativeHostWork::check(&source)?; source.clone() };
+    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source.clone()) };
     let name = host_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)?;
     crate::native_host::NativeHostWork::check(&source)?;
     let NameWork::Original { allocation, .. } = accounting else { unreachable!() };
@@ -206,8 +194,8 @@ pub(crate) fn host_wide_name_bytes_with_source_work<W: SourceDemandReadWork>(
         ).map(|name| (name, None));
     }
     let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = source.materialization_work()?;
-    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source) };
+    let original = { crate::native_host::NativeHostWork::check(&source)?; source.clone() };
+    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source.clone()) };
     let name = host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)?;
     crate::native_host::NativeHostWork::check(&source)?;
     let NameWork::Original { allocation, .. } = accounting else { unreachable!() };
@@ -257,7 +245,7 @@ fn copy_bytes_measured<W: SourceDemandReadWork>(
     let mut bytes = name_buffer(source.len(), maximum_bytes, work)?;
     bytes.extend_from_slice(source);
     let recorded = match reservation {
-        Some(reservation) => { let mut copy = reservation; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(original_name_error),
+        Some(reservation) => { let copy = reservation; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(original_name_error),
         None => work.record(delta),
     };
     if let Err(error) = recorded {
@@ -569,17 +557,18 @@ mod tests {
             WorkBudget { peak_allocation_bytes: 64 * 1024, ..finite_name_budget() },
             &cancellation,
         ).map_err(|(error, _)| error)?;
-        let ((encoding, bytes), allocation) = host_wide_name_bytes_with_native_work(
-            &[0xd800, 0x0061], FilesystemProfile::Windows, 255, &original,
+        let ((encoding, bytes), allocation) = host_wide_name_bytes_with_source_work(
+            &[0xd800, 0x0061], FilesystemProfile::Windows, 255, &mut original.clone(),
         )?;
         assert_eq!(encoding, NameEncoding::WindowsUtf16Le);
         assert_eq!(bytes, [0, 0xd8, 0x61, 0]);
+        let allocation = allocation.expect("native name allocation");
         assert_eq!(allocation.bytes(), bytes.capacity() as u64);
         drop(bytes);
         drop(allocation);
-        assert!(matches!(host_wide_name_bytes_with_native_work(
-            &[0xd800], FilesystemProfile::Portable, 255, &original,
-        ), Err(crate::NativeTreeMaterializationError::InvalidLayout)));
+        assert!(matches!(host_wide_name_bytes_with_source_work(
+            &[0xd800], FilesystemProfile::Portable, 255, &mut original.clone(),
+        ), Err(DemandError::InvalidRequest)));
         Ok(())
     }
 }

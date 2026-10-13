@@ -75,8 +75,11 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
         if !context.may_have_named_attributes(&path, work)? {
             return copy_variable_result(&[], list, length, work);
         }
-        let mut cursor: Option<(Vec<u8>, crate::NativeAllocation)> = None;
-        let mut encoded = DarwinOwned::empty(Vec::new());
+        let mut cursor: Option<(Vec<u8>, NativeAllocation)> = None;
+        if length != 0 && list.is_null() {
+            return Err(driver_errno(libc::ERANGE));
+        }
+        let mut count = 0_usize;
         loop {
             let mut page = context.source.list_attributes_with_meter(
                 &path,
@@ -89,15 +92,29 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
                 if name.contains(&0) {
                     return Err(driver_errno(libc::EIO));
                 }
-                let required = encoded
-                    .len()
+                let next = count
                     .checked_add(name.len())
                     .and_then(|n| n.checked_add(1))
-                    .ok_or(crate::WorkError::Overflow)?;
-                grow_bytes(&mut encoded, required, work)?;
-                work.charge(copy_work(name.len() as u64 + 1))?;
-                encoded.extend_from_slice(name);
-                encoded.push(0);
+                    .ok_or(WorkError::Overflow)?;
+                if next > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES {
+                    return Err(driver_errno(libc::E2BIG));
+                }
+                if length != 0 {
+                    if next > length {
+                        return Err(driver_errno(libc::ERANGE));
+                    }
+                    work.charge(copy_work(name.len() as u64 + 1))?;
+                    // SAFETY: next fits the non-null bridge buffer; the name stays live.
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            name.as_ptr(),
+                            list.cast::<u8>().add(count),
+                            name.len(),
+                        );
+                        list.add(next - 1).write(0);
+                    }
+                }
+                count = next;
             }
             let Some(next) = page.0.next_cursor.take() else {
                 break;
@@ -111,7 +128,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
             }
             cursor = Some((next, next_allocation));
         }
-        copy_variable_result(&encoded, list, length, work)
+        c_int::try_from(count).map_err(|_| driver_errno(libc::EOVERFLOW))
     })
 }
 
@@ -125,52 +142,6 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     ffi(address, &span, true, |context, work| {
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         context.mutate(|| context.source.remove_attribute(&path, name, work), work)?;
-        Ok(0)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
-    address: usize,
-    path: *const c_char,
-    handle: u64,
-    mode: c_int,
-    offset: i64,
-    length: i64,
-) -> c_int {
-    let span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
-    ffi(address, &span, true, |context, work| {
-        let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
-        let length = u64::try_from(length).map_err(|_| driver_errno(libc::EINVAL))?;
-        let (operation, permitted) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
-            (
-                MountRangeAllocation::PunchHole,
-                FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-            )
-        } else if mode & FALLOC_FL_ZERO_RANGE != 0 {
-            (
-                MountRangeAllocation::ZeroRange {
-                    extend: mode & FALLOC_FL_KEEP_SIZE == 0,
-                },
-                FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE,
-            )
-        } else {
-            (
-                MountRangeAllocation::Preallocate {
-                    keep_size: mode & FALLOC_FL_KEEP_SIZE != 0,
-                },
-                FALLOC_FL_KEEP_SIZE,
-            )
-        };
-        if mode & !permitted != 0 {
-            return Err(driver_errno(libc::EOPNOTSUPP));
-        }
-        context.mutate_file(
-            &*mount_path(path, work)?,
-            handle,
-            |file| file.allocate_range_with_meter(offset, length, operation, work),
-            work,
-        )?;
         Ok(0)
     })
 }

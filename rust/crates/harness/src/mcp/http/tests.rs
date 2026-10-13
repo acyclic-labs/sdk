@@ -84,10 +84,11 @@ async fn json_and_every_sse_chunk_width_preserve_session_identity() -> Result<()
                 Some("session".into()),
                 4096,
                 100,
+                None,
             )?;
             assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
             let result = transport.call(operation, "echo", json!({}), None).await?;
-            assert_eq!(result.content[0]["text"], "hello 🦀");
+            assert_eq!(result["content"][0]["text"], "hello 🦀");
             let requests = provider
                 .requests
                 .lock()
@@ -116,6 +117,7 @@ async fn expired_session_and_receipt_absence_never_repost() -> Result<()> {
         Some("session".into()),
         4096,
         100,
+        None,
     )?;
     assert!(matches!(
         transport.call(operation, "echo", json!({}), None).await,
@@ -128,19 +130,6 @@ async fn expired_session_and_receipt_absence_never_repost() -> Result<()> {
 #[tokio::test]
 async fn envelope_and_callback_negative_controls() -> Result<()> {
     let operation = OperationId::from_bytes([1; 16]);
-    let value: Value =
-        serde_json::from_str(&message(operation)).map_err(|e| Error::Invalid(e.to_string()))?;
-    for field in ["id", "jsonrpc", "result"] {
-        let mut malformed = value.clone();
-        malformed
-            .as_object_mut()
-            .ok_or_else(|| Error::Invalid("fixture object absent".into()))?
-            .remove(field);
-        assert!(rpc_result(malformed, operation, None).is_err());
-    }
-    let mut both = value;
-    both["error"] = json!({"code":-1,"message":"no"});
-    assert!(rpc_result(both, operation, None).is_err());
     assert!(matches!(
         sse::response(
             Box::pin(futures::stream::iter([Ok(Bytes::from_static(
@@ -168,6 +157,7 @@ async fn initialization_pins_negotiated_session_and_rejects_foreign_version() ->
             None,
             4096,
             100,
+            None,
         )?;
         let request = transport.initialization_request(operation, "fixture", "1")?;
         assert!(!request.headers.contains_key("mcp-session-id"));

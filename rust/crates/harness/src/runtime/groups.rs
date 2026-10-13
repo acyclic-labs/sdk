@@ -1,7 +1,6 @@
 use super::*;
 
 /// Typed live group whose cancellation is independent of sibling groups.
-
 pub struct RuntimeGroup {
     pub(super) harness: Arc<AgentHarness>,
     pub(super) group: TaskGroup,
@@ -11,7 +10,6 @@ pub struct RuntimeGroup {
 }
 
 /// Ordered immutable batch selection.
-
 pub struct Batch<I> {
     /// Caller-retained identity allocated before dispatch.
     pub id: BatchId,
@@ -28,7 +26,6 @@ impl<I> Batch<I> {
 }
 
 /// One unambiguous slot in an admitted batch.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputKey {
     /// Batch owning this input.
@@ -38,7 +35,6 @@ pub struct InputKey {
 }
 
 /// Group behavior retained with the exact batch identity.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BatchGroupPolicy {
@@ -49,7 +45,6 @@ pub enum BatchGroupPolicy {
 }
 
 /// Exact immutable batch request presented to a durable owner.
-
 #[derive(Clone)]
 pub struct DurableBatchRequest {
     /// Stable group identity.
@@ -202,7 +197,12 @@ impl DurableBatchRequest {
             execution.validate(&mut None)?;
         }
         for input in &self.inputs {
-            crate::contract::validate_json_schema_value(&self.input_schema, input, "batch input", &mut None)?;
+            crate::executor::validate_json_schema_value(
+                &self.input_schema,
+                input,
+                "batch input",
+                &mut None,
+            )?;
         }
         if crate::contract::canonical_json_bytes(&self.canonical_value())?.len() as u64
             > self.scope.limits().file_bytes
@@ -300,7 +300,6 @@ impl DurableBatchRequest {
 }
 
 /// One canonical operation identity shared by native and WASM batch facades.
-
 #[must_use]
 pub fn batch_member_operation_id(
     group_id: GroupId,
@@ -318,7 +317,6 @@ pub fn batch_member_operation_id(
 }
 
 /// One exact input slot, preserving the admission decision before and after terminal observation without introducing another key-bearing shape.
-
 pub struct BatchEntry<T> {
     /// Stable batch/index key.
     pub key: InputKey,
@@ -327,7 +325,6 @@ pub struct BatchEntry<T> {
 }
 
 /// Ordered admission receipt; every submitted input retains a slot.
-
 pub struct AdmissionBatch<O> {
     /// Owning group identity.
     pub group_id: GroupId,
@@ -341,7 +338,6 @@ pub struct AdmissionBatch<O> {
 }
 
 /// Ordered outcome of all observable batch slots.
-
 pub struct BatchOutcome<O> {
     /// Stable group identity.
     pub group_id: GroupId,
@@ -354,7 +350,6 @@ pub struct BatchOutcome<O> {
 }
 
 /// One cancellation request, never a claim that the task is terminal.
-
 pub enum BatchCancellationStatus {
     /// The owner accepted an idempotent cancellation request; observe outcome separately.
     Requested,
@@ -376,7 +371,6 @@ pub enum BatchCancellationStatus {
 }
 
 /// Per-member request report for a retained batch.
-
 pub struct BatchCancellationReport {
     /// Owning group.
     pub group_id: GroupId,
@@ -451,17 +445,7 @@ impl<O> BatchOutcome<O> {
             | Admission::Rejected { .. } => true,
             Admission::Accepted(Ok(Outcome::Indeterminate { .. }) | Err(_))
             | Admission::Indeterminate { .. } => false,
-        }) && self.cancellation.as_ref().is_none_or(|result| {
-            result.as_ref().is_ok_and(|report| {
-                report.entries.iter().all(|(_, status)| {
-                    matches!(
-                        status,
-                        BatchCancellationStatus::Requested
-                            | BatchCancellationStatus::NotAdmitted { .. }
-                    )
-                })
-            })
-        })
+        }) && !cancellation_unresolved(&self.cancellation)
     }
 }
 
@@ -540,7 +524,6 @@ impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
 }
 
 /// A typed ordered map cannot silently discard a rejected admission, failed child, or unknown outcome.
-
 pub enum RuntimeMap<O> {
     /// Every input admitted and completed successfully, in input order.
     Complete(Vec<O>),
@@ -565,6 +548,11 @@ impl RuntimeGroup {
             ));
         }
         require_task_spawn(&self.scope, definition)?;
+        if self.harness.execution.is_some() {
+            return Err(Error::Unsupported(
+                "live task closures cannot cross an execution provider; register a resumable task and admit it with a stable operation ID".into(),
+            ));
+        }
         self.harness
             .spawn_in_group(
                 &self.group,
@@ -605,28 +593,17 @@ impl RuntimeGroup {
         O: Serialize + DeserializeOwned + Send + 'static,
     {
         let admissions = self.spawn_many(definition, inputs).await;
-        let mut outcomes = Vec::with_capacity(admissions.len());
-        let mut accepted = Vec::new();
-        for admission in admissions {
-            match admission {
-                Ok(task) => {
-                    outcomes.push(None);
-                    accepted.push(task);
+        let concurrency = admissions.len().clamp(1, 64);
+        let outcomes = stream::iter(admissions)
+            .map(|admission| async move {
+                match admission {
+                    Ok(task) => task.result().await,
+                    Err(error) => Err(error),
                 }
-                Err(error) => outcomes.push(Some(Err(error))),
-            }
-        }
-        let mut completed = join_runtime(accepted).await.into_iter();
-        let outcomes = outcomes
-            .into_iter()
-            .map(|entry| {
-                entry.unwrap_or_else(|| {
-                    completed.next().unwrap_or_else(|| {
-                        Err(Error::Storage("accepted task result is missing".into()))
-                    })
-                })
             })
-            .collect::<Vec<_>>();
+            .buffered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
         if outcomes
             .iter()
             .all(|entry| matches!(entry, Ok(Outcome::Succeeded(_))))

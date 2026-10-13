@@ -57,12 +57,10 @@ export type PiProjectedPart =
   | Readonly<{ type: "tool_call"; callId: string; name: string; arguments: unknown }>
   | Readonly<{ type: "tool_result"; callId: string; name: string; value: unknown }>;
 type PiText = Extract<PiProjectedPart, { type: "text" }>;
-type PiToolCall = Extract<PiProjectedPart, { type: "tool_call" }>;
-type PiToolResult = Extract<PiProjectedPart, { type: "tool_result" }>;
 export type PiProjectedMessage =
   | Readonly<{ role: "system" | "user"; content: readonly PiText[] }>
-  | Readonly<{ role: "assistant"; content: readonly (PiText | PiToolCall)[] }>
-  | Readonly<{ role: "tool"; content: readonly (PiText | PiToolResult)[] }>;
+  | Readonly<{ role: "assistant"; content: readonly Extract<PiProjectedPart, { type: "text" | "tool_call" }>[] }>
+  | Readonly<{ role: "tool"; content: readonly Extract<PiProjectedPart, { type: "text" | "tool_result" }>[] }>;
 export interface PiProjectedRequest {
   readonly model: ModelRequest["model"];
   readonly messages: readonly PiProjectedMessage[];
@@ -132,19 +130,16 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
 }
 
 function projectedMessage(role: ModelRequest["messages"][number]["role"], content: PiProjectedPart[]): PiProjectedMessage {
-  const isText = (part: PiProjectedPart): part is PiText => part.type === "text";
-  const isAssistantPart = (part: PiProjectedPart): part is PiText | PiToolCall => part.type !== "tool_result";
-  const isToolPart = (part: PiProjectedPart): part is PiText | PiToolResult => part.type !== "tool_call";
   switch (role) {
     case "system":
     case "user":
-      if (!content.every(isText)) throw new TypeError("invalid Pi message content");
+      if (!content.every(part => part.type === "text")) throw new TypeError("invalid Pi message content");
       return { role, content };
     case "assistant":
-      if (!content.every(isAssistantPart)) throw new TypeError("invalid Pi assistant content");
+      if (!content.every(part => part.type !== "tool_result")) throw new TypeError("invalid Pi assistant content");
       return { role, content };
     case "tool":
-      if (!content.every(isToolPart)) throw new TypeError("invalid Pi tool content");
+      if (!content.every(part => part.type !== "tool_call")) throw new TypeError("invalid Pi tool content");
       return { role, content };
     default: throw new TypeError("unsupported Pi message role");
   }

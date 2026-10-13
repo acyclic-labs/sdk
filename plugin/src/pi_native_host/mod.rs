@@ -18,7 +18,6 @@ use acyclic_fs::{
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::store::HistoryIo;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, JsonValueSchema, OperationId, Outcome, Result, TaskId,
     conversation::VolumeOperation,
@@ -38,7 +37,7 @@ use acyclic_harness::{
     fork::ForkReport,
     resources::GenerationRef,
     runtime::{
-        ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext,
+        ContentBindings, DurableTaskHost, TaskAdmissionRecord, TaskContext,
     },
     scheduler::{LeaseFence, ResourceRequest},
     store::{HistoryReadLimits, HistoryReader},

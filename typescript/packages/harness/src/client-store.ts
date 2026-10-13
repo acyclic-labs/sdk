@@ -40,15 +40,9 @@ export interface ClientRecoveryRecord {
 }
 
 const clientMetadataKey = "@harness/outbox-sequence";
-interface ClientMetadata {
-  readonly authority: typeof clientMetadataKey;
-  readonly sequence: number;
-  readonly checkpointVersion: bigint;
-}
-
-function clientMetadata(value: unknown): ClientMetadata {
+function clientMetadata(value: unknown) {
   retainedDataBytes(value, 4096);
-  const record = value as ClientMetadata;
+  const record = value as { readonly authority: string; readonly sequence: number; readonly checkpointVersion: bigint };
   if (record?.authority !== clientMetadataKey || Object.keys(record).length !== 3 ||
       !Number.isSafeInteger(record.sequence) || record.sequence < 0 ||
       typeof record.checkpointVersion !== "bigint" || record.checkpointVersion < 0n ||
@@ -130,18 +124,17 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
   #database: Promise<IDBDatabase> | undefined;
   readonly #factory: IDBFactory | undefined;
   readonly #name: string;
-  readonly #maximumCommands: number;
-  readonly #maximumBytes: number;
-  readonly #maximumResidentBytes: number;
-  readonly #maximumCursors: number;
-  readonly #maximumCheckpointBytes: number;
+  readonly #limits;
 
   constructor(options: IndexedDbClientStoreOptions) {
-    this.#maximumCommands = requestBound(options.maximumCommands ?? 1024, "maximumCommands");
-    this.#maximumBytes = requestBound(options.maximumBytes ?? 16 * 1024 * 1024, "maximumBytes");
-    this.#maximumResidentBytes = requestBound(options.maximumResidentBytes ?? 16 * 1024 * 1024, "maximumResidentBytes");
-    this.#maximumCursors = requestBound(options.maximumCursors ?? 64, "maximumCursors");
-    this.#maximumCheckpointBytes = requestBound(options.maximumCheckpointBytes ?? 256 * 1024, "maximumCheckpointBytes");
+    this.#limits = Object.freeze({
+      maximumCommands: options.maximumCommands ?? 1024,
+      maximumBytes: options.maximumBytes ?? 16 * 1024 * 1024,
+      maximumResidentBytes: options.maximumResidentBytes ?? 16 * 1024 * 1024,
+      maximumCursors: options.maximumCursors ?? 64,
+      maximumCheckpointBytes: options.maximumCheckpointBytes ?? 256 * 1024,
+    });
+    for (const [name, value] of Object.entries(this.#limits)) requestBound(value, name);
     this.#factory = options.indexedDB ?? globalThis.indexedDB;
     if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");
     this.#name = options.databaseName;
@@ -161,8 +154,8 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
       through = page.throughSequence;
       after = page.afterSequence;
       commands.push(...page.commands);
-      if (commands.length > this.#maximumCommands) throw new RangeError("outbox capacity exceeded");
-      retainedDataBytes(commands, this.#maximumResidentBytes);
+      if (commands.length > this.#limits.maximumCommands) throw new RangeError("outbox capacity exceeded");
+      retainedDataBytes(commands, this.#limits.maximumResidentBytes);
     } while (after < through);
     return commands;
   }
@@ -176,7 +169,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     const store = database.transaction("outbox").objectStore("outbox");
     const index = store.index("sequence");
     const [count, indexedCount, last] = await Promise.all([request(store.count()), request(index.count()), request(index.openCursor(null, "prev"))]);
-    if (count > this.#maximumCommands) throw new RangeError("outbox capacity exceeded");
+    if (count > this.#limits.maximumCommands) throw new RangeError("outbox capacity exceeded");
     if (count !== indexedCount) throw new Error("outbox contains an unindexed record");
     const through = throughSequence ?? (last === null ? 0 : outboxRecord(last.value).sequence);
     if (afterSequence >= through) return { commands: [], afterSequence: through, throughSequence: through };
@@ -184,21 +177,21 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     let bytes = 0;
     let after = afterSequence;
     await visitOutbox(index, IDBKeyRange.bound(afterSequence, through, true, false), record => {
-      bytes += retainedDataBytes(record.command, this.#maximumResidentBytes - bytes);
+      bytes += retainedDataBytes(record.command, this.#limits.maximumResidentBytes - bytes);
       records.push(record);
       after = record.sequence;
-      return records.length < Math.min(64, this.#maximumCommands);
+      return records.length < Math.min(64, this.#limits.maximumCommands);
     });
     // An empty tail (e.g. another tab acknowledged it) completes this fixed cut.
-    if (records.length < Math.min(64, this.#maximumCommands)) after = through;
+    if (records.length < Math.min(64, this.#limits.maximumCommands)) after = through;
     return { commands: await Promise.all(records.map(record => assertOutboxSafe(record.command))),
       afterSequence: after, throughSequence: through };
   }
 
   async put(command: ClientCommand): Promise<void> {
-    retainedDataBytes(command, this.#maximumResidentBytes);
+    retainedDataBytes(command, this.#limits.maximumResidentBytes);
     const storedCommand = await assertOutboxSafe(command);
-    const residentBytes = retainedDataBytes(storedCommand, this.#maximumResidentBytes);
+    const residentBytes = retainedDataBytes(storedCommand, this.#limits.maximumResidentBytes);
     const contracts = await NativeContracts.create();
     const bytes = contracts.encodeCanonicalJson(cloneStructuredValue(storedCommand, new Set(), false, true)).byteLength;
     const database = await this.#open();
@@ -208,7 +201,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     const [storedCount, indexedCount, rawMetadata] = await Promise.all([request(store.count()),
       request(store.index("sequence").count()), request(cursors.get(clientMetadataKey))]);
     const metadata = clientMetadata(rawMetadata);
-    if (storedCount !== indexedCount || storedCount > this.#maximumCommands) {
+    if (storedCount !== indexedCount || storedCount > this.#limits.maximumCommands) {
       transaction.abort();
       throw new Error("invalid outbox record count");
     }
@@ -220,18 +213,18 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     await visitOutbox(store.index("sequence"), null, record => {
       count += 1;
       maximum = record.sequence;
-      const size = retainedDataBytes(record.command, this.#maximumResidentBytes);
+      const size = retainedDataBytes(record.command, this.#limits.maximumResidentBytes);
       const encodedSize = contracts.encodeCanonicalJson(cloneStructuredValue(record.command, new Set(), false, true)).byteLength;
       if (record.bytes !== encodedSize) throw new Error("invalid outbox byte accounting");
       if (record.operationId === storedCommand.operationId) existing = record;
       else { retained += size; encoded += encodedSize; }
-      if (count > this.#maximumCommands || retained > this.#maximumResidentBytes || encoded > this.#maximumBytes) {
+      if (count > this.#limits.maximumCommands || retained > this.#limits.maximumResidentBytes || encoded > this.#limits.maximumBytes) {
         throw new RangeError("IndexedDB outbox capacity exceeded");
       }
       return true;
     });
-    if (count + (existing === undefined ? 1 : 0) > this.#maximumCommands ||
-        retained > this.#maximumResidentBytes || encoded > this.#maximumBytes) {
+    if (count + (existing === undefined ? 1 : 0) > this.#limits.maximumCommands ||
+        retained > this.#limits.maximumResidentBytes || encoded > this.#limits.maximumBytes) {
       transaction.abort();
       throw new RangeError("IndexedDB outbox capacity exceeded");
     }
@@ -257,16 +250,16 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
   async loadRecovery(): Promise<readonly ClientRecoveryRecord[]> {
     const database = await this.#open();
     const all = await request<Array<{ authority: string; generation: string; revision: bigint; checkpointVersion: bigint; checkpoint?: ClientCheckpoint }>>(
-      database.transaction("cursors").objectStore("cursors").getAll(undefined, this.#maximumCursors + 2));
+      database.transaction("cursors").objectStore("cursors").getAll(undefined, this.#limits.maximumCursors + 2));
     const metadata = clientMetadata(all.find(record => record.authority === clientMetadataKey));
     const records = all.filter(record => record.authority !== clientMetadataKey);
-    if (records.length > this.#maximumCursors) throw new RangeError("cursor capacity exceeded");
+    if (records.length > this.#limits.maximumCursors) throw new RangeError("cursor capacity exceeded");
     return records.map(record => {
       validateCursor(record);
       if (typeof record.checkpointVersion !== "bigint" || record.checkpointVersion <= 0n ||
           record.checkpointVersion > metadata.checkpointVersion) throw new Error("invalid checkpoint version");
       retainedDataBytes({ authority: record.authority, generation: record.generation, revision: record.revision }, 4096);
-      if (record.checkpoint !== undefined) retainedDataBytes(record.checkpoint, this.#maximumCheckpointBytes, true);
+      if (record.checkpoint !== undefined) retainedDataBytes(record.checkpoint, this.#limits.maximumCheckpointBytes, true);
       return { authority: record.authority, cursor: { generation: record.generation, revision: record.revision },
         checkpointVersion: record.checkpointVersion, checkpoint: record.checkpoint };
     });
@@ -287,7 +280,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     expectedCursor?: ReplayCursor | null, expectedCheckpointVersion?: bigint | null): Promise<bigint> {
     validateCursor(cursor);
     retainedDataBytes({ authority, cursor }, 4096);
-    if (checkpoint !== undefined) retainedDataBytes(checkpoint, this.#maximumCheckpointBytes, true);
+    if (checkpoint !== undefined) retainedDataBytes(checkpoint, this.#limits.maximumCheckpointBytes, true);
     const ownedCheckpoint = checkpoint === undefined ? undefined : cloneStructuredValue(checkpoint, new Set(), true);
     const database = await this.#open();
     const transaction = database.transaction(["outbox", "cursors"], "readwrite");
@@ -312,7 +305,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
       transaction.abort();
       throw new ClientCheckpointConflict("cursor advancement requires its projection checkpoint");
     }
-    if (existing === undefined && count - 1 >= this.#maximumCursors) {
+    if (existing === undefined && count - 1 >= this.#limits.maximumCursors) {
       transaction.abort();
       throw new RangeError("cursor capacity exceeded");
     }
@@ -353,22 +346,17 @@ function openClientDatabase(
         authority: clientMetadataKey, sequence: 0, checkpointVersion: 0n,
       });
     };
-    opening.onsuccess = () => {
+    opening.onsuccess = async () => {
       const database = opening.result;
       if (rejected) { database.close(); return; }
       try {
         const index = database.transaction("outbox").objectStore("outbox").index("sequence");
         if (index.keyPath !== "sequence" || !index.unique) throw new Error("invalid sequence index");
-        if (!database.objectStoreNames.contains("cursors")) throw new Error("missing cursors store");
-        const reading = database.transaction("cursors").objectStore("cursors").get(clientMetadataKey);
-        reading.onsuccess = () => {
-          try { clientMetadata(reading.result); resolve(database); }
-          catch (error) { database.close(); fail(error); }
-        };
-        reading.onerror = () => { database.close(); fail(reading.error ?? new Error("client metadata read failed")); };
-      } catch {
+        clientMetadata(await request(database.transaction("cursors").objectStore("cursors").get(clientMetadataKey)));
+        resolve(database);
+      } catch (error) {
         database.close();
-        fail(new Error("Harness outbox sequence index is unsupported"));
+        fail(error);
       }
     };
     opening.onerror = () => fail(opening.error ?? new Error("IndexedDB open failed"));

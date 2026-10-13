@@ -87,7 +87,7 @@ impl MemoryHarnessStorage {
         limits: Limits,
         source: Option<
             Arc<
-                dyn super::RecursiveDefaultToolSource<
+                super::ConfiguredRecursiveToolSource<
                         MemoryStream,
                         MemoryAuthorityBackend,
                         MemoryObjectBackend,
@@ -516,7 +516,7 @@ impl MemoryHarnessStorage {
             .resolve_interaction(id, response, &responder)
             .await?;
         self.journal
-            .interaction_outcome(id)
+            .interaction_outcome(id, None)?
             .await?
             .ok_or_else(|| Error::Storage("resolved interaction has no committed outcome".into()))
     }

@@ -1,8 +1,10 @@
-//! Workflow.
+//! Main durable task operations.
 use super::*;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    pub(crate) async fn suspend_workflow(
+    /// Suspends the exact lease with optional atomic execution and workflow guards.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn suspend_workflow(
         &self,
         task: TaskId,
         fence: &crate::scheduler::LeaseFence,
@@ -10,23 +12,29 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         waiting_command: Option<OperationId>,
         idle_execution: Option<(OperationId, u64)>,
         pending: Option<(&acyclic_stream::StreamPath, u64)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
-        let fence = fence.clone_with_work(work)?;
+        if pending.is_some() && idle_execution.is_none() {
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "workflow tail guard requires its execution guard",
+            ));
+        }
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         coordinator.observe_operation(
-            self.verifier.audience(),
+            &self.owner,
             &self.owner_scope,
             &self.verifier,
             operation_id,
             work,
         )?;
-        let key = worker_key_with_work("suspend", operation_id, &fence, revision, work)?;
+        let key = worker_key("suspend", operation_id, fence, revision, work)?;
         let event = crate::scheduler::SchedulerEvent::WorkflowSuspended {
             operation_id,
-            fence,
+            fence: fence.clone_with_work(work)?,
             workflow_revision: revision,
             waiting_command,
         };
@@ -45,7 +53,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             coordinator.apply(key, event, work).await?;
         }
         let current = coordinator.observe_operation(
-            self.verifier.audience(),
+            &self.owner,
             &self.owner_scope,
             &self.verifier,
             operation_id,
@@ -57,7 +65,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 slot.revision != revision || slot.waiting_command != waiting_command
             })
         {
-            return Err(admission_boundary(
+            return Err(crate::scheduler::diagnostic(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "workflow suspension receipt is no longer current",
@@ -79,6 +87,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
+        self.verifier.verify_audience(&self.owner, &mut None)?;
         self.verifier.verify(&self.owner_scope, &mut None)?;
         if !self
             .owner_scope
@@ -121,18 +130,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .scheduler()
                 .operation(event.operation_id())
                 .ok_or_else(|| Error::Storage("wake event operation is absent".into()))?;
-            if operation.spec.owner.authority() != self.verifier.audience() {
+            if operation.spec.owner.authority() != &self.owner {
                 continue;
             }
-            let operation = coordinator
-                .observe_operation(
-                    self.verifier.audience(),
-                    &self.owner_scope,
-                    &self.verifier,
-                    event.operation_id(),
-                    &mut None,
-                )
-                .cloned()?;
+            let operation = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                event.operation_id(),
+                &mut None,
+            )?;
             if operation.phase == crate::scheduler::OperationPhase::Suspended
                 && !operation.cancellation_requested
                 && operation
@@ -140,7 +147,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .as_ref()
                     .is_some_and(|slot| slot.waiting_command.is_some())
             {
-                tasks.insert(crate::runtime::task_id_for_admission(event.operation_id()));
+                tasks.insert(TaskId::from_bytes(event.operation_id().into_bytes()));
             }
         }
         Ok((
@@ -151,17 +158,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         ))
     }
 
+    /// Authenticated read of a passive slot; never claims execution ownership.
     #[cfg(feature = "filesystem")]
-    /// Reads the passive slot without claiming execution ownership.
-    pub async fn workflow_suspension(
+    pub(crate) async fn workflow_suspension(
         &self,
         task: TaskId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         let operation = coordinator.observe_operation(
-            self.verifier.audience(),
+            &self.owner,
             &self.owner_scope,
             &self.verifier,
             OperationId::from_bytes(task.into_bytes()),
@@ -180,206 +187,153 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(feature = "filesystem")]
-    pub(crate) fn workflow_stream(&self) -> std::sync::Arc<P> {
-        Arc::clone(&self.stream)
+    pub(crate) fn workflow_stream(&self) -> Arc<P> {
+        self.stream.clone()
     }
 
+    /// Wakes the exact command wait with its stable null input.
     #[cfg(feature = "filesystem")]
     pub(crate) async fn wake_command(
         &self,
         task: TaskId,
         revision: u64,
         waiting: OperationId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
-        let mut key = String::new();
-        if let Some(io) = work.as_deref_mut() {
-            let digits = revision.checked_ilog10().map_or(1, |digits| digits + 1) as usize;
-            let length = 92 + digits;
-            io.admit_copy(length as u64)?;
-            io.reserve_text(&mut key, length)?;
-            io.copy_bytes(length as u64)?;
-        }
-        use std::fmt::Write as _;
-        write!(&mut key, "task-command-wake:{task}:{revision}:{waiting}")
-            .expect("writing into String");
+        let text = crate::executor::preparation_format(
+            format_args!("task-command-wake:{task}:{revision}:{waiting}"),
+            work,
+        )?;
+        let io = operation_io(work)?;
         let input = self
-            .stage_payload_with_work(operation, &key, b"null", work)
+            .payloads
+            .stage(operation, &text, b"null", io.as_ref())?
             .await?;
-        let admission = self.admission_with_work(operation, work).await?;
-        admission.limits.validate_file(&input, &mut None)?;
-        if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
-            return Err(admission_boundary(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
-                "task cannot read its command wake",
-            ));
-        }
-        let (value, owned) = self.read_json(&input, work).await?;
-        drop(value);
-        if let Some(io) = work.as_deref_mut() {
-            io.release_owned(owned)?;
-        }
-        self.coordinator
-            .lock()
-            .await
-            .resume_workflow(
-                self.verifier.audience(),
-                &self.owner_scope,
-                &self.verifier,
-                operation,
-                revision,
-                input,
-                IdempotencyKey::new(key)?,
-                Some(waiting),
-                work,
-            )
-            .await?;
-        Ok(())
+        self.resume_workflow(
+            task,
+            revision,
+            input,
+            IdempotencyKey::new(text)?,
+            Some(waiting),
+            work,
+        )
+        .await
     }
 
-    /// Delivers input into the exact owner-authorized workflow resume slot.
+    /// Delivers owner-authorized input into the exact retained workflow slot.
     pub async fn resume_workflow(
         &self,
         task: TaskId,
         revision: u64,
         input: FileRef,
         key: IdempotencyKey,
-        native: crate::NativeWork<'_>,
+        waiting: Option<OperationId>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = native
-            .map(|work| {
-                crate::filesystem::PreparationIo::from_native_work(work)
-                    .map(crate::store::HistoryWork::new)
-            })
-            .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
-        let _ = native;
-        let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission_with_work(operation_id, &mut work).await?;
-        if let Some(io) = work.as_deref_mut() {
-            io.check_cancellation()?;
-            if input.path().len() > admission.limits.path_bytes
-                || input.descriptor().byte_length() > admission.limits.file_bytes
-            {
-                return Err(admission_boundary(
-                    &mut work,
-                    crate::wire::ErrorCode::Invalid,
-                    "workflow resume input exceeds original task limits",
-                ));
-            }
-        }
-        admission.limits.validate_file(&input, &mut None)?;
-        if !crate::runtime::read_granted_with_work(&admission.grants, &input, &mut work)? {
-            return Err(admission_boundary(
-                &mut work,
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let io = operation_io(work)?;
+        let admission = self
+            .admission(
+                operation,
+                &mut io
+                    .as_ref()
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
+            .await?;
+        admission.limits.validate_file(&input, work)?;
+        if !read_granted(&admission.grants, &input)? {
+            return Err(crate::scheduler::diagnostic(
+                work,
                 crate::wire::ErrorCode::Unauthorized,
-                "task cannot read its workflow resume input",
+                "task cannot read workflow resume input",
             ));
         }
-        let (value, owned) = self.read_json(&input, &mut work).await?;
-        drop(value);
-        if let Some(io) = work.as_deref_mut() {
-            io.release_owned(owned)?;
-        }
+        self.read_json(&input, io.as_ref()).await?;
         self.coordinator
             .lock()
             .await
             .resume_workflow(
-                self.verifier.audience(),
+                &self.owner,
                 &self.owner_scope,
                 &self.verifier,
-                operation_id,
+                operation,
                 revision,
                 input,
                 key,
-                None,
-                &mut work,
+                waiting,
+                work,
             )
             .await?;
         Ok(())
     }
 
-    /// Reads the retained input under the current lease.
+    /// Reads the retained input under the original current lease and supplied IO.
     pub async fn workflow_input(
         &self,
         task: TaskId,
         fence: &crate::scheduler::LeaseFence,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<(u64, Value)>> {
-        self.workflow_input_with_work(task, fence, &mut None)
-            .await
-            .map(|(input, _)| input)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Reads the retained input on its original native ledger.
-    pub async fn workflow_input_with_native_work(
-        &self,
-        task: TaskId,
-        fence: &crate::scheduler::LeaseFence,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<(u64, Value)>, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::HistoryWork::new)?;
-        let metadata = std::mem::size_of::<Option<(u64, Value)>>() as u64;
-        crate::store::history::HistoryIo::retain_owned(&mut io, metadata)?;
-        let (input, bytes) = self
-            .workflow_input_with_work(task, fence, &mut Some(&mut io))
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let admission = self
+            .admission(
+                operation,
+                &mut io
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
             .await?;
-        let custody =
-            io.take_native_custody(bytes.checked_add(metadata).ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "workflow input custody overflows",
-            })?)?;
-        Ok((input, custody))
-    }
-
-    pub(super) async fn workflow_input_with_work(
-        &self,
-        task: TaskId,
-        fence: &crate::scheduler::LeaseFence,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Option<(u64, Value)>, u64)> {
-        let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission_with_work(operation_id, work).await?;
+        #[cfg(feature = "filesystem")]
+        let mut history = io.map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(
+            &mut work,
+            std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?,
+        );
         let slot = {
             let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh(work).await?;
-            let operation = coordinator.observe_operation(
-                self.verifier.audience(),
+            coordinator.refresh(quota.work()).await?;
+            let state = coordinator.observe_operation(
+                &self.owner,
                 &self.owner_scope,
                 &self.verifier,
-                operation_id,
-                work,
+                operation,
+                quota.work(),
             )?;
-            crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
-            operation
+            crate::scheduler::require_execution_owner(state, fence, false, quota.work())?;
+            state
                 .workflow
                 .as_ref()
-                .map(|slot| slot.clone_with_work(work))
+                .map(|slot| slot.clone_with_work(quota.work()))
                 .transpose()?
         };
         let Some(slot) = slot else {
-            return Ok((None, 0));
+            return Ok(None);
         };
+        quota.adopt(slot.logical_owned_bytes()?)?;
         let Some(input) = slot.input else {
-            return Ok((None, 0));
+            return Ok(None);
         };
-        admission.limits.validate_file(&input, &mut None)?;
-        if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
-            return Err(admission_boundary(
-                work,
+        admission.limits.validate_file(&input, quota.work())?;
+        if !read_granted(&admission.grants, &input)? {
+            return Err(crate::scheduler::diagnostic(
+                quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
-                "task cannot read its retained workflow input",
+                "task cannot read retained workflow input",
             ));
         }
-        let (value, owned) = self.read_json(&input, work).await?;
-        self.verify_owner(task, fence, false, work).await?;
-        Ok((Some((slot.revision, value)), owned))
+        let value = self.read_json(&input, io).await?;
+        self.verify_owner(task, fence, false, quota.work()).await?;
+        drop((admission, input));
+        Ok(Some((slot.revision, value)))
     }
 }

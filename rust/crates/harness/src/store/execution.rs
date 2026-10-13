@@ -32,7 +32,6 @@ pub(super) fn stream_idempotency_key_with_work(
 
 impl<P: StreamProvider> StreamAggregate<P> {
     /// Plans, CAS-appends, and only then applies one command.
-
     pub async fn execute(
         &mut self,
         command: Command,
@@ -88,7 +87,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     } => {
                         let mut retained = crate::wire_codec::CodecQuota::from_retained(work, 0);
                         let (effect, bytes) = self
-                            .effect(*effect_id, self.effect_history_limits, retained.work())
+                            .effect(
+                                *effect_id,
+                                default_projection_read_limits(),
+                                retained.work(),
+                            )
                             .await?
                             .ok_or_else(|| {
                                 guarded_boundary(
@@ -147,7 +150,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if !fresh_migration {
             if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
                 && let Some(effect) = self
-                    .effect(effect_id, self.effect_history_limits, &mut None)
+                    .effect(effect_id, default_projection_read_limits(), &mut None)
                     .await
                     .map(|state| state.map(|(state, _)| state))?
             {
@@ -184,7 +187,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Reconciles a possibly committed append without issuing another append.
-
     pub async fn reconcile(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
         async {
             let result = self.reconcile_inner(command).await?;

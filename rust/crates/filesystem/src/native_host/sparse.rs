@@ -163,90 +163,72 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     length: u64,
     work: &mut W,
 ) -> Result<bool, DemandError> {
+    use acyclic_native_runtime::NativeOperationKind::Write;
     use std::os::windows::io::AsRawHandle as _;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::{
         DUPLICATE_EXTENTS_DATA, FSCTL_DUPLICATE_EXTENTS_TO_FILE, FSCTL_SET_SPARSE,
     };
     const CLONE_CHUNK: u64 = 1024 * 1024 * 1024;
     for alignment in [4 * 1024, 64 * 1024] {
-        work.charge(ITEM)?;
-        let cloned: Result<(), DemandError> = (|| {
+        work.started_io(ITEM)?;
+        let cloned = (|| {
             let clone_length = length / alignment * alignment;
             if clone_length == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "file is smaller than clone alignment",
-                )
-                .into());
+                return Err(io::Error::from(io::ErrorKind::InvalidInput).into());
             }
-            work.charge(WRITE)?;
-            // SAFETY: live synchronous target handle; this control has no buffers.
-            unsafe {
-                DeviceIoControl(
-                    HANDLE(target.as_raw_handle()),
-                    FSCTL_SET_SPARSE,
-                    None,
-                    0,
-                    None,
-                    0,
-                    None,
-                    None,
-                )
-                .map_err(io::Error::from)?;
-            }
+            source_control(target, FSCTL_SET_SPARSE, &[], &mut [], Write, work)?;
             truncate_file(target, length, work)?;
             let mut offset = 0;
             while offset < clone_length {
-                work.charge(ITEM)?;
+                work.started_io(ITEM)?;
                 let count = (clone_length - offset).min(CLONE_CHUNK);
                 let duplicate = DUPLICATE_EXTENTS_DATA {
-                    FileHandle: HANDLE(source.as_raw_handle()),
+                    FileHandle: win::HANDLE(source.as_raw_handle()),
                     SourceFileOffset: i64::try_from(offset)
                         .map_err(|_| crate::WorkError::Overflow)?,
                     TargetFileOffset: i64::try_from(offset)
                         .map_err(|_| crate::WorkError::Overflow)?,
                     ByteCount: i64::try_from(count).map_err(|_| crate::WorkError::Overflow)?,
                 };
-                work.charge(WRITE)?;
-                // SAFETY: both held handles and complete fixed-size input remain live.
-                unsafe {
-                    DeviceIoControl(
-                        HANDLE(target.as_raw_handle()),
-                        FSCTL_DUPLICATE_EXTENTS_TO_FILE,
-                        Some((&raw const duplicate).cast()),
-                        std::mem::size_of::<DUPLICATE_EXTENTS_DATA>() as u32,
-                        None,
-                        0,
-                        None,
-                        None,
+                // SAFETY: this native record has four initialized, padding-free machine words.
+                let input = unsafe {
+                    std::slice::from_raw_parts(
+                        std::ptr::from_ref(&duplicate).cast::<u8>(),
+                        std::mem::size_of_val(&duplicate),
                     )
-                    .map_err(io::Error::from)?;
-                }
+                };
+                source_control(
+                    target,
+                    FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+                    input,
+                    &mut [],
+                    Write,
+                    work,
+                )?;
                 offset += count;
             }
             if clone_length < length {
                 let ranges =
                     allocated_data_ranges(source, clone_length, length - clone_length, 64, work)?;
-                let ranges_bytes =
-                    (ranges.capacity() * std::mem::size_of::<HostDataRange>()) as u64;
-                let result: Result<(), DemandError> = (|| {
+                let allocation = (ranges.capacity() * std::mem::size_of::<HostDataRange>()) as u64;
+                let result = (|| {
                     let mut buffer = [0_u8; 64 * 1024];
                     for range in &ranges {
-                        work.charge(ITEM)?;
-                        let size = usize::try_from(range.length)
+                        work.started_io(ITEM)?;
+                        let length = usize::try_from(range.length)
                             .map_err(|_| crate::WorkError::Overflow)?;
-                        let buffer = buffer.get_mut(..size).ok_or(DemandError::InvalidRequest)?;
-                        windows_copy_tail(source, target, range.offset, buffer, work)?;
+                        let output = buffer
+                            .get_mut(..length)
+                            .ok_or(DemandError::InvalidRequest)?;
+                        windows_copy_tail(source, target, range.offset, output, work)?;
                     }
-                    Ok(())
+                    Ok::<_, DemandError>(())
                 })();
                 drop(ranges);
-                work.release(ranges_bytes)?;
+                work.release(allocation)?;
                 result?;
             }
-            Ok(())
+            Ok::<_, DemandError>(())
         })();
         match cloned {
             Ok(()) => return Ok(true),
@@ -262,33 +244,12 @@ pub(crate) fn truncate_file<W: NativeHostWork>(
     length: u64,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    #[cfg(unix)]
-    {
-        let length = libc::off_t::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
-        loop {
-            let delta = WRITE;
-            work.admit(delta)?;
-            work.record(delta)?;
-            // SAFETY: ftruncate acts only on the live held descriptor.
-            if unsafe { libc::ftruncate(file.as_raw_fd(), length) } == 0 {
-                return Ok(());
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error.into());
-            }
+    i64::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
+    loop {
+        match work.attempt_io(WRITE, || file.set_len(length)) {
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
+            result => return result,
         }
-    }
-    #[cfg(windows)]
-    {
-        use windows::Wdk::Storage::FileSystem::FileEndOfFileInformation;
-        use windows::Win32::Storage::FileSystem::FILE_END_OF_FILE_INFO;
-        let information = FILE_END_OF_FILE_INFO {
-            EndOfFile: i64::try_from(length).map_err(|_| crate::WorkError::Overflow)?,
-        };
-        work.attempt_io(WRITE, || {
-            windows_set_information(file, &information, FileEndOfFileInformation)
-        })
     }
 }
 
@@ -296,101 +257,49 @@ pub(crate) fn truncate_file<W: NativeHostWork>(
 pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     source: &File,
     target: &File,
-    offset: u64,
+    mut offset: u64,
     buffer: &mut [u8],
     work: &mut W,
 ) -> Result<(), DemandError> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Wdk::Storage::FileSystem::{NtReadFile, NtWriteFile};
-    use windows::Win32::Foundation::HANDLE;
-    let mut consumed = 0usize;
-    while consumed < buffer.len() {
-        let length = buffer.len() - consumed;
+    use std::os::windows::fs::FileExt as _;
+    let target_offset = offset;
+    let mut remaining = &mut *buffer;
+    // Each partial native read is admitted; read_exact would hide its retries.
+    while !remaining.is_empty() {
         work.admit(WorkCounters {
-            source_bytes_read: length as u64,
+            source_bytes_read: remaining.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        work.started_io(READ)?;
-        let position = i64::try_from(
-            offset
-                .checked_add(consumed as u64)
-                .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
-        let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        // SAFETY: synchronous held handle and writable admitted tail slice.
-        let status = unsafe {
-            NtReadFile(
-                HANDLE(source.as_raw_handle()),
-                None,
-                None,
-                None,
-                &raw mut block,
-                buffer[consumed..].as_mut_ptr().cast(),
-                length as u32,
-                Some(&position),
-                None,
-            )
+        let count = match work.attempt_io(READ, || source.seek_read(remaining, offset)) {
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
         };
-        if status.is_err() {
-            return Err(status_error(status).into());
-        }
-        let count = block.Information;
         if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "clone source tail shortened",
-            )
-            .into());
-        }
-        if count > length {
-            return Err(DemandError::InvalidRequest);
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
         }
         work.record(WorkCounters {
             source_bytes_read: count as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        consumed += count;
+        offset = offset
+            .checked_add(count as u64)
+            .ok_or(crate::WorkError::Overflow)?;
+        remaining = &mut remaining[count..];
     }
-    let mut consumed = 0usize;
-    while consumed < buffer.len() {
-        work.charge(WRITE)?;
-        let position = i64::try_from(
-            offset
-                .checked_add(consumed as u64)
-                .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
-        let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        // SAFETY: synchronous held handle and initialized tail slice remain live.
-        let status = unsafe {
-            NtWriteFile(
-                HANDLE(target.as_raw_handle()),
-                None,
-                None,
-                None,
-                &raw mut block,
-                buffer[consumed..].as_ptr().cast(),
-                (buffer.len() - consumed) as u32,
-                Some(&position),
-                None,
-            )
+    let mut offset = target_offset;
+    let mut input = &*buffer;
+    while !input.is_empty() {
+        let count = match work.attempt_io(WRITE, || target.seek_write(input, offset)) {
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
         };
-        if status.is_err() {
-            return Err(status_error(status).into());
-        }
-        let count = block.Information;
         if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "clone tail write made no progress",
-            )
-            .into());
+            return Err(io::Error::from(io::ErrorKind::WriteZero).into());
         }
-        if count > buffer.len() - consumed {
-            return Err(DemandError::InvalidRequest);
-        }
-        consumed += count;
+        offset = offset
+            .checked_add(count as u64)
+            .ok_or(crate::WorkError::Overflow)?;
+        input = &input[count..];
     }
     Ok(())
 }

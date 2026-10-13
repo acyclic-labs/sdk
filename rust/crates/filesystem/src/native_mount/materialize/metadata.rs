@@ -60,7 +60,7 @@ where
         receipt
             .custody
             .release(source_array_bytes as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         let host_array_bytes = vec_bytes(&attributes);
         let retained = host_array_bytes
             .checked_add(payload_bytes)
@@ -85,7 +85,7 @@ pub(super) async fn apply_host_attributes_offloaded(
     let custody = receipt
         .custody
         .split_off(retained as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     let attributes = (attributes, custody);
     if attributes.0.is_empty() {
         return Ok(());
@@ -101,7 +101,11 @@ pub(super) async fn apply_host_attributes_offloaded(
                 .0
                 .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
             #[cfg(target_os = "macos")]
-            let target = crate::native_host::open_macos_metadata_target(&root.0.directory, super::work::host_path(&path.0), work)?;
+            let target = crate::native_host::open_macos_metadata_target(
+                &root.0.directory,
+                super::work::host_path(&path.0),
+                work,
+            )?;
             #[cfg(target_os = "linux")]
             let result = crate::native_host::set_extended_attributes(&target, &attributes.0, work);
             #[cfg(target_os = "macos")]
@@ -126,8 +130,8 @@ pub(super) async fn apply_host_attributes_offloaded(
             result
         })
         .await
-        .map_err(materialize_runtime_error)?
-        .map_err(materialize_demand_error)
+        .map_err(MaterializeError::from)?
+        .map_err(MaterializeError::from)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -151,7 +155,7 @@ pub(super) async fn apply_host_metadata_offloaded(
             #[cfg(unix)]
             root.0.stat(super::work::host_path(&path.0), work)?;
             #[cfg(windows)]
-            root.0.stat_wide(&path.0, work)?;
+            root.0.stat(&path.0, work)?;
             return Ok(());
         }
         #[cfg(target_os = "linux")]
@@ -159,9 +163,13 @@ pub(super) async fn apply_host_metadata_offloaded(
             .0
             .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
         #[cfg(target_os = "macos")]
-        let target = crate::native_host::open_macos_metadata_target(&root.0.directory, super::work::host_path(&path.0), work)?;
+        let target = crate::native_host::open_macos_metadata_target(
+            &root.0.directory,
+            super::work::host_path(&path.0),
+            work,
+        )?;
         #[cfg(windows)]
-        let target = root.0.open_windows_metadata_target_wide(&path.0, work)?;
+        let target = root.0.open_windows_metadata_target(&path.0, work)?;
         #[cfg(target_os = "linux")]
         {
             crate::native_host::apply_linux_metadata(&target, metadata, work)
@@ -176,8 +184,8 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
     })
     .await
-    .map_err(materialize_runtime_error)?
-    .map_err(materialize_demand_error)
+    .map_err(MaterializeError::from)?
+    .map_err(MaterializeError::from)
 }
 
 #[cfg(unix)]
@@ -203,32 +211,33 @@ pub(super) fn validate_options(
     options: &MaterializeOptions,
     receipt: &mut GenerationReceipt,
 ) -> Result<HostRoot, MaterializeError> {
-    let root = receipt
-        .run(|work| HostRoot::open(&options.destination, work))
-        .map_err(|failure| {
-            let error = match failure {
-                error @ (MaterializeError::Work(_) | MaterializeError::Cancelled(_)) => error,
-                _ => MaterializeError::InvalidDestination,
-            };
-            error
-        })?;
+    let mut work = receipt.custody.work();
+    let root = HostRoot::open(&options.destination, &mut work).map_err(|error| {
+        match MaterializeError::from(error) {
+            error @ (MaterializeError::Work(_) | MaterializeError::Cancelled(_)) => error,
+            _ => MaterializeError::InvalidDestination,
+        }
+    })?;
     if let Some(expected) = options.expected_root_identity {
         let actual = root.identity();
         if actual != expected {
             return Err(MaterializeError::AllocationChanged { expected, actual });
         }
     }
-    let (mut entries, reader_allocation) =
-        receipt.run(|work| root.read_dir_stats(Path::new(""), work))?;
-    #[cfg(unix)]
-    let next = receipt.run(|work| entries.next(work));
-    #[cfg(windows)]
-    let next = receipt.run(|work| entries.next(work));
+    let (entries, reader_allocation) = root.read_dir_stats(
+        #[cfg(unix)]
+        Path::new(""),
+        #[cfg(windows)]
+        &[],
+        &mut work,
+    )?;
+    let mut entries = entries;
+    let next = entries.next(&mut work);
     drop(entries);
-    receipt.run(|work| crate::native_host::NativeHostWork::release(work, reader_allocation))?;
+    drop(reader_allocation);
     if let Some((entry, allocation)) = next? {
         drop(entry);
-        receipt.run(|work| crate::native_host::NativeHostWork::release(work, allocation))?;
+        drop(allocation);
         return Err(MaterializeError::InvalidDestination);
     }
     Ok(root)
@@ -250,10 +259,19 @@ pub(super) fn create_file(
     path: &Vec<HostPathUnit>,
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
+    let mut work = receipt.custody.work().clone();
     #[cfg(windows)]
-    let file = receipt.run(|work| host_root.create_windows_file_wide(&path, true, false, work))?;
+    let file = host_root
+        .create_file(
+            path,
+            ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+            &mut work,
+        )
+        .map_err(MaterializeError::from)?;
     #[cfg(unix)]
-    let file = receipt.run(|work| host_root.create_file(super::work::host_path(path), work))?;
+    let file = host_root
+        .create_file(super::work::host_path(path), &mut work)
+        .map_err(MaterializeError::from)?;
     let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(
         receipt.custody.work().runtime_meter(),
     ));
@@ -272,7 +290,7 @@ pub(super) fn create_file(
             drop(file);
             error
         })
-        .map_err(materialize_runtime_error)
+        .map_err(MaterializeError::from)
 }
 
 pub(super) fn account_written(
@@ -284,9 +302,11 @@ pub(super) fn account_written(
         .written_bytes
         .checked_add(bytes)
         .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-    receipt.run(|work| {
-        work.with_original_leaf(|work| work.work.verify(work.budget).map_err(DemandError::from))
-    })
+    receipt
+        .custody
+        .work()
+        .with_original_leaf(|work| work.work.verify(work.budget))
+        .map_err(Into::into)
 }
 
 pub(super) fn account_materialization(
@@ -294,12 +314,14 @@ pub(super) fn account_materialization(
     bytes: u64,
 ) -> Result<(), MaterializeError> {
     account_written(receipt, bytes)?;
-    receipt.run(|work| {
-        work.record(WorkCounters {
+    receipt
+        .custody
+        .work()
+        .record_admitted(WorkCounters {
             materializations: 1,
             ..WorkCounters::UNCHARGED
         })
-    })
+        .map_err(Into::into)
 }
 
 pub(super) fn account_file(
@@ -320,22 +342,23 @@ pub(super) fn account_file(
     account_materialization(receipt, written)
 }
 
-pub(super) fn create_symlink_measured(
+pub(super) fn create_symlink(
     host_root: &HostRoot,
     target: &acyclic_stream::OwnedBytes,
     destination: &Vec<HostPathUnit>,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
+    let mut work = receipt.custody.work().clone();
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
-        receipt.run(|work| {
-            host_root.symlink(
+        host_root
+            .symlink(
                 OsStr::from_bytes(target),
                 super::work::host_path(destination),
-                work,
+                &mut work,
             )
-        })
+            .map_err(MaterializeError::from)
     }
     #[cfg(windows)]
     {
@@ -343,20 +366,20 @@ pub(super) fn create_symlink_measured(
             .ok_or_else(|| MaterializeError::UnrepresentableName)?;
         let mut units = Vec::new();
         receipt.reserve(&mut units, target.len() / 2)?;
-        receipt.run(|work| {
-            work.charge(WorkCounters {
-                bytes_copied: target.len() as u64,
-                ..WorkCounters::UNCHARGED
-            })
+        receipt.custody.work().charge(WorkCounters {
+            bytes_copied: target.len() as u64,
+            ..WorkCounters::UNCHARGED
         })?;
         units.extend(decoded);
-        let result = receipt.run(|work| host_root.symlink_file_wide(&units, &destination, work));
+        let result = host_root
+            .symlink_file(&units, destination, &mut work)
+            .map_err(MaterializeError::from);
         let retained = units.capacity() * std::mem::size_of::<u16>();
         drop(units);
         receipt
             .custody
             .release(retained as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         result
     }
 }
@@ -365,19 +388,20 @@ pub(super) fn create_symlink_measured(
     clippy::useless_conversion,
     reason = "libc file-type constants have different widths on Linux and macOS"
 )]
-pub(super) fn create_special_measured(
+pub(super) fn create_special(
     host_root: &HostRoot,
     destination: &Vec<HostPathUnit>,
     kind: FileKind,
     device: Option<(u32, u32)>,
-    receipt: &mut GenerationReceipt,
+    _receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
     #[cfg(unix)]
     {
+        let mut work = _receipt.custody.work().clone();
         match kind {
-            FileKind::Fifo => receipt.run(|work| {
-                host_root.create_fifo_held(super::work::host_path(destination), 0o600, work)
-            }),
+            FileKind::Fifo => host_root
+                .create_fifo_held(super::work::host_path(destination), 0o600, &mut work)
+                .map_err(MaterializeError::from),
             FileKind::CharacterDevice | FileKind::BlockDevice => {
                 let (major, minor) =
                     device.ok_or_else(|| MaterializeError::UnsupportedKind(kind))?;
@@ -389,17 +413,18 @@ pub(super) fn create_special_measured(
                 let device_number = super::device::join_device(major, minor).map_err(|errno| {
                     MaterializeError::Io(std::io::Error::from_raw_os_error(errno))
                 })?;
-                receipt.run(|work| {
-                    host_root.create_device_held(
+                host_root
+                    .create_device_held(
                         super::work::host_path(destination),
                         file_type | 0o600,
                         device_number,
-                        work,
+                        &mut work,
                     )
-                })
+                    .map_err(MaterializeError::from)
             }
-            FileKind::Socket => receipt
-                .run(|work| host_root.bind_unix_socket(super::work::host_path(destination), work)),
+            FileKind::Socket => host_root
+                .bind_unix_socket(super::work::host_path(destination), &mut work)
+                .map_err(MaterializeError::from),
             _ => Err(MaterializeError::UnsupportedKind(kind)),
         }
     }

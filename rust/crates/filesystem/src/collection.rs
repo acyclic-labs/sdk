@@ -517,11 +517,6 @@ impl CheckoutRoots {
             + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
     }
 
-    #[cfg(test)]
-    pub(crate) const fn has_hold(&self) -> bool {
-        self.hold.is_some()
-    }
-
     /// Only freshly cloned, measured root buffers receive these exact tags.
     /// Collection slot capacity is cached shared storage, not handle custody.
     pub(crate) fn attach_control_custody(&mut self, owner: &Arc<crate::kernel::ProofDataCustody>) {
@@ -832,7 +827,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let producer = checkout.private_candidate(&original, &cancellation)?;
+        let producer = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
         let custody = producer.private_control_custody();
         let meter = (&original.state);
         let baseline = original.live_allocation_bytes();

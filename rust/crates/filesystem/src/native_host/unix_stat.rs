@@ -6,7 +6,9 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
 ) -> Result<NativeRootIdentity, W::Error> {
     #[cfg(unix)]
     {
-        let stat = stat_unix_fd_at(libc::AT_FDCWD, path.as_os_str(), false, work)?;
+        let stat = unix_name(path.as_os_str(), work, |name, work| {
+            stat_at(libc::AT_FDCWD, name, work)
+        })?;
         if !stat.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotADirectory,
@@ -14,15 +16,15 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
             )
             .into());
         }
-        Ok(NativeRootIdentity {
-            device: stat.dev(),
-            object: stat.ino(),
-        })
+        Ok(stat.identity())
     }
     #[cfg(windows)]
     {
-        with_root_path_name(path, false, work, |name, work| {
-            root_path_identity_wide(name, work)
+        with_root_name(path, work, |name, work| {
+            let file = work.attempt_io(READ, || {
+                open_windows_root_name(name, fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE)
+            })?;
+            directory_identity(&Dir::from_std_file(file), work)
         })
     }
 }
@@ -75,50 +77,25 @@ pub(super) fn open_unix<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-pub(super) fn open_unix_at<W: NativeHostWork>(
-    directory: &Dir,
-    name: &OsStr,
-    flags: i32,
-    work: &mut W,
-) -> Result<cap_std::fs::File, W::Error> {
-    unix_name(name, work, |name, work| {
-        open_unix(directory.as_raw_fd(), name, flags, work).map(cap_std::fs::File::from_std)
-    })
-}
-
-#[cfg(unix)]
-pub(crate) fn stat_leaf<W: NativeHostWork>(
-    directory: &Dir,
-    name: &OsStr,
-    work: &mut W,
-) -> Result<HostStat, W::Error> {
-    require_leaf(Path::new(name))?;
-    stat_unix_fd_at(directory.as_raw_fd(), name, false, work)
-}
-
-#[cfg(unix)]
-pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
+pub(super) fn stat_at<W: NativeHostWork>(
     fd: i32,
-    name: &OsStr,
-    empty_path: bool,
+    name: &std::ffi::CStr,
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
     #[cfg(target_os = "linux")]
-    let directory = if fd == libc::AT_FDCWD {
-        rustix::fs::CWD
-    } else {
-        // SAFETY: callers pass a live held descriptor, except the explicit CWD sentinel above, supplied by rustix itself.
-        unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
-    };
-    #[cfg(target_os = "linux")]
-    let flags = rustix::fs::AtFlags::SYMLINK_NOFOLLOW
-        | if empty_path {
-            rustix::fs::AtFlags::EMPTY_PATH
+    {
+        let directory = if fd == libc::AT_FDCWD {
+            rustix::fs::CWD
         } else {
-            rustix::fs::AtFlags::empty()
+            // SAFETY: the caller holds this descriptor for the complete query.
+            unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
         };
-    unix_name(name, work, |name, work| {
-        #[cfg(target_os = "linux")]
+        let flags = rustix::fs::AtFlags::SYMLINK_NOFOLLOW
+            | if name.is_empty() && fd != libc::AT_FDCWD {
+                rustix::fs::AtFlags::EMPTY_PATH
+            } else {
+                rustix::fs::AtFlags::empty()
+            };
         loop {
             work.started_io(READ)?;
             match rustix::fs::statx(
@@ -127,86 +104,47 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
                 flags,
                 rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
             ) {
-                Ok(stat) => {
-                    return Ok(HostStat {
-                        mode: u32::from(stat.stx_mode),
-                        len: stat.stx_size,
-                        dev: rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor),
-                        ino: stat.stx_ino,
-                        nlink: u64::from(stat.stx_nlink),
-                        uid: stat.stx_uid,
-                        gid: stat.stx_gid,
-                        rdev: rustix::fs::makedev(stat.stx_rdev_major, stat.stx_rdev_minor),
-                        atime: stat.stx_atime.tv_sec,
-                        atime_nsec: i64::from(stat.stx_atime.tv_nsec),
-                        mtime: stat.stx_mtime.tv_sec,
-                        mtime_nsec: i64::from(stat.stx_mtime.tv_nsec),
-                        ctime: stat.stx_ctime.tv_sec,
-                        ctime_nsec: i64::from(stat.stx_ctime.tv_nsec),
-                        created: if stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0 {
-                            unix_time(stat.stx_btime.tv_sec, i64::from(stat.stx_btime.tv_nsec)).ok()
-                        } else {
-                            None
-                        },
-                    });
-                }
+                Ok(stat) => return Ok(HostStat::from_statx(stat)),
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
                 Err(error) => return Err(io::Error::from(error).into()),
             }
         }
-        loop {
-            work.started_io(READ)?;
-            #[cfg(target_os = "linux")]
-            let result = if empty_path {
-                rustix::fs::fstat(directory)
-            } else {
-                rustix::fs::statat(directory, name, flags)
-            };
-            #[cfg(target_os = "macos")]
-            let result = {
-                let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                let result = unsafe {
-                    if empty_path {
-                        libc::fstat(fd, stat.as_mut_ptr())
-                    } else {
-                        libc::fstatat(
-                            fd,
-                            name.as_ptr(),
-                            stat.as_mut_ptr(),
-                            libc::AT_SYMLINK_NOFOLLOW,
-                        )
-                    }
-                };
-                if result == 0 {
-                    Ok(unsafe { stat.assume_init() })
-                } else {
-                    Err(io::Error::last_os_error())
-                }
-            };
-            match result {
-                Ok(stat) => return Ok(HostStat::from_stat(stat)?),
-                #[cfg(target_os = "linux")]
-                Err(rustix::io::Errno::INTR) => {}
-                #[cfg(target_os = "macos")]
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(io::Error::from(error).into()),
-            }
-        }
-    })
+    }
+    Ok(HostStat::from_stat(fstat(fd, name, work)?)?)
 }
 
 #[cfg(unix)]
 pub(super) fn fstat<W: NativeHostWork>(
     fd: std::os::fd::RawFd,
+    name: &std::ffi::CStr,
     work: &mut W,
 ) -> Result<libc::stat, W::Error> {
-    work.attempt_io(READ, || {
-        let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: the held descriptor stays live; successful fstat initializes the complete output.
-        if unsafe { libc::fstat(fd, observed.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
+    loop {
+        let result = work.attempt_io(READ, || {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: held descriptor, terminated name and complete output remain live.
+            let result = unsafe {
+                if name.is_empty() && fd != libc::AT_FDCWD {
+                    libc::fstat(fd, stat.as_mut_ptr())
+                } else {
+                    libc::fstatat(
+                        fd,
+                        name.as_ptr(),
+                        stat.as_mut_ptr(),
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                }
+            };
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the successful call initialized the complete record.
+            Ok(unsafe { stat.assume_init() })
+        });
+        match result {
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
+            result => return result,
         }
-        Ok(unsafe { observed.assume_init() })
-    })
+    }
 }

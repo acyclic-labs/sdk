@@ -76,7 +76,7 @@ export type ReferencedAttachments =
 
 
 declare const conversationMessageIdBrand: unique symbol;
-export type ConversationMessageId = string & Readonly<{ readonly [conversationMessageIdBrand]: true }>;
+export type ConversationMessageId = string & { readonly [conversationMessageIdBrand]: true };
 
 interface ConversationMessageBase {
   readonly id: ConversationMessageId;

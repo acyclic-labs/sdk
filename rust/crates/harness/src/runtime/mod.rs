@@ -1,6 +1,5 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
-mod native_startup;
 use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
@@ -31,12 +30,11 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::{StreamExt as _, stream};
-use native_startup::StartupIo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
     any::Any,
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     future::Future,
     sync::{
         Arc,
@@ -44,19 +42,13 @@ use std::{
     },
 };
 /// Default number of direct children requested by the SDK facade.
-
 pub const DEFAULT_CHILD_PAGE: usize = 256;
 /// Default number of entries requested by the private-directory SDK facade.
-
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_context;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_volume_callback;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_volume_callback::NativeVolumeCallbackGuard;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_volume_callback::NativeVolumePublicationGuard;
 
 mod tasks;
 pub use tasks::*;
@@ -78,18 +70,16 @@ mod bindings;
 pub use bindings::*;
 mod tools;
 pub use tools::*;
-mod dependencies;
-pub use dependencies::*;
 mod children;
-pub use children::*;
+mod dependencies;
+pub(crate) use children::*;
 mod context_open;
-pub use context_open::*;
+pub(crate) use context_open::*;
 mod admission_execution;
 mod fork_binding;
 mod host_binding;
 mod reattachment;
 mod startup;
-pub use reattachment::*;
 mod task_context;
 pub use task_context::*;
 mod content_read;

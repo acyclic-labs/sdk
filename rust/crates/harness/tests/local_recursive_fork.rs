@@ -46,14 +46,14 @@ use uuid::Uuid;
 const DEPTH: u8 = 3;
 
 impl ToolExecutor for PrefixModel {
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             Ok(ToolResult {
                 value: invocation.arguments,
             })
         })
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Ok(None) })
     }
 }

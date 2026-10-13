@@ -8,7 +8,9 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<Option<LazyWorkspaceState>, crate::LazyWorkspaceError> {
         let work = core_lazy_work(accounting)?;
         let state = finish_core_lazy(
-            self.load_lazy_logged(id, work.clone()).await,
+            self.materialization(work.clone())
+                .load_logged::<LazyWorkspaceState>(id)
+                .await,
             &work,
             accounting,
         )?;
@@ -70,28 +72,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         ),
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), crate::LazyWorkspaceError> {
-        let bytes = value.0.owned_bytes();
-        let work = core_lazy_work(accounting)?;
-        let mut value = value;
-        let allocation = match &mut value.1 {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                if !allocation.work().shares_allocation_context(&work) {
-                    return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
-                }
-                allocation.split_off(allocation.bytes())?
-            }
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                work.claim(bytes, 0, crate::WorkCounters::UNCHARGED)?
-            }
-        };
-        let result = self.put_node(id, (value.0, allocation), work.clone()).await;
-        if matches!(
-            value.1,
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone
-        ) {
-            accounting.release_owned(&mut value.1, bytes)?;
-        }
-        finish_core_lazy(result, &work, accounting)
+        self.put_node(id, value, accounting).await
     }
 
     async fn load_lazy_shadow(
@@ -122,27 +103,6 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         ),
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), crate::LazyWorkspaceError> {
-        let bytes = value.0.owned_bytes();
-        let work = core_lazy_work(accounting)?;
-        let mut value = value;
-        let allocation = match &mut value.1 {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                if !allocation.work().shares_allocation_context(&work) {
-                    return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
-                }
-                allocation.split_off(allocation.bytes())?
-            }
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                work.claim(bytes, 0, crate::WorkCounters::UNCHARGED)?
-            }
-        };
-        let result = self.put_node(id, (value.0, allocation), work.clone()).await;
-        if matches!(
-            value.1,
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone
-        ) {
-            accounting.release_owned(&mut value.1, bytes)?;
-        }
-        finish_core_lazy(result, &work, accounting)
+        self.put_node(id, value, accounting).await
     }
 }

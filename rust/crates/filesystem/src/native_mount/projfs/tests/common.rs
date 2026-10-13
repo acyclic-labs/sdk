@@ -1,20 +1,11 @@
-use super::{
-    CallbackGate, PostOperationFailures, flush_callback_gate, record_post_operation_failure,
-    reject_stale_projection, source_hresult,
-};
+use super::*;
 use crate::kernel::{FileMetadata, KernelAccounting};
-use crate::model::{
-    AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
-    VolumeConfig,
-};
+use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode};
 use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
 use crate::native_mount::{MountFilesystem, MountPath, MountSourceError};
-use crate::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication, WorkBudget,
-};
-use bytes::Bytes;
+use crate::{MountOptions, MountPublication};
 use std::collections::HashSet;
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Mutex};
 use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFICATION_PRE_DELETE,
     PrjMarkDirectoryAsPlaceholder,

@@ -2,7 +2,6 @@ use super::*;
 
 impl TaskContext {
     /// Calls a local tool under this task's scope and validates both schemas.
-
     pub async fn call<I, O>(&self, tool: &ToolDefinition, input: I) -> Result<O>
     where
         I: Serialize,
@@ -29,7 +28,12 @@ impl TaskContext {
         }
         let arguments =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        crate::contract::validate_json_schema_value(&tool.input_schema, &arguments, "tool input", &mut None)?;
+        crate::executor::validate_json_schema_value(
+            &tool.input_schema,
+            &arguments,
+            "tool input",
+            &mut None,
+        )?;
         let operation_id = OperationId::new();
         let invocation = ToolInvocation {
             operation_id,
@@ -40,7 +44,7 @@ impl TaskContext {
         let context = ToolContext::new(
             std::sync::Arc::new(self.clone()),
             invocation.operation_id,
-            &(invocation.call_id.clone()),
+            &invocation.call_id,
             None,
         )?;
         binding
@@ -51,14 +55,18 @@ impl TaskContext {
         }
         let result = binding
             .executor
-            .execute_with_context(context, invocation)
+            .execute(invocation, Some(context))
             .await?;
-        crate::contract::validate_json_schema_value(&tool.output_schema, &result.value, "tool output", &mut None)?;
+        crate::executor::validate_json_schema_value(
+            &tool.output_schema,
+            &result.value,
+            "tool output",
+            &mut None,
+        )?;
         serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
     }
 
     /// Returns any pending approval before dispatching the action.
-
     pub(crate) async fn authorize_tool(
         &self,
         definition: &ToolDefinition,
@@ -69,7 +77,6 @@ impl TaskContext {
     }
 
     /// Borrows the original configured policy and its protected binding identity.
-
     pub(crate) fn stock_tool_policy_binding(
         &self,
     ) -> Option<(&ComponentIdentity, &Arc<dyn ToolPolicy>)> {
@@ -80,7 +87,6 @@ impl TaskContext {
     }
 
     /// Borrows scoped vetoes in their original admission order.
-
     pub(crate) fn stock_tool_policy_overrides(
         &self,
     ) -> impl Iterator<Item = (&ComponentIdentity, &Arc<dyn ToolPolicy>)> {
@@ -90,7 +96,6 @@ impl TaskContext {
     }
 
     /// A borrowed scope can restrict the original grant, never replace its sealed selections, created-access owner, or runtime provenance.
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn require_native_scope_restriction(
         &self,
@@ -171,20 +176,10 @@ impl TaskContext {
             .into_iter()
             .chain(self.stock_tool_policy_overrides())
         {
-            let bound_reason = if self
-                .harness
-                .policy
-                .as_ref()
-                .is_some_and(|global| Arc::ptr_eq(global, policy))
-            {
-                "runtime policy identity changed after binding"
-            } else {
-                "scoped policy identity changed after binding"
-            };
             if let Some(paid) = self
                 .policy_approval(
                     policy.as_ref(),
-                    Some((identity, bound_reason)),
+                    Some(identity),
                     definition,
                     invocation,
                     work,
@@ -251,7 +246,7 @@ impl TaskContext {
         Ok(self
             .policy_approval(
                 policy,
-                Some((expected, "policy identity changed after binding")),
+                Some(expected),
                 definition,
                 invocation,
                 Some(work),
@@ -264,7 +259,7 @@ impl TaskContext {
     pub(super) async fn policy_approval(
         &self,
         policy: &dyn ToolPolicy,
-        expected: Option<(&ComponentIdentity, &'static str)>,
+        expected: Option<&ComponentIdentity>,
         definition: &ToolDefinition,
         invocation: &ToolInvocation,
         work: Option<&NativeWork>,
@@ -275,23 +270,17 @@ impl TaskContext {
             Some(work) => {
                 policy.supports_native_policy(work)?;
                 let (value, custody) = policy.identity_with_native_work(work)?;
-                let paid = (value, Some(custody));
-                validate_native_policy_identity(&paid, work)?;
-                paid
+                check_policy_metadata(&value, &custody, work)?;
+                (value, Some(custody))
             }
             _ => (policy.identity(), None),
         };
-        if let Some((expected, reason)) = expected {
-            if expected != &identity.0 {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work.is_some() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Conflict,
-                        reason,
-                    });
-                }
-                return Err(Error::Conflict(reason.into()));
-            }
+        if expected.is_some_and(|expected| expected != &identity.0) {
+            return Err(task_workflow_error(
+                work,
+                crate::wire::ErrorCode::Conflict,
+                "policy identity changed after binding",
+            ));
         }
         let decision: (ToolPolicyDecision, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -314,22 +303,16 @@ impl TaskContext {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 let (value, custody) = policy.identity_with_native_work(work)?;
-                let paid = (value, Some(custody));
-                validate_native_policy_identity(&paid, work)?;
-                paid
+                check_policy_metadata(&value, &custody, work)?;
+                (value, Some(custody))
             }
             _ => (policy.identity(), None),
         };
         if after.0 != identity.0 {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "policy identity changed during evaluation",
-                });
-            }
-            return Err(Error::Conflict(
-                "policy identity changed during evaluation".into(),
+            return Err(task_workflow_error(
+                work,
+                crate::wire::ErrorCode::Conflict,
+                "policy identity changed during evaluation",
             ));
         }
         drop(after);

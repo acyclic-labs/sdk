@@ -414,6 +414,11 @@ impl Projector {
                     state.processed = state.notified;
                     state.retry = false;
                     self.changed.notify_all();
+                    state = self
+                        .changed
+                        .wait_timeout(state, HELD_RETRY)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
                     continue;
                 }
             };

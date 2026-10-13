@@ -172,12 +172,12 @@ struct CountingNoopTool {
 }
 
 impl ToolExecutor for CountingNoopTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         self.executions.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(ToolResult { value: Value::Null }) })
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(None) })
     }
@@ -404,10 +404,10 @@ impl TaskStateProvider for TestTaskState {
 }
 
 impl ToolExecutor for NoopTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async { Ok(ToolResult { value: Value::Null }) })
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Ok(None) })
     }
 }
@@ -701,10 +701,10 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     bindings.state = Some(Arc::new(TestTaskState(task_scope)));
     let runtime = bindings.build()?;
     let first_context = runtime
-        .durable_context(first_task, OperationId::from_bytes([63; 16]))
+        .durable_context(first_task, OperationId::from_bytes([63; 16]), None)
         .await?;
     let other_context = runtime
-        .durable_context(other_task, OperationId::from_bytes([64; 16]))
+        .durable_context(other_task, OperationId::from_bytes([64; 16]), None)
         .await?;
     let projection_context = first_context.clone();
     for _ in 0..2 {

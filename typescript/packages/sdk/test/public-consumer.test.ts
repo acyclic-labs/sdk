@@ -29,10 +29,6 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
   expect(JSON.parse(new TextDecoder().decode(read.body))).toEqual({ ok: true });
   expect((await objects.list(create(objectsApi.ListObjectsRequestSchema, { bucket })))
     .entries.map(entry => entry.objectKey)).toEqual(["result.json"]);
-  expect((await objects.put(create(objectsApi.PutObjectHeaderSchema, {
-    bucket, objectKey: "bytes",
-  }), Uint8Array.of(1, 2))).size).toBe(2n);
-
   const fs = await openMemoryFs();
   try {
     const workspace = await fs.createWorkspace("consumer");

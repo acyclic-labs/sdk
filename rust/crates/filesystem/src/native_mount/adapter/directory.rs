@@ -29,11 +29,13 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = inputs.observer(&observation, cancellation)?;
+            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)?;
             let (page, source_allocation) = checkout
                 .list_directory_records(
                     &path,
-                    cursor.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                    cursor
+                        .as_ref()
+                        .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     maximum_entries,
                     work,
                     cancellation,

@@ -11,7 +11,7 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
         &cancellation,
     )
     .map_err(|failure| failure.0)?;
-    let root = receipt.run(|work| HostRoot::open(directory.path(), work))?;
+    let root = HostRoot::open(directory.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
     let namespace = NamespacePath::new(
@@ -27,16 +27,16 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
     let meter = receipt.custody.work().runtime_meter();
     let control = native
         .control_async(
-            |file, meter| mark_sparse_measured(file, meter.expect("metered control")),
+            |file, meter| mark_sparse(file, meter.expect("metered control")),
             Some(meter),
         )
-        .map_err(materialize_runtime_error)?;
-    control.await.map_err(materialize_runtime_error)?;
+        .map_err(MaterializeError::from)?;
+    control.await.map_err(MaterializeError::from)?;
     let meter = receipt.custody.work().runtime_meter();
     let resize = native
         .set_len_async(1024 * 1024, Some(meter))
-        .map_err(materialize_runtime_error)?;
-    resize.await.map_err(materialize_runtime_error)?;
+        .map_err(MaterializeError::from)?;
+    resize.await.map_err(MaterializeError::from)?;
     let mut ordinary_control = None::<
         &mut fn(
             NativeMaterializationActionPhase,

@@ -238,41 +238,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 pub(super) fn insert_lineage_value<T: Copy>(
-    values: &mut crate::kernel::Owned<Vec<T>>,
+    values: &mut Owned<Vec<T>>,
     index: usize,
     value: T,
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    if values.value.len() == values.value.capacity() {
-        let next = values
-            .value
-            .capacity()
-            .checked_mul(2)
-            .map(|capacity| capacity.max(1))
-            .ok_or(WorkError::Overflow)?;
-        let mut replacement = crate::kernel::Owned::<Vec<T>>::allocate(next, accounting)?;
-        let copied = WorkCounters {
-            bytes_copied: crate::foundation::usize_to_u64(
-                values
-                    .value
-                    .len()
-                    .checked_mul(size_of::<T>())
-                    .ok_or(WorkError::Overflow)?,
-            ),
-            ..WorkCounters::UNCHARGED
-        };
-        if let Err(error) = accounting.admit(copied) {
-            replacement.retire(accounting)?;
-            return Err(error);
-        }
-        replacement.value.append(&mut values.value);
-        let completed = accounting.record_completed(copied);
-        let previous = std::mem::replace(values, replacement);
-        previous.retire(accounting)?;
-        completed?;
-    }
+    values.ensure_for_push(usize::MAX, accounting)?;
     let copied = WorkCounters {
-        bytes_copied: crate::foundation::usize_to_u64(
+        bytes_copied: usize_to_u64(
             (values.value.len() - index + 1)
                 .checked_mul(size_of::<T>())
                 .ok_or(WorkError::Overflow)?,

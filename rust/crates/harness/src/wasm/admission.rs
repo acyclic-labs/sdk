@@ -283,7 +283,7 @@ pub fn validate_task_requirements_wasm(
             ))));
         }
     }
-    let tools = input
+    let tools: std::collections::BTreeSet<(String, String)> = input
         .tools
         .into_iter()
         .map(|definition| (definition.name, definition.version))
@@ -308,10 +308,10 @@ pub fn validate_task_requirements_wasm(
         extensions,
     };
     validate_task_requirements(
-        &tasks,
-        &tools,
+        tasks.iter().map(|((name, version), requirements)| ((name.as_str(), version.as_str()), requirements)),
+        |name, version| Ok(tools.iter().any(|(selected, revision)| selected == name && revision == version)),
         &environment,
-        &input.grants.into_iter().collect(),
+        &crate::Capabilities::new(input.grants),
         None,
     )
     .map_err(js_error)
@@ -405,7 +405,7 @@ pub fn admit_batch_request_wasm(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(js_error)?;
-    let input_digest = crate::contract::canonical_json_digest(&canonical, u64::MAX, &mut None)
+    let input_digest = crate::executor::json::canonical_json_digest(&canonical, u64::MAX, &mut None)
         .map_err(js_error)?
         .to_vec();
     let projection = WasmBatchAdmissionRequest {

@@ -122,7 +122,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
                     id: "pi-service-original".into(),
                     available: Default::default(),
                     labels: Default::default(),
-                })
+                }, None, &mut None)
                 .await
                 .unwrap()
             else {
@@ -217,7 +217,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
             id: "pi-service-original".into(),
             available: Default::default(),
             labels: Default::default(),
-        })
+        }, None, &mut None)
         .await
         .unwrap()
     else {
@@ -300,7 +300,7 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
             id: "pi-service-original".into(),
             available: Default::default(),
             labels: Default::default(),
-        })
+        }, None, &mut None)
         .await
         .unwrap()
     else {
@@ -449,7 +449,7 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
     assert!(
         resources
             .fs
-            .open_workspace_with_native_work(&scratch, &work, work.cancellation())
+            .open_workspace(&scratch, &work, work.cancellation())
             .await
             .is_err()
     );
@@ -471,7 +471,7 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
     assert!(
         service
             .fs
-            .open_workspace_with_native_work(&scratch, &work, work.cancellation())
+            .open_workspace(&scratch, &work, work.cancellation())
             .await
             .is_ok()
     );
@@ -559,7 +559,7 @@ fn scoped_response_reuses_original_identity_and_exhausted_quota() {
         .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .unwrap();
     blocker
-        .resize_retained(work.remaining().unwrap().peak_allocation_bytes)
+        .resize(work.remaining().unwrap().peak_allocation_bytes)
         .unwrap();
     assert!(
         crate::service_session::guarded_scoped_reply(

@@ -28,7 +28,6 @@ pub struct Config {
     pub stream_provider: ProviderRef,
     pub private_volume: VolumeRef,
     pub owner: AuthorityBinding,
-    pub observed_authorities: Vec<AuthorityBinding>,
     pub generation: String,
     pub model_invocation_ledger: PathBuf,
     pub limits: Limits,
@@ -49,31 +48,21 @@ pub struct Config {
     pub project_source_root: Option<TaskId>,
 }
 impl Config {
+    pub(crate) fn bindings(&self) -> impl Iterator<Item = &AuthorityBinding> {
+        std::iter::once(&self.owner)
+            .chain(self.fork_sources.iter().map(|source| &source.owner))
+            .chain(self.tools.callers.iter().map(|caller| &caller.owner))
+            .chain(self.tools.forks.iter().map(|fork| &fork.child))
+    }
     pub fn from_file(path: &Path) -> Result<Self> {
-        use std::io::Read as _;
-        const MAXIMUM: u64 = 1024 * 1024;
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)
-            .and_then(|file| file.take(MAXIMUM + 1).read_to_end(&mut bytes))
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if bytes.len() as u64 > MAXIMUM {
-            return Err(Error::Invalid(
-                "native configuration exceeds one MiB".into(),
-            ));
-        }
-        serde_json::from_slice(&bytes)
+        serde_json::from_slice(&std::fs::read(path).map_err(storage)?)
             .map_err(|error| Error::Invalid(format!("native configuration: {error}")))
     }
     pub(super) fn validate(&self) -> Result<AuthorityVerifier> {
         if !self.filesystem_root.is_absolute()
             || !self.stream_root.is_absolute()
             || self.generation.is_empty()
-            || self.generation.len() > 128
-            || self.observed_authorities.len() > 64
-            || self.concurrency == 0
             || self.deterministic_delay_ms > 5000
-            || self.fork_sources.len() > 64
-            || self.native_publications.len() > 64
         {
             return Err(Error::Invalid(
                 "native composition requires absolute paths and finite bounds".into(),
@@ -88,12 +77,11 @@ impl Config {
             ));
         }
         let verifier = self.owner.verifier()?;
-        for binding in &self.observed_authorities {
+        for binding in self.bindings() {
             binding.verifier()?;
         }
         for source in &self.fork_sources {
             let verifier = source.owner.verifier()?;
-            source.project.validate(&mut None)?;
             source.request.validate(&mut None)?;
             if source.request.parent != source.owner.authority
                 || source.request.parent_revision != source.snapshot.revision
@@ -121,7 +109,6 @@ impl Config {
 pub struct ForkSourceConfig {
     pub caller: TaskId,
     pub owner: AuthorityBinding,
-    pub project: VolumeRef,
     pub snapshot: Snapshot,
     pub request: acyclic_harness::fork::ForkRequest,
 }
@@ -146,8 +133,7 @@ impl WorkflowContext {
         let mode = self.attribute_mode.unwrap_or(ContextRenderMode::Prompt);
         for attribute in &self.attributes {
             attribute.validate(&mut None)?;
-            let text = serde_json::to_string(attribute)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let text = serde_json::to_string(attribute).map_err(invalid)?;
             pipeline = pipeline.with(Arc::new(SourceStage::new(
                 attribute.type_name.clone(),
                 attribute.state_revision.clone(),

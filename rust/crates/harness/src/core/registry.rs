@@ -57,9 +57,9 @@ impl SchemaRegistry {
                 "extension binding needs a namespaced name, positive version, and implementation digest".into(),
             ));
         }
-        crate::contract::compile_json_schema(&schema, "extension", &mut None)?;
+        crate::executor::compile_json_schema(&schema, "extension", &mut None)?;
         if let Some(configuration_schema) = &configuration_schema {
-            crate::contract::compile_json_schema(configuration_schema, "configuration", &mut None)?;
+            crate::executor::compile_json_schema(configuration_schema, "configuration", &mut None)?;
         }
         let mut required = BTreeSet::new();
         for dependency in dependencies {
@@ -72,14 +72,20 @@ impl SchemaRegistry {
             }
         }
         let binding = ExtensionBinding {
-            schema_digest: crate::contract::canonical_json_digest(&schema, u64::MAX, &mut None)?,
+            schema_digest: crate::executor::json::canonical_json_digest(
+                &schema,
+                u64::MAX,
+                &mut None,
+            )?,
             schema,
             implementation_digest,
             fork_policy,
             dependencies: required,
             configuration_schema_digest: configuration_schema
                 .as_ref()
-                .map(|value| crate::contract::canonical_json_digest(value, u64::MAX, &mut None))
+                .map(|value| {
+                    crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
+                })
                 .transpose()?,
             configuration_schema,
         };
@@ -176,7 +182,9 @@ impl SchemaRegistry {
                     "extension dependency cycle",
                 )
             })?;
-            order.push(copying::copy_dependency(next, &mut owned)?);
+            order.push(copy(next, &mut owned, |value: &ExtensionDependency, _| {
+                Ok(value.name.capacity() as u64)
+            })?);
         }
         let graph_bytes = (chosen.len() as u64)
             .checked_mul(std::mem::size_of::<(&str, &ExtensionDependency)>() as u64)
@@ -244,10 +252,12 @@ impl SchemaRegistry {
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None, &mut None)?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &binding.schema,
             &value,
-            "extension payload", &mut None)?;
+            "extension payload",
+            &mut None,
+        )?;
         Ok(())
     }
 
@@ -264,9 +274,11 @@ impl SchemaRegistry {
             .configuration_schema_digest
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
         let record = ExtensionConfiguration {
-            extension: copying::copy_dependency(extension, quota)?,
+            extension: copy(extension, quota, |value: &ExtensionDependency, _| {
+                Ok(value.name.capacity() as u64)
+            })?,
             schema_digest,
-            content: copying::copy_file(content, quota)?,
+            content: content.clone_in_quota(quota)?,
         };
         record.validate()?;
         Ok(record)
@@ -362,6 +374,8 @@ impl SchemaRegistry {
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(schema, value, "configuration", work))
+        crate::executor::with_history_io(io, |work| {
+            crate::executor::validate_json_schema_value(schema, value, "configuration", work)
+        })
     }
 }

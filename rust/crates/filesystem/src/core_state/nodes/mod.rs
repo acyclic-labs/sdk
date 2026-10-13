@@ -24,8 +24,8 @@ pub(super) const LAZY_NODE_GRACE: Duration = if cfg!(test) {
     Duration::from_secs(10 * 60)
 };
 
-impl<K: Copy + Ord, V> Generations<K, V> {
-    pub(super) fn new() -> Self {
+impl<K, V> Default for Generations<K, V> {
+    fn default() -> Self {
         Self {
             current: Vec::new(),
             previous: Vec::new(),
@@ -35,7 +35,9 @@ impl<K: Copy + Ord, V> Generations<K, V> {
             slots: [None, None, None],
         }
     }
+}
 
+impl<K: Copy + Ord, V> Generations<K, V> {
     pub(super) fn position<T>(
         entries: &[(K, T)],
         key: &K,
@@ -182,41 +184,25 @@ impl<K: Copy + Ord, V> Generations<K, V> {
 }
 
 /// Immutable overlay and shadow nodes this store and its clones have read or written.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct NodeMemo {
     pub(super) overlays: Mutex<Generations<LazyOverlayId, LazyOverlay>>,
     pub(super) shadows: Mutex<Generations<crate::LazyShadowId, crate::LazyShadow>>,
 }
 
-impl Default for NodeMemo {
-    fn default() -> Self {
-        Self {
-            overlays: Mutex::new(Generations::new()),
-            shadows: Mutex::new(Generations::new()),
-        }
-    }
-}
-
 /// An immutable content-addressed lazy node.
 pub(super) trait LazyNode:
-    crate::lazy_workspace::MemoryLazyNode + Default + Send + 'static
+    crate::lazy_workspace::MemoryLazyNode + DeserializeOwned + Default + Send + 'static
 {
     type Id: Copy + Ord + Send + 'static;
-    type Wire: DeserializeOwned;
     const FAMILY: &'static str;
 
     fn address(id: Self::Id) -> [u8; 32];
     fn memo(nodes: &NodeMemo) -> MutexGuard<'_, Generations<Self::Id, Self>>;
-    fn from_wire(
-        wire: Self::Wire,
-        work: &crate::materializer::NativeMaterializationWork,
-        allocation: &mut crate::materializer::NativeAllocation,
-    ) -> Result<Self, LocalCoreStateStoreError>;
 }
 
 impl LazyNode for LazyOverlay {
     type Id = LazyOverlayId;
-    type Wire = Self;
     const FAMILY: &'static str = "lazy-overlays";
 
     fn address(id: Self::Id) -> [u8; 32] {
@@ -229,19 +215,10 @@ impl LazyNode for LazyOverlay {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
-
-    fn from_wire(
-        wire: Self::Wire,
-        _work: &crate::materializer::NativeMaterializationWork,
-        _allocation: &mut crate::materializer::NativeAllocation,
-    ) -> Result<Self, LocalCoreStateStoreError> {
-        Ok(wire)
-    }
 }
 
 impl LazyNode for crate::LazyShadow {
     type Id = crate::LazyShadowId;
-    type Wire = LazyShadowWire;
     const FAMILY: &'static str = "lazy-shadows-v1";
 
     fn address(id: Self::Id) -> [u8; 32] {
@@ -251,58 +228,6 @@ impl LazyNode for crate::LazyShadow {
     fn memo(nodes: &NodeMemo) -> MutexGuard<'_, Generations<Self::Id, Self>> {
         nodes.shadows.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    fn from_wire(
-        wire: Self::Wire,
-        work: &crate::materializer::NativeMaterializationWork,
-        allocation: &mut crate::materializer::NativeAllocation,
-    ) -> Result<Self, LocalCoreStateStoreError> {
-        Ok(match wire {
-            LazyShadowWire::Empty => Self::Empty,
-            LazyShadowWire::Node {
-                file_id,
-                priority,
-                record,
-                metadata,
-                left,
-                right,
-            } => {
-                let bytes = std::mem::size_of::<crate::WorkspaceMetadata>() as u64;
-                work.admit(crate::WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                })?;
-                allocation.grow(bytes)?;
-                let metadata = Box::new(metadata);
-                work.spent(crate::WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                })?;
-                Self::Node {
-                    file_id,
-                    priority,
-                    record,
-                    metadata,
-                    left,
-                    right,
-                }
-            }
-        })
-    }
-}
-
-/// The same durable shadow JSON, with its metadata inline during bounded decode.
-#[derive(Deserialize)]
-pub(super) enum LazyShadowWire {
-    Empty,
-    Node {
-        file_id: crate::FileId,
-        priority: u64,
-        record: Vec<u8>,
-        metadata: crate::WorkspaceMetadata,
-        left: crate::LazyShadowId,
-        right: crate::LazyShadowId,
-    },
 }
 
 pub(super) fn lazy_digest<T: Serialize>(
@@ -341,21 +266,11 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
         }
         LocalCoreStateStoreError::LazyWork(error) => error,
         LocalCoreStateStoreError::Integrity => Lazy::NativeRecordIntegrity,
-        LocalCoreStateStoreError::NativeLedgerMismatch => Lazy::NativeLedgerMismatch,
         LocalCoreStateStoreError::ContextTransaction(message) => {
             Lazy::NativeRecordContextTransaction(message, None)
         }
         LocalCoreStateStoreError::Corrupt(path) => Lazy::NativeRecordCorrupt(path, None),
     }
-}
-
-pub(super) fn lazy_native_failure(
-    (cause, work): (
-        crate::materializer::NativeTreeMaterializationError,
-        crate::WorkCounters,
-    ),
-) -> crate::LazyWorkspaceError {
-    crate::LazyWorkspaceError::NativeConstruction { cause, work }
 }
 
 fn core_lazy_work(
@@ -376,7 +291,7 @@ fn core_lazy_work(
                     .checked_add(work)
                     .expect("constructor used its remaining allowance");
             }
-            crate::LazyWorkspaceError::NativeConstruction { cause, work }
+            crate::LazyWorkspaceError::NativeWork(cause)
         },
     )
 }
@@ -425,17 +340,16 @@ pub(super) fn clone_node<T: crate::lazy_workspace::MemoryLazyNode>(
     value: &T,
     meter: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(T, crate::NativeAllocation), LocalCoreStateStoreError> {
-    meter
-        .allocations(|allocations, work, budget, cancellation| {
-            Ok(crate::lazy_workspace::clone_lazy_node(
-                value,
+    meter.allocations(|allocations, work, budget, cancellation| {
+        Ok(value
+            .copy(&mut crate::kernel::KernelAccounting::borrowed_standalone(
                 allocations,
                 work,
                 budget,
                 cancellation,
-            )?)
-        })
-        .map(|(value, allocation)| (value, allocation))
+            ))?
+            .0)
+    })
 }
 
 impl LocalCoreStateStore {
@@ -467,17 +381,18 @@ impl LocalCoreStateStore {
                     .work();
                 let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
                 with_lock(&mut paths, |paths| {
-                    let Some((wire, allocation)) = read_recoverable::<T::Wire>(paths)? else {
+                    let Some(mut owned) = read_recoverable::<T>(paths)? else {
                         return Ok(None);
                     };
-                    let mut allocation = allocation.expect("native record allocation");
-                    let value = T::from_wire(wire, work, &mut allocation)?;
-                    allocation.resize(value.owned_bytes())?;
-                    let owned = (value, allocation);
-                    if lazy_digest((&owned.0), work)? != T::address(id) {
+                    owned
+                        .1
+                        .as_mut()
+                        .expect("native record allocation")
+                        .resize(owned.0.owned_bytes())?;
+                    if lazy_digest(&owned.0, work)? != T::address(id) {
                         return Err(LocalCoreStateStoreError::Integrity);
                     }
-                    Ok(Some(owned))
+                    Ok(Some((owned.0, owned.1.expect("native record allocation"))))
                 })
             })
             .await?;
@@ -496,70 +411,88 @@ impl LocalCoreStateStore {
     pub(super) async fn put_node<T: LazyNode>(
         &self,
         id: T::Id,
-        owned: (T, crate::NativeAllocation),
-        meter: crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let (value, allocation) = owned;
-        let same_ledger = meter.shares_ledger(allocation.work());
-        let owned = (value, allocation);
-        if !same_ledger {
-            return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
-        }
-        let empty = lazy_digest(&T::default(), &meter)?;
-        if lazy_digest((&owned.0), &meter)? != T::address(id) {
-            return Err(LocalCoreStateStoreError::Integrity);
-        }
-        if T::address(id) == empty {
-            return if (&owned.0) == &T::default() {
-                Ok(())
-            } else {
-                Err(LocalCoreStateStoreError::Integrity)
-            };
-        }
-        {
-            let mut memo = T::memo(&self.nodes);
-            memo.touch(id, &meter)?;
-            if let Some(existing) = memo.get(&id, &meter)? {
-                meter.charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })?;
-                return if existing == (&owned.0) {
+        value: (T, crate::kernel::allocation::KernelOwnedAllocation),
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::LazyWorkspaceError> {
+        let bytes = value.0.owned_bytes();
+        let work = core_lazy_work(accounting)?;
+        let mut value = value;
+        let allocation = match &mut value.1 {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                if !allocation.work().shares_allocation_context(&work) {
+                    return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
+                }
+                allocation.split_off(allocation.bytes())?
+            }
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                work.claim(bytes, 0, crate::WorkCounters::UNCHARGED)?
+            }
+        };
+        let owned = (value.0, allocation);
+        let meter = work.clone();
+        let result = async {
+            let empty = lazy_digest(&T::default(), &meter)?;
+            if lazy_digest((&owned.0), &meter)? != T::address(id) {
+                return Err(LocalCoreStateStoreError::Integrity);
+            }
+            if T::address(id) == empty {
+                return if (&owned.0) == &T::default() {
                     Ok(())
                 } else {
                     Err(LocalCoreStateStoreError::Integrity)
                 };
             }
-        }
-        let stored = self
-            .materialization(meter.clone())
-            .transaction(move |namespace| {
-                let work = namespace
-                    ._allocation
-                    .as_ref()
-                    .expect("bound native work")
-                    .work();
-                let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
-                with_lock(&mut paths, |paths| {
-                    if let Some((wire, allocation)) = read_recoverable::<T::Wire>(paths)? {
-                        let mut allocation = allocation.expect("native record allocation");
-                        let existing = T::from_wire(wire, work, &mut allocation)?;
-                        work.charge(crate::WorkCounters {
-                            items_examined: 1,
-                            ..Default::default()
-                        })?;
-                        if &existing != (&owned.0) {
-                            return Err(LocalCoreStateStoreError::Integrity);
-                        }
+            {
+                let mut memo = T::memo(&self.nodes);
+                memo.touch(id, &meter)?;
+                if let Some(existing) = memo.get(&id, &meter)? {
+                    meter.charge(crate::WorkCounters {
+                        items_examined: 1,
+                        ..Default::default()
+                    })?;
+                    return if existing == (&owned.0) {
+                        Ok(())
                     } else {
-                        write_journaled(paths, (&owned.0))?;
-                    }
-                    Ok(owned)
+                        Err(LocalCoreStateStoreError::Integrity)
+                    };
+                }
+            }
+            let stored = self
+                .materialization(meter.clone())
+                .transaction(move |namespace| {
+                    let work = namespace
+                        ._allocation
+                        .as_ref()
+                        .expect("bound native work")
+                        .work();
+                    let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
+                    with_lock(&mut paths, |paths| {
+                        if let Some(existing) = read_recoverable::<T>(paths)? {
+                            work.charge(crate::WorkCounters {
+                                items_examined: 1,
+                                ..Default::default()
+                            })?;
+                            if &existing.0 != &owned.0 {
+                                return Err(LocalCoreStateStoreError::Integrity);
+                            }
+                        } else {
+                            write_journaled(paths, (&owned.0))?;
+                        }
+                        Ok(owned)
+                    })
                 })
-            })
-            .await?;
-        T::memo(&self.nodes).insert(id, stored, &meter)?;
-        Ok(())
+                .await?;
+            T::memo(&self.nodes).insert(id, stored, &meter)?;
+            Ok(())
+        }
+        .await;
+        if matches!(
+            value.1,
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone
+        ) {
+            accounting.release_owned(&mut value.1, bytes)?;
+        }
+        finish_core_lazy(result, &work, accounting)
     }
 }
 

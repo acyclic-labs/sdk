@@ -46,9 +46,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (signal?.aborted) return;
     const tail = await this.#tail(path, signal);
     if (from > tail) throw new StreamError("out_of_range", "follow cursor is beyond the stream tail");
-    // The HTTP API has no long-poll or streaming read, so follow polls. Back
-    // off from 25 ms after the last record to 1 s while idle: new records
-    // after activity arrive sooner, and an idle follower costs 1 request/s.
+    // Poll from 25 ms after activity to 1 s while idle.
     let next = from;
     let idle = 25;
     while (!signal?.aborted) {
@@ -58,7 +56,6 @@ export class HttpStreamProvider implements StreamProvider {
       else { await delay(idle, signal); idle = Math.min(idle * 2, 1000); }
     }
   }
-  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> { await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); const input = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); for (const item of await this.#request("children", await encodeHttpRequest("children", input))) yield item; }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
     if (request.parent !== undefined) validatePathValue(request.parent);
@@ -137,12 +134,7 @@ export class HttpStreamProvider implements StreamProvider {
   }
 }
 
-/**
- * Decode the small error envelope shared by hosted Stream endpoints. Rust
- * owns the error-code set and its public projection. Unknown or malformed
- * bodies stay transport failures so arbitrary server strings cannot become
- * typed domain errors.
- */
+/** Unknown peer error codes remain transport failures. */
 async function hostedError(route: string, text: string, status: number): Promise<StreamError> {
   const fallback = text || `HTTP ${status}`;
   const details = parseHostedError(text);

@@ -19,7 +19,7 @@ fn validate_text<'a>(
         for ch in std::iter::once(None).chain(part.chars().map(Some)) {
             if let Some(io) = work.as_deref_mut() {
                 io.check_cancellation()?;
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             if part.is_empty() || ch.is_some_and(char::is_control) {
                 return Err(invalid(reason));

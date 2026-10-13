@@ -1,4 +1,5 @@
 use super::*;
+use crate::wire_codec::CodecQuota;
 
 impl<P: StreamProvider> StreamAggregate<P> {
     pub(super) async fn validate_task_admission_content_with_work(
@@ -27,119 +28,65 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .ok_or_else(|| guarded_boundary(work, crate::wire::ErrorCode::Unsupported, reason))?;
         if let Action::PlanEffect { result_schema, .. } = action {
             match work.as_deref_mut() {
-                Some(observer) => {
-                    history::verify_content_with_work(observer, verifier.as_ref(), reference)
-                        .await?
+                Some(io) => {
+                    history::verify_content_with_work(io, verifier.as_ref(), reference).await?
                 }
                 None => {
                     verified_content_bytes(
                         verifier.as_ref(),
                         reference,
-                        (reference).descriptor().byte_length(),
+                        reference.descriptor().byte_length(),
                         None,
                     )
-                    .await
-                    .map(|(bytes, _)| bytes)?;
+                    .await?;
                 }
             }
-            let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
-            let (bytes, claim) = Self::read_admission_content_with_work(
+            let mut quota = CodecQuota::new(work, 0)?;
+            let (bytes, held) = Self::read_admission_content_with_work(
                 verifier.as_ref(),
                 result_schema,
-                scratch.work(),
+                quota.work(),
             )
             .await?;
-            scratch.adopt(claim)?;
-            let validated =
-                crate::effects::validate_schema_bytes(result_schema, &bytes, scratch.work());
-            drop(bytes);
-            let released = scratch.relinquish(claim);
-            return match validated {
-                Ok(()) => released,
-                Err(error) => {
-                    let _ = released;
-                    Err(error)
-                }
-            };
+            quota.adopt(held)?;
+            return crate::effects::validate_schema_bytes(result_schema, &bytes, quota.work());
         }
-        if let Action::ResolveEffect { observation } = action {
-            let effect = self.reducer.effect(observation.effect_id).ok_or_else(|| {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work
-                    .as_ref()
-                    .is_some_and(|work| work.original_native_work().is_some())
-                {
-                    return Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::NotFound,
-                        reason: "effect is not found",
-                    };
-                }
-                Error::NotFound(format!("effect {}", observation.effect_id))
-            })?;
-            let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
-            let (bytes, claim) = Self::read_admission_content_with_work(
-                verifier.as_ref(),
-                reference,
-                scratch.work(),
-            )
-            .await?;
-            scratch.adopt(claim)?;
-            let (schema_bytes, schema_claim) = Self::read_admission_content_with_work(
-                verifier.as_ref(),
-                &effect.result_schema,
-                scratch.work(),
-            )
-            .await?;
-            scratch.adopt(schema_claim)?;
-            let validated = crate::effects::validate_result_bytes(
-                &effect.result_schema,
-                &schema_bytes,
-                reference,
-                &bytes,
-                scratch.work(),
-            );
-            drop(schema_bytes);
-            drop(bytes);
-            let retained = scratch.retained();
-            let released = scratch.relinquish(retained);
-            return match validated {
-                Ok(()) => released,
-                Err(error) => {
-                    let _ = released;
-                    Err(error)
-                }
-            };
+        let mut quota = CodecQuota::new(work, 0)?;
+        let (bytes, held) =
+            Self::read_admission_content_with_work(verifier.as_ref(), reference, quota.work())
+                .await?;
+        quota.adopt(held)?;
+        match action {
+            Action::OpenInteraction { ticket } => {
+                let request = ticket.validate_request_bytes(&bytes, quota.work())?;
+                quota.adopt(request.1)?;
+                Ok(())
+            }
+            Action::ResolveEffect { observation } => {
+                let effect = self.reducer.effect(observation.effect_id).ok_or_else(|| {
+                    guarded_boundary(
+                        quota.work(),
+                        crate::wire::ErrorCode::NotFound,
+                        "effect is not found",
+                    )
+                })?;
+                let (schema, held) = Self::read_admission_content_with_work(
+                    verifier.as_ref(),
+                    &effect.result_schema,
+                    quota.work(),
+                )
+                .await?;
+                quota.adopt(held)?;
+                crate::effects::validate_result_bytes(
+                    &effect.result_schema,
+                    &schema,
+                    reference,
+                    &bytes,
+                    quota.work(),
+                )
+            }
+            _ => unreachable!("content action selected above"),
         }
-        if let Action::OpenInteraction { ticket } = action {
-            let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
-            let (bytes, claim) = Self::read_admission_content_with_work(
-                verifier.as_ref(),
-                reference,
-                scratch.work(),
-            )
-            .await?;
-            scratch.adopt(claim)?;
-            let validated = ticket
-                .validate_request_bytes(&bytes, scratch.work())
-                .and_then(|request| {
-                    let measured = request.1;
-                    drop(request);
-                    scratch
-                        .work()
-                        .as_deref_mut()
-                        .map_or(Ok(()), |io| io.release_owned(measured))
-                });
-            drop(bytes);
-            let released = scratch.relinquish(claim);
-            return match validated {
-                Ok(()) => released,
-                Err(error) => {
-                    let _ = released;
-                    Err(error)
-                }
-            };
-        }
-        Ok(())
     }
 
     pub(super) async fn read_admission_content_with_work(
@@ -148,7 +95,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
         match work.as_deref_mut() {
-            Some(observer) => history::read_content_with_work(observer, verifier, reference).await,
+            Some(io) => history::read_content_with_work(io, verifier, reference).await,
             None => verifier
                 .read(reference, reference.descriptor().byte_length(), None)?
                 .await
@@ -156,7 +103,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-    #[cfg(feature = "filesystem")]
     pub(super) async fn validate_interaction_part_with_work(
         &self,
         ticket: &crate::interaction::InteractionTicket,
@@ -171,45 +117,33 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "interaction content verifier is not bound",
             )
         })?;
-        let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
-        let (request_bytes, request_claim) = Self::read_admission_content_with_work(
+        let mut quota = CodecQuota::new(work, 0)?;
+        let (request_bytes, held) = Self::read_admission_content_with_work(
             verifier.as_ref(),
             &ticket.request,
-            scratch.work(),
+            quota.work(),
         )
         .await?;
-        scratch.adopt(request_claim)?;
-        let request = ticket.validate_request_bytes(&request_bytes, scratch.work())?;
-        scratch.adopt(request.1)?;
-        let (bytes, claim) =
-            Self::read_admission_content_with_work(verifier.as_ref(), reference, scratch.work())
+        quota.adopt(held)?;
+        let request = ticket.validate_request_bytes(&request_bytes, quota.work())?;
+        quota.adopt(request.1)?;
+        let (bytes, held) =
+            Self::read_admission_content_with_work(verifier.as_ref(), reference, quota.work())
                 .await?;
-        scratch.adopt(claim)?;
+        quota.adopt(held)?;
         match detail_outcome {
-            Some(outcome) => ticket.validate_decision_bytes(
-                &request.0,
-                outcome,
-                reference,
-                &bytes,
-                scratch.work(),
-            ),
-            None => ticket.validate_answer_bytes(&request.0, reference, &bytes, scratch.work()),
+            Some(outcome) => {
+                ticket.validate_decision_bytes(&request.0, outcome, reference, &bytes, quota.work())
+            }
+            None => ticket.validate_answer_bytes(&request.0, reference, &bytes, quota.work()),
         }
     }
-
     pub(super) async fn validate_admission_content(
         &self,
         action: &crate::core::Action,
     ) -> Result<()> {
         self.validate_interaction_admission(action).await?;
         self.validate_extension_admission_content(action).await?;
-        if matches!(
-            action,
-            Action::PlanEffect { .. } | Action::ResolveEffect { .. }
-        ) {
-            self.validate_task_admission_content_with_work(action, &mut None)
-                .await?;
-        }
         let message = match action {
             crate::core::Action::AppendConversationMessage { message } => Some(message.as_ref()),
             crate::core::Action::PublishProjectMerge { receipt } => Some(&receipt.notice),
@@ -226,8 +160,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 (&message.content).descriptor().byte_length(),
                 None,
             )
-            .await?
-            .0;
+            .await?;
             match &message.attachments {
                 ReferencedAttachments::Inline { items } => {
                     for attachment in items {
@@ -237,8 +170,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                             (&attachment.file).descriptor().byte_length(),
                             None,
                         )
-                        .await?
-                        .0;
+                        .await?;
                     }
                 }
                 ReferencedAttachments::Manifest {
@@ -262,11 +194,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     (reference).descriptor().byte_length(),
                     None,
                 )
-                .await?
-                .0;
+                .await?;
             }
         }
-
+        self.validate_task_admission_content_with_work(action, &mut None)
+            .await?;
         if let crate::core::Action::PublishProjectMerge { receipt } = action {
             let verifier = self
                 .merge_verifier
@@ -279,19 +211,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     pub(super) async fn validate_interaction_admission(&self, action: &Action) -> Result<()> {
         let Action::ResolveInteraction { resolution } = action else {
-            if let Action::OpenInteraction { ticket } = action {
-                let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                    Error::Unsupported("interaction content verifier is not bound".into())
-                })?;
-                let bytes = verifier
-                    .read(
-                        &ticket.request,
-                        ticket.request.descriptor().byte_length(),
-                        None,
-                    )?
-                    .await?;
-                ticket.validate_request_bytes(&bytes, &mut None)?;
-            }
             return Ok(());
         };
         let (ticket, _) = self
@@ -312,41 +231,18 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 ));
             }
         }
-        let answer = match &resolution.outcome {
-            InteractionOutcome::Answered { answer } => Some(answer),
-            _ => None,
-        };
-        if answer.is_none() && resolution.detail.is_none() {
-            return Ok(());
-        }
-        let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-            Error::Unsupported("interaction content verifier is not bound".into())
-        })?;
-        let bytes = verifier
-            .read(
-                &ticket.request,
-                ticket.request.descriptor().byte_length(),
-                None,
-            )?
-            .await?;
-        let request = ticket.validate_request_bytes(&bytes, &mut None)?.0;
-        if let Some(answer) = answer {
-            let bytes = verifier
-                .read(answer, answer.descriptor().byte_length(), None)?
+        if let InteractionOutcome::Answered { answer } = &resolution.outcome {
+            self.validate_interaction_part_with_work(ticket, answer, None, &mut None)
                 .await?;
-            ticket.validate_answer_bytes(&request, answer, &bytes, &mut None)?;
         }
         if let Some(detail) = &resolution.detail {
-            let bytes = verifier
-                .read(detail, detail.descriptor().byte_length(), None)?
-                .await?;
-            ticket.validate_decision_bytes(
-                &request,
-                &resolution.outcome,
+            self.validate_interaction_part_with_work(
+                ticket,
                 detail,
-                &bytes,
+                Some(&resolution.outcome),
                 &mut None,
-            )?;
+            )
+            .await?;
         }
         Ok(())
     }
@@ -362,71 +258,30 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() {
             return Ok(());
         }
-        let path = reference.authority.stream_path(work)?;
-        let path_bytes = if work.is_some() {
-            path.capacity() as u64
-        } else {
-            0
-        };
-        let read = match operations::stream(&self.client, &path, work) {
-            Ok(stream) => {
-                operations::one_record(
-                    &self.client,
-                    stream.0.path(),
-                    reference.revision.saturating_sub(1),
-                    work,
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        drop(path);
-        let released_path = match work.as_deref_mut() {
-            Some(observer) => observer.release_owned(path_bytes),
-            None => Ok(()),
-        };
-        let record = match read {
-            Ok(record) => {
-                released_path?;
-                record
-            }
-            Err(error) => {
-                let _ = released_path;
-                return Err(error);
-            }
-        }
-        .ok_or_else(|| guarded_boundary(work, crate::wire::ErrorCode::NotFound, "causal event"))?;
-        let raw = operations::sdk_record_retained_bytes(&record, work);
-        let decoded = crate::wire_codec::decode_event(&record.value, work);
-        drop(record);
-        let released_record = match work.as_deref_mut() {
-            Some(observer) => observer.release_owned(raw),
-            None => Ok(()),
-        };
-        let ((authority, event), event_retained) = match decoded {
-            Ok(decoded) => {
-                released_record?;
-                decoded
-            }
-            Err(error) => {
-                let _ = released_record;
-                return Err(error);
-            }
-        };
-        let valid = authority == reference.authority && event.revision == reference.revision;
-        let owned = if work.is_some() {
-            event_retained
-                .checked_add(authority.id.capacity() as u64)
-                .ok_or_else(|| Error::Invalid("causal record custody overflows".into()))?
-        } else {
-            0
-        };
-        drop(event);
-        drop(authority);
-        if let Some(work) = work.as_deref_mut() {
-            work.release_owned(owned)?;
-        }
-        if !valid {
+        let mut quota = CodecQuota::new(work, 0)?;
+        let (path, held) =
+            operations::publication_path(&reference.authority, "harness/v2/", None, quota.work())?;
+        quota.adopt(held)?;
+        let record = operations::one_record(
+            &self.client,
+            &path,
+            reference.revision.saturating_sub(1),
+            quota.work(),
+        )
+        .await?
+        .ok_or_else(|| {
+            guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::NotFound,
+                "causal event",
+            )
+        })?;
+        let held = operations::sdk_record_retained_bytes(&record, quota.work());
+        quota.adopt(held)?;
+        let ((authority, event), held) =
+            crate::wire_codec::decode_event(&record.value, quota.work())?;
+        quota.adopt(held + authority.id.capacity() as u64)?;
+        if authority != reference.authority || event.revision != reference.revision {
             return Err(Error::Invalid(
                 "causal event reference does not resolve exactly".into(),
             ));

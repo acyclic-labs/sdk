@@ -10,7 +10,7 @@ import { type ProjectWorkspaceProvider } from "./project.js";
 import { type InteractionId, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { pinForkParentSnapshot } from "./content.js";
 import { type ForkParentSnapshot, type ForkReport, type ForkPublisher, type ForkSeed } from "./fork.js";
-import { TaskContext, ToolContext } from "./task-context.js";
+import { TaskContext } from "./task-context.js";
 import { type GroupPolicy } from "./enums.js";
 import { TaskGroup } from "./task-group.js";
 import { validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm, validateModelContent, prepareModelRequest as prepareModelRequestWasm, type ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -445,7 +445,7 @@ export class AgentHarness {
     await this.assertPolicyIdentity();
     if (decision.kind === "deny") throw new Error(decision.reason);
     const approvals = policyApprovals(decision, policy?.identity() ?? null);
-    return { admittedInput, parsedInput, publishOutput, callId, invocation, approvals };
+    return { admittedInput, publishOutput, invocation, approvals };
   }
   async call<Input, Output>(tool: ToolRef<Input, Output>, input: Input, signal = new AbortController().signal,
     taskId?: TaskId, operationId?: string, providerCallId?: string): Promise<Output> {
@@ -453,7 +453,7 @@ export class AgentHarness {
   }
   async #invokeTool<Input, Output>(tool: ToolRef<Input, Output>, input: Input, signal: AbortSignal,
     taskId?: TaskId, operationId?: string, providerCallId?: string): Promise<{ value: Output; invocation: ToolInvocation<Input> }> {
-    const { admittedInput, parsedInput, publishOutput, callId, invocation, approvals } =
+    const { admittedInput, publishOutput, invocation, approvals } =
       await this.#prepareToolCall(tool, input, signal, operationId, providerCallId);
     const actionInstance = invocation.operationId;
     for (const [approvalIndex, request] of approvals.entries()) {
@@ -471,7 +471,7 @@ export class AgentHarness {
           output_schema: tool.definition.outputSchema,
           projection_schema: tool.definition.projectionSchema,
         },
-        invocation: { call_id: callId, name: invocation.name, arguments: admittedInput },
+        invocation: { call_id: invocation.callId, name: invocation.name, arguments: admittedInput },
       });
       const approval = contracts.validate("approval_binding", {
         operation_id: contracts.idFromDigest(actionDigest, "operation"),
@@ -495,9 +495,11 @@ export class AgentHarness {
     }
     const registered = (erased as unknown as RegisteredTool<Input, Output>);
     if (registered.handle !== tool) throw new Error("tool definition is not registered or no longer active");
-    if (registered.machine) throw new Error("resumable tool requires callDurable and its owner host");
-    if (registered.definition.handler) return { invocation,
-      value: publishOutput(await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput)) };
+    if (registered.handle.machine) throw new Error("resumable tool requires callDurable and its owner host");
+    if (registered.definition.handler) {
+      const context = Object.assign(new TaskContext(this, signal, taskId, false), { callId: invocation.callId, operationId: invocation.operationId });
+      return { invocation, value: publishOutput(await registered.definition.handler(context, invocation.arguments)) };
+    }
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
     return { invocation, value: publishOutput((await registered.executor.execute(invocation)).value) };
   }
@@ -506,8 +508,8 @@ export class AgentHarness {
     if (!this.components.state?.executeTool || !operationId || !taskId) {
       throw new Error("durable tool calls require task state, task identity, and stable operation ID");
     }
-    const { parsedInput, publishOutput } = await this.#prepareToolCall(tool, input, signal, operationId);
-    const outcome = await this.components.state.executeTool(taskId, operationId, tool, parsedInput, this);
+    const { invocation, publishOutput } = await this.#prepareToolCall(tool, input, signal, operationId);
+    const outcome = await this.components.state.executeTool(taskId, operationId, tool, invocation.arguments, this);
     return outcome.kind === "succeeded"
       ? { kind: "succeeded", value: publishOutput(outcome.value) }
       : outcome;
@@ -730,8 +732,7 @@ export class AgentHarness {
       if (!selected) throw new Error(`model-visible tool revision is ambiguous: ${name}`);
       const tool = this.#tools.get(componentKey(name, selected));
       if (!tool) throw new Error(`selected tool revision is not registered: ${name}@${selected}`);
-      const { revision, description, inputSchema, outputSchema, projection } = tool.definition;
-      return { name, revision, description, inputSchema, outputSchema, projectionSchema: projection.schema };
+      return tool.handle.definition;
     });
   }
 }

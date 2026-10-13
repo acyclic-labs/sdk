@@ -12,8 +12,8 @@ fn clone_from_a_separate_held_source_is_cow_and_cannot_escape()
     std::fs::create_dir(&source_path)?;
     std::fs::create_dir(&view_path)?;
     std::fs::write(source_path.join("file"), b"original")?;
-    let source = HostRoot::open(&source_path, &mut ordinary_work()).map_err(ordinary_error)?;
-    let view = HostRoot::open(&view_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let source = test_root(&source_path)?;
+    let view = test_root(&view_path)?;
     if !view
         .clone_file_from(
             &source,
@@ -62,7 +62,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
     let original = root_path.join("file");
     std::fs::write(&original, b"old")?;
     let owner = std::fs::metadata(&original)?;
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     let target = open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?;
     let moved = root_path.join("moved");
     std::fs::rename(&original, &moved)?;
@@ -115,7 +115,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
             },
             &mut work
         ),
-        Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
         open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
@@ -125,7 +125,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
             },
             &mut work
         ),
-        Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     Ok(())
 }
@@ -141,7 +141,7 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
     let socket = temporary.path().join("socket");
     let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(temporary.path())?;
     open_macos_metadata_target(&root.directory, Path::new("pipe"), &mut work)?.apply(
         FileMetadata {
             posix_mode: MetadataField::Value(0o640),
@@ -171,7 +171,7 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
             },
             &mut work
         ),
-        Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     let old_socket = temporary.path().join("old-socket");
     let pending = open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?;
@@ -192,7 +192,7 @@ fn special_node_creation_stays_inside_the_held_root() -> Result<(), Box<dyn std:
     std::fs::create_dir(&root_path)?;
     std::fs::create_dir(&outside)?;
     std::os::unix::fs::symlink(&outside, root_path.join("pivot"))?;
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     assert!(
         root.create_fifo_held(Path::new("pivot/pipe"), 0o600, &mut ordinary_work())
             .map_err(ordinary_error)

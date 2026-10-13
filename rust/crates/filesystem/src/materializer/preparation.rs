@@ -1,175 +1,28 @@
 use super::*;
+#[cfg(feature = "native-mount")]
 use std::sync::Arc;
 
-/// Accepted native work whose durable completion is uncertain.
+/// Accepted staging whose completion has not been acknowledged durably.
 #[derive(Debug)]
 pub struct NativeStageUncertainty<E> {
-    primary: Box<Option<E>>,
+    cause: Box<Option<E>>,
     /// Last acknowledged work prefix.
     pub last_durable_work: crate::WorkCounters,
-    /// Actual work observed by this invocation.
+    /// Actual invocation work.
     pub observed_work: crate::WorkCounters,
-    allocation: NativeAllocation,
+    _allocation: NativeAllocation,
 }
 impl<E> NativeStageUncertainty<E> {
-    /// Original typed cause.
+    /// Original staging failure.
     pub fn cause(&self) -> &E {
-        self.primary
-            .as_ref()
-            .as_ref()
-            .expect("finished uncertainty")
-    }
-    fn reserve(
-        work: &NativeMaterializationWork,
-    ) -> Result<(Box<Option<E>>, NativeAllocation), NativeTreeMaterializationError> {
-        let allocation = work.claim(
-            std::mem::size_of::<Option<E>>() as u64,
-            u64::from(std::mem::size_of::<Option<E>>() != 0),
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        Ok((Box::new(None), allocation))
-    }
-    fn finish(
-        slot: (Box<Option<E>>, NativeAllocation),
-        cause: E,
-        last_durable_work: crate::WorkCounters,
-        observed_work: crate::WorkCounters,
-    ) -> Self {
-        let (mut primary, allocation) = slot;
-        *primary = Some(cause);
-        Self {
-            primary,
-            allocation,
-            last_durable_work,
-            observed_work,
-        }
-    }
-}
-impl<E: std::fmt::Display> std::fmt::Display for NativeStageUncertainty<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "native stage completion uncertain: {}", self.cause())
-    }
-}
-impl<E: std::error::Error + 'static> std::error::Error for NativeStageUncertainty<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.cause())
+        self.cause.as_ref().as_ref().expect("staging failure")
     }
 }
 
+#[cfg(feature = "native-mount")]
 impl<S: MaterializationJournalStore>
     JournaledMaterializer<S, Arc<NativeTreeMaterializationBackend>>
 {
-    /// Stages selected generations through the same prepaid journal.
-    #[cfg(feature = "native-mount")]
-    pub(super) async fn stage_generation<A, O, E, F, Fut>(
-        &self,
-        generation: &crate::Generation<A, O>,
-        selections: &[String],
-        options: &crate::MaterializeOptions,
-        journal: MaterializationJournal,
-        before_effect: &mut F,
-    ) -> Result<MaterializationJournal, E>
-    where
-        A: crate::AsyncAuthorityStore,
-        O: crate::AsyncObjectStore,
-        E: From<crate::MaterializeError>
-            + From<crate::WorkspaceError>
-            + From<MaterializationError<S::Error, NativeTreeMaterializationError>>
-            + From<NativeStageUncertainty<E>>
-            + Send,
-        F: FnMut() -> Fut + Send,
-        Fut: Future<Output = Result<(), E>> + Send,
-    {
-        let work = self.backend.work();
-        let slot = NativeStageUncertainty::<E>::reserve(&work)
-            .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-        let state = parking_lot::Mutex::new((
-            Some(journal),
-            None::<S::ActionCompletion<'_>>,
-            None::<crate::WorkCounters>,
-        ));
-        let reader = generation
-            .workspace()
-            .checkout(
-                crate::model::GenerationSelector::Exact(generation.id()),
-                crate::model::CheckoutMode::read_only_pinned(),
-                work,
-                work.cancellation(),
-            )
-            .await
-            .and_then(|checkout| {
-                checkout
-                    .into_pinned_reader_with_native_work(work, work.cancellation())
-                    .map_err(crate::WorkspaceError::from)
-            })
-            .map_err(E::from)?;
-        let mut control = |phase| {
-            use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
-            let owner = if phase == Before {
-                Some(before_effect())
-            } else {
-                None
-            };
-            let state = &state;
-            async move {
-                match phase {
-                    Before => {
-                        let journal = state.lock().0.take().ok_or_else(|| {
-                            E::from(MaterializationError::Backend(
-                                NativeTreeMaterializationError::InvalidLayout,
-                            ))
-                        })?;
-                        owner.expect("before action owns guard").await?;
-                        self.verify_allocation(&journal).await.map_err(E::from)?;
-                        let last = journal.work;
-                        let completion = self
-                            .store
-                            .prepare_action(journal)
-                            .await
-                            .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                        *state.lock() = (None, Some(completion), Some(last));
-                    }
-                    Completed => {
-                        let completion = state.lock().1.take().ok_or_else(|| {
-                            E::from(MaterializationError::Backend(
-                                NativeTreeMaterializationError::InvalidLayout,
-                            ))
-                        })?;
-                        let journal = completion
-                            .await
-                            .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                        *state.lock() = (Some(journal), None, None);
-                    }
-                }
-                Ok(())
-            }
-        };
-        let result = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
-            &reader,
-            selections,
-            options,
-            &work,
-            &mut control,
-        )
-        .await;
-        drop(control);
-        let (journal, completion, last) = state.into_inner();
-        drop(completion);
-        match (result, journal, last) {
-            (Ok(_), Some(journal), None) => Ok(journal),
-            (Err(cause), _, Some(last)) => Err(E::from(NativeStageUncertainty::finish(
-                slot,
-                cause,
-                last,
-                work.receipt(),
-            ))),
-            (Err(cause), _, None) => Err(cause),
-            _ => Err(E::from(MaterializationError::Backend(
-                NativeTreeMaterializationError::InvalidLayout,
-            ))),
-        }
-    }
-    #[cfg(feature = "native-mount")]
     pub(super) async fn reset_stage<E, F, Fut>(
         &self,
         journal: MaterializationJournal,
@@ -183,262 +36,192 @@ impl<S: MaterializationJournalStore>
         Fut: Future<Output = Result<(), E>> + Send,
     {
         let work = self.backend.work();
-        let slot = NativeStageUncertainty::<E>::reserve(&work)
+        let allocation = work
+            .claim(
+                std::mem::size_of::<Option<E>>() as u64,
+                u64::from(std::mem::size_of::<Option<E>>() != 0),
+                crate::WorkCounters::UNCHARGED,
+            )
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
+        let mut cause = Box::new(None);
         before_effect().await?;
-        self.verify_allocation(&journal).await.map_err(E::from)?;
-        let last = journal.work;
+        self.verify_effect_context(&journal)
+            .await
+            .map_err(E::from)?;
+        let last_durable_work = journal.work;
         let completion = self
             .store
             .prepare_action(journal)
             .await
             .map_err(|error| E::from(MaterializationError::Store(error)))?;
-        let identity = match self.backend.reset_target_directory(relative).await {
-            Ok(identity) => identity,
-            Err(error) => {
-                return Err(E::from(NativeStageUncertainty::finish(
-                    slot,
-                    E::from(MaterializationError::Backend(error)),
-                    last,
-                    work.receipt(),
-                )));
-            }
-        };
-        let journal = completion.await.map_err(|error| {
-            E::from(NativeStageUncertainty::finish(
-                slot,
-                E::from(MaterializationError::Store(error)),
-                last,
-                work.receipt(),
-            ))
-        })?;
-        Ok((journal, identity))
+        let result = async {
+            let identity = self
+                .backend
+                .reset_target_directory(relative)
+                .await
+                .map_err(|error| E::from(MaterializationError::Backend(error)))?;
+            let journal = completion
+                .await
+                .map_err(|error| E::from(MaterializationError::Store(error)))?;
+            Ok((journal, identity))
+        }
+        .await;
+        result.map_err(|error| {
+            *cause = Some(error);
+            E::from(NativeStageUncertainty {
+                cause,
+                last_durable_work,
+                observed_work: work.receipt(),
+                _allocation: allocation,
+            })
+        })
     }
 }
-impl NativeTreeMaterializationBackend {
-    pub(super) async fn prepare_allocations<S, F, Fut, E>(
-        store: &S,
-        mut journal: MaterializationJournal,
-        root: &Path,
-        operation: &Path,
+impl<E: std::fmt::Display> std::fmt::Display for NativeStageUncertainty<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "native staging completion uncertain: {}", self.cause())
+    }
+}
+impl<E: std::error::Error + 'static> std::error::Error for NativeStageUncertainty<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause())
+    }
+}
+
+#[cfg(feature = "native-mount")]
+impl<S: MaterializationJournalStore>
+    JournaledMaterializer<S, Arc<NativeTreeMaterializationBackend>>
+{
+    /// Stages through this store's fenced journal and the caller's existing work.
+    pub fn stage_generation<A, O, E, F, Fut>(
+        &self,
+        generation: &crate::Generation<A, O>,
+        selections: &[String],
+        options: &crate::MaterializeOptions,
+        journal: MaterializationJournal,
         work: &NativeMaterializationWork,
         before_effect: &mut F,
-    ) -> Result<MaterializationJournal, E>
+    ) -> impl Future<Output = Result<MaterializationJournal, E>> + Send
     where
-        S: MaterializationJournalStore,
-        E: From<MaterializationError<S::Error, NativeTreeMaterializationError>>,
+        A: crate::AsyncAuthorityStore,
+        O: crate::AsyncObjectStore,
+        E: From<crate::MaterializeError>
+            + From<crate::WorkspaceError>
+            + From<MaterializationError<S::Error, NativeTreeMaterializationError>>
+            + From<NativeStageUncertainty<E>>
+            + Send,
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<(), E>> + Send,
     {
-        let backend = MaterializationError::<S::Error, NativeTreeMaterializationError>::Backend;
-        let incompatible =
-            MaterializationError::<S::Error, NativeTreeMaterializationError>::IncompatibleJournal;
-        let expected_root =
-            crate::NativeRootIdentity::from_bytes(journal.root_identity.ok_or(incompatible)?);
-        let mut progress = journal.preparation_progress.ok_or(
-            MaterializationError::<S::Error, NativeTreeMaterializationError>::IncompatibleJournal,
-        )?;
-        if !valid_journal(&journal, journal.plan.operation_id) {
-            return Err(MaterializationError::<S::Error, NativeTreeMaterializationError>::IncompatibleJournal.into());
-        }
-        check_native_plan(&journal.plan, work).map_err(backend)?;
-        if progress.pending.is_some() {
-            return Err(backend(NativeTreeMaterializationError::IndeterminatePreparation).into());
-        }
-        for step in [
-            MaterializationPreparationAllocation::Operation,
-            MaterializationPreparationAllocation::Target,
-            MaterializationPreparationAllocation::Backup,
-        ] {
-            let known = match step {
-                MaterializationPreparationAllocation::Operation => progress.operation,
-                MaterializationPreparationAllocation::Target => progress.target,
-                MaterializationPreparationAllocation::Backup => progress.backup,
+        async move {
+            if !work.shares_ledger(self.backend.work())
+                || !journal.is_valid_for(journal.plan.operation_id)
+                || journal.phase != MaterializationPhase::Preparing
+                || journal.preparation_progress.is_some()
+                || !journal.preimages.is_empty()
+            {
+                return Err(E::from(MaterializationError::Backend(
+                    NativeTreeMaterializationError::InvalidLayout,
+                )));
+            }
+            let _allocation = work
+                .claim(
+                    std::mem::size_of::<Option<E>>() as u64,
+                    u64::from(std::mem::size_of::<Option<E>>() != 0),
+                    crate::WorkCounters::UNCHARGED,
+                )
+                .map_err(|error| E::from(MaterializationError::Backend(error)))?;
+            let mut cause = Box::new(None);
+            let state = parking_lot::Mutex::new((
+                Some(journal),
+                None::<S::ActionCompletion<'_>>,
+                None::<crate::WorkCounters>,
+            ));
+            let reader = generation
+                .workspace()
+                .checkout(
+                    crate::model::GenerationSelector::Exact(generation.id()),
+                    crate::model::CheckoutMode::read_only_pinned(),
+                    work,
+                    work.cancellation(),
+                )
+                .await
+                .and_then(|checkout| {
+                    checkout
+                        .into_pinned_reader_with_native_work(work, work.cancellation())
+                        .map_err(crate::WorkspaceError::from)
+                })
+                .map_err(E::from)?;
+            let mut control = |phase| {
+                use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
+                let authorized = if phase == Before {
+                    Some(before_effect())
+                } else {
+                    None
+                };
+                let state = &state;
+                async move {
+                    match phase {
+                        Before => {
+                            authorized.expect("effect authorization").await?;
+                            let journal = state.lock().0.take().ok_or_else(|| {
+                                E::from(MaterializationError::Backend(
+                                    NativeTreeMaterializationError::InvalidLayout,
+                                ))
+                            })?;
+                            self.verify_effect_context(&journal)
+                                .await
+                                .map_err(E::from)?;
+                            let last = journal.work;
+                            let completion = self
+                                .store
+                                .prepare_action(journal)
+                                .await
+                                .map_err(|error| E::from(MaterializationError::Store(error)))?;
+                            *state.lock() = (None, Some(completion), Some(last));
+                        }
+                        Completed => {
+                            let completion = state.lock().1.take().ok_or_else(|| {
+                                E::from(MaterializationError::Backend(
+                                    NativeTreeMaterializationError::InvalidLayout,
+                                ))
+                            })?;
+                            let journal = completion
+                                .await
+                                .map_err(|error| E::from(MaterializationError::Store(error)))?;
+                            *state.lock() = (Some(journal), None, None);
+                        }
+                    }
+                    Ok(())
+                }
             };
-            if known.is_some() {
-                continue;
-            }
-            before_effect().await?;
-            verify_preparation(root, expected_root, operation, progress, work).map_err(backend)?;
-            let current = store
-                .load(journal.plan.operation_id)
-                .await
-                .map_err(MaterializationError::<S::Error, NativeTreeMaterializationError>::Store)?;
-            if current.as_ref() != Some(&journal) {
-                return Err(
-                    MaterializationError::<S::Error, NativeTreeMaterializationError>::PlanConflict
-                        .into(),
-                );
-            }
-            progress.pending = Some(step);
-            journal.preparation_progress = Some(progress);
-            journal.work = work.journal_work().map_err(backend)?;
-            let (stored, pending) =
-                compare_next_journal::<S, NativeTreeMaterializationError>(store, journal).await?;
-            journal = pending;
-            if !stored {
-                return Err(
-                    MaterializationError::<S::Error, NativeTreeMaterializationError>::Contended
-                        .into(),
-                );
-            }
-            let current = store
-                .load(journal.plan.operation_id)
-                .await
-                .map_err(MaterializationError::<S::Error, NativeTreeMaterializationError>::Store)?;
-            if current.as_ref() != Some(&journal) {
-                return Err(
-                    MaterializationError::<S::Error, NativeTreeMaterializationError>::PlanConflict
-                        .into(),
-                );
-            }
-            verify_preparation(root, expected_root, operation, progress, work).map_err(backend)?;
-            let parent = crate::native_host::HostRoot::open(
-                operation
-                    .parent()
-                    .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-                &mut &*work,
+            let result = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
+                &reader,
+                selections,
+                options,
+                work,
+                &mut control,
             )
-            .map_err(backend)?;
-            let leaf = Path::new(
-                operation
-                    .file_name()
-                    .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-            );
-            let (parent, leaf) = match step {
-                MaterializationPreparationAllocation::Operation => (parent, leaf),
-                _ => {
-                    let operation = recorded_child(
-                        &parent,
-                        leaf,
-                        progress.operation.ok_or_else(|| {
-                            backend(NativeTreeMaterializationError::InvalidLayout)
-                        })?,
-                        work,
-                    )
-                    .map_err(backend)?;
-                    (
-                        operation,
-                        if step == MaterializationPreparationAllocation::Target {
-                            Path::new("target")
-                        } else {
-                            Path::new("backup")
-                        },
-                    )
+            .await;
+            drop(control);
+            let (journal, completion, last) = state.into_inner();
+            drop(completion);
+            match (result, journal, last) {
+                (Ok(_), Some(journal), None) => Ok(journal),
+                (Err(error), _, Some(last_durable_work)) => {
+                    *cause = Some(error);
+                    Err(E::from(NativeStageUncertainty {
+                        cause,
+                        last_durable_work,
+                        observed_work: work.receipt(),
+                        _allocation,
+                    }))
                 }
-            };
-            work.with_original_leaf(|state| parent.create_dir(leaf, state))
-                .map_err(native_materialization_work_error)
-                .map_err(backend)?;
-            crate::native_host::sync_directory_held(&parent.directory, &mut &*work)
-                .map_err(backend)?;
-            let directory = parent.open_dir_held(leaf, &mut &*work).map_err(backend)?;
-            let identity = crate::native_host::directory_identity(&directory, &mut &*work)
-                .map_err(backend)?
-                .to_bytes();
-            match step {
-                MaterializationPreparationAllocation::Operation => {
-                    progress.operation = Some(identity)
-                }
-                MaterializationPreparationAllocation::Target => progress.target = Some(identity),
-                MaterializationPreparationAllocation::Backup => progress.backup = Some(identity),
+                (Err(error), _, None) => Err(error),
+                _ => Err(E::from(MaterializationError::Backend(
+                    NativeTreeMaterializationError::InvalidLayout,
+                ))),
             }
-            progress.pending = None;
-            journal.preparation_progress = Some(progress);
-            journal.work = work.journal_work().map_err(backend)?;
-            let (stored, completed) =
-                compare_next_journal::<S, NativeTreeMaterializationError>(store, journal).await?;
-            journal = completed;
-            if !stored {
-                return Err(
-                    MaterializationError::<S::Error, NativeTreeMaterializationError>::Contended
-                        .into(),
-                );
-            }
-            before_effect().await?;
-            verify_preparation(root, expected_root, operation, progress, work).map_err(backend)?;
-        }
-        journal.preparation_identity = Some(MaterializationPreparationIdentity {
-            operation: progress
-                .operation
-                .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-            target: progress
-                .target
-                .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-            backup: progress
-                .backup
-                .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-        });
-        journal.preparation_progress = None;
-        journal.work = work.journal_work().map_err(backend)?;
-        let (stored, journal) =
-            compare_next_journal::<S, NativeTreeMaterializationError>(store, journal).await?;
-        if !stored {
-            return Err(
-                MaterializationError::<S::Error, NativeTreeMaterializationError>::Contended.into(),
-            );
-        }
-        Ok(journal)
-    }
-}
-fn recorded_child(
-    parent: &crate::native_host::HostRoot,
-    leaf: &Path,
-    expected: [u8; 16],
-    work: &NativeMaterializationWork,
-) -> Result<crate::native_host::HostRoot, NativeTreeMaterializationError> {
-    let directory = parent.open_dir_held(leaf, &mut &*work)?;
-    let actual = crate::native_host::directory_identity(&directory, &mut &*work)?;
-    let expected = crate::NativeRootIdentity::from_bytes(expected);
-    if actual != expected {
-        return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual });
-    }
-    Ok(crate::native_host::HostRoot {
-        directory,
-        identity: actual,
-    })
-}
-fn verify_preparation(
-    root: &Path,
-    expected: crate::NativeRootIdentity,
-    operation: &Path,
-    progress: MaterializationPreparationProgress,
-    work: &NativeMaterializationWork,
-) -> Result<(), NativeTreeMaterializationError> {
-    let actual = work.root_identity(root)?;
-    if actual != expected {
-        return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual });
-    }
-    let parent = crate::native_host::HostRoot::open(
-        operation
-            .parent()
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        &mut &*work,
-    )?;
-    let expected = crate::NativeRootIdentity::from_bytes(progress.parent);
-    if parent.identity() != expected {
-        return Err(NativeTreeMaterializationError::AllocationChanged {
-            expected,
-            actual: parent.identity(),
-        });
-    }
-    if let Some(identity) = progress.operation {
-        let operation = recorded_child(
-            &parent,
-            Path::new(
-                operation
-                    .file_name()
-                    .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-            ),
-            identity,
-            work,
-        )?;
-        if let Some(identity) = progress.target {
-            recorded_child(&operation, Path::new("target"), identity, work)?;
-        }
-        if let Some(identity) = progress.backup {
-            recorded_child(&operation, Path::new("backup"), identity, work)?;
         }
     }
-    Ok(())
 }

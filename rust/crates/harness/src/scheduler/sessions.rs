@@ -75,7 +75,7 @@ impl Scheduler {
                 return Err(diagnostic(work, Invalid, "placement labels are invalid"));
             }
         }
-        crate::contract::compile_json_schema_with_work(
+        crate::executor::compile_json_schema(
             &spec.entrypoint.result_schema,
             "entrypoint result",
             work,

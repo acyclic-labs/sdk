@@ -18,7 +18,10 @@ where
     ) -> Result<ApplyResult> {
         loop {
             let (copied, retained) = with_history_io(io, |work| {
-                CodecQuota::produce(work, |quota| crate::core::copy_ticket(ticket, quota))
+                CodecQuota::produce(work, |quota| crate::core::copy(ticket, quota, |value: &crate::interaction::InteractionTicket, work| {
+        value.request.validate(work)?;
+        crate::core::owned_bytes(value)
+    }))
             })?;
             let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
             let result = self
@@ -91,7 +94,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let scope = scope.copy(&mut work)?;
         let idempotency_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("interaction:{operation_id}"), work)
+            crate::executor::preparation_format(format_args!("interaction:{operation_id}"), work)
         })?)?;
         let hold = io
             .map(|io| {

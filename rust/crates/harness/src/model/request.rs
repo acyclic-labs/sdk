@@ -89,7 +89,7 @@ impl ModelRequest {
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
                         crate::executor::with_history_io(io, |work| {
-                            crate::contract::validate_json_schema_value(
+                            crate::executor::validate_json_schema_value(
                                 &tool.input_schema,
                                 arguments,
                                 "model tool arguments",
@@ -128,7 +128,7 @@ impl ModelRequest {
                                 let envelope =
                                     io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
                                 crate::executor::with_history_io(Some(io), |work| {
-                                    crate::contract::validate_json_schema_value(
+                                    crate::executor::validate_json_schema_value(
                                         &tool.projection_schema,
                                         &envelope.0,
                                         "model tool result",
@@ -139,7 +139,7 @@ impl ModelRequest {
                             _ => {
                                 let envelope = serde_json::to_value(content)
                                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                                crate::contract::validate_json_schema_value(
+                                crate::executor::validate_json_schema_value(
                                     &tool.projection_schema,
                                     &envelope,
                                     "model tool result",
@@ -209,31 +209,14 @@ impl PreparedModelRequest {
             if io.original_native_work().is_some() {
                 return Self::encode_admitted(request, limits, Some(io));
             }
-            // Guards outlive payloads if preparation fails.
             let request_hold;
             let bytes_hold;
             let request = request;
-            let before = io.receipt().items_examined;
+            // Bound JSON depth before the recursive capacity inventory.
             let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
             bytes_hold = io.guard_bytes(&bytes)?;
-            let items = io
-                .receipt()
-                .items_examined
-                .checked_sub(before)
-                .ok_or_else(|| Error::Invalid("model request encoding count underflow".into()))?;
-            let owned = items
-                .checked_mul(
-                    <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes(),
-                )
-                .and_then(|slots| slots.checked_mul(8))
-                .and_then(|slots| {
-                    (bytes.len() as u64)
-                        .checked_mul(4)
-                        .and_then(|strings| slots.checked_add(strings))
-                })
-                .and_then(|owned| owned.checked_add(size_of::<ModelRequest>() as u64))
-                .ok_or_else(|| Error::Invalid("model request ownership overflow".into()))?;
-            request_hold = io.reserve_decode(owned)?;
+            request_hold =
+                io.reserve_decode(add(size_of::<Self>() as u64, request.payload_bytes()?)?)?;
             request.validate(limits, Some(io))?;
             let request_digest = hash_bytes(&bytes, Some(io))?;
             if let Some(hold) = bytes_hold {
@@ -296,29 +279,47 @@ impl PreparedModelRequest {
         self.request_digest
     }
     /// Additive token bound including every pinned file.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn serialized_token_upper_bound_with_native_work(
+    pub fn serialized_token_upper_bound(
         &self,
-        work: &NativeMaterializationWork,
-    ) -> Result<(crate::context::ModelTokenCount, NativeAllocation)> {
-        let io = PreparationIo::from_native_work(work)?;
-        io.retain_owned(size_of::<crate::context::ModelTokenCount>() as u64)?;
+        work: crate::NativeWork<'_>,
+    ) -> Result<(crate::context::ModelTokenCount, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let observer = work.map(PreparationIo::from_native_work).transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = observer.as_ref();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io: Option<&PreparationIo> = None;
+        let _ = work;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.retain_owned(size_of::<crate::context::ModelTokenCount>() as u64)?;
+        }
         let mut message_tokens = Vec::new();
         for message in &self.request.messages {
-            charge_items(Some(&io), 1)?;
+            charge_items(io, 1)?;
+            #[cfg(feature = "filesystem")]
             let _hold;
-            let bytes = io.encode(message, io.remaining()?.bytes_encoded, false)?;
-            _hold = io.guard_bytes(&bytes)?;
+            let bytes: acyclic_stream::OwnedBytes = match io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => {
+                    let bytes = io.encode(message, io.remaining()?.bytes_encoded, false)?;
+                    _hold = io.guard_bytes(&bytes)?;
+                    bytes
+                }
+                _ => serde_json::to_vec(message)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .into(),
+            };
             let mut tokens = bytes.len() as u64;
             for file in message.content.file_refs() {
-                charge_items(Some(&io), 1)?;
+                charge_items(io, 1)?;
                 tokens = tokens
                     .checked_add(file.descriptor().byte_length())
                     .ok_or_else(|| Error::Invalid("deterministic token count overflows".into()))?;
             }
             let tokens = u32::try_from(tokens)
                 .map_err(|_| Error::Invalid("deterministic token count exceeds u32".into()))?;
-            crate::executor::stock_vec_push(&mut message_tokens, tokens, Some(&io))?;
+            crate::executor::stock_vec_push(&mut message_tokens, tokens, io)?;
         }
         let fixed_tokens = u32::try_from(self.bytes.len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
@@ -327,11 +328,17 @@ impl PreparedModelRequest {
             fixed_tokens,
             message_tokens,
         };
-        let retained = add(
-            size_of::<crate::context::ModelTokenCount>() as u64,
-            slots(count.message_tokens.capacity(), size_of::<u32>())?,
-        )?;
-        let custody = io.into_native_custody(retained)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = observer
+            .map(|io| {
+                io.into_native_custody(add(
+                    size_of::<crate::context::ModelTokenCount>() as u64,
+                    slots(count.message_tokens.capacity(), size_of::<u32>())?,
+                )?)
+            })
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = None;
         Ok((count, custody))
     }
 }

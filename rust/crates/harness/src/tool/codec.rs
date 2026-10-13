@@ -50,7 +50,7 @@ pub(crate) fn clone_value(
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
-    let retained = crate::contract::json_value_logical_owned_bytes(&copied)?;
+    let retained = crate::executor::json::json_value_logical_owned_bytes(&copied)?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }
@@ -65,7 +65,7 @@ pub(crate) fn value<T: Serialize>(
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
     let value = io.value_json(value, maximum_bytes)?;
     let retained = (std::mem::size_of::<Value>() as u64)
-        .checked_add(crate::contract::json_value_logical_owned_bytes(&value)?)
+        .checked_add(crate::executor::json::json_value_logical_owned_bytes(&value)?)
         .ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
             reason: "tool JSON ownership overflow",
@@ -138,7 +138,7 @@ pub(crate) const fn tool_serde_diagnostic_label_bytes() -> u64 {
             "digest",
             "state",
         ];
-        let mut bytes = crate::contract::preparation_serde_diagnostic_label_bytes();
+        let mut bytes = crate::executor::json::preparation_serde_diagnostic_label_bytes();
         let mut index = 0;
         while index < LABELS.len() {
             bytes += LABELS[index].len() as u64 + 4;

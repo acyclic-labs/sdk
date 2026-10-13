@@ -63,7 +63,7 @@ impl PiNativeCommandHost {
     ) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
         self.child_admission(task, work).await?;
         let observed = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -75,7 +75,7 @@ impl PiNativeCommandHost {
                 .task_host()
                 .recover_work(task, &mut Some(&mut io))
                 .await?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         match observed.0 {
             WorkPull::Claimed(lease) => {
@@ -96,7 +96,7 @@ impl PiNativeCommandHost {
 
     async fn execute_stock(
         &self,
-        context: Arc<NativeTaskContext>,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         stock: WorkflowCommand,
         plan: &TaskEffectPlan,
@@ -104,7 +104,6 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
         let maximum = context
-            .context()
             .scope()
             .limits()
             .file_bytes
@@ -147,7 +146,6 @@ impl PiNativeCommandHost {
         let (effect, mut original_custody) = receipt.into_effect()?;
         let maximum = bound
             .context
-            .context()
             .scope()
             .limits()
             .file_bytes
@@ -220,7 +218,7 @@ impl TaskCommandHost for PiNativeCommandHost {
 
     fn execute_with_native_work<'a>(
         &'a self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -235,7 +233,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     .execute_with_native_work(shared, fence, command, payload, work)?
                     .await;
             }
-            let context = shared.context();
+            let context = shared.as_ref();
             self.bind_invocation_work(
                 context.durable_task_id().ok_or_else(|| {
                     unauthorized("Pi native invocation has no original durable owner")
@@ -351,7 +349,7 @@ impl TaskCommandHost for PiNativeCommandHost {
 
     fn reconcile_with_native_work<'a>(
         &'a self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -366,7 +364,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     .reconcile_with_native_work(shared, fence, command, payload, work)?
                     .await;
             }
-            let context = shared.context();
+            let context = shared.as_ref();
             self.bind_invocation_work(
                 context.durable_task_id().ok_or_else(|| {
                     unauthorized("Pi native recovery has no original durable owner")

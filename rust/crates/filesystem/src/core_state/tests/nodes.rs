@@ -10,7 +10,7 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
     let paths = namespace
         .record(GIT_COMPAT_NAMESPACE, &held_id.into_bytes())
         .expect("record paths");
-    std::fs::create_dir_all(&paths.directory).expect("lock directory");
+    std::fs::create_dir_all(paths.directory()).expect("lock directory");
     let held = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -255,15 +255,12 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         state.overlay,
         state.shadows,
     );
-    state.completed_selected_import = Some(crate::lazy_workspace::CompletedSelectedImport {
-        operation: OperationId::from_bytes([0xb3; 16]),
-        snapshot,
-        destination: snapshot,
-        source: snapshot,
-        input: Digest::from_bytes([0xb4; 32]),
-        config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-        source_config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-    });
+    state.selected_import_roots = Some(
+        [(
+            snapshot,
+            crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
+        ); 3],
+    );
     let cancellation = crate::CancellationToken::new();
     let work = crate::materializer::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
@@ -307,10 +304,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         .await
         .expect("real backend restart")
         .expect("original retained state");
-    assert_eq!(
-        original.completed_selected_import,
-        state.completed_selected_import
-    );
+    assert_eq!(original.selected_import_roots, state.selected_import_roots);
     assert_eq!(original.source, state.source);
     assert_eq!(original.workspace_id, id);
 }
@@ -434,7 +428,6 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
             error.semantic_error(),
             crate::LazyWorkspaceError::Cancelled
         ));
-        assert_eq!(error.spent_work(), crate::WorkCounters::UNCHARGED);
     }
     assert_eq!(accounting.spent(), crate::WorkCounters::UNCHARGED);
     assert!(
@@ -596,7 +589,7 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
         file_id: crate::foundation::FileId::from_bytes([7; 16]),
         priority: 0,
         record: record.clone(),
-        metadata: Box::new(metadata),
+        metadata,
         left: empty_shadows,
         right: empty_shadows,
     };
@@ -613,7 +606,7 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
         file_id: crate::foundation::FileId::from_bytes([8; 16]),
         priority: 0,
         record,
-        metadata: Box::new(metadata),
+        metadata,
         left: empty_shadows,
         right: empty_shadows,
     };

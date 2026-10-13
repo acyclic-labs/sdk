@@ -29,15 +29,6 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     create_directories_owned(directory, relative, work).map(|_| ())
 }
 
-pub(crate) fn create_directories_held<W: NativeHostWork>(
-    parent: &Dir,
-    path: &Path,
-    work: &mut W,
-) -> Result<Dir, W::Error> {
-    let directory = clone_directory(parent, work)?;
-    create_directories_owned(directory, path, work)
-}
-
 fn create_directories_owned<W: NativeHostWork>(
     mut current: Dir,
     path: &Path,
@@ -64,6 +55,42 @@ fn create_directories_owned<W: NativeHostWork>(
     Ok(current)
 }
 
+pub(super) fn directory_path<W: NativeHostWork>(
+    parent: &Dir,
+    #[cfg(unix)] path: &Path,
+    #[cfg(windows)] path: &[u16],
+    create: bool,
+    work: &mut W,
+) -> Result<Dir, W::Error> {
+    let mut current = clone_directory(parent, work)?;
+    #[cfg(unix)]
+    let components = path.components();
+    #[cfg(windows)]
+    let components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    for component in components {
+        work.started_io(ITEM)?;
+        #[cfg(unix)]
+        let std::path::Component::Normal(name) = component else {
+            return Err(W::invalid_request());
+        };
+        #[cfg(windows)]
+        let name = component;
+        #[cfg(unix)]
+        {
+            current = open_unix_directory(&current, name, create, work)?;
+        }
+        #[cfg(windows)]
+        {
+            current = if create {
+                Dir::from_std_file(create_windows_directory(&current, name, work)?)
+            } else {
+                open_windows_directory(&current, name, work)?.0
+            };
+        }
+    }
+    Ok(current)
+}
+
 pub(crate) fn open_leaf<W: NativeHostWork>(
     parent: &Dir,
     name: &Path,
@@ -74,7 +101,33 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     #[cfg(windows)]
     {
         with_wide_path(name, work, |name, work| {
-            open_windows_leaf_with_options(parent, name, options, work)
+            use windows::{Wdk::Storage::FileSystem as nt, Win32::Storage::FileSystem as fs};
+            let disposition = match options {
+                NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
+                NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
+                _ => nt::FILE_CREATE,
+            };
+            let access = fs::FILE_GENERIC_READ
+                | if matches!(options, NativeOpenOptions::Read) {
+                    fs::FILE_ACCESS_RIGHTS(0)
+                } else {
+                    fs::FILE_GENERIC_WRITE
+                };
+            let file = open_windows_at(
+                parent,
+                name,
+                access,
+                disposition,
+                nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                work,
+            )?;
+            if windows_stat_information(&file, work)?.FileAttributes
+                & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
+                != 0
+            {
+                return Err(W::invalid_request());
+            }
+            Ok(file)
         })
     }
     #[cfg(unix)]
@@ -94,7 +147,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         unix_name(name.as_os_str(), work, |name, work| {
             let file = open_unix(parent.as_raw_fd(), name, flags, work)?;
             loop {
-                match fstat(file.as_raw_fd(), work) {
+                match fstat(file.as_raw_fd(), c"", work) {
                     Ok(stat)
                         if stat.st_mode & libc::S_IFMT as libc::mode_t
                             == libc::S_IFREG as libc::mode_t =>
@@ -136,25 +189,6 @@ pub(crate) fn builtin_io(
     transferred?;
     copied?;
     Ok(count)
-}
-
-pub(crate) fn lock_builtin_file(
-    file: &File,
-    writable: bool,
-    work: &NativeMaterializationWork,
-) -> Result<(), NativeTreeMaterializationError> {
-    work.charge(READ)?;
-    match if writable {
-        file.try_lock()
-    } else {
-        file.try_lock_shared()
-    } {
-        Ok(()) => Ok(()),
-        Err(std::fs::TryLockError::WouldBlock) => {
-            Err(NativeTreeMaterializationError::PreimageConflict)
-        }
-        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
-    }
 }
 
 pub(crate) fn remove_leaf<W: NativeHostWork>(
@@ -237,7 +271,7 @@ impl<const N: usize> NativePreparedAsciiLeaf<N> {
         #[cfg(windows)]
         let mut wide = [0; N];
         for (index, byte) in bytes[..N - 1].iter().copied().enumerate() {
-            work.check()?;
+            crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
             #[cfg(windows)]
             {
                 wide[index] = u16::from(byte);
@@ -283,5 +317,30 @@ pub(crate) fn remove_prepared_ascii_leaf<W: NativeHostWork, const N: usize>(
     #[cfg(windows)]
     {
         remove_windows_leaf(parent, &name.wide[..N - 1], false, None, work)
+    }
+}
+pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
+    root: &Dir,
+    #[cfg(unix)] path: &Path,
+    #[cfg(windows)] path: &[u16],
+    work: &mut W,
+    #[cfg(unix)] operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, W::Error>,
+    #[cfg(windows)] operation: impl FnOnce(&Dir, &[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    #[cfg(unix)]
+    let (parent, leaf) = (
+        path.parent().ok_or_else(W::invalid_request)?,
+        path.file_name().ok_or_else(W::invalid_request)?,
+    );
+    #[cfg(windows)]
+    let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+    let parent = directory_path(root, parent, false, work)?;
+    #[cfg(unix)]
+    {
+        unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work))
+    }
+    #[cfg(windows)]
+    {
+        operation(&parent, leaf, work)
     }
 }

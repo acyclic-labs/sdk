@@ -1,4 +1,3 @@
-//! reducer fork semantics.
 use super::*;
 impl Reducer {
     pub(in crate::core) fn require_fresh_fork_with_work(

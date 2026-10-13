@@ -130,11 +130,7 @@ export interface StreamProvider {
 }
 
 export interface StreamEnvironment { readonly endpoint: string; readonly token: string; readonly caCertificate?: Uint8Array }
-/**
- * Every code a StreamError carries: the Rust-owned base codes, the public
- * aliases hosted and gRPC providers project onto, and failures the client
- * detects itself.
- */
+/** Rust-owned and provider/client error codes. */
 export type StreamFailureCode = RustStreamErrorCode
   | "stream_not_found" | "commit_not_found" | "destination_exists" | "capacity_exhausted"
   | "configuration" | "invalid_cursor" | "invalid_page" | "invalid_response"

@@ -205,15 +205,16 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let attach_us = started.elapsed().as_micros();
 
     let started = Instant::now();
-    let exact = (async { let cancellation = &CancellationToken::new(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = lazy.exactify("/hot", PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
-        .await?;
+    let cancellation = CancellationToken::new();
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    lazy.exactify("/hot", PublicationPermit::Unrestricted, &mut accounting).await?;
     let exactify_us = started.elapsed().as_micros();
     eprintln!(
         "{}",
         json!({
             "attach_us": attach_us,
             "exactify_us": exactify_us,
-            "work": exact.work,
+            "work": accounting.spent(),
         })
     );
     if std::env::var_os("ACYCLIC_APFS_BENCH_EXACT_ONLY").is_some() {

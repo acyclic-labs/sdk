@@ -669,21 +669,20 @@ impl PiSession {
                     })?;
                 let workspace_name = {
                     let mut io =
-                        acyclic_harness::store::history::native_work_io(original_native_work)
-                            .map_err(acyclic_harness::Error::from)?;
+                        acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(original_native_work)?);
                     let value = volume.storage_name(&mut Some(&mut io))?;
-                    (value, io.into_custody())
+                    (value, io.into_custody()?)
                 };
                 let workspace = self
                     .resources
                     .fs
-                    .open_workspace_with_native_work(
+                    .open_workspace(
                         &workspace_name.0,
                         original_native_work,
                         original_native_work.cancellation(),
                     )
                     .await
-                    .map_err(|(source, custody)| RootError::NativeFilesystem { source, custody })?;
+                    .map_err(|source| RootError::NativeFilesystem { source, custody: None })?;
                 drop(workspace_name.0);
                 drop(workspace_name.1);
                 if workspace.id().into_bytes() != creation.repository_workspace_id {
@@ -692,15 +691,31 @@ impl PiSession {
                         reason: "Pi selected project workspace was substituted",
                     });
                 }
-                let resumed = LazyWorkspace::resume_root_observation_with_native_work(
+                let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: original_native_work,
+                    cancellation: original_native_work.cancellation(),
+                };
+                let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+                    &self.resources.store,
+                    workspace.id(),
+                    &mut accounting,
+                )
+                .await
+                .map_err(|source| RootError::NativeSource { source, custody: None })?
+                .ok_or(RootError::NativeSource {
+                    source: acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                    custody: None,
+                })?;
+                original.validate_root_binding(workspace.id(), expected)
+                    .map_err(|source| RootError::NativeSource { source, custody: None })?;
+                let resumed = LazyWorkspace::open(
                     workspace,
                     Arc::clone(&physical.source),
                     self.resources.store.clone(),
-                    expected,
-                    original_native_work,
+                    &mut accounting,
                 )
                 .await
-                .map_err(|(source, custody)| RootError::NativeSource { source, custody })?;
+                .map_err(|source| RootError::NativeSource { source, custody: None })?;
                 let key =
                     original_native_work
                         .display(key)
@@ -721,15 +736,11 @@ impl PiSession {
         for (key, handle) in &self.roots {
             let rebound = handle
                 .workspace
-                .rebind_source(
-                    &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                        original_native_work,
-                        original_native_work.cancellation(),
-                    )
-                    .map_err(|source| RootError::NativeSource {
-                        source,
-                        custody: None,
-                    })?,
+                .state(
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work: original_native_work,
+                        cancellation: original_native_work.cancellation(),
+                    },
                 )
                 .await
                 .map_err(|source| RootError::NativeSource {
@@ -745,8 +756,8 @@ impl PiSession {
                     code: acyclic_harness::wire::ErrorCode::Invalid,
                     reason: "Pi retained root handle is not selected by allocation",
                 })?;
-            if rebound.as_state().source.identity != original.source_identity
-                || rebound.as_state().source.epoch < original.source_epoch
+            if rebound.source.identity != original.source_identity
+                || rebound.source.epoch < original.source_epoch
             {
                 return Err(RootError::NativeBoundary {
                     code: acyclic_harness::wire::ErrorCode::Invalid,
@@ -754,7 +765,7 @@ impl PiSession {
                 });
             }
             // Only the genuine SDK rebind may advance the admitted creation epoch.
-            original.source_epoch = rebound.as_state().source.epoch;
+            original.source_epoch = rebound.source.epoch;
             drop(rebound);
         }
         let PluginTaskBinding::Pi(binding) = &mut self.state.task_binding else {
@@ -866,7 +877,7 @@ impl PiSession {
             },
         )?;
         context_custody
-            .resize_retained(actual_context_bytes)
+            .resize(actual_context_bytes)
             .map_err(|cause| RootError::NativeWork {
                 cause,
                 custody: None,
@@ -1195,9 +1206,9 @@ impl PiSession {
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();
-        let mut lease_io = acyclic_harness::store::native_work_io(&work)?;
+        let mut lease_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?);
         let reservation = host.recover_work(caller, &mut Some(&mut lease_io)).await?;
-        let _reservation_custody = lease_io.into_custody();
+        let _reservation_custody = lease_io.into_custody()?;
         let lease = match reservation {
             acyclic_harness::distributed::WorkPull::Claimed(lease) => lease,
             acyclic_harness::distributed::WorkPull::Unresolved { .. } => {
@@ -1212,7 +1223,7 @@ impl PiSession {
             }
         };
         let fence = acyclic_harness::scheduler::LeaseFence::from(&lease.reservation);
-        let journal_owner = host.journal_owner(binding.task_id, fence.clone()).await?;
+        let journal_owner = host.journal_owner(binding.task_id, &(fence.clone()), None).await?;
         let context = self
             .runtime
             .runtime

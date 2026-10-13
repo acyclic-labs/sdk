@@ -1,7 +1,7 @@
 //! seed fork protocol.
 use super::*;
 pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSeed> {
-    crate::core::copy_owned(source, quota, |source, work| {
+    crate::core::copy(source, quota, |source, work| {
         source.validate(work)?;
         crate::core::owned_bytes(source)
     })
@@ -188,7 +188,7 @@ impl ForkSeed {
             work.checkpoint()?;
             resource.validate(work.work())?;
             for revision in [&resource.source, &resource.revision] {
-                crate::contract::json_byte_length(
+                crate::executor::json::json_byte_length(
                     revision,
                     crate::store::default_projection_read_limits().maximum_bytes,
                     work.work(),
@@ -232,7 +232,7 @@ impl ForkSeed {
         for (index, omission) in self.omissions.iter().enumerate() {
             work.checkpoint()?;
             omission.validate(work.work())?;
-            crate::contract::json_byte_length(
+            crate::executor::json::json_byte_length(
                 &omission.selection.revision,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work.work(),
@@ -255,7 +255,7 @@ impl ForkSeed {
         for (index, manifest) in self.attachment_manifests.iter().enumerate() {
             work.checkpoint()?;
             manifest.validate(work.work())?;
-            crate::contract::json_byte_length(
+            crate::executor::json::json_byte_length(
                 manifest,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work.work(),
@@ -357,7 +357,7 @@ impl ForkSeed {
             work.checkpoint()?;
             grant.validate(work.work())?;
             for file in std::iter::once(&grant.file).chain(grant.attachment_manifest.iter()) {
-                crate::contract::json_byte_length(
+                crate::executor::json::json_byte_length(
                     file,
                     crate::store::default_projection_read_limits().maximum_bytes,
                     work.work(),

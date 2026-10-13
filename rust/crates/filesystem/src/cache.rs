@@ -219,11 +219,6 @@ impl Flight {
         }
     }
 
-    #[cfg(test)]
-    fn poll(&self, context: &Context<'_>) -> Poll<Result<Option<OwnedBytes>, ObjectStoreError>> {
-        self.poll_with_context(context, #[cfg(not(target_arch = "wasm32"))] None)
-    }
-
     fn poll_with_context(
         &self,
         context: &Context<'_>,
@@ -279,7 +274,7 @@ impl Flight {
                     // Commit moved waiters before a late refusal, preserving all
                     // prior registrations. Free old storage before its guard.
                     drop(std::mem::replace(waiters, replacement));
-                    if let Some(copy) = copy { { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }?; }
+                    if let Some(copy) = copy { { let copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }?; }
                     if let Some(work) = work {
                         KernelAccounting::native(work, work.cancellation())
                             .record_completed(WorkCounters::UNCHARGED)
@@ -1003,7 +998,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         }));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(copy) = copy {
-            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: (requests.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED }) }
+            { let copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: (requests.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED }) }
                 .map_err(|error| (error.into(), prepared.work))?;
         }
         let mut guards = BatchBuffer::new(prepared.leaders.values.len(), "object cache flight guard allocation failed",
@@ -1454,7 +1449,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                 let BatchBuffer { values, allocation } = receipt.value;
                 match allocation {
                     Some(KernelOwnedAllocation::NativeOriginal(allocation)) => {
-                        crate::async_storage::native_read_batch(values, allocation)
+                        Ok::<_, crate::ObjectStoreError>((values, allocation))
                     }
                     _ => {
                 drop(values);

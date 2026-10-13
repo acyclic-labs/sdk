@@ -86,7 +86,9 @@ export class ClientViews<Value, Assumption, Evidence> {
     tick(sequence);
     const budget = Object.freeze({ ...limits });
     this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, budget,
-      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain), domain.restore?.bind(domain));
+      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain));
+    const restore = domain.restore?.bind(domain);
+    if (restore !== undefined) this.#kernel.enableRestore(restore);
     this.#maximumSelections = budget.records + budget.branches;
   }
 
@@ -194,7 +196,7 @@ export class ClientViews<Value, Assumption, Evidence> {
   residency(): readonly [records: number, branches: number, edges: number, bytes: number] {
     this.#live();
     const [bytes, records, branches, edges] = this.#kernel.residency() as [number, number, number, number];
-    return Object.freeze([Number(records), Number(branches), Number(edges), Number(bytes)]);
+    return Object.freeze([records, branches, edges, bytes]);
   }
 
   dispose(): void {

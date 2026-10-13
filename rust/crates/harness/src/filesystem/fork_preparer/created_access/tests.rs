@@ -20,7 +20,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     let birth = &fixture.original_root_births.as_ref().unwrap()[0];
     let owner = fixture
         .host
-        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
+        .journal_owner(fixture.root, &((&fixture.root_lease.reservation).into()), None)
         .await?;
     let agent = owner
         .authenticated_binding_agent(&mut Some(
@@ -91,7 +91,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     creator.bind_root_bootstrap_allocation_with_native_work(Arc::clone(&token), &work)?;
     let root_context = owner.root_bootstrap_context(
         &admission,
-        token.witness.binding(),
+        &token.witness.0,
         &work,
     )
     .await?;
@@ -102,7 +102,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     let bare = crate::filesystem::root_source::FsRootProjectSourceProvider::new(
         fixture.filesystem.clone(),
         creator.issuer.audience(),
-        fixture.root,
+        fixture.root, None,
         Some(&PreparationIo::from_native_work(&work)?),
     )?;
     let selection = ProjectSourceSnapshot {
@@ -127,7 +127,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
             Err(_) => true,
         }
     );
-    let policy = bare.with_bootstrap_source_with_native_work(token, &work)?;
+    let policy = crate::filesystem::root_source::FsRootProjectSourceProvider::new(fixture.filesystem.clone(), creator.issuer.audience(), fixture.root, Some(token), Some(&PreparationIo::from_native_work(&work)?))?;
     policy
         .verify_with_native_work(context(), &selection, &work)?
         .await?;

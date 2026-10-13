@@ -20,14 +20,13 @@ impl NativeSession {
             SchemaRegistry::default(),
             &mut None,
         )?;
-        let request = source
-            .request
-            .clone()
-            .with_history_policy(&reducer, history, &mut None)?;
-        Ok(format!(
-            "fork-selection-json={}\n",
-            serde_json::to_string(&request).map_err(|error| Error::Invalid(error.to_string()))?
-        ))
+        json_line(
+            "fork-selection",
+            &source
+                .request
+                .clone()
+                .with_history_policy(&reducer, history, &mut None)?,
+        )
     }
     pub async fn publish_preparation(
         &self,
@@ -36,39 +35,32 @@ impl NativeSession {
         preparation: TaskId,
     ) -> Result<String> {
         self.caller_context(caller, lease).await?;
-        let admission = self
-            .runtime
-            .task_host()
-            .observe_admission(preparation)
-            .await?;
+        let host = self.runtime.task_host();
+        let admission = host.observe_admission(preparation).await?;
         if admission.parent != Some(caller) || admission.task.name != "acyclic.fork_preparation" {
             return Err(Error::Unauthorized(
-                "preparation does not belong to this original caller".into(),
+                "preparation belongs to another caller".into(),
             ));
         }
-        let input: ResourcePreparationRequest = serde_json::from_value(admission.input)
-            .map_err(|error| Error::Invalid(format!("retained preparation input: {error}")))?;
+        let input: ResourcePreparationRequest =
+            serde_json::from_value(admission.input).map_err(invalid)?;
         input.validate(&mut None)?;
-        let Some(acyclic_harness::Outcome::Succeeded(value)) =
-            self.runtime.task_host().outcome(preparation).await?
+        let Some(acyclic_harness::Outcome::Succeeded(value)) = host.outcome(preparation).await?
         else {
             return Err(Error::Conflict(
-                "preparation has no authoritative successful report".into(),
+                "preparation has no successful report".into(),
             ));
         };
-        let report: ForkReport = serde_json::from_value(value)
-            .map_err(|error| Error::Invalid(format!("retained fork report: {error}")))?;
+        let report: ForkReport = serde_json::from_value(value).map_err(invalid)?;
         report.validate(&mut None)?;
         if input.child.parent != Some(caller)
-            || serde_json::to_value(&report.request)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                != input.payload
+            || serde_json::to_value(&report.request).map_err(invalid)? != input.payload
         {
             return Err(Error::Unauthorized(
-                "report changed the exact retained preparation/caller".into(),
+                "report changed the retained preparation".into(),
             ));
         }
-        let parent_binding = self
+        let source = self
             .config
             .fork_sources
             .iter()
@@ -77,89 +69,44 @@ impl NativeSession {
                     && source.owner.authority == report.request.parent
                     && source.snapshot.revision == report.request.parent_revision
             })
-            .ok_or_else(|| {
-                Error::Unsupported("original source publication binding unavailable".into())
-            })?;
-        let child_binding = self
+            .ok_or_else(|| Error::Unsupported("source publication binding unavailable".into()))?;
+        let binding = self
             .config
-            .observed_authorities
-            .iter()
+            .bindings()
             .find(|binding| binding.authority == report.request.child)
-            .ok_or_else(|| {
-                Error::Unsupported(
-                    "explicit child conversation provider binding unavailable".into(),
-                )
-            })?;
-        let content = FilesystemContentVerifier::new(
-            self.files.clone(),
-            &parent_binding.owner.verifier()?,
-            &parent_binding.owner.scope,
-            MAX_FRAME_BYTES as u64,
-            None,
-        )?;
-        let mut parent = StreamAggregate::open(
+            .ok_or_else(|| Error::Unsupported("child conversation binding unavailable".into()))?;
+        let mut parent = open_aggregate(
             &self.stream,
-            parent_binding.owner.authority.clone(),
-            parent_binding.owner.verifier()?,
-            SchemaRegistry::default(),
-            None,
-            HistoryReadLimits {
-                maximum_events: 256,
-                maximum_bytes: 4 * 1024 * 1024,
-            },
-            acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
+            &self.files,
+            &self.config.stream_provider,
+            &source.owner,
         )
-        .await?
-        .with_content_verifier(content)
-        .with_fork_verifier(CompositeForkVerifier::new(
-            &[
-                FilesystemForkVerifier::new(
-                    self.files.clone(),
-                    MAX_FRAME_BYTES as u64,
-                    None,
-                    None,
-                )?,
-                StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?,
-            ],
-            &mut None,
-        )?);
-        let mut child = StreamAggregate::open(
+        .await?;
+        let mut child = open_aggregate(
             &self.stream,
-            child_binding.authority.clone(),
-            child_binding.verifier()?,
-            SchemaRegistry::default(),
-            None,
-            HistoryReadLimits {
-                maximum_events: 256,
-                maximum_bytes: 4 * 1024 * 1024,
-            },
-            acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
+            &self.files,
+            &self.config.stream_provider,
+            binding,
         )
         .await?;
         let seed = child
             .spawn_from_report(
                 &mut parent,
                 report,
-                parent_binding.owner.scope.clone(),
-                child_binding.scope.clone(),
+                source.owner.scope.clone(),
+                binding.scope.clone(),
             )
             .await?;
         let operation = input.child.operation_id;
-        let admitted = self
-            .runtime
-            .task_host()
+        let admitted = host
             .admit_owned(input.child, LeaseFence::from(&lease.reservation))
             .await?;
-        Ok(format!(
-            "fork-json={}\n",
-            serde_json::json!({
+        json_line(
+            "fork",
+            &serde_json::json!({
                 "preparation": preparation, "new_child_agent": seed.child_agent,
                 "child_admission_operation": operation, "admission": admitted, "seed": seed,
-            })
-        ))
+            }),
+        )
     }
 }

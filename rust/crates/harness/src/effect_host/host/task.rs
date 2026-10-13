@@ -63,11 +63,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 effect.0.status,
                 EffectStatus::Dispatched | EffectStatus::Indeterminate
             ) {
-                verify_owner(owner, true, observed).await?;
+                owner.verify(true, observed).await?;
                 return clone_status(&effect.0.status, observed);
             }
             let attestation = if dispatched {
-                verify_owner(owner, false, observed).await?;
+                owner.verify(false, observed).await?;
                 Some(
                     self.providers
                         .dispatch_state_and_attest(&self.issuer, effect_id, &effect.0, observed)
@@ -131,7 +131,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         #[cfg(target_arch = "wasm32")]
         let observed = &mut None;
         let status = async {
-            verify_owner(owner, true, observed).await?;
+            owner.verify(true, observed).await?;
             validate_task_plan(owner, plan, false, observed)?;
             let effect_id = task_effect_id(owner.task_binding().0, command_id, observed)?;
             let stream = owner.stream();
@@ -196,7 +196,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::core::ApplyResult> {
         let phase = if plan.is_some() { "plan" } else { "dispatch" };
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &("task-effect", effect_id, phase),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
@@ -277,7 +277,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                             "task effect command changed after admission",
                         ));
                     }
-                    verify_owner(owner, false, custody.work()).await?;
+                    owner.verify(false, custody.work()).await?;
                 }
                 result => return result,
             }
@@ -295,7 +295,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let mut retained = crate::wire_codec::CodecQuota::new(work, 0)?;
         let attestation = attestation;
         retained.adopt(attestation_owned_bytes(&attestation)?)?;
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &(effect_id, &attestation),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             retained.work(),
@@ -312,7 +312,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         loop {
             #[cfg(feature = "filesystem")]
             if let Some(owner) = owner {
-                verify_owner(owner, true, retained.work()).await?;
+                owner.verify(true, retained.work()).await?;
             }
             #[cfg(feature = "filesystem")]
             let stream = owner.map_or_else(

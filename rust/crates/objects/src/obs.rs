@@ -81,7 +81,6 @@ struct BodyState {
     body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>,
     lifetime: Lifetime,
     context: Option<Span>,
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>> for BodyStream {
     fn from(body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>) -> Self {
@@ -92,7 +91,6 @@ impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>
                     body,
                     lifetime: Lifetime(None),
                     context: Some(Span::none()),
-                    _allocation: None,
                 },
                 tracing::dispatcher::get_default(Clone::clone),
             ),
@@ -102,25 +100,6 @@ impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl BodyStream {
-    pub(crate) fn from_native_boxed<S>(
-        body: std::pin::Pin<Box<S>>,
-        allocation: acyclic_native_runtime::ReadAllocation,
-    ) -> Self
-    where
-        S: futures::Stream<Item = Result<bytes::Bytes, crate::Error>> + Send + 'static,
-    {
-        let body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>> = body;
-        let mut stream = Self::from(body);
-        stream
-            .inner
-            .inner_mut()
-            .expect("new body retains its producer")
-            ._allocation = Some(allocation);
-        stream
-    }
-}
 impl futures::Stream for BodyStream {
     type Item = Result<bytes::Bytes, crate::Error>;
     fn poll_next(

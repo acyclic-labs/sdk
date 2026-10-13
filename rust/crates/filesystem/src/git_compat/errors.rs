@@ -1,23 +1,5 @@
 use super::*;
 
-#[derive(Debug, Error)]
-pub(super) enum GitCompatStateError {
-    #[error("invalid compatibility state")]
-    Invalid,
-    #[error("unknown object")]
-    Unknown(String),
-    #[error("branch already exists")]
-    BranchExists(String),
-    #[error("HEAD is unborn")]
-    UnbornHead,
-    #[error("nothing to commit")]
-    NothingToCommit,
-    #[error("stash is empty")]
-    EmptyStash,
-    #[error("invalid bisect operation: {0}")]
-    Bisect(String),
-}
-
 /// Git compatibility failure.
 #[derive(Debug, Error)]
 pub enum GitCompatError<E: std::error::Error + 'static> {
@@ -76,18 +58,4 @@ pub enum GitCompatRunError<S: std::error::Error + 'static, E: std::error::Error 
     /// The filesystem executor failed; prepared state remains recoverable.
     #[error("Git compatibility filesystem action failed: {0}")]
     Executor(E),
-}
-
-pub(super) fn map_state_error<E: std::error::Error + 'static>(
-    error: GitCompatStateError,
-) -> GitCompatError<E> {
-    match error {
-        GitCompatStateError::Invalid => GitCompatError::InvalidState,
-        GitCompatStateError::Unknown(name) => GitCompatError::UnknownObject(name),
-        GitCompatStateError::BranchExists(name) => GitCompatError::BranchExists(name),
-        GitCompatStateError::UnbornHead => GitCompatError::UnbornHead,
-        GitCompatStateError::NothingToCommit => GitCompatError::NothingToCommit,
-        GitCompatStateError::EmptyStash => GitCompatError::UnknownObject("stash@{0}".to_owned()),
-        GitCompatStateError::Bisect(message) => GitCompatError::InvalidCommand(message),
-    }
 }

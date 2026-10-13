@@ -7,13 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         name: impl AsRef<str>,
         idempotency_key: crate::IdempotencyKey,
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.delete_workspace",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty
-        );
-        let result = crate::obs::in_span(&span, async move {
+        let result = (async move {
             let (_, id) = self
                 .workspace_name_identity(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(|failure| failure.error)?
@@ -36,7 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .await
         })
         .await;
-        crate::obs::outcome_on(&span, result)
+        result
     }
 
     pub(crate) async fn delete_workspace_volume(
@@ -90,22 +84,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
         )
         .map_err(WorkspaceError::engine)?;
-        let encoded = crate::kernel::encode::<FsError>(
-            WorkBudget::UNBOUNDED,
-            Some(&cancellation),
-            0,
-            |observe| {
-                crate::kernel::encode_workspace_deleted(
-                    volume.id,
-                    observe,
-                    FsError::EncodedAllocationFailed,
-                )
-            },
-        )
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        let encoded = creation_commit(operation_id, encoded, WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        let (commit, _) = encoded.value;
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let encoded =
+            crate::kernel::codec::encode_owned(&mut accounting, |observe, allocation_error| {
+                crate::kernel::encode_workspace_deleted(volume.id, observe, allocation_error)
+            })
+            .map_err(WorkspaceError::engine)?;
+        let commit = creation_commit(operation_id, encoded, &mut accounting)
+            .map_err(WorkspaceError::engine)?;
         let appended = self
             .inner
             .authority

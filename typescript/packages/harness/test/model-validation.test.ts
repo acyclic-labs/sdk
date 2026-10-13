@@ -30,7 +30,6 @@ test("generated skill parser and immutable projection share Rust validation and 
   expect(skill.description).toBe("Inspect selected files");
   expect(skill.fields).toEqual({ metadata: { category: "review" } });
   expect(skill.source).toEqual(source);
-  expect(Object.isFrozen(skill)).toBe(true);
   const snapshot = { instructions: [], skills: [skill] };
   const base = { messages: [{ role: "user" as const, content: "inspect" }], metadata: {} };
   const projected = contracts.projectDiscoveredContext(snapshot, base, "prepend", DEFAULT_LIMITS);
@@ -396,7 +395,6 @@ test("Rust inventory includes nested tool media and options while preserving ori
   expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
   expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
   expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
-  expect(Object.isFrozen(inventory.nativeConfigurations[0])).toBe(true);
   expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
 });
 

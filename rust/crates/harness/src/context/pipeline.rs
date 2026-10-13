@@ -1,4 +1,5 @@
 use super::*;
+use crate::{executor::stock_boundary, wire::ErrorCode};
 
 /// Replaceable ordered context transformation.
 pub trait ContextStage: acyclic_stream::ProviderPlatform {
@@ -14,23 +15,23 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
             .is_some()
             && !self.supports_native()
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unsupported,
+                ErrorCode::Unsupported,
                 "context stage has no native capability",
             ));
         }
         if !crate::is_valid_component_label(self.name()) {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "context stage identity is invalid",
             ));
         }
         if !self.contract(io)?.is_object() {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "context stage contract must be an object",
             ));
         }
@@ -50,9 +51,11 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
         false
     }
 }
+
 /// Explicit ordered pipeline; no hidden framework stages are inserted.
 #[derive(Clone, Default)]
 pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
+
 impl ContextPipeline {
     /// Validates stage identities on the optional preparation ledger.
     pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
@@ -61,7 +64,7 @@ impl ContextPipeline {
             work.remaining()?;
             if self.0.iter().any(|stage| !stage.supports_native()) {
                 return Err(crate::Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
+                    code: ErrorCode::Unsupported,
                     reason: "context stage has no native capability",
                 });
             }
@@ -82,7 +85,7 @@ impl ContextPipeline {
         work.remaining()?;
         if !stage.supports_native() {
             return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
+                code: ErrorCode::Unsupported,
                 reason: "context stage has no native capability",
             });
         }
@@ -94,7 +97,7 @@ impl ContextPipeline {
             .len()
             .checked_add(1)
             .ok_or_else(|| crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
+                code: ErrorCode::Invalid,
                 reason: "context stage count overflows",
             })?;
         let guard = reserve_context_vec_native(&mut self.0, capacity, work)?;
@@ -142,16 +145,16 @@ impl ContextPipeline {
             .as_ref()
             .map_or(1, |selected| selected.messages.len());
         let current_input_index = u32::try_from(base_count.checked_sub(1).ok_or_else(|| {
-            crate::executor::stock_boundary(
+            stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "current input is missing from context",
             )
         })?)
         .map_err(|_| {
-            crate::executor::stock_boundary(
+            stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "current input index exceeds portable count",
             )
         })?;
@@ -173,9 +176,9 @@ impl ContextPipeline {
             .as_ref()
             .is_some_and(|selected| selected.selection.checkpoint.is_some())
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unsupported,
+                ErrorCode::Unsupported,
                 "canonical checkpoint requires owner-resolved base context",
             ));
         }
@@ -206,9 +209,9 @@ impl ContextPipeline {
     ) -> Result<Context> {
         validate_projected_context(&retained, limits, io)?;
         if delta.current_input_index.is_none() {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "continued base has no current input",
             ));
         }
@@ -239,9 +242,9 @@ impl ContextPipeline {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         self.validate(io)?;
         if self.0.len() > limits.context_messages {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "context stage count exceeds limit",
             ));
         }
@@ -251,9 +254,9 @@ impl ContextPipeline {
         }
         validate_projected_context(&context, limits, io)?;
         if context.current_input_index.is_none() {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "base context has no current input marker",
             ));
         }
@@ -261,9 +264,9 @@ impl ContextPipeline {
             context = stage.apply(input, context, limits, io)?.await?;
             validate_projected_context(&context, limits, io)?;
             if context.current_input_index.is_none() {
-                return Err(crate::executor::stock_boundary(
+                return Err(stock_boundary(
                     io,
-                    crate::wire::ErrorCode::Invalid,
+                    ErrorCode::Invalid,
                     "context stage removed the current input marker",
                 ));
             }
@@ -274,23 +277,25 @@ impl ContextPipeline {
     /// Returns immutable stage contracts on the optional preparation ledger.
     pub fn contracts(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<Value>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
+        if io
+            .and_then(crate::executor::PreparationIo::original_native_work)
+            .is_some()
+            && self.0.iter().any(|stage| !stage.supports_native())
         {
-            if self.0.iter().any(|stage| !stage.supports_native()) {
-                return Err(crate::Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "context stage has no native capability",
-                });
-            }
-            let mut output = Vec::new();
-            io.absorb_native_custody(reserve_context_vec_native(&mut output, self.0.len(), work)?)?;
-            for stage in &self.0 {
-                output.push(stage.contract(Some(io))?);
-            }
-            return Ok(output);
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Unsupported,
+                "context stage has no native capability",
+            ));
         }
-        self.0.iter().map(|stage| stage.contract(io)).collect()
+        let mut contracts = Vec::new();
+        crate::executor::with_history_io(io, |work| {
+            compaction::reserve_vector(&mut contracts, self.0.len(), work)
+        })?;
+        for stage in &self.0 {
+            contracts.push(stage.contract(io)?);
+        }
+        Ok(contracts)
     }
 
     /// Copies stage handles on the optional preparation ledger.
@@ -303,11 +308,7 @@ impl ContextPipeline {
                 .len()
                 .checked_mul(std::mem::size_of::<Arc<dyn ContextStage>>())
                 .ok_or_else(|| {
-                    crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "context stage copy overflows",
-                    )
+                    stock_boundary(io, ErrorCode::Invalid, "context stage copy overflows")
                 })?;
             if let Some(work) = work.as_deref_mut() {
                 work.admit_copy(copied as u64)?;

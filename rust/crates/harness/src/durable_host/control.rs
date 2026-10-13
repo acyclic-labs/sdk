@@ -1,181 +1,163 @@
-//! Control.
+//! Cancellation keeps the original reservation and authenticated parent guard.
 use super::*;
+use crate::store::HistoryIo;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    /// Cancels under the original owner and retained retry identity.
-    pub async fn cancel(&self, task_id: TaskId, native: crate::NativeWork<'_>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = native
-            .map(|work| {
-                crate::filesystem::PreparationIo::from_native_work(work)
-                    .map(crate::store::HistoryWork::new)
-            })
-            .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    /// Returns the host clock used for pinned task deadlines.
+    pub fn now_unix_millis(&self) -> u64 {
+        self.clock.now_unix_millis()
+    }
+
+    /// Observes cancellation on the existing IO context.
+    pub async fn cancellation_requested(
+        &self,
+        task: TaskId,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<bool> {
+        #[cfg(feature = "filesystem")]
+        let mut history = io.map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
         let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
-        let _ = native;
-        if let Some(io) = work.as_deref_mut() {
-            io.check_cancellation()?;
-        }
-        let operation_id = OperationId::from_bytes(task_id.into_bytes());
-        let mut key = String::new();
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_copy(48)?;
-            io.reserve_text(&mut key, 48)?;
-            io.copy_bytes(48)?;
-        }
-        use std::fmt::Write as _;
-        write!(&mut key, "task-cancel:{operation_id}").expect("writing into String");
-        self.coordinator
-            .lock()
-            .await
-            .cancel_operation(
-                self.verifier.audience(),
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-                IdempotencyKey::new(key)?,
-                true,
-                None,
-                &mut work,
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Authenticates operation controls against this task owner's trust root.
-    pub async fn authorize_operation_control(
-        &self,
-        request: &crate::wire_api::OperationControlRequest,
-    ) -> Result<()> {
-        request.authenticate(&self.verifier)?;
-        if &request.owner != self.verifier.audience() {
-            return Err(Error::Unauthorized(
-                "operation control belongs to another owner".into(),
-            ));
-        }
-        if !request
-            .scope
-            .capabilities()
-            .contains(capability::OPERATION_OBSERVE)
-            && !request
-                .scope
-                .capabilities()
-                .contains(capability::OPERATION_CANCEL)
-        {
-            return Err(Error::Unauthorized(
-                "operation control capability is missing".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Observes one exact operation through the existing coordinator.
-    pub async fn observe_control(
-        &self,
-        request: &crate::wire_api::OperationControlRequest,
-    ) -> Result<crate::scheduler::OperationState> {
-        self.authorize_operation_control(request).await?;
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh(&mut None).await?;
-        coordinator
+        coordinator.refresh(&mut work).await?;
+        Ok(coordinator
             .observe_operation(
-                &request.owner,
-                &request.scope,
-                &self.verifier,
-                request.operation_id,
-                &mut None,
-            )
-            .cloned()
-    }
-
-    /// Cancels one operation with the caller's retained retry identity.
-    pub async fn cancel_control(
-        &self,
-        request: &crate::wire_api::CancelControlRequest,
-    ) -> Result<crate::scheduler::OperationState> {
-        self.authorize_operation_control(&request.control).await?;
-        let mut coordinator = self.coordinator.lock().await;
-        let (_, state) = coordinator
-            .cancel_operation(
-                &request.control.owner,
-                &request.control.scope,
-                &self.verifier,
-                request.control.operation_id,
-                request.idempotency_key.clone(),
-                request.recursive,
-                None,
-                &mut None,
-            )
-            .await?;
-        Ok(state)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Reads a task outcome on its original native ledger.
-    pub async fn outcome_with_native_work(
-        &self,
-        task: TaskId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<Outcome<Value>>, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::HistoryWork::new)?;
-        let metadata = std::mem::size_of::<Option<Outcome<Value>>>() as u64;
-        crate::store::history::HistoryIo::retain_owned(&mut io, metadata)?;
-        let (outcome, owned) = self.outcome_with_work(task, &mut Some(&mut io)).await?;
-        let custody =
-            io.take_native_custody(owned.checked_add(metadata).ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "task outcome custody overflows",
-            })?)?;
-        Ok((outcome, custody))
-    }
-
-    pub(super) async fn outcome_with_work(
-        &self,
-        task: TaskId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Option<Outcome<Value>>, u64)> {
-        let observed = {
-            let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh(work).await?;
-            let operation = coordinator.observe_operation(
-                self.verifier.audience(),
+                &self.owner,
                 &self.owner_scope,
                 &self.verifier,
                 OperationId::from_bytes(task.into_bytes()),
-                work,
-            )?;
-            operation
-                .outcome
-                .as_ref()
-                .map(|outcome| outcome.clone_with_work(work))
-                .transpose()?
-        };
-        match observed {
-            Some(Outcome::Succeeded(reference)) => {
-                let (value, owned) = self.read_json(&reference, work).await?;
-                Ok((Some(Outcome::Succeeded(value)), owned))
-            }
-            Some(Outcome::Failed { message }) => {
-                let owned = if work.is_some() {
-                    message.capacity() as u64
-                } else {
-                    0
-                };
-                Ok((Some(Outcome::Failed { message }), owned))
-            }
-            Some(Outcome::Cancelled) => Ok((Some(Outcome::Cancelled), 0)),
-            Some(Outcome::Indeterminate { operation_id }) => {
-                Ok((Some(Outcome::Indeterminate { operation_id }), 0))
-            }
-            None => Ok((None, 0)),
-        }
+                &mut work,
+            )?
+            .cancellation_requested)
     }
 
-    /// Requests a direct child's entire subtree to stop under the caller's retained lease.
+    /// Cancels only after the original admitted deadline expires.
+    pub async fn expire_task_deadline(
+        &self,
+        task: TaskId,
+        fence: Option<&crate::scheduler::LeaseFence>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let operation = OperationId::from_bytes(task.into_bytes());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native = work
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .cloned();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = native
+            .as_ref()
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io: Option<crate::executor::PreparationIo> = None;
+        if work.is_some() && io.is_none() {
+            return Err(Error::Unsupported(
+                "deadline observation requires original IO".into(),
+            ));
+        }
+        let admission = self
+            .admission(
+                operation,
+                &mut io
+                    .as_ref()
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
+            .await?;
+        let deadline = admission
+            .run_limits
+            .deadline_epoch_ms
+            .ok_or_else(|| Error::Invalid("task has no admitted deadline".into()))?;
+        drop(admission);
+        if self.now_unix_millis() < deadline {
+            return Err(Error::Conflict("task deadline has not elapsed".into()));
+        }
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh(work).await?;
+        let state = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation,
+            work,
+        )?;
+        if state
+            .outcome
+            .as_ref()
+            .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
+        {
+            return Ok(());
+        }
+        if let Some(fence) = fence {
+            if state.reservation.as_ref().is_none_or(|lease| {
+                lease.id != fence.reservation_id || lease.placement != fence.placement
+            }) {
+                return Err(Error::Conflict(
+                    "deadline observer does not own current reservation".into(),
+                ));
+            }
+        }
+        if state.cancellation_requested {
+            return Ok(());
+        }
+        let text =
+            crate::executor::preparation_format(format_args!("task-cancel:{operation}"), work)?;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, text.capacity() as u64);
+        let key = IdempotencyKey::new(text)?;
+        let (_, state) = coordinator
+            .cancel_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation,
+                key,
+                true,
+                None,
+                quota.work(),
+            )
+            .await?;
+        let retained = [
+            state.spec.logical_owned_bytes()?,
+            state
+                .reservation
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+            state
+                .checkpoint
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+            state
+                .workflow
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+            state
+                .outcome
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+        ]
+        .into_iter()
+        .try_fold(0u64, |sum, bytes| {
+            sum.checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("cancelled state custody overflows".into()))
+        })?;
+        quota.adopt(retained)?;
+        drop(state);
+        Ok(())
+    }
+
+    /// Cancels the direct child's subtree under its original parent lease.
     #[cfg(feature = "filesystem")]
     pub async fn cancel_child_owned(
         &self,
@@ -183,55 +165,84 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: &crate::scheduler::LeaseFence,
         child: TaskId,
         operation: OperationId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<crate::scheduler::OperationState> {
-        self.verify_owner(parent, fence, false, work).await?;
-        let admitted = self
-            .admission_with_work(OperationId::from_bytes(parent.into_bytes()), work)
-            .await?;
-        if !admitted.grants.contains(capability::OPERATION_CANCEL)
-            || self
-                .admission_with_work(OperationId::from_bytes(child.into_bytes()), work)
-                .await?
-                .parent
-                != Some(parent)
-        {
-            return Err(admission_boundary(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
-                "cancellation requires an authorized direct child",
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = work
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .cloned();
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = native
+            .as_ref()
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let io: Option<crate::executor::PreparationIo> = None;
+        if work.is_some() && io.is_none() {
+            return Err(Error::Unsupported(
+                "child cancellation requires original IO".into(),
             ));
         }
+        let admitted = self
+            .admission(
+                OperationId::from_bytes(parent.into_bytes()),
+                &mut io
+                    .as_ref()
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
+            .await?;
+        let target = self
+            .admission(
+                OperationId::from_bytes(child.into_bytes()),
+                &mut io
+                    .as_ref()
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
+            .await?;
+        if !admitted.grants.contains(capability::OPERATION_CANCEL) || target.parent != Some(parent)
+        {
+            return Err(Error::Unauthorized(
+                "cancellation requires an authorized direct child".into(),
+            ));
+        }
+        drop((admitted, target));
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
-        let parent_state = coordinator.observe_operation(
-            self.verifier.audience(),
-            &self.owner_scope,
-            &self.verifier,
-            OperationId::from_bytes(parent.into_bytes()),
+        let parent_op = OperationId::from_bytes(parent.into_bytes());
+        crate::scheduler::require_execution_owner(
+            coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                parent_op,
+                work,
+            )?,
+            fence,
+            false,
             work,
         )?;
-        crate::scheduler::require_execution_owner(parent_state, fence, false, work)?;
-        let mut key = String::new();
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_copy(91)?;
-            io.reserve_text(&mut key, 91)?;
-            io.copy_bytes(91)?;
-        }
-        use std::fmt::Write as _;
-        write!(&mut key, "task-child-cancel:{parent}:{operation}").expect("writing into String");
-        coordinator
+        let text = crate::executor::preparation_format(
+            format_args!("task-child-cancel:{parent}:{operation}"),
+            work,
+        )?;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, text.capacity() as u64);
+        let (_, state) = coordinator
             .cancel_operation(
-                self.verifier.audience(),
+                &self.owner,
                 &self.owner_scope,
                 &self.verifier,
                 OperationId::from_bytes(child.into_bytes()),
-                IdempotencyKey::new(key)?,
+                IdempotencyKey::new(text)?,
                 true,
-                Some((OperationId::from_bytes(parent.into_bytes()), fence)),
-                work,
+                Some((parent_op, fence)),
+                quota.work(),
             )
-            .await
-            .map(|(_, state)| state)
+            .await?;
+        Ok(state)
     }
 }

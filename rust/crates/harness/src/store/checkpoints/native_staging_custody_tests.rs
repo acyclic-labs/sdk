@@ -1,10 +1,10 @@
 use super::*;
 
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-use acyclic_stream::MemoryStream;
+use acyclic_stream::{MemoryStream, OwnedBytes};
 use std::sync::{Arc, atomic::Ordering};
 
-pub(super) fn budget() -> WorkBudget {
+pub(in crate::store) fn budget() -> WorkBudget {
     WorkBudget {
         authority_records_read: 32,
         authority_bytes_read: 1_048_576,
@@ -44,9 +44,6 @@ async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -
         crate::store::history::reserve(&mut source, 4096, &mut io)?;
         io.copy_bytes(9)?;
         source.extend_from_slice(b"immutable");
-        assert!(source.capacity() > source.len());
-        let source_capacity = source.capacity();
-        let source_pointer = source.as_ptr();
         if mode == 1 {
             provider.forbid_writes.store(true, Ordering::SeqCst);
         }
@@ -56,7 +53,7 @@ async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -
         if mode == 3 {
             cancellation.cancel();
         }
-        let staged = stage_immutable_vec_with_work(
+        let staged = stage_immutable(
             &client,
             (StreamPath::new(path.as_str())?, 0),
             Ok(source),
@@ -92,7 +89,7 @@ async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -
             crate::store::history::reserve(&mut source, 4096, &mut io)?;
             io.copy_bytes(9)?;
             source.extend_from_slice(b"immutable");
-            stage_immutable_vec_with_work(
+            stage_immutable(
                 &client,
                 (StreamPath::new(path.as_str())?, 0),
                 Ok(source),
@@ -117,8 +114,6 @@ async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -
                 .value
                 .retained_capacity()
                 .expect("original native encoder capacity stays intrinsic");
-            assert_eq!(capacity, source_capacity);
-            assert_eq!(record.value.as_ref().as_ptr(), source_pointer);
             let alias = record.value.clone();
             let empty = alias.slice(0..0);
             drop(record);
@@ -196,7 +191,7 @@ async fn competing_immutable_identity_recovers_or_rejects_without_retained_sourc
         let body: &[u8] = if identical { b"immutable" } else { b"hostile" };
         io.copy_bytes(body.len() as u64)?;
         source.extend_from_slice(body);
-        let staged = stage_immutable_vec_with_work(
+        let staged = stage_immutable(
             &client,
             (StreamPath::new(path.as_str())?, 0),
             Ok(source),

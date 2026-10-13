@@ -216,7 +216,7 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
         );
     }
     let fork = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "accounting-fork",
             crate::ForkOptions::from_generation(
                 workspace
@@ -231,7 +231,7 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,

@@ -1,4 +1,3 @@
-//! extension types semantics.
 use super::*;
 /// Explicit treatment of one extension's state at a child fork.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -149,12 +148,23 @@ impl ExtensionAdmission {
                 return Ok(self.clone());
             }
             Ok(Self {
-                source: copying::copy_reference(&self.source, quota)?,
-                selected: copying::copy_vector(&self.selected, quota, copying::copy_dependency)?,
+                source: copy(&self.source, quota, |value: &EventReference, _| {
+                    Ok(value.authority.id.capacity() as u64)
+                })?,
+                selected: copying::copy_vector(&self.selected, quota, |value, quota| {
+                    copy(value, quota, |value: &ExtensionDependency, _| {
+                        Ok(value.name.capacity() as u64)
+                    })
+                })?,
                 configurations: copying::copy_vector(
                     &self.configurations,
                     quota,
-                    copying::copy_configuration,
+                    |value, quota| {
+                        copy(value, quota, |value: &ExtensionConfiguration, work| {
+                            value.content.validate(work)?;
+                            owned_bytes(value)
+                        })
+                    },
                 )?,
             })
         })

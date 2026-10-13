@@ -1,6 +1,6 @@
 use super::*;
 
-/// Directory-listing page size used to scan siblings for a case-folded
+/// Page size for case-folded sibling scans.
 pub(super) const CASE_FOLD_COLLISION_SCAN_PAGE: u32 = 256;
 
 pub(super) fn name_path_error(error: crate::kernel::NamespacePathError) -> FsError {
@@ -34,16 +34,10 @@ pub(super) fn name_fold_key(
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(delta)?;
-    let requested = name.as_bytes().len() as u64;
-    let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(name.as_bytes().len())
-        .map_err(|_| FsError::PendingMutationAllocationFailed)?;
-    accounting.reconcile_owned(&mut allocation, requested, bytes.capacity() as u64)?;
-    bytes.extend_from_slice(name.as_bytes());
+    let mut bytes = Owned::<Vec<u8>>::allocate(name.as_bytes().len(), accounting)?;
+    bytes.value.extend_from_slice(name.as_bytes());
     accounting.record_completed(delta)?;
-    Ok((bytes, allocation))
+    Ok((bytes.value, bytes.allocation))
 }
 
 pub(super) fn name_fold_equal(
@@ -98,26 +92,12 @@ pub(super) fn pending_binding_path<'a>(
     Ok(None)
 }
 
-pub(super) fn removed_binding_id(
-    path: &NamespacePath,
-    removed: &[(&NamespacePath, FileId)],
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Option<FileId>, FsError> {
-    Ok(pending_binding_path(
-        path.components(),
-        removed,
-        CaseSensitivity::ProfileFolded,
-        accounting,
-    )?
-    .map(|(_, id)| id))
-}
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn admit_mutation_names_with_accounting(
         &mut self,
         operations: &mut [Mutation],
         operations_allocation: &mut KernelOwnedAllocation,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         accounting.check()?;
@@ -132,7 +112,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             Owned::<Vec<(&NamespacePath, FileId)>>::allocate(operations.len(), accounting)?;
         for operation in operations {
             accounting.check()?;
-            self.canonicalize_existing_mutation(
+            self.canonicalize_mutation(
                 operation,
                 &pending.value,
                 operations_allocation,
@@ -140,27 +120,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 cancellation,
             )
             .await?;
-            self.canonicalize_new_mutation_parents(
-                operation,
-                &pending.value,
-                operations_allocation,
-                accounting,
-                cancellation,
-            )
-            .await?;
-            match operation {
+            let binding = match operation {
                 Mutation::Create { path, record } | Mutation::Restore { path, record } => {
-                    let allowed = removed_binding_id(path, &removed.value, accounting)?;
-                    let allowed_ids = allowed.as_ref().map_or(&[][..], std::slice::from_ref);
-                    self.admit_binding_name(
-                        path,
-                        &pending.value,
-                        allowed_ids,
-                        accounting,
-                        cancellation,
-                    )
-                    .await?;
-                    pending.value.push((path, record.file_id));
+                    Some((path, record.file_id))
                 }
                 Mutation::Link {
                     source,
@@ -174,17 +136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             cancellation,
                         )
                         .await?;
-                    let allowed = removed_binding_id(destination, &removed.value, accounting)?;
-                    let allowed_ids = allowed.as_ref().map_or(&[][..], std::slice::from_ref);
-                    self.admit_binding_name(
-                        destination,
-                        &pending.value,
-                        allowed_ids,
-                        accounting,
-                        cancellation,
-                    )
-                    .await?;
-                    pending.value.push((destination, id));
+                    Some((destination, id))
                 }
                 Mutation::Rename {
                     source,
@@ -199,28 +151,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             cancellation,
                         )
                         .await?;
-                    let removed_id = removed_binding_id(destination, &removed.value, accounting)?
-                        .filter(|other| *other != id);
+                    let removed_id = pending_binding_path(
+                        destination.components(),
+                        &removed.value,
+                        CaseSensitivity::ProfileFolded,
+                        accounting,
+                    )?
+                    .map(|(_, id)| id)
+                    .filter(|other| *other != id);
                     let ids = [id, removed_id.unwrap_or(id)];
-                    let allowed_ids = if removed_id.is_some() {
-                        &ids[..]
-                    } else {
-                        &ids[..1]
-                    };
+                    let allowed = &ids[..if removed_id.is_some() { 2 } else { 1 }];
                     self.admit_binding_name(
                         destination,
                         &pending.value,
-                        allowed_ids,
+                        allowed,
                         accounting,
                         cancellation,
                     )
                     .await?;
-                    pending.value.retain(|(path, _)| *path != &*source);
-                    if *replace {
-                        pending.value.retain(|(path, _)| *path != &*destination);
-                    }
+                    pending.value.retain(|(path, _)| {
+                        *path != &*source && (!*replace || *path != &*destination)
+                    });
                     removed.value.push((source, id));
                     pending.value.push((destination, id));
+                    None
                 }
                 Mutation::Remove { path, .. } => {
                     if pending_binding_path(
@@ -242,6 +196,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         removed.value.push((path, id));
                     }
                     pending.value.retain(|(other, _)| *other != &*path);
+                    None
                 }
                 Mutation::SetMetadata { .. }
                 | Mutation::Write { .. }
@@ -251,30 +206,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 | Mutation::Preallocate { .. }
                 | Mutation::CloneRange { .. }
                 | Mutation::File { .. }
-                | Mutation::CloneFileRange { .. } => {}
+                | Mutation::CloneFileRange { .. } => None,
+            };
+            if let Some((path, id)) = binding {
+                let allowed = pending_binding_path(
+                    path.components(),
+                    &removed.value,
+                    CaseSensitivity::ProfileFolded,
+                    accounting,
+                )?
+                .map(|(_, id)| id);
+                self.admit_binding_name(
+                    path,
+                    &pending.value,
+                    allowed.as_ref().map_or(&[], std::slice::from_ref),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+                pending.value.push((path, id));
             }
         }
         pending.retire(accounting)?;
         removed.retire(accounting)
     }
 
-    pub(super) fn replace_name_path(
-        path: &mut NamespacePath,
-        mut replacement: (
-            NamespacePath,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        operations_allocation: &mut KernelOwnedAllocation,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<(), FsError> {
-        let old_bytes = path.retained_bytes();
-        operations_allocation.absorb(&mut replacement.1)?;
-        drop(std::mem::replace(path, replacement.0));
-        accounting.release_owned(operations_allocation, old_bytes)?;
-        accounting.check()
-    }
-
-    pub(super) async fn admit_binding_name(
+    async fn admit_binding_name(
         &mut self,
         path: &NamespacePath,
         pending: &[(&NamespacePath, FileId)],
@@ -282,27 +239,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        let parent_pending = match path.split_last() {
-            Some((parent, _)) => pending_binding_path(
+        accounting.check()?;
+        let Some((parent, name)) = path.split_last() else {
+            return Ok(());
+        };
+        if self.volume.config.unicode == UnicodePolicy::RequireNfc
+            && name.encoding() == NameEncoding::Utf8
+            && !std::str::from_utf8(name.as_bytes()).is_ok_and(unicode_normalization::is_nfc)
+        {
+            return Err(FsError::NonNormalizedName);
+        }
+        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded {
+            if pending_binding_path(
                 parent,
                 pending,
                 self.volume.config.case_sensitivity,
                 accounting,
             )?
-            .is_some(),
-            None => false,
-        };
-        self.admit_new_name_with_accounting(
-            path,
-            accounting,
-            cancellation,
-            allowed,
-            parent_pending,
-        )
-        .await?;
-        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-            && let Some((parent, name)) = path.split_last()
-        {
+            .is_none()
+                && self
+                    .find_case_folded_sibling_with_accounting(
+                        parent,
+                        name,
+                        accounting,
+                        cancellation,
+                        allowed,
+                    )
+                    .await?
+                    .is_some()
+            {
+                return Err(FsError::NameCollision);
+            }
             for (other, id) in pending {
                 if let Some((other_parent, other_name)) = other.split_last()
                     && parent == other_parent
@@ -317,51 +284,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-    pub(super) async fn canonicalize_new_mutation_parents(
-        &mut self,
-        operation: &mut Mutation,
-        pending: &[(&NamespacePath, FileId)],
-        operations_allocation: &mut KernelOwnedAllocation,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded {
-            return Ok(());
-        }
-        let (Mutation::Create { path, .. }
-        | Mutation::Link {
-            destination: path, ..
-        }
-        | Mutation::Rename {
-            destination: path, ..
-        }) = operation
-        else {
-            return Ok(());
-        };
-        let Some((parent, name)) = path.split_last() else {
-            return Ok(());
-        };
-        if parent.is_empty() {
-            return Ok(());
-        }
-        let Some(resolved) = self
-            .canonicalize_path_components(parent, pending, accounting, cancellation)
-            .await?
-        else {
-            return Ok(());
-        };
-        let replacement = resolved.0.child_with_accounting(
-            name,
-            self.volume.config.limits,
-            accounting,
-            cancellation,
-        )?;
-        let bytes = resolved.0.retained_bytes();
-        retire_name_owned(resolved, bytes, accounting)?;
-        Self::replace_name_path(path, replacement, operations_allocation, accounting)
-    }
-
-    pub(super) async fn canonicalize_existing_mutation(
+    async fn canonicalize_mutation(
         &mut self,
         operation: &mut Mutation,
         pending: &[(&NamespacePath, FileId)],
@@ -372,24 +295,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded {
             return Ok(());
         }
-        let paths = match operation {
+        let (paths, destination) = match operation {
             Mutation::Remove { path, .. }
             | Mutation::SetMetadata { path, .. }
             | Mutation::Write { path, .. }
             | Mutation::ValidateRegular { path }
             | Mutation::Resize { path, .. }
             | Mutation::ZeroRange { path, .. }
-            | Mutation::Preallocate { path, .. } => [Some(path), None],
-            Mutation::Rename { source, .. } | Mutation::Link { source, .. } => [Some(source), None],
+            | Mutation::Preallocate { path, .. } => ([Some(path), None], None),
+            Mutation::Rename {
+                source,
+                destination,
+                ..
+            }
+            | Mutation::Link {
+                source,
+                destination,
+            } => ([Some(source), None], Some(destination)),
             Mutation::CloneRange {
                 source,
                 destination,
                 ..
-            } => [Some(source), Some(destination)],
-            Mutation::Create { .. }
-            | Mutation::Restore { .. }
-            | Mutation::File { .. }
-            | Mutation::CloneFileRange { .. } => return Ok(()),
+            } => ([Some(source), Some(destination)], None),
+            Mutation::Create { path, .. } => ([None, None], Some(path)),
+            Mutation::Restore { .. } | Mutation::File { .. } | Mutation::CloneFileRange { .. } => {
+                return Ok(());
+            }
         };
         for path in paths.into_iter().flatten() {
             let replacement = self
@@ -397,22 +328,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await?;
             Self::replace_name_path(path, replacement, operations_allocation, accounting)?;
         }
+        if let Some(path) = destination
+            && let Some((parent, name)) = path.split_last()
+            && !parent.is_empty()
+            && let Some(resolved) = self
+                .canonicalize_path_components(parent, pending, accounting, cancellation)
+                .await?
+        {
+            let replacement = resolved.0.child_with_accounting(
+                name,
+                self.volume.config.limits,
+                accounting,
+                cancellation,
+            )?;
+            let bytes = resolved.0.retained_bytes();
+            retire_name_owned(resolved, bytes, accounting)?;
+            Self::replace_name_path(path, replacement, operations_allocation, accounting)?;
+        }
         Ok(())
+    }
+
+    pub(super) fn replace_name_path(
+        path: &mut NamespacePath,
+        mut replacement: (NamespacePath, KernelOwnedAllocation),
+        operations_allocation: &mut KernelOwnedAllocation,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        let old_bytes = path.retained_bytes();
+        operations_allocation.absorb(&mut replacement.1)?;
+        drop(std::mem::replace(path, replacement.0));
+        accounting.release_owned(operations_allocation, old_bytes)?;
+        accounting.check()
     }
 
     pub(super) async fn canonical_existing_path(
         &mut self,
         path: &NamespacePath,
         pending: &[(&NamespacePath, FileId)],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<
-        (
-            NamespacePath,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        FsError,
-    > {
+    ) -> Result<(NamespacePath, KernelOwnedAllocation), FsError> {
         if let Some((exact, _)) = pending_binding_path(
             path.components(),
             pending,
@@ -441,15 +396,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &mut self,
         requested: &[LogicalName],
         pending: &[(&NamespacePath, FileId)],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<
-        Option<(
-            NamespacePath,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        )>,
-        FsError,
-    > {
+    ) -> Result<Option<(NamespacePath, KernelOwnedAllocation)>, FsError> {
         let allocation = accounting.claim_owned(0, 0)?;
         let mut canonical = (
             NamespacePath::new(Vec::new(), self.volume.config.limits).map_err(name_path_error)?,
@@ -530,7 +479,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &mut self,
         path: &NamespacePath,
         pending: &[(&NamespacePath, FileId)],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {
         if let Some((_, id)) = pending_binding_path(
@@ -547,57 +496,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(lookup.0.record.ok_or(FsError::NotFound)?.file_id)
     }
 
-    pub(super) async fn admit_new_name_with_accounting(
-        &mut self,
-        path: &NamespacePath,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-        allowed_file_ids: &[FileId],
-        parent_pending: bool,
-    ) -> Result<(), FsError> {
-        accounting.check()?;
-        let Some((parent, name)) = path.split_last() else {
-            return Ok(());
-        };
-        if self.volume.config.unicode == UnicodePolicy::RequireNfc
-            && name.encoding() == NameEncoding::Utf8
-            && !std::str::from_utf8(name.as_bytes()).is_ok_and(unicode_normalization::is_nfc)
-        {
-            return Err(FsError::NonNormalizedName);
-        }
-        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-            && !parent_pending
-            && self
-                .find_case_folded_sibling_with_accounting(
-                    parent,
-                    name,
-                    accounting,
-                    cancellation,
-                    allowed_file_ids,
-                )
-                .await?
-                .is_some()
-        {
-            return Err(FsError::NameCollision);
-        }
-        Ok(())
-    }
-
     pub(super) fn find_case_folded_sibling_with_accounting<'a, 'accounting>(
         &'a mut self,
         parent_components: &'a [LogicalName],
         target: &'a LogicalName,
-        accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
+        accounting: &'a mut KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
     ) -> impl std::future::Future<
-        Output = Result<
-            Option<(
-                LogicalName,
-                crate::kernel::allocation::KernelOwnedAllocation,
-            )>,
-            FsError,
-        >,
+        Output = Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError>,
     > + ProviderTask
     + 'a {
         async move {
@@ -626,10 +533,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         retire_name_owned(std::mem::replace(&mut parent, next), bytes, accounting)?;
                     }
                     let folded_target = name_fold_key(target, accounting)?;
-                    let mut after: Option<(
-                        LogicalName,
-                        crate::kernel::allocation::KernelOwnedAllocation,
-                    )> = None;
+                    let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
                     let found = loop {
                         accounting.check()?;
                         let page = self

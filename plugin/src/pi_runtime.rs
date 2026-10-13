@@ -154,7 +154,7 @@ impl PiTaskRuntime {
     ) -> acyclic_harness::Result<Self> {
         authority.validate(
             journal,
-            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
         let (mut tools, tools_custody) = ToolRegistry::new(work)?;
         let mut tools_custody = Some(tools_custody);
@@ -283,7 +283,7 @@ impl PiTaskRuntime {
                 VolumeOperation::Write,
             )))
         {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let grant = volume.capability(operation, &mut Some(&mut io))?;
             if !authority.scope.grants().contains(&grant) {
                 return Err(acyclic_harness::Error::NativeBoundary {

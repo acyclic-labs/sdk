@@ -41,10 +41,10 @@ impl<A, O> SharedCheckoutState<A, O> {
     pub fn clear_retained_operation(&mut self, operation_id: OperationId) {
         if self.publication_operation == Some(operation_id) {
             self.publication_operation = None;
+            self.publication_evidence = None;
         }
     }
 
-    /// Begins an optimistic transaction on a copy of this candidate.
     pub(super) fn candidate(
         &self,
         operation: Option<OperationId>,
@@ -60,35 +60,20 @@ impl<A, O> SharedCheckoutState<A, O> {
             Some(_) => return Err(MountSourceError::Stale),
             None => self.ensure_publication_resolved()?,
         }
-        let clone = |carrier: &mut NativeDemandCarrier<'_>| {
-            if let Some(work) = carrier.original_native_work() {
-                return self
-                    .checkout
-                    .private_candidate(&work, cancellation)
-                    .map_err(MountSourceError::Filesystem);
-            }
-            let result = carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.live_allocation_bytes(),
-                    self.checkout.private_candidate(
-                        work.remaining().map_err(super::lazy::mount_demand_error)?,
-                        cancellation,
-                    ),
-                ))
-            })?;
-            let checkout = carrier.accept_with_prior_live(result.1, result.0, fs_error)?;
-            carrier
-                .with_work(|work| work.retain_checkout_control(&checkout.private_control_custody()))
-                .map_err(super::lazy::mount_demand_error)?;
-            Ok(checkout)
-        };
+        let work = carrier.original_native_work().expect("native SDK callback");
         Ok(CheckoutCandidate {
-            base: clone(carrier)?,
-            checkout: clone(carrier)?,
+            base: self
+                .checkout
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
+            checkout: self
+                .checkout
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
+            operation,
         })
     }
 
-    /// Records one change to the checkout's view. The exclusive guard keeps
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         record_view_change(
             &self.ledger,
@@ -99,7 +84,6 @@ impl<A, O> SharedCheckoutState<A, O> {
             )),
         )
         .expect("external SDK view recording");
-        self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
     }
 }

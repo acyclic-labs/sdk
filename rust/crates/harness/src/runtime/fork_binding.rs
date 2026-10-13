@@ -1,24 +1,7 @@
 use super::*;
 
 impl AgentHarness {
-    /// Returns the authorized workspace boundary.
-
-    pub fn workspaces(&self) -> Result<Arc<dyn crate::merge::ProjectWorkspaceProvider>> {
-        if !self.scope.grants().contains(capability::FORK_PUBLISH)
-            && !self.scope.grants().contains(capability::PROJECT_MERGE)
-        {
-            return Err(Error::Unauthorized(
-                "runtime scope lacks project authority".into(),
-            ));
-        }
-        self.workspaces
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::Unsupported("project workspace provider is not bound".into()))
-    }
-
     /// Selects a newly captured parent revision for future work.
-
     pub fn at_parent_snapshot(
         self: &Arc<Self>,
         preparer: Arc<dyn crate::fork::ForkPreparer>,
@@ -73,7 +56,6 @@ impl AgentHarness {
     }
 
     /// Captures the exact requested resources without publishing a child.
-
     pub async fn prepare_fork(
         &self,
         request: crate::fork::ForkRequest,
@@ -88,7 +70,6 @@ impl AgentHarness {
     }
 
     /// Observes an uncertain preparation without redispatching captures.
-
     pub async fn reconcile_fork(
         &self,
         request: crate::fork::ForkRequest,
@@ -107,7 +88,6 @@ impl AgentHarness {
     }
 
     /// Binds a model only for scoped task/tool model requests.
-
     pub fn bind_model(
         self: &Arc<Self>,
         model: Model,
@@ -120,22 +100,9 @@ impl AgentHarness {
     }
 
     /// Replaces the ordered context stages for future local task work.
-
     pub fn bind_context(self: &Arc<Self>, context: ContextPipeline) -> Arc<Self> {
         let mut bound = self.as_ref().clone();
         bound.context = context;
         Arc::new(bound)
-    }
-
-    /// Selects a different model for future local child work without changing the parent's pinned task, tool, policy, or authority bindings.
-
-    pub fn scoped_model(
-        self: &Arc<Self>,
-        grants: Capabilities,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-    ) -> Result<Arc<Self>> {
-        self.scoped(grants, limits)?.bind_model(model, provider)
     }
 }

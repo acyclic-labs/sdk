@@ -1,5 +1,5 @@
 import type { ClientCommand, Connection, ReplayCursor, Transport } from "./client.js";
-import { RequestScheduler, requestAborted } from "./client-requests.js";
+import { RequestScheduler } from "./client-requests.js";
 
 /** Share finite request admission with hydration; preserve transport correlation and replay. */
 export class ScheduledTransport<Event> implements Transport<Event> {
@@ -36,12 +36,12 @@ export class ScheduledTransport<Event> implements Transport<Event> {
           owned = connected;
           if (controller.signal.aborted) {
             await closeOwned();
-            throw requestAborted();
+            throw new DOMException("Request cancelled", "AbortError");
           }
           return connected;
         } finally { abort.removeEventListener("abort", cancel); }
       }, signal);
-      if (controller.signal.aborted) { await closeOwned(); throw requestAborted(); }
+      if (controller.signal.aborted) { await closeOwned(); throw new DOMException("Request cancelled", "AbortError"); }
     } catch (error) {
       signal?.removeEventListener("abort", cancel);
       detached = owned === undefined;

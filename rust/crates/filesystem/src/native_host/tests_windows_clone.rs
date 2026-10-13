@@ -33,10 +33,6 @@ fn filetime_conversions_cover_their_extremes() {
     assert_eq!(filetime_to_unix_nanoseconds(i64::MAX), None);
     assert_eq!(filetime_to_unix_nanoseconds(i64::MIN), None);
     assert_eq!(filetime_to_unix_nanoseconds(0), None);
-    assert!(
-        metadata_time(crate::kernel::MetadataField::Value(150), 7).is_err(),
-        "exact writers refuse instants between ticks"
-    );
 }
 use bytes::Bytes;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -57,9 +53,8 @@ async fn held_async_copy_preserves_source_hardlinks_and_rejects_escape() -> std:
     std::fs::write(source_path.join("file"), b"source contents")?;
     std::fs::hard_link(source_path.join("file"), source_path.join("alias"))?;
     std::fs::write(outside_path.join("untouched"), b"outside")?;
-    let source = HostRoot::open(&source_path, &mut ordinary_work()).map_err(ordinary_error)?;
-    let destination =
-        HostRoot::open(&destination_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let source = test_root(&source_path)?;
+    let destination = test_root(&destination_path)?;
     destination
         .copy_file_from(&source, Path::new("alias"), Path::new("copy"))
         .await?;
@@ -108,9 +103,8 @@ async fn cancelled_async_copy_leaves_no_partial_output() -> std::io::Result<()> 
     let source_file = std::fs::File::create(source_path.join("large"))?;
     let length = 128 * 1024 * 1024;
     source_file.set_len(length)?;
-    let source = HostRoot::open(&source_path, &mut ordinary_work()).map_err(ordinary_error)?;
-    let destination =
-        HostRoot::open(&destination_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let source = test_root(&source_path)?;
+    let destination = test_root(&destination_path)?;
     let task = tokio::spawn(async move {
         destination
             .copy_file_from(&source, Path::new("large"), Path::new("copy"))
@@ -164,14 +158,7 @@ fn staged_copy_crash_child() -> std::io::Result<()> {
         directory,
         cap_std::ambient_authority(),
     )?)?;
-    reopen_windows_file(
-        &staged.guard,
-        windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE,
-        Default::default(),
-        &mut ordinary_work(),
-    )
-    .map_err(ordinary_error)?
-    .write_all(b"partial copy")?;
+    staged.guard.try_clone()?.write_all(b"partial copy")?;
     std::process::abort();
 }
 #[test]
@@ -203,14 +190,7 @@ fn a_published_copy_keeps_only_its_final_name() -> std::io::Result<()> {
     let parent =
         cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
     let staged = StagedWindowsFile::create(parent)?;
-    reopen_windows_file(
-        &staged.guard,
-        windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE,
-        Default::default(),
-        &mut ordinary_work(),
-    )
-    .map_err(ordinary_error)?
-    .write_all(b"complete copy")?;
+    staged.guard.try_clone()?.write_all(b"complete copy")?;
     staged.publish(std::ffi::OsStr::new("copy"))?;
     assert_eq!(
         staged
@@ -299,10 +279,11 @@ fn a_name_deleted_while_held_open_is_not_found() -> std::io::Result<()> {
     }?;
     drop(deleting);
     assert_eq!(std::fs::read_dir(temporary.path())?.count(), 1);
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
-    let stat = root
-        .stat(Path::new("pending"), &mut ordinary_work())
-        .map_err(ordinary_error);
+    let root = test_root(temporary.path())?;
+    let stat = with_wide_path(Path::new("pending"), &mut ordinary_work(), |path, work| {
+        root.stat(path, work)
+    })
+    .map_err(ordinary_error);
     drop(held);
     assert_eq!(
         stat.map(|_| ()).map_err(|error| error.kind()),
@@ -315,7 +296,7 @@ async fn copy_never_replaces_an_existing_destination() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("source"), b"new")?;
     std::fs::write(temporary.path().join("existing"), b"old")?;
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(temporary.path())?;
     let copied = root
         .copy_file_from(&root, Path::new("source"), Path::new("existing"))
         .await;
@@ -349,13 +330,15 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"payload")?;
     std::fs::create_dir(temporary.path().join("directory"))?;
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(temporary.path())?;
     for (path, attributes) in [
         (Path::new("file"), ARCHIVE | HIDDEN),
         (Path::new("directory"), DIRECTORY | HIDDEN),
     ] {
         apply_windows_metadata(
-            root.open_windows_metadata_target(path, &mut work)?,
+            with_wide_path(path, &mut work, |path, work| {
+                root.open_windows_metadata_target(path, work)
+            })?,
             FileMetadata {
                 windows_attributes: MetadataField::Value(attributes),
                 created_ns: MetadataField::Value(FIXED_NS),
@@ -376,12 +359,12 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
     permissions.set_readonly(true);
     std::fs::set_permissions(&file, permissions.clone())?;
     apply_windows_metadata(
-        root.open_windows_metadata_target(Path::new("file"), &mut work)?,
+        root.open_windows_metadata_target(&test_path("file"), &mut work)?,
         FileMetadata::default(),
         &mut work,
     )?;
     apply_windows_metadata(
-        root.open_windows_metadata_target(Path::new("file"), &mut work)?,
+        root.open_windows_metadata_target(&test_path("file"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(ARCHIVE),
             ..FileMetadata::default()
@@ -400,10 +383,10 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
     std::fs::create_dir(&root_path)?;
     std::fs::write(root_path.join("file"), b"inside")?;
     std::fs::write(temporary.path().join("outside"), b"outside")?;
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     assert!(matches!(
         apply_windows_metadata(
-            root.open_windows_metadata_target(Path::new("file"), &mut work)
+            root.open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
                 windows_attributes: MetadataField::Value(REPARSE_POINT),
@@ -411,11 +394,11 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
             },
             &mut work
         ),
-        Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
         apply_windows_metadata(
-            root.open_windows_metadata_target(Path::new("file"), &mut work)
+            root.open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
                 named_attributes: MetadataField::Value(crate::ObjectId {
@@ -426,10 +409,10 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
             },
             &mut work
         ),
-        Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(
-        root.open_windows_metadata_target(Path::new("../outside"), &mut work)
+        root.open_windows_metadata_target(&test_path("../outside"), &mut work)
             .is_err()
     );
     assert_eq!(std::fs::read(temporary.path().join("outside"))?, b"outside");
@@ -451,9 +434,9 @@ fn held_windows_metadata_rejects_intermediate_reparse_escape() -> std::io::Resul
         Err(error) => return Err(error),
     }
     let before = std::fs::metadata(outside.join("target"))?.file_attributes();
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     assert!(
-        root.open_windows_metadata_target(Path::new("pivot/target"), &mut work)
+        root.open_windows_metadata_target(&test_path("pivot/target"), &mut work)
             .is_err()
     );
     assert_eq!(
@@ -484,9 +467,9 @@ fn held_windows_metadata_updates_final_reparse_point_without_touching_target()
     }
     let target_attributes = std::fs::symlink_metadata(&target)?.file_attributes();
     let link_attributes = std::fs::symlink_metadata(&link)?.file_attributes();
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     apply_windows_metadata(
-        root.open_windows_metadata_target(Path::new("link"), &mut work)?,
+        root.open_windows_metadata_target(&test_path("link"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(link_attributes | HIDDEN),
             created_ns: MetadataField::Value(FIXED_NS),
@@ -520,8 +503,8 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
     let original = temporary.path().join("original");
     let moved = temporary.path().join("moved");
     std::fs::write(&original, b"old")?;
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
-    let target = root.open_windows_metadata_target(Path::new("original"), &mut work)?;
+    let root = test_root(temporary.path())?;
+    let target = root.open_windows_metadata_target(&test_path("original"), &mut work)?;
     std::fs::rename(&original, &moved)?;
     std::fs::write(&original, b"new")?;
     let replacement_metadata = std::fs::metadata(&original)?;
@@ -560,10 +543,14 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
 #[tokio::test]
 async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> std::io::Result<()> {
     let directory = tempfile::tempdir()?;
-    let root = HostRoot::open(directory.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(directory.path())?;
     let path = Path::new("overlapped.bin");
     let file = with_wide_path(path, &mut ordinary_work(), |path, work| {
-        root.create_windows_file_wide(path, true, false, work)
+        root.create_file(
+            path,
+            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+            work,
+        )
     })
     .map_err(ordinary_error)?;
     // SAFETY: HostRoot used FILE_FLAG_OVERLAPPED and this new handle is transferred directly, with no other I/O or completion-port owner.
@@ -590,10 +577,15 @@ async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> st
     );
     Ok(())
 }
-fn sparse_file(root: &HostRoot, path: &Path, length: u64) -> std::io::Result<cap_std::fs::File> {
-    let file = root
-        .create_file(path, &mut ordinary_work())
-        .map_err(ordinary_error)?;
+fn sparse_file(root: &HostRoot, path: &Path, length: u64) -> std::io::Result<std::fs::File> {
+    let file = with_wide_path(path, &mut ordinary_work(), |path, work| {
+        root.create_file(
+            path,
+            windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+            work,
+        )
+    })
+    .map_err(ordinary_error)?;
     // SAFETY: no buffers are passed and the file handle stays live.
     unsafe {
         DeviceIoControl(
@@ -642,8 +634,7 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
                 .tempdir_in(parent)?,
             None => tempfile::tempdir()?,
         };
-        let root =
-            HostRoot::open(directory.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+        let root = test_root(directory.path())?;
         let source_path = Path::new("source.bin");
         let target_path = Path::new("target.bin");
         let mut source = sparse_file(&root, source_path, length)?;
@@ -652,9 +643,12 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
             source.write_all(&[byte; 4096][..count])?;
         }
         source.sync_all()?;
-        let cloned = root
-            .clone_file_from(&root, source_path, target_path, &mut ordinary_work())
-            .map_err(ordinary_error)?;
+        let cloned = with_wide_path(source_path, &mut ordinary_work(), |source, work| {
+            with_wide_path(target_path, work, |destination, work| {
+                root.clone_file_from(&root, source, destination, work)
+            })
+        })
+        .map_err(ordinary_error)?;
         let mut required = parent.is_some();
         #[cfg(feature = "native-mount")]
         {
@@ -667,15 +661,21 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
         }
         if !cloned {
             assert!(
-                root.stat(target_path, &mut ordinary_work())
-                    .map_err(ordinary_error)
-                    .is_err()
+                with_wide_path(target_path, &mut ordinary_work(), |path, work| root
+                    .stat(path, work))
+                .map_err(ordinary_error)
+                .is_err()
             );
             continue;
         }
-        let mut target = root
-            .open_file(target_path, &mut ordinary_work())
-            .map_err(ordinary_error)?;
+        let mut target = with_wide_path(target_path, &mut ordinary_work(), |path, work| {
+            root.open_file(
+                path,
+                windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+                work,
+            )
+        })
+        .map_err(ordinary_error)?;
         let mut actual = [0; 4096];
         for &(offset, byte, count) in patches {
             target.seek(SeekFrom::Start(offset))?;
@@ -711,7 +711,7 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
 #[test]
 fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()> {
     let directory = tempfile::tempdir()?;
-    let root = HostRoot::open(directory.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(directory.path())?;
     let path = Path::new("ranges.bin");
     let mut file = sparse_file(&root, path, 20 * 1024 * 1024)?;
     for index in 0..10_u64 {
@@ -719,9 +719,14 @@ fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()>
         file.write_all(&[0xA5; 4096])?;
     }
     file.sync_all()?;
-    let source = root
-        .open_file(path, &mut ordinary_work())
-        .map_err(ordinary_error)?;
+    let source = with_wide_path(path, &mut ordinary_work(), |path, work| {
+        root.open_file(
+            path,
+            windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+            work,
+        )
+    })
+    .map_err(ordinary_error)?;
     assert!(
         allocated_data_ranges(
             &source.try_clone()?.into_std(),

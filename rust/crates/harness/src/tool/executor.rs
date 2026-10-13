@@ -2,23 +2,7 @@ use super::*;
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
-    /// Borrows the pinned resumable identity on the supplied original ledger.
-    fn resumable_machine_identity(
-        &self,
-        work: crate::NativeWork<'_>,
-    ) -> Result<Option<&crate::workflow::MachineIdentity>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.is_some() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "tool executor has no native resumable identity producer",
-            });
-        }
-        let _ = work;
-        Ok(None)
-    }
-
-    /// Checks invocation-specific resource grants before a result is replayed, dispatched, or reconciled.
+    /// Checks resource grants before replay, dispatch or reconciliation.
     fn authorize(
         &self,
         _scope: Option<&crate::runtime::RuntimeScope>,
@@ -37,30 +21,33 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Executes an already admitted invocation.
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>>;
-
-    /// Executes with the scoped task/tool context when admitted by the typed runtime.
-    fn execute_with_context<'a>(
+    fn execute<'a>(
         &'a self,
-        _context: crate::runtime::ToolContext,
         invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
-        self.execute(invocation)
-    }
+        context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>>;
 
     /// Reconciles a previously started invocation without executing it again.
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
+        context: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>>;
 
-    /// Reconciles under the same owner-authenticated task context used for dispatch.
-    fn reconcile_with_context<'a>(
-        &'a self,
-        _context: crate::runtime::ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        self.reconcile(invocation)
+    /// Borrows the pinned resumable identity on the supplied original ledger.
+    fn resumable_machine_identity(
+        &self,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<&crate::workflow::MachineIdentity>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "tool executor has no native resumable identity producer",
+            });
+        }
+        let _ = work;
+        Ok(None)
     }
 
     /// Rejects an unaudited implementation before the caller constructs native invocation metadata or a future.

@@ -118,9 +118,3 @@ pub(super) fn publication_failure(
     result.failure = Some(message);
     result
 }
-pub(super) fn invalid(error: impl std::fmt::Display) -> Error {
-    Error::Invalid(error.to_string())
-}
-pub(super) fn storage(error: impl std::fmt::Display) -> Error {
-    Error::Storage(error.to_string())
-}

@@ -19,30 +19,30 @@ pub(in crate::store) fn publication_path(
     authority: &Authority,
     prefix: &str,
     last: Option<(&dyn std::fmt::Display, usize)>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
+    use crate::{store::guarded_boundary as boundary, wire::ErrorCode::Invalid};
+    use std::fmt::Write as _;
     if prefix.starts_with("harness/v2/conversation-")
         && authority.kind != crate::core::AggregateKind::Conversation
     {
-        return Err(crate::store::guarded_boundary(
+        return Err(boundary(
             work,
-            crate::wire::ErrorCode::Invalid,
+            Invalid,
             "message index requires a conversation",
         ));
     }
-    use std::fmt::Write as _;
-    let canonical = authority.stream_path(work)?;
-    let canonical_capacity = canonical.capacity() as u64;
-    if prefix == "harness/v2/" && last.is_none() {
-        let result = stream_path(&canonical, work);
-        drop(canonical);
-        return release_owned_after_drop(result, canonical_capacity, work);
-    }
-    let result = (|| {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let canonical = authority.stream_path(quota.work())?;
+    quota.adopt(canonical.capacity() as u64)?;
+    let mut text = String::new();
+    let input = if prefix == "harness/v2/" && last.is_none() {
+        canonical.as_str()
+    } else {
         let suffix = canonical.strip_prefix("harness/v2/").ok_or_else(|| {
-            crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Invalid,
+            boundary(
+                quota.work(),
+                Invalid,
                 "publication authority path is invalid",
             )
         })?;
@@ -50,59 +50,52 @@ pub(in crate::store) fn publication_path(
             .len()
             .checked_add(suffix.len())
             .and_then(|bytes| bytes.checked_add(last.map_or(0, |(_, bytes)| bytes + 1)))
-            .ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "publication path length overflows",
-                )
+            .ok_or_else(|| boundary(quota.work(), Invalid, "publication path length overflows"))?;
+        match quota.work().as_deref_mut() {
+            Some(io) => io.reserve_text(&mut text, capacity)?,
+            None => text.reserve_exact(capacity),
+        }
+        quota.adopt(text.capacity() as u64)?;
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.copy_bytes((prefix.len() + suffix.len()) as u64)?;
+        }
+        text.push_str(prefix);
+        text.push_str(suffix);
+        if let Some((last, _)) = last {
+            struct Count(usize);
+            impl std::fmt::Write for Count {
+                fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                    self.0 += value.len();
+                    Ok(())
+                }
+            }
+            let mut count = Count(0);
+            write!(&mut count, "/{last}").map_err(|_| {
+                boundary(quota.work(), Invalid, "publication path formatting failed")
             })?;
-        let mut text = String::new();
-        let result = (|| {
-            match work.as_deref_mut() {
-                Some(observer) => observer.reserve_text(&mut text, capacity)?,
-                None => text.reserve_exact(capacity),
+            if count.0 > capacity - text.len() {
+                return Err(boundary(
+                    quota.work(),
+                    Invalid,
+                    "publication path exceeds admitted capacity",
+                ));
             }
-            if let Some(observer) = work.as_deref_mut() {
-                observer.copy_bytes((prefix.len() + suffix.len()) as u64)?;
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.copy_bytes(count.0 as u64)?;
             }
-            text.push_str(prefix);
-            text.push_str(suffix);
-            if let Some((last, _)) = last {
-                struct Count(usize);
-                impl std::fmt::Write for Count {
-                    fn write_str(&mut self, value: &str) -> std::fmt::Result {
-                        self.0 += value.len();
-                        Ok(())
-                    }
-                }
-                let mut count = Count(0);
-                write!(&mut count, "/{last}").map_err(|_| {
-                    crate::store::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Invalid,
-                        "publication path formatting failed",
-                    )
-                })?;
-                if let Some(observer) = work.as_deref_mut() {
-                    observer.copy_bytes(count.0 as u64)?;
-                }
-                write!(&mut text, "/{last}").map_err(|_| {
-                    crate::store::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Invalid,
-                        "publication path formatting failed",
-                    )
-                })?;
-            }
-            stream_path(&text, work)
-        })();
-        let text_capacity = text.capacity() as u64;
-        drop(text);
-        release_owned_after_drop(result, text_capacity, work)
-    })();
+            write!(&mut text, "/{last}").map_err(|_| {
+                boundary(quota.work(), Invalid, "publication path formatting failed")
+            })?;
+        }
+        text.as_str()
+    };
+    let (path, held) = stream_path(input, quota.work())?;
+    quota.adopt(held)?;
+    drop(text);
     drop(canonical);
-    release_owned_after_drop(result, canonical_capacity, work)
+    quota.replace(held)?;
+    quota.transfer();
+    Ok((path, held))
 }
 
 fn stream_path(

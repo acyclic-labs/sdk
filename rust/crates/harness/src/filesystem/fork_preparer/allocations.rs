@@ -74,7 +74,7 @@ macro_rules! fork_preparation_records {
     ($($record:ident),+ $(,)?) => {$(
         impl bounded_io::PreparationRecord for $record {
             fn maximum_slot_bytes() -> u64 { crate::filesystem::default_tools::recursive_decode_slot_bytes::<Self>() }
-            fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::$record }
+            fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema { crate::executor::json::JsonValueSchema::$record }
         }
     )+};
 }
@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
             ParentProjectController::new(self, parent, verifier, scope, source_project, None)?;
-        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read, None)?;
         let parent_agent = scope
             .agent()
             .ok_or_else(|| Error::Unauthorized("fork allocation requires a parent agent".into()))?;
@@ -372,7 +372,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native seed binding requires its original issued creation guard",
                 })?
-                .verify_creation_with_native_work(work)?
+                .verify(
+                    false,
+                    Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+                )?
                 .await?;
         }
         let binding = seed_digest(seed, MAX_REPORT_BYTES, io)?;
@@ -405,7 +408,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
             let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:seed", seed.operation_id),
                     work,
                 )
@@ -457,14 +460,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
         })?;
         let creation_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("fork:{}:allocation-journal", claim.operation_id),
                 work,
             )
         })?)?;
         bounded_io::create(self, name, &creation_key, io, preparation).await?;
         let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("fork:{}:allocation", claim.operation_id),
                 work,
             )

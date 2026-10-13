@@ -17,23 +17,8 @@ pub(crate) struct PreparedCandidateAdoption {
 }
 
 impl<A, O> Checkout<A, O> {
-    /// Prepares the exact candidate proof under the original caller's limits.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn prepare_candidate_adoption<W: FsWork>(
-        &self,
-        base: &Self,
-        candidate: &Self,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Option<PreparedCandidateAdoption>, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result =
-            self.prepare_candidate_adoption_with_accounting(base, candidate, &mut accounting);
-        budget.finish(result, &accounting)
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(super) fn prepare_candidate_adoption_with_accounting(
+    pub(crate) fn prepare_candidate_adoption(
         &self,
         base: &Self,
         candidate: &Self,
@@ -97,44 +82,19 @@ impl<A, O> Checkout<A, O> {
 
     #[cfg(feature = "native-mount")]
     pub(super) fn candidate_base_unchanged(&self, base: &Self) -> bool {
-        let Self {
-            volume: _,
-            generation_root,
-            base_root,
-            root,
-            authority_head,
-            authored_operation_id,
-            live_operation_id,
-            last_commit,
-            publication_closure: _,
-            prepared_merge_parent,
-            dependencies: _,
-            proof_owned_bytes: _,
-            mode,
-        } = self;
-        *generation_root == base.generation_root
-            && *base_root == base.base_root
-            && *root == base.root
-            && *authority_head == base.authority_head
-            && *authored_operation_id == base.authored_operation_id
-            && *live_operation_id == base.live_operation_id
-            && *last_commit == base.last_commit
-            && *prepared_merge_parent == base.prepared_merge_parent
-            && *mode == base.mode
+        self.generation_root == base.generation_root
+            && self.base_root == base.base_root
+            && self.root == base.root
+            && self.authority_head == base.authority_head
+            && self.authored_operation_id == base.authored_operation_id
+            && self.live_operation_id == base.live_operation_id
+            && self.last_commit == base.last_commit
+            && self.prepared_merge_parent == base.prepared_merge_parent
+            && self.mode == base.mode
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(crate) fn private_candidate<W: FsWork>(
-        &self,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Self, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = self.private_candidate_with_accounting(&mut accounting, cancellation);
-        budget.finish(result, &accounting)
-    }
-
     pub(super) fn checkout_custody(
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -158,7 +118,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(Arc::new(ProofDataCustody::default()))
     }
 
-    pub(crate) fn private_candidate_with_accounting(
+    pub(crate) fn private_candidate(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -173,7 +133,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         // This guard is declared before the physical proof so every error
         let mut proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
         // Immutable proof maps remain shared by the canonical Arc COW engine.
-        let mut dependencies = self.dependencies.independent_with_custody(custody);
+        let dependencies = self.dependencies.independent_with_custody(custody);
         accounting.record_completed(copied)?;
         dependencies.proof().control = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
@@ -195,40 +155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             _ => crate::kernel::ProofDataClaim::control(&dependencies.data_custody, proof_bytes),
         };
-        let (base_root, base_control) = match accounting {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { .. } => {
-                crate::collection::clone_generation_root_native(
-                    &self.base_root,
-                    accounting,
-                    &dependencies.data_custody,
-                )?
-            }
-            _ => {
-                let (base_root, _) = crate::collection::clone_generation_root_with_accounting(
-                    &self.base_root,
-                    accounting,
-                )?;
-                let control = crate::kernel::ProofDataClaim::control(
-                    &dependencies.data_custody,
-                    root_parent_bytes(&base_root)?,
-                );
-                (base_root, control)
-            }
-        };
-        dependencies.base_root_control = base_control;
-        let root = match accounting {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { .. } => self
-                .root
-                .replicate_native_measured(accounting, &dependencies.data_custody)?,
-            _ => {
-                let mut root = self.root.replicate_with_accounting(accounting, None)?;
-                root.attach_control_custody(&dependencies.data_custody);
-                root
-            }
-        };
-        Ok(self.replica_with_roots(dependencies, self.mode, base_root, root))
+        self.replica(dependencies, self.mode, accounting)
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
@@ -366,23 +293,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.dependencies.base_root_control = prepared.base.1;
     }
 
-    pub(crate) fn proof_data_bytes(
-        &self,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<u64, FsError> {
-        accounting.charge(WorkCounters {
-            items_examined: 2,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let proof = self.dependencies.proof();
-        proof
-            .dependencies
-            .logical_data()
-            .2
-            .checked_add(proof.observed_data_bytes)
-            .ok_or(FsError::Work(WorkError::Overflow))
-    }
-
     #[cfg(feature = "native-mount")]
     pub(crate) fn into_unpublishable_capture_candidate(mut self) -> Self {
         self.mode = CheckoutMode {
@@ -394,100 +304,70 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self
     }
 
-    /// Constructs an observing alias with independently admitted roots.
+    /// Constructs a read-only alias retaining observations on the original proof.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn observer<W: FsWork>(
+    pub(crate) fn observer(
         &self,
-        budget: W,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> W::Output<Self, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = (|| -> Result<Self, FsError> {
-            let accounting = &mut accounting;
-            cancellation.check()?;
-            if !self.tracks_observations() {
-                let mut checkout =
-                    self.private_candidate_with_accounting(accounting, cancellation)?;
-                checkout.mode = CheckoutMode::read_only_pinned();
-                return Ok(checkout);
-            }
-            let custody = Self::checkout_custody(accounting, cancellation)?;
-            accounting.check()?;
-            let mut dependencies = self.dependencies.observing_with_custody(custody);
-            let base = match accounting {
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { .. } => {
-                    crate::collection::clone_generation_root_native(
-                        &self.base_root,
-                        accounting,
-                        &dependencies.data_custody,
-                    )?
-                }
-                _ => {
-                    let root = crate::collection::clone_generation_root_with_accounting(
-                        &self.base_root,
-                        accounting,
-                    )?;
-                    if !matches!(
-                        root.1,
-                        crate::kernel::allocation::KernelOwnedAllocation::Standalone
-                    ) {
-                        return Err(FsError::HandleAllocationFailed);
-                    }
-                    let control = crate::kernel::ProofDataClaim::control(
-                        &dependencies.data_custody,
-                        root_parent_bytes(&root.0)?,
-                    );
-                    (root.0, control)
-                }
-            };
-            let root = match accounting {
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { .. } => self
-                    .root
-                    .replicate_native_measured(accounting, &dependencies.data_custody)?,
-                _ => {
-                    let mut root = self.root.replicate_with_accounting(accounting, None)?;
-                    root.attach_control_custody(&dependencies.data_custody);
-                    root
-                }
-            };
-            dependencies.base_root_control = base.1;
-            Ok(self.replica_with_roots(
-                dependencies,
-                CheckoutMode::read_only_pinned(),
-                base.0,
-                root,
-            ))
-        })();
-        budget.finish(result, &accounting)
+    ) -> Result<Self, FsError> {
+        cancellation.check()?;
+        if !self.tracks_observations() {
+            return self.inspector(accounting, cancellation);
+        }
+        let custody = Self::checkout_custody(accounting, cancellation)?;
+        accounting.check()?;
+        let dependencies = self.dependencies.observing_with_custody(custody);
+        self.replica(dependencies, CheckoutMode::read_only_pinned(), accounting)
     }
 
     /// Constructs an isolated read-only candidate.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn inspector<W: FsWork>(
+    pub(crate) fn inspector(
         &self,
-        budget: W,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> W::Output<Self, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = self
-            .private_candidate_with_accounting(&mut accounting, cancellation)
+    ) -> Result<Self, FsError> {
+        self.private_candidate(accounting, cancellation)
             .map(|mut checkout| {
                 checkout.mode = CheckoutMode::read_only_pinned();
                 checkout
-            });
-        budget.finish(result, &accounting)
+            })
     }
 
-    pub(super) fn replica_with_roots(
+    fn replica(
         &self,
-        dependencies: DependencyLedger,
+        mut dependencies: DependencyLedger,
         mode: CheckoutMode,
-        base_root: GenerationRoot,
-        root: crate::collection::CheckoutRoots,
-    ) -> Self {
-        Self {
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_owner = accounting.native_work().map(|_| &dependencies.data_custody);
+        #[cfg(target_arch = "wasm32")]
+        let native_owner = None;
+        let (base_root, control) = match native_owner {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(owner) => {
+                crate::collection::clone_generation_root_native(&self.base_root, accounting, owner)?
+            }
+            _ => {
+                let (root, _) = crate::collection::clone_generation_root_with_accounting(
+                    &self.base_root,
+                    accounting,
+                )?;
+                let control =
+                    ProofDataClaim::control(&dependencies.data_custody, root_parent_bytes(&root)?);
+                (root, control)
+            }
+        };
+        dependencies.base_root_control = control;
+        let mut root = self
+            .root
+            .replicate_with_accounting(accounting, native_owner)?;
+        if native_owner.is_none() {
+            root.attach_control_custody(&dependencies.data_custody);
+        }
+        Ok(Self {
             volume: self.volume.clone(),
             generation_root: self.generation_root,
             base_root,
@@ -506,7 +386,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 },
             dependencies,
             mode,
-        }
+        })
     }
 }
 
@@ -523,44 +403,25 @@ pub(super) fn root_parent_buffer(
     live_owned_bytes: u64,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<GenerationId>>, FsError> {
-    let mut work = WorkCounters::default();
+) -> FsResult<Vec<GenerationId>> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = (|| {
-        cancellation.check()?;
-        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-        allocations
-            .claim_bytes(live_owned_bytes, 0, &mut work, budget)
-            .map_err(|error| error.into_work_or(FsError::PendingMutationAllocationFailed))?;
-        let mut values = Vec::new();
-        if !parents.is_empty() {
-            cancellation.check()?;
-            let admitted = allocations
-                .claim_elements::<GenerationId>(parents.len(), &mut work, budget)
-                .map_err(|error| error.into_work_or(FsError::PendingMutationAllocationFailed))?;
-            values
-                .try_reserve_exact(parents.len())
-                .map_err(|_| FsError::PendingMutationAllocationFailed)?;
-            let actual =
-                crate::foundation::usize_to_u64(values.capacity() * size_of::<GenerationId>());
-            if actual > admitted {
-                allocations
-                    .claim_bytes(actual - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
-                    .map_err(|error| {
-                        error.into_work_or(FsError::PendingMutationAllocationFailed)
-                    })?;
-                work.verify(budget)?;
-            }
-        }
-        let copy_bytes = parents
-            .len()
-            .checked_mul(size_of::<GenerationId>())
-            .map(crate::foundation::usize_to_u64)
-            .ok_or(FsError::Work(WorkError::Overflow))?;
-        crate::collection::charge_handle_copy(copy_bytes, &mut work, budget)?;
-        values.extend_from_slice(parents);
-        Ok(values)
+        accounting.check()?;
+        accounting.claim_owned(live_owned_bytes, 0)?;
+        let mut values = Owned::<Vec<GenerationId>>::allocate(parents.len(), &mut accounting)?;
+        let copied = WorkCounters {
+            bytes_copied: usize_to_u64(
+                parents
+                    .len()
+                    .checked_mul(size_of::<GenerationId>())
+                    .ok_or(WorkError::Overflow)?,
+            ),
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied)?;
+        values.value.extend_from_slice(parents);
+        accounting.record_completed(copied)?;
+        Ok(values.value)
     })();
-    result
-        .map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
+    measured(result, &accounting)
 }

@@ -105,7 +105,7 @@ impl PiSession {
             .await?
             .ok_or_else(|| invalid("builtin caller has no current original native invocation"))?;
         crate::pi_builtin::authorize_owner(
-            live.context.context(),
+            live.context.as_ref(),
             &live.owner,
             request.caller,
             work,

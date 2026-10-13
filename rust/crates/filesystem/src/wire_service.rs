@@ -830,7 +830,7 @@ where
             None => options,
         };
         let destination = source_workspace
-            .fork(request.destination_name, options, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .fork::<_, _, crate::WorkspaceError>(request.destination_name, options, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &mut |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
@@ -965,11 +965,9 @@ where
             request.maximum_changes,
             request.maximum_conflicts,
         );
-        let changes = plan
-            .source_changes(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| status(&failure.error))?;
-        let file_changes = changes.value.files.iter().map(file_record_change).collect();
+        let changes = source_workspace.volume.fs.workspace_join_changes(plan.common_ancestor(), &source, request.maximum_changes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| status(&failure.error))?.value.0;
+        let file_changes = changes.files.iter().map(file_record_change).collect();
         let binding_changes = changes
-            .value
             .bindings
             .iter()
             .map(directory_binding_change)
@@ -980,7 +978,7 @@ where
             expected_target: Some(target_ref),
             file_changes,
             conflicts: Vec::new(),
-            truncated: changes.value.truncated,
+            truncated: changes.truncated,
             common_ancestor: Some(base_ref),
             maximum_generations: request.maximum_generations,
             maximum_changes: request.maximum_changes,
@@ -1075,7 +1073,7 @@ where
             .apply(ApplyOptions {
                 if_target: target_id,
                 idempotency_key: operation,
-            }, crate::PublicationPermit::Unrestricted)
+            }, std::collections::BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await
             .map_err(|error| status(&error))?;
         let outcome = if existing_operation
@@ -1840,7 +1838,7 @@ fn join_common_ancestor_ref<A, O>(
     source: &Workspace<A, O>,
     target: &Workspace<A, O>,
 ) -> wire::GenerationRef {
-    let volume = plan.common_ancestor_volume();
+    let volume = plan.base.volume_id;
     let workspace = if volume == source.id().volume_id() {
         Some(workspace_ref(source))
     } else if volume == target.id().volume_id() {

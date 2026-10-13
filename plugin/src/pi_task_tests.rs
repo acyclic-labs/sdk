@@ -650,12 +650,13 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .workflow_journal_with_native_work(task, &fence, &work)
         .await
         .unwrap();
+    let replay_io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap();
     let replay = journal
-        .replay_with_native_work(0, 16, &work)
+        .replay(0, 16, Some(&replay_io))
         .unwrap()
         .await
         .unwrap();
-    assert_eq!(replay.0.last().unwrap().next, checkpoint);
+    assert_eq!(replay.0.last().unwrap().checkpoint().unwrap(), (&checkpoint.machine, checkpoint.revision, &checkpoint.state));
     drop(replay);
     let mut wrong = fence.clone();
     wrong.reservation_id.push_str("-foreign");

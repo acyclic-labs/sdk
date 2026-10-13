@@ -35,7 +35,9 @@ impl StockExecution<'_> {
             request: retained_request,
             mut admission,
             events: replayed_model,
-        } = retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?;
+        } = crate::executor::retain_preparation(
+            retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
+        );
         let started = retained_request.is_some();
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
@@ -113,7 +115,7 @@ impl StockExecution<'_> {
             for event in continuation.drain(..) {
                 let index = observed.len();
                 let key = with_history_io(io, |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!("{purpose_key}:{step}:{index}"),
                         work,
                     )
@@ -165,13 +167,13 @@ impl StockExecution<'_> {
                 return Err(Error::Indeterminate(input.operation_id));
             }
             let request_key = with_history_io(io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("{purpose_key}:{step}:request"),
                     work,
                 )
             })?;
             let claim_key = with_history_io(io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("{purpose_key}:{step}:claim:{}", OperationId::new()),
                     work,
                 )
@@ -267,7 +269,7 @@ impl StockExecution<'_> {
                 let event = event?;
                 let index = observed.len();
                 let key = with_history_io(io, |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!("{purpose_key}:{step}:{index}"),
                         work,
                     )

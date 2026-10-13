@@ -136,8 +136,8 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
     changed.preparation = TaskId::from_bytes([73; 16]);
     let changed_child = child.clone().with_resource_proofs(vec![changed])?;
     assert_ne!(
-        crate::contract::canonical_json_digest(&canonical, u64::MAX, &mut None)?,
-        crate::contract::canonical_json_digest(&changed_child.canonical_value(), u64::MAX, &mut None)?
+        crate::executor::json::canonical_json_digest(&canonical, u64::MAX, &mut None)?,
+        crate::executor::json::canonical_json_digest(&changed_child.canonical_value(), u64::MAX, &mut None)?
     );
     let mut missing = wire;
     missing

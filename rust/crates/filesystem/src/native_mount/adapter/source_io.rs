@@ -1,18 +1,15 @@
 use super::*;
 
 /// Retains a physical source operation until its last alias finishes.
-#[derive(Clone)]
-pub struct NativeSourceIoLease {
-    inner: Arc<CaptureProducer>,
-}
+pub type NativeSourceIoLease = Arc<CaptureProducer>;
 
-impl NativeSourceIoLease {
+impl CaptureProducer {
     pub(crate) fn original_work(&self) -> Option<&crate::NativeMaterializationWork> {
-        self.inner.original.as_ref()
+        self.original.as_ref()
     }
 }
 
-impl std::fmt::Debug for NativeSourceIoLease {
+impl std::fmt::Debug for CaptureProducer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NativeSourceIoLease")
@@ -20,7 +17,8 @@ impl std::fmt::Debug for NativeSourceIoLease {
     }
 }
 
-pub(super) struct CaptureProducer {
+/// One accepted physical source operation.
+pub struct CaptureProducer {
     pub(super) gate: Arc<StdMutex<CaptureSourceGate>>,
     pub(super) quiesced: Arc<std::sync::Condvar>,
     pub(super) original: Option<crate::NativeMaterializationWork>,
@@ -71,16 +69,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         )
     }
 
-    pub(crate) fn native_source_io_lease(
-        self: &Arc<Self>,
-    ) -> Result<NativeSourceIoLease, MountSourceError>
-    where
-        Self: Send + Sync + 'static,
-    {
-        self.native_source_io_lease_for_owner(Arc::clone(self) as Arc<dyn Send + Sync>)
-    }
-
-    pub(in crate::native_mount) fn native_source_io_lease_for_owner(
+    pub(in crate::native_mount) fn native_source_io_lease(
         &self,
         owner: Arc<dyn Send + Sync>,
     ) -> Result<NativeSourceIoLease, MountSourceError> {
@@ -98,7 +87,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
-        let mut credit = self.reserve_capture_poll()?;
+        let credit = self.reserve_capture_poll()?;
         let allocation = original
             .claim(
                 std::mem::size_of::<CaptureProducer>() as u64,
@@ -106,6 +95,17 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::WorkCounters::UNCHARGED,
             )
             .map_err(MountSourceError::NativeWork)?;
+        let mut producer = self.capture_producer(credit)?;
+        producer.original = self.native_io_original.clone();
+        producer._owner = Some(owner);
+        producer._allocation = Some(allocation);
+        Ok(Arc::new(producer))
+    }
+
+    pub(super) fn capture_producer(
+        &self,
+        mut credit: Option<crate::materializer::NativeWorkReservation>,
+    ) -> Result<CaptureProducer, MountSourceError> {
         let mut gate = self
             .capture_gate
             .lock()
@@ -120,17 +120,27 @@ impl<A, O> CheckoutMountSource<A, O> {
             .producers
             .checked_add(1)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.accept_capture_poll(&mut credit)?;
+        if let Some(credit) = &mut credit {
+            self.cleanup_credit
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?
+                .0
+                .absorb(credit)
+                .map_err(MountSourceError::NativeWork)?;
+        }
         gate.producers = producers;
         gate.ever_used = true;
-        let inner = Arc::new(CaptureProducer {
+        Ok(CaptureProducer {
             gate: Arc::clone(&self.capture_gate),
             quiesced: Arc::clone(&self.capture_quiesced),
-            original: self.native_io_original.clone(),
-            _owner: Some(owner),
-            _allocation: Some(allocation),
-        });
-        Ok(NativeSourceIoLease { inner })
+            original: None,
+            _owner: None,
+            _allocation: None,
+        })
     }
 
     pub(super) fn reserve_capture_poll(
@@ -147,25 +157,6 @@ impl<A, O> CheckoutMountSource<A, O> {
                     .map_err(MountSourceError::NativeWork)
             })
             .transpose()
-    }
-
-    pub(super) fn accept_capture_poll(
-        &self,
-        credit: &mut Option<crate::materializer::NativeWorkReservation>,
-    ) -> Result<(), MountSourceError> {
-        if let Some(credit) = credit {
-            self.cleanup_credit
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-                .ok_or(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ))?
-                .0
-                .absorb(credit)
-                .map_err(MountSourceError::NativeWork)?;
-        }
-        Ok(())
     }
 
     pub(in crate::native_mount) fn capture_retired(&self) -> bool {

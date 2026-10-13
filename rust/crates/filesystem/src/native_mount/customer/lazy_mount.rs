@@ -88,7 +88,7 @@ where
         before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -143,7 +143,7 @@ where
         before_publication: F,
     ) -> impl Future<Output = Result<crate::LazySnapshotRef, E>> + Send + 'a
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {

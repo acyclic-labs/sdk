@@ -8,7 +8,7 @@ import {
   installActorsMethods,
   type ActorsClientMethods,
   type ActorsMethod,
-  type ActorsOperation,
+  type ActorsOperation as Operation,
 } from "./generated/actors-service.js";
 import {
   configureActorsNominalBinding,
@@ -23,8 +23,7 @@ import type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
 export type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
 export { ActorId, CodeSha256, PositiveU64, CurrentHeadMarker } from "./generated/nominal.js";
 
-/** Rust operation surface implemented by either the N-API or WASM bridge. */
-export type Operation = ActorsOperation;
+export type { ActorsOperation as Operation } from "./generated/actors-service.js";
 
 export type ActorsRustClient = {
   readonly [K in Operation]: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
@@ -135,10 +134,7 @@ export interface ActorsClient extends ActorsClientMethods {}
 function nativeBinding(): ActorsRustBinding {
   return {
     async connect(endpoint, token, signal, caCertificate) {
-      // The staged metadata identifies the exact native artifacts present in
-      // this package. Select WASM before evaluating the generated loader when
-      // the package was installed on another supported platform; the loader's
-      // generic missing-binding error otherwise hides its requested paths.
+      // Fall back before evaluating an absent platform's generated native loader.
       const module = await loadNativeModule();
       if (module === undefined) {
         return wasmBinding().connect(endpoint, token, signal, caCertificate);
@@ -191,10 +187,7 @@ interface NativeActorsModule extends Partial<ActorsNominalBinding> {
     connectWithCaResult(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsResult<NativeActorsClient>>;
   };
   readonly NativeActorsCancellation?: new () => { cancel(): void };
-  readonly default?: Partial<ActorsNominalBinding> & { readonly NativeActorsClient?: {
-    connectResult(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsResult<NativeActorsClient>>;
-    connectWithCaResult(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsResult<NativeActorsClient>>;
-  }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+  readonly default?: Omit<NativeActorsModule, "default">;
 }
 
 let nativeModulePromise: Promise<NativeActorsModule | undefined> | undefined;

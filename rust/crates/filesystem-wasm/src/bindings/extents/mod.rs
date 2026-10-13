@@ -42,7 +42,6 @@ pub enum BrowserExtentPlanResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Plans one bounded sparse range without reading file content blobs.
     #[wasm_bindgen(js_name = planFileExtents)]
     pub async fn plan_file_extents(
         &mut self,
@@ -75,7 +74,6 @@ impl BrowserCheckout {
         ts(result)
     }
 
-    /// Plans one bounded sparse range by stable file identity.
     #[wasm_bindgen(js_name = planFileExtentsById)]
     pub async fn plan_file_extents_by_id(
         &mut self,
@@ -89,7 +87,7 @@ impl BrowserCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let receipt = browser_call!(
             self,
-            plan_file_extents_by_id(file_id, ByteRange { offset, length }, maximum_spans,)
+            plan_file_extents(file_id, ByteRange { offset, length }, maximum_spans,)
         )?;
         let result = match receipt.value {
             None => BrowserExtentPlanResult::Inline {
@@ -108,7 +106,6 @@ impl BrowserCheckout {
         ts(result)
     }
 
-    /// Finds the next sparse data or hole boundary without reading file bodies.
     #[wasm_bindgen(js_name = seekFileExtent)]
     pub async fn seek_file_extent(
         &mut self,
@@ -125,7 +122,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Finds the next sparse boundary by stable file identity.
     #[wasm_bindgen(js_name = seekFileExtentById)]
     pub async fn seek_file_extent_by_id(
         &mut self,
@@ -135,7 +131,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserExtentSeekResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let target = extent_seek_target(&target)?;
-        let receipt = browser_call!(self, seek_file_extent_by_id(file_id, offset, target,))?;
+        let receipt = browser_call!(self, seek_file_extent(file_id, offset, target,))?;
         ts(BrowserExtentSeekResult {
             offset: receipt.value,
             work: browser_work(receipt.work),

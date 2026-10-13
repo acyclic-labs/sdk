@@ -90,7 +90,7 @@ async fn extension_bytes_are_validated_before_ref_only_publication() -> Result<(
             .any(|window| window == b"hello")
     );
     assert!(matches!(
-        decode_event(&records[0].value, &mut None)?.0.1.payload,
+        crate::wire_codec::decode_event(&records[0].value, &mut None)?.0.1.payload,
         crate::core::EventPayload::Custom { record } if record.content == content()?
     ));
     Ok(())

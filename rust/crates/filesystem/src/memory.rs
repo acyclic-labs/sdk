@@ -850,10 +850,6 @@ impl From<(AuthorityStoreError, WorkCounters)> for AuthorityFailure {
     }
 }
 
-fn authority_fs_failure((error, work): (AuthorityStoreError, WorkCounters)) -> crate::performance::OperationFailure<crate::FsError> {
-    crate::performance::OperationFailure::new(error.into(), work)
-}
-
 /// Funding for the common authority producer.
 enum AuthorityAccounting<'a> {
     Ordinary {
@@ -1456,7 +1452,7 @@ impl crate::async_storage::AsyncObjectStore for MemoryObjectStore {
             drop(reads);
             return Err(ObjectStoreError::Corrupt);
         };
-        crate::async_storage::native_read_batch(reads, custody)
+        Ok::<_, crate::ObjectStoreError>((reads, custody))
     }
             .await
             .map(|(values, allocation)| (values, Some(allocation)));

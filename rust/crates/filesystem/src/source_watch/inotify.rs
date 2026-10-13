@@ -227,7 +227,7 @@ fn contains_path_with_work<W: SourceDemandReadWork>(
     watches: &[(PathBuf, i32)], path: &Path, work: &mut W,
 ) -> Result<bool, DemandError> {
     for (candidate, _) in watches {
-        work.with_original_leaf(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
+        work.with_original_leaf(|work| work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
         if candidate == path {
             return Ok(true);
         }
@@ -252,7 +252,7 @@ fn prepare_insert_with_work<W: SourceDemandReadWork>(
             .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
             .ok_or(WorkError::Overflow)?;
         let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
-        work.allocate_for(bytes, copied)?;
+        work.claim_allocation(bytes, u64::from((bytes) != 0), copied)?;
         let mut grown = Vec::with_capacity(count);
         grown.append(watches);
         *watches = grown;
@@ -264,7 +264,7 @@ fn prepare_insert_with_work<W: SourceDemandReadWork>(
     }
     let bytes = path.as_os_str().len() as u64;
     let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::default() };
-    work.allocate_for(bytes, copied)?;
+    work.claim_allocation(bytes, u64::from((bytes) != 0), copied)?;
     Ok(path.to_path_buf())
 }
 
@@ -309,7 +309,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
         loop {
             let bytes = u64::try_from(capacity).map_err(|_| WorkError::Overflow)?;
             let next_temporary = temporary.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            work.allocate(bytes)?;
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             temporary = next_temporary;
             let grown = vec![0_u8; capacity];
             let old_bytes = path.capacity() as u64;
@@ -318,7 +318,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
             temporary -= old_bytes;
             let read = WorkCounters { source_bytes_read: bytes, ..WorkCounters::default() };
             work.admit(read)?;
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: the stack C path and the complete writable buffer live through readlink; a full buffer is retried, never truncated.
             let length = unsafe {
                 libc::readlink(proc_path.as_ptr().cast(), path.as_mut_ptr().cast(), path.len())
@@ -336,7 +336,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
         let root_path = Path::new(OsStr::from_bytes(&path));
         let mut child = root_path;
         loop {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             let (Some(parent), Some(name)) = (child.parent(), child.file_name()) else {
                 break;
             };
@@ -345,7 +345,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
             let copy = WorkCounters { bytes_copied: name_bytes, ..WorkCounters::default() };
             work.admit(copy)?;
             let next_temporary = temporary.checked_add(name_bytes).ok_or(WorkError::Overflow)?;
-            work.allocate(name_bytes)?;
+            work.claim_allocation(name_bytes, u64::from((name_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             temporary = next_temporary;
             work.record(copy)?;
             pending_name = std::ffi::OsString::from_vec(name.as_bytes().to_vec());
@@ -362,7 +362,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
                 let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
                 work.admit(copied)?;
                 let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
-                work.allocate(bytes)?;
+                work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
                 *retained = next_retained;
                 work.record(copied)?;
                 let mut grown = Vec::with_capacity(count);
@@ -377,13 +377,13 @@ fn watch_ancestors<W: SourceDemandReadWork>(
             let copy = WorkCounters { bytes_copied: parent_bytes as u64, ..WorkCounters::default() };
             work.admit(copy)?;
             let next_temporary = temporary.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            work.allocate(bytes)?;
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             temporary = next_temporary;
             work.record(copy)?;
             c_path = Vec::with_capacity(length);
             c_path.extend_from_slice(parent.as_os_str().as_bytes());
             c_path.push(0);
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: the complete NUL-terminated path lives through the call.
             let descriptor = unsafe {
                 libc::inotify_add_watch(inotify.as_raw_fd(), c_path.as_ptr().cast(), ANCESTRAL)
@@ -396,7 +396,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
             temporary -= bytes;
             let mut prior = None;
             for (index, (registered, _)) in ancestors.iter().enumerate() {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 if *registered == descriptor {
                     prior = Some(index);
                     break;
@@ -487,7 +487,7 @@ impl NativeSourceWatch {
         let mut control_transferred = false;
         let result = (|| {
             work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
-            work.allocate(control_bytes)?;
+            work.claim_allocation(control_bytes, u64::from((control_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             retained = control_bytes;
             shared = Some(Arc::new(Shared {
                 inotify: AtomicI32::new(-1),
@@ -510,13 +510,13 @@ impl NativeSourceWatch {
             let initialized = shared.as_ref().expect("shared initialized");
             initialized.ownership.retain(control_bytes, work)?;
             control_transferred = true;
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: plain descriptor creation with valid flags.
             inotify = Some(owned(unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) })?);
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: as above.
             wake = Some(owned(unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) })?);
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: duplicating a live descriptor the root holds.
             root = Some(owned(unsafe { libc::fcntl(directory.directory_fd(), libc::F_DUPFD_CLOEXEC, 0) })?);
             let held_inotify = inotify.as_ref().expect("inotify initialized");
@@ -524,17 +524,17 @@ impl NativeSourceWatch {
             watch_ancestors(held_inotify, held_root, &mut ancestors, &mut retained, &mut cleanup, work)?;
             let bytes = READ_BUFFER_BYTES as u64;
             let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            work.allocate(bytes)?;
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             retained = next_retained;
             buffer = vec![0; READ_BUFFER_BYTES];
             cleanup.reserve_record(work)?;
             let bytes = std::mem::size_of::<(PathBuf, i32)>() as u64;
             let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            work.allocate(bytes)?;
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             retained = next_retained;
             watches = Vec::with_capacity(1);
             let (root_path, _) = proc_fd_path(held_root.as_raw_fd());
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: this stack C path names the held root and lives through registration, exactly as for every later admitted directory.
             let descriptor = unsafe {
                 libc::inotify_add_watch(held_inotify.as_raw_fd(), root_path.as_ptr().cast(), WATCHED)
@@ -565,7 +565,7 @@ impl NativeSourceWatch {
             let initialized = shared.as_ref().expect("shared initialized");
             let _startup_reading = initialized.reading.lock().unwrap_or_else(PoisonError::into_inner);
             // Native thread machinery is SDK-private (zero canonical payload), but its actual allocation and native call are still admitted.
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 backend_read_operations: 1, allocation_operations: 1,
                 ..WorkCounters::default()
             })?;
@@ -701,7 +701,7 @@ impl NativeSourceWatch {
         // Only the original owner carries credits accepted before native birth. The caller's token controls waiting, never that owner's authority.
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
-        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), Some(wait), true)?;
+        self.stop(&mut crate::NativeMaterializationWork::clone(original), Some(wait), true)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
         Ok(())
     }
@@ -709,7 +709,7 @@ impl NativeSourceWatch {
     pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         self.shared.delivery.ensure_stop_available()?;
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), None, true)
+        self.stop(&mut crate::NativeMaterializationWork::clone(original), None, true)
     }
 
     fn stop<W: SourceDemandReadWork>(
@@ -952,7 +952,7 @@ impl Shared {
     fn cancel_cleanup<W: SourceDemandReadWork>(&self, work: &mut W) {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(birth) = &self.delivery.original {
-            cleanup.cancel(&mut crate::demand::NativeSourceWork::from_original_work(birth));
+            cleanup.cancel(&mut crate::NativeMaterializationWork::clone(birth));
         } else {
             cleanup.cancel(work);
         }
@@ -979,7 +979,7 @@ impl Shared {
         if let Some(original) = &self.delivery.original {
             // Every retained record belongs to this native owner, even if a different caller requested admission. Fund its mandatory drop from that owner's immutable original before record birth.
             self.cleanup.lock().unwrap_or_else(PoisonError::into_inner)
-                .reserve_record(&mut crate::demand::NativeSourceWork::from_original_work(original))?;
+                .reserve_record(&mut crate::NativeMaterializationWork::clone(original))?;
         } else if self.delivery.birth_matches(work) {
             self.cleanup.lock().unwrap_or_else(PoisonError::into_inner).reserve_record(work)?;
         }
@@ -990,10 +990,10 @@ impl Shared {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
-            original.state.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
+            original.state.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(1)).expect("original reservation is balanced"));
         } else if self.delivery.birth_matches(work) {
             cleanup.records -= 1;
-            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(1)).expect("original reservation is balanced"));
         }
     }
 
@@ -1062,7 +1062,7 @@ impl Shared {
         let bytes = u64::try_from(length).map_err(|_| WorkError::Overflow)?;
         let path = work.with_original_leaf(|work| {
             work.work.admit(&WorkCounters { bytes_copied: bytes - 1, ..WorkCounters::default() }, &work.budget)?;
-            work.allocate(bytes)?;
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             work.record(WorkCounters { bytes_copied: bytes - 1, ..WorkCounters::default() })?;
             let mut path = Vec::with_capacity(length);
             path.extend_from_slice(&prefix[..prefix_length]);
@@ -1075,7 +1075,7 @@ impl Shared {
         let result = (|| {
             let path = CString::new(path)
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-            work.with_original_leaf(|work| work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() }))?;
+            work.with_original_leaf(|work| work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() }))?;
             // SAFETY: a NUL-terminated path that outlives the call, through the held root rather than a newly resolved root name.
             let descriptor = unsafe {
                 libc::inotify_add_watch(self.inotify.load(Ordering::Acquire), path.as_ptr(), WATCHED)
@@ -1103,7 +1103,7 @@ impl Shared {
         let mut abandoned = false;
         let result = (|| {
             let mut prefix = work.with_original_leaf(|work| {
-                work.allocate(bytes)?;
+                work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
                 Ok::<_, DemandError>(PathBuf::with_capacity(directory.as_os_str().len()))
             })?;
             let mut held: Option<(OwnedFd, u64)> = None;
@@ -1114,7 +1114,7 @@ impl Shared {
                         return Err(DemandError::InvalidRequest);
                     };
                     work.with_original_leaf(|work| {
-                        work.charge(WorkCounters {
+                        work.started_io(WorkCounters {
                             items_examined: 1,
                             bytes_copied: (component.as_os_str().len() as u64)
                                 .checked_add(u64::from(!prefix.as_os_str().is_empty()))
@@ -1200,7 +1200,7 @@ impl Shared {
         if self.stopping.load(Ordering::Acquire) { return Ok(()); }
         let mut at = 0;
         while at < watches.len() {
-            work.with_original_leaf(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
+            work.with_original_leaf(|work| work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
             let (path, descriptor) = &watches[at];
             if path.as_os_str().is_empty() || !path.starts_with(directory) {
                 at += 1;
@@ -1209,7 +1209,7 @@ impl Shared {
             let descriptor = *descriptor;
             let mut shared = false;
             for (index, (_, other)) in watches.iter().enumerate() {
-                work.with_original_leaf(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
+                work.with_original_leaf(|work| work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
                 if index != at && *other == descriptor {
                     shared = true;
                     break;
@@ -1222,7 +1222,7 @@ impl Shared {
             };
             work.with_original_leaf(|work| work.work.admit(&copied, &work.budget))?;
             if !shared {
-                work.with_original_leaf(|work| work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() }))?;
+                work.with_original_leaf(|work| work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() }))?;
                 // SAFETY: removes only this instance's admitted descriptor.
                 if unsafe { libc::inotify_rm_watch(self.inotify.load(Ordering::Acquire), descriptor) } < 0 {
                     let error = io::Error::last_os_error();
@@ -1250,7 +1250,7 @@ impl Shared {
         let reservation = work.reserve_cleanup_write()?;
         let buffer = match work.with_original_leaf(|work| {
             work.work.admit(&copied, &work.budget)?;
-            work.allocate(bytes)?;
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             work.record(copied)?;
             let mut buffer = Vec::with_capacity(bytes as usize);
             buffer.extend_from_slice(name);
@@ -1263,7 +1263,7 @@ impl Shared {
         let result = (|| {
             let name = CString::from_vec_with_nul(buffer)
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-            work.with_original_leaf(|work| work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() }))?;
+            work.with_original_leaf(|work| work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() }))?;
             // SAFETY: one normal component beneath a held directory, never following a symlink or re-resolving a previously opened prefix.
             let directory = unsafe { libc::openat(parent, name.as_ptr(),
                 libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
@@ -1307,7 +1307,7 @@ impl Shared {
         ];
         while !self.stopping.load(Ordering::Acquire) {
             let mut work = self.delivery.callback_work();
-            if let Err(error) = work.charge(WorkCounters {
+            if let Err(error) = work.started_io(WorkCounters {
                 backend_read_operations: 1, ..WorkCounters::UNCHARGED
             }) {
                 self.delivery.failed_with_work(error, &mut work);
@@ -1395,7 +1395,7 @@ impl Shared {
                     work.admit(WorkCounters {
                         source_bytes_read: maximum as u64, ..WorkCounters::default()
                     })?;
-                    work.charge(WorkCounters {
+                    work.started_io(WorkCounters {
                         backend_read_operations: 1, ..WorkCounters::default()
                     })?;
                     // SAFETY: no competing reader can use this owned page.
@@ -1418,7 +1418,7 @@ impl Shared {
                     })?;
                     if reading.filled == 0 { return Ok(self.delivery.is_exact()); }
                 }
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 let raw = &reading.buffer[reading.cursor..reading.filled];
                 let Some(header) = raw.get(..EVENT_HEADER_BYTES) else {
                     self.delivery.invalidate_with_work(work)?;
@@ -1440,7 +1440,7 @@ impl Shared {
                 };
                 let mut name_length = 0;
                 for byte in bytes {
-                    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                    work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                     if *byte == 0 { break; }
                     name_length += 1;
                 }
@@ -1455,7 +1455,7 @@ impl Shared {
                 {
                     let ancestors = self.ancestors.lock().unwrap_or_else(PoisonError::into_inner);
                     for (watched, on_the_way) in &*ancestors {
-                        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                        work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                         if *watched == descriptor {
                             ancestor = Some(
                                 mask & (libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_IGNORED) != 0
@@ -1485,7 +1485,7 @@ impl Shared {
                     }
                     let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
                     if reading.alias_cursor >= watches.len() { break; }
-                    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                    work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                     let (alias, watched) = &watches[reading.alias_cursor];
                     if *watched != descriptor {
                         reading.alias_cursor += 1;
@@ -1506,7 +1506,7 @@ impl Shared {
                         .and_then(|length| length.checked_add(name.len())).ok_or(WorkError::Overflow)?;
                     let delta = WorkCounters { bytes_copied: bytes as u64, ..WorkCounters::default() };
                     if cleanup_needed { self.reserve_record_cleanup(work)?; }
-                    if let Err(error) = work.allocate_for(bytes as u64, delta) {
+                    if let Err(error) = work.claim_allocation(bytes as u64, u64::from((bytes as u64) != 0), delta) {
                         if cleanup_needed { self.cancel_record_cleanup(work); }
                         return Err(error);
                     }
@@ -1525,7 +1525,7 @@ impl Shared {
                             ..WorkCounters::default()
                         };
                         let prepared = (|| {
-                            work.allocate_for(next_bytes, delta)?;
+                            work.claim_allocation(next_bytes, u64::from((next_bytes) != 0), delta)?;
                             let mut replacement = Vec::with_capacity(next_capacity);
                             replacement.append(&mut reading.cleanup);
                             reading.cleanup = replacement;
@@ -1597,11 +1597,11 @@ impl Shared {
                     let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
                     let mut at = 0;
                     while at < watches.len() {
-                        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                        work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                         if watches[at].1 == descriptor {
                             let shifted = (watches.len() - at - 1)
                                 .checked_mul(std::mem::size_of::<(PathBuf, i32)>()).ok_or(WorkError::Overflow)?;
-                            work.charge(WorkCounters { bytes_copied: shifted as u64, ..WorkCounters::default() })?;
+                            work.started_io(WorkCounters { bytes_copied: shifted as u64, ..WorkCounters::default() })?;
                             let (path, _) = watches.remove(at);
                             let bytes = path.capacity() as u64;
 
@@ -1646,7 +1646,7 @@ mod admission_tests {
             Ok(())
         }
         fn host_changed_with_native_work(
-            &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
+            &self, _: &[HostChange], work: &mut crate::NativeMaterializationWork,
         ) -> Result<(), DemandError> { work.check() }
     }
 
@@ -1772,7 +1772,7 @@ mod admission_tests {
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget { items_returned: 0, ..ORIGINAL_BUDGET }, &cancellation,
         ))));
-        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
         let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
@@ -1844,7 +1844,7 @@ mod admission_tests {
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget { items_returned: 0, ..ORIGINAL_BUDGET }, &CancellationToken::new(),
         ))));
-        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
         let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1907,9 +1907,9 @@ mod admission_tests {
                 Err(DemandError::NativeWorkUnavailable)
             }
             fn host_changed_with_native_work(
-                &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
+                &self, _: &[HostChange], work: &mut crate::NativeMaterializationWork,
             ) -> Result<(), DemandError> {
-                work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
+                work.started_io(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                 self.entered.send(()).expect("live callback controller");
                 let mut release = self.release.lock().unwrap_or_else(PoisonError::into_inner);
                 while !*release {
@@ -1928,7 +1928,7 @@ mod admission_tests {
         let sink = Arc::new(PanicsAfterRelease {
             entered, release: Mutex::new(false), changed: Condvar::new(),
         });
-        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
         let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
         let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
         let retained_control = original.lock().live_allocation_bytes()
@@ -1978,12 +1978,12 @@ mod admission_tests {
                 Err(DemandError::NativeWorkUnavailable)
             }
             fn host_changed_with_native_work(
-                &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
+                &self, _: &[HostChange], work: &mut crate::NativeMaterializationWork,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("live original callback");
                 assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
-                work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
+                work.started_io(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                 self.invoked.store(true, Ordering::Release);
                 self.cancellation.cancel();
                 work.check()
@@ -1999,7 +1999,7 @@ mod admission_tests {
             original: Arc::downgrade(&original), cancellation: cancellation.clone(),
             invoked: AtomicBool::new(false),
         });
-        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
         let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
         let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
@@ -2055,7 +2055,7 @@ mod admission_tests {
                 Err(DemandError::NativeWorkUnavailable)
             }
             fn host_changed_with_native_work(
-                &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
+                &self, _: &[HostChange], work: &mut crate::NativeMaterializationWork,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("the actual reader retains its original");
                 assert!(Arc::ptr_eq(&original, work.original));
@@ -2075,7 +2075,7 @@ mod admission_tests {
         let sink = Arc::new(Retires {
             watch: Mutex::new(None), original: lifetime.clone(), invoked: AtomicBool::new(false),
         });
-        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
         let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
         let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
         let reader = Arc::downgrade(&watch.shared);

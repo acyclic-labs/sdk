@@ -1,4 +1,5 @@
 //! Opt-in server requests using the ordinary execution and interaction owners.
+#![allow(deprecated, reason = "Pinned MCP 2025-11-25 supports sampling.")]
 use crate::{
     Error, OperationId, Result,
     context::{Context, ContextPlacement, SourceStage},
@@ -10,7 +11,6 @@ use crate::{
     },
     runtime::ToolContext,
 };
-use acyclic_stream::BoxProviderFuture;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -76,16 +76,14 @@ pub struct McpCallbackRequest {
     pub message: Value,
 }
 impl McpCallbackRequest {
-    /// Validates a pinned request and returns its payload-independent journal identity.
-    pub fn validate(&self) -> Result<OperationId> {
+    /// Validates the SDK request and derives its payload-independent journal identity.
+    pub fn validate(&self) -> Result<(OperationId, rmcp::model::ServerRequest)> {
         self.policy.validate()?;
-        let _: rmcp::model::JsonRpcRequest<Value> =
-            rmcp::model::JsonRpcRequest::deserialize(&self.message)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        if self.message.get("result").is_some() || self.message.get("error").is_some() {
-            return Err(Error::Invalid(
-                "MCP callback mixes request and response envelopes".into(),
-            ));
+        if self.message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+            || self.message.get("result").is_some()
+            || self.message.get("error").is_some()
+        {
+            return Err(Error::Invalid("invalid MCP callback envelope".into()));
         }
         let id = self
             .message
@@ -96,22 +94,36 @@ impl McpCallbackRequest {
             .message
             .get("params")
             .ok_or_else(|| Error::Invalid("MCP callback parameters absent".into()))?;
-        match self.message.get("method").and_then(Value::as_str) {
-            Some("sampling/createMessage") if self.policy.sampling => validate_sampling(params),
+        let method = self.message.get("method").and_then(Value::as_str);
+        match method {
+            Some("sampling/createMessage") if self.policy.sampling => {}
             Some("elicitation/create") if self.policy.elicitation => {
-                let _: rmcp::model::ElicitRequestParams =
-                    rmcp::model::ElicitRequestParams::deserialize(params)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
                 if let Some(schema) = params.get("requestedSchema") {
-                    crate::contract::compile_json_schema(schema, "MCP elicitation", &mut None)?;
+                    crate::executor::compile_json_schema(schema, "MCP elicitation", &mut None)?;
                 }
-                Ok(())
             }
-            _ => Err(Error::Unsupported(
-                "MCP callback is not enabled by pinned policy".into(),
-            )),
-        }?;
-        let digest = crate::contract::canonical_json_digest(
+            _ => {
+                return Err(Error::Unsupported(
+                    "MCP callback is not enabled by pinned policy".into(),
+                ));
+            }
+        }
+        let decoded: rmcp::model::JsonRpcRequest<rmcp::model::ServerRequest> =
+            rmcp::model::JsonRpcRequest::deserialize(&self.message)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        if !matches!(
+            (method, &decoded.request),
+            (
+                Some("sampling/createMessage"),
+                rmcp::model::ServerRequest::CreateMessageRequest(_)
+            ) | (
+                Some("elicitation/create"),
+                rmcp::model::ServerRequest::ElicitRequest(_)
+            )
+        ) {
+            return Err(Error::Invalid("invalid MCP callback parameters".into()));
+        }
+        let digest = crate::executor::json::canonical_json_digest(
             &(
                 "harness/mcp-callback/v1",
                 self.parent,
@@ -124,7 +136,7 @@ impl McpCallbackRequest {
         )?;
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&digest[..16]);
-        Ok(OperationId::from_bytes(bytes))
+        Ok((OperationId::from_bytes(bytes), decoded.request))
     }
 
     /// Validates the reply identity and result schema before any response POST.
@@ -141,7 +153,12 @@ impl McpCallbackRequest {
             rmcp::model::JsonRpcResponse::deserialize(reply)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         match self.message.get("method").and_then(Value::as_str) {
-            Some("sampling/createMessage") => validate_sampling_result(response.result),
+            Some("sampling/createMessage") => {
+                let result: rmcp::model::CreateMessageResult =
+                    serde_json::from_value(response.result)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                result.validate().map_err(Error::Invalid)
+            }
             Some("elicitation/create") => {
                 let _: rmcp::model::ElicitResult =
                     rmcp::model::ElicitResult::deserialize(&response.result)
@@ -153,7 +170,7 @@ impl McpCallbackRequest {
                         .result
                         .get("content")
                         .ok_or_else(|| Error::Invalid("accepted MCP form has no content".into()))?;
-                    crate::contract::validate_json_schema_value(
+                    crate::executor::validate_json_schema_value(
                         schema,
                         content,
                         "MCP elicitation answer",
@@ -169,19 +186,7 @@ impl McpCallbackRequest {
     }
 }
 
-/// Explicit host selection for ordinary sampling input and media admission.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpSamplingPolicy {
-    /// Exact host input used only when the remote transcript does not end in a user message.
-    pub continuation: ModelContent,
-    /// Opt-in image processing contract; absent means images are unsupported.
-    pub image: Option<NativeMediaPolicy>,
-    /// Opt-in audio duration/work/byte contract; absent means audio is unsupported.
-    pub audio: Option<NativeMediaPolicy>,
-}
-
 mod runtime;
 pub use runtime::McpRuntimeCallbacks;
 mod sampling;
-use sampling::{sampling_messages, validate_sampling, validate_sampling_result};
+use sampling::sampling_messages;

@@ -10,7 +10,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if !self
             .native
             .as_ref()
-            .is_some_and(|(_, custody)| custody.work().shares_allocation_context(work))
+            .is_some_and(|custody| custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -105,7 +105,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             "task preparation lacks its IO ledger",
                         )
                     })?
-                    .contains_capability(task.grants(), volume, "volume:read:"),
+                    .contains_capability(&task.origin().source_grants, volume, "volume:read:"),
                 None => Ok(true),
             }
         };
@@ -197,7 +197,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let bound = task.request();
             if task.origin().intended_child != bound.child.operation_id
                 || bound.child.parent != Some(task.origin().parent_task)
-                || task.grants() != &task.origin().source_grants
             {
                 return Err(reject(
                     crate::wire::ErrorCode::Unauthorized,
@@ -218,7 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 || bound.creation_grant != capability::FORK_PUBLISH
                 || bound.read_authorization != request.authorized_source
                 || request.preparation.maximum_inherited_bytes > bound.maximum_bytes
-                || bound.resources.len() != creation_volumes(request).count()
+                || bound.resources().count() != creation_volumes(request).count()
             {
                 return Err(reject(
                     crate::wire::ErrorCode::Unauthorized,
@@ -241,7 +240,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             drop(payload_hold);
             drop(encoded);
             drop(request_hold);
-            for (resource, volume) in bound.resources.iter().zip(creation_volumes(request)) {
+            for (resource, volume) in bound.resources().zip(creation_volumes(request)) {
                 let before = io.owned_bytes()?;
                 let resource_hold;
                 let actual = bounded_io::content_workspace(&self.host.provider, volume, Some(io))?
@@ -287,6 +286,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             ));
         }
         if let Some(selection) = &request.preparation.summary {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.native.is_some() != io.and_then(PreparationIo::original_native_work).is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "summary preparation requires its original native work",
+                });
+            }
             let summary = self.summary.as_ref().ok_or(reject(
                 crate::wire::ErrorCode::Unsupported,
                 "summary fork owner-bound checkpoint provider is not installed",
@@ -307,47 +313,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         Ok(())
-    }
-
-    pub(super) fn prepare_bound_summary(
-        &self,
-        request: &ForkRequest,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<&PreparedSummaryFork>> {
-        let Some(selection) = &request.preparation.summary else {
-            return Ok(None);
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        match (
-            &self.native,
-            io.and_then(PreparationIo::original_native_work),
-        ) {
-            (Some(_), Some(work)) => self.require_native_projection_work(work)?,
-            (None, None) => {}
-            _ => {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "summary preparation requires its original native work",
-                });
-            }
-        }
-        let bound = self.summary.as_ref().ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "summary fork owner-bound checkpoint provider is not installed",
-            )
-        })?;
-        if selection != bound.prepared.selection()
-            || request.preparation.inherited_through_sequence != bound.prepared.through_sequence()
-        {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Conflict,
-                "summary fork request differs from its original capture",
-            ));
-        }
-        Ok(Some(&bound.prepared))
     }
 }
 

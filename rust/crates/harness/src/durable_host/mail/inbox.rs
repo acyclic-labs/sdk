@@ -29,8 +29,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let bounds =
             match operations::bounds_with_work(&self.stream, mailbox.0.path(), &mut work).await? {
                 Ok(bounds) => bounds,
-                Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
-                Err(error) => return Err(sdk_error(error, &work)),
+                Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(operations::stream_error_with_work(error, &work)),
             };
         if after > bounds.tail {
             return Err(boundary(
@@ -46,14 +46,19 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 "inbox page bound is invalid",
             )
         })?;
-        let mut records =
-            match operations::read_records(&self.stream, mailbox.0.path(), after, maximum, &mut work)
-                .await?
-            {
-                Ok(records) => records,
-                Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
-                Err(error) => return Err(sdk_error(error, &work)),
-            };
+        let mut records = match operations::read_records(
+            &self.stream,
+            mailbox.0.path(),
+            after,
+            maximum,
+            &mut work,
+        )
+        .await?
+        {
+            Ok(records) => records,
+            Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(operations::stream_error_with_work(error, &work)),
+        };
         let mut expected = after;
         let mut items = Vec::new();
         let mut output_bytes = 0_u64;
@@ -144,7 +149,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             write!(&mut message_id, "{}", event.message_id).expect("reserved canonical UUID text");
             if let Some(observer) = work.as_deref_mut() {
-                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                observer
+                    .codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             items.push(InboxItem {
                 task_id: task,

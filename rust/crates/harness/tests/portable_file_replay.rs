@@ -80,36 +80,16 @@ impl ToolExecutor for FileExecutorSpy {
     ) -> Result<()> {
         self.inner.authorize_with_context(context, invocation)
     }
-    fn execute<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute(invocation)
-    }
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute_with_context(context, invocation)
-    }
-    fn reconcile<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        self.inner.reconcile(invocation)
-    }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        self.inner.reconcile_with_context(context, invocation)
-    }
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
+ self.executions.fetch_add(1, Ordering::SeqCst);
+ self.inner.execute(invocation, context)
+}
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+ self.reconciliations.fetch_add(1, Ordering::SeqCst);
+ self.inner.reconcile(invocation, context)
+}
 }
 
 struct JournalSpy {
@@ -363,7 +343,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 Admission::Accepted(_)
             ));
         }
-        let context = runtime.harness().durable_context(task, admission).await?;
+        let context = runtime.harness().durable_context(task, admission, None).await?;
         let writable = AgentHarness::with_policy(
             tasks.clone(),
             tools.clone(),
@@ -378,7 +358,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             None,
             None,
         )?
-        .durable_context(task, admission)
+        .durable_context(task, admission, None)
         .await?;
         let journal = Arc::new(JournalSpy {
             inner: Arc::new(FilesystemExecutionJournal::new(
@@ -437,8 +417,13 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             tool.executor
                 .authorize_with_context(&original, &invocation)?;
             for wrong in [
-                ToolContext::new(context.clone(), OperationId::new(), operation.to_string())?,
-                ToolContext::new(context.clone(), operation, "different-call")?,
+                ToolContext::new(
+                    Arc::new(context.clone()),
+                    OperationId::new(),
+                    &operation.to_string(),
+                    None,
+                )?,
+                ToolContext::new(Arc::new(context.clone()), operation, "different-call", None)?,
             ] {
                 assert!(matches!(
                     tool.executor.authorize_with_context(&wrong, &invocation),
@@ -506,7 +491,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         let published: files::FileResult = serde_json::from_value(write_value.clone())
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(published.file.path(), "destination.txt");
-        assert_eq!(writable.read_file(&published.file).await?.as_ref(), b"body".as_ref());
+        assert_eq!(writable.read_file(&published.file, None).await?.as_ref(), b"body".as_ref());
         assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(write_executor.reconciliations.load(Ordering::SeqCst), 0);
         if reopened {

@@ -16,91 +16,73 @@ unsafe extern "C" {
     fn nfs4_test_sync_acknowledgement() -> std::ffi::c_int;
 }
 
-fn shared_sources_with_publication(
+fn sources(
     profile: FilesystemProfile,
+    consistency: ConsistencyMode,
     publication: MountPublication,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
-    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    config.profile = profile;
+    let config = VolumeConfig {
+        profile,
+        ..VolumeConfig::portable(Lifecycle::Ephemeral)
+    };
     let fs = Fs::memory();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let checkout = runtime.block_on(async {
-        let cancellation = CancellationToken::new();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
-        volume
-            .checkout(
+    let cancellation = CancellationToken::new();
+    let volume = runtime
+        .block_on(fs.create_volume(config, WorkBudget::UNBOUNDED, &cancellation))?
+        .value;
+    let mode = CheckoutMode {
+        access: AccessMode::ReadWrite,
+        consistency,
+        mutations: MutationMode::PrivateOverlay,
+    };
+    let checkout = || {
+        runtime
+            .block_on(volume.checkout(
                 GenerationSelector::Head,
-                CheckoutMode {
-                    access: AccessMode::ReadWrite,
-                    consistency: ConsistencyMode::Pinned,
-                    mutations: MutationMode::PrivateOverlay,
-                },
+                mode,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )
-            .await
+            ))
             .map(|receipt| receipt.value)
-    })?;
-    let checkout = Arc::new(SharedCheckout::with_publication(checkout, publication));
+    };
+    let first = Arc::new(SharedCheckout::with_publication(checkout()?, publication));
+    let second = if consistency == ConsistencyMode::Pinned {
+        Arc::clone(&first)
+    } else {
+        Arc::new(SharedCheckout::with_publication(checkout()?, publication))
+    };
     Ok((
-        CheckoutMountSource::new(Arc::clone(&checkout), config)?,
-        CheckoutMountSource::new(checkout, config)?,
+        CheckoutMountSource::new(first, config)?,
+        CheckoutMountSource::new(second, config)?,
     ))
 }
-
-fn tracking_sources(
-    profile: FilesystemProfile,
-) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
-    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    config.profile = profile;
-    let fs = Fs::memory();
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let (first, second) = runtime.block_on(async {
-        let cancellation = CancellationToken::new();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
-        let mode = CheckoutMode {
-            access: AccessMode::ReadWrite,
-            consistency: ConsistencyMode::TrackingSafe,
-            mutations: MutationMode::PrivateOverlay,
-        };
-        let first = volume
-            .checkout(
-                GenerationSelector::Head,
-                mode,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
-        let second = volume
-            .checkout(
-                GenerationSelector::Head,
-                mode,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
-        Ok::<_, OperationFailure<FsError>>((first, second))
-    })?;
-    Ok((
-        CheckoutMountSource::new(Arc::new(SharedCheckout::new(first)), config)?,
-        CheckoutMountSource::new(Arc::new(SharedCheckout::new(second)), config)?,
-    ))
-}
-
 fn native_test_path(name: &str) -> MountPath {
-    #[cfg(target_os = "windows")]
-    let bytes = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let bytes = name.as_bytes().to_vec();
-    MountPath::root().child(bytes)
+    name.split('/').fold(MountPath::root(), |path, component| {
+        #[cfg(target_os = "windows")]
+        let bytes = component
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let bytes = component.as_bytes().to_vec();
+        path.child(bytes)
+    })
+}
+
+fn mount_source(
+    source: &Arc<MemorySource>,
+    destination: &Path,
+) -> Result<crate::native_mount::NativeMountSession, NativeMountError> {
+    crate::mount_native(
+        crate::NativeMountRequest {
+            mount_id: crate::MountId::new(),
+            volume_id: source.volume_id()?,
+            destination: destination.to_path_buf(),
+            writable: true,
+        },
+        source.clone(),
+    )
 }
 
 include!("runtime.rs");

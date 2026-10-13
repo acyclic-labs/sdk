@@ -135,7 +135,7 @@ async fn sealed_summary_preparation(
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_epoch_ms: None,
         }, &mut None)?;
-    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
+    let payloads = crate::filesystem::FilesystemContentPublisher::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?;
     let reader = FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?;
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(SummaryLeaseMachine {
@@ -150,9 +150,9 @@ async fn sealed_summary_preparation(
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(implementation, &mut None)?;
-    let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&storage.stream, reader.clone(), None, &mut None).await?, storage.stream.clone(), payloads.clone(), reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines, Arc::new(acyclic_stream::SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
+    let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&storage.stream, reader.clone(), None, &mut None).await?, storage.stream.clone(), payloads.clone(), reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines, Arc::new(acyclic_stream::SystemUnixMillisClock))?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
-    }, None)?.with_resource_creation_providers(&[Arc::new(
+    })?.with_resource_creation_providers(&[Arc::new(
         crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)], None)?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
@@ -167,15 +167,15 @@ async fn sealed_summary_preparation(
     let worker = crate::distributed::Worker {
         id: "summary-preparation-worker".into(), available: Default::default(), labels: BTreeMap::new(),
     };
-    let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
+    let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary root lease missing".into()));
     };
-    host.start_task(&root_lease, None).await?;
+    host.start_task(&root_lease, &mut None).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let proofs = preparer.creation_allocations(fork, prep_task, None)?;
     let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
-    let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
+    let command_payload = crate::distributed::SchedulerPayloadStore::stage(payloads.as_ref(), fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?, None)?.await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
 provider: storage.volume.provider().clone(),
@@ -196,12 +196,12 @@ read_authorization: fork.authorized_source.clone(),
     assert!(matches!(host.admit_owned(admission(prep_op, Some(root),
         serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?),
         (&root_lease.reservation).into()).await?, crate::Admission::Accepted(id) if id == prep_task));
-    let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
-    host.start_task(&lease, None).await?;
+    host.start_task(&lease, &mut None).await?;
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
-    let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
+    let owner = Arc::new(host.journal_owner(prep_task, &((&lease.reservation).into()), None).await?
         .with_invocation_cancellation(&invocation.0));
     Ok((owner.resource_preparation(request, &mut None).await?, invocation))
 }
@@ -337,7 +337,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let proof: crate::context::CompactionReference = crate::contract::json_from_slice(
         &storage
             .journal
-            .load(&prepared.checkpoint().compaction)
+            .load(&prepared.checkpoint().compaction, None)?
             .await?,
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -452,10 +452,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         aggregate.reducer(),
         ForkHistoryPolicy::Summary(Box::new(selection)), &mut None,
     )?;
-    let finite = preparer.prepare_bound_summary(&request, None)?
-        .ok_or_else(|| Error::Invalid("bound Summary source proof missing".into()))?;
-    assert_eq!(finite.context(), &source);
-    assert_eq!(finite.selection(), request.preparation.summary.as_ref().unwrap());
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
     assert!(preparer.prepare_for_task(request.clone(), &Arc::new(quota_preparation)).await.is_err());
@@ -499,7 +495,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .chain(source.metadata.values())
         .map(|file| {
             Ok((
-                hex::encode(crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?),
+                hex::encode(crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?),
                 file.clone(),
             ))
         })

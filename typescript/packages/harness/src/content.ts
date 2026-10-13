@@ -11,11 +11,11 @@ export interface ContentBindings {
   readonly volumeReadCapability: (volume: VolumeRef) => string;
   readonly directoryReadCapability: (volume: VolumeRef, prefix: string) => string;
   readonly directory?: PrivateDirectoryBindings;
-  readonly writer?: Readonly<{
+  readonly writer?: {
     readonly volume: VolumeRef;
     readonly writeCapability: () => string;
     readonly stage: (operationId: string, path: string, bytes: Uint8Array, mediaType: string, displayName: string) => Promise<FileRef>;
-  }>;
+  };
 }
 export interface PrivateDirectoryPage {
   readonly generation: ResourceRef<"generation">;
@@ -28,8 +28,7 @@ export interface PrivateDirectoryBindings {
   readPath(volume: VolumeRef<"agent_private">, grantedPrefix: string, path: string,
     expectedGeneration: ResourceRef<"generation"> | null): Promise<Readonly<{ file: FileRef; bytes: Uint8Array }>>;
 }
-export type ContentReader = Pick<ContentBindings,
-  "validate" | "read" | "fileReadCapability" | "volumeReadCapability" | "directoryReadCapability" | "directory">;
+export type ContentReader = Omit<ContentBindings, "writer">;
 export interface ContentMountResolver {
   mount(volume: VolumeRef): ContentReader & Readonly<{
     requireFileRead(file: FileRef): void;

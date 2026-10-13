@@ -1,10 +1,11 @@
 import type { FsJoinPlan, JoinResult, MergeConflictSelection, ResolvableFsJoinPlan } from "./contracts.js";
-import type { NativeRawJoinPlan, WasmRawJoinPlan } from "./binding-types.js";
+import type { NativeRawJoinPlan } from "./binding-types.js";
+import type { BrowserJoinPlan } from "../generated/wasm/acyclic_fs_wasm.js";
 import { parseJoinResult } from "./workspace-results.js";
 import { copyName } from "./binding-values.js";
 
 export function adaptJoinPlan(
-  raw: WasmRawJoinPlan & Partial<Pick<NativeRawJoinPlan, "applySides">>,
+  raw: BrowserJoinPlan & Partial<Pick<NativeRawJoinPlan, "applySides">>,
 ): FsJoinPlan & Partial<Pick<ResolvableFsJoinPlan, "applySides">> {
   return {
     get targetHead() { return Uint8Array.from(raw.targetHead); },

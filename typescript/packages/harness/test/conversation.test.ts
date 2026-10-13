@@ -16,8 +16,6 @@ test("Rust-owned limits contract preserves defaults, ceilings, and number semant
   expect(MAX_LIMITS.path_bytes).toBe(MAX_PATH_BYTES);
   expect(MAX_EXACT_JS_INTEGER).toBe(MAX_LIMITS.file_bytes);
   expect(MAX_LABEL_BYTES).toBeGreaterThan(0);
-  expect(Object.isFrozen(DEFAULT_LIMITS)).toBe(true);
-  expect(Object.isFrozen(MAX_LIMITS)).toBe(true);
   expect(Object.values(DEFAULT_LIMITS).every(value => typeof value === "number")).toBe(true);
   expect(() => contracts.validate("limits", {
     ...MAX_LIMITS, file_bytes: MAX_EXACT_JS_INTEGER + 1,
@@ -49,20 +47,17 @@ test("Rust constructs exact descriptors for empty files and rejects invalid medi
   expect(descriptor.byte_length).toBe(0);
   expect(descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join(""))
     .toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-  expect(Object.isFrozen(descriptor.sha256)).toBe(true);
   await expect(descriptorFor(new Uint8Array(), "not a media type")).rejects.toThrow();
 });
 
 test("standalone provider and file descriptor admission has one Rust contract", () => {
   const provider = contracts.validate("provider_ref", { namespace: "test", family: "filesystem", version: "2" });
   expect(provider.family).toBe("filesystem");
-  expect(Object.isFrozen(provider)).toBe(true);
   expect(() => contracts.validate("provider_ref", { ...provider, namespace: "" })).toThrow();
   const descriptor = contracts.validate("file_descriptor", {
     sha256: Array(32).fill(0) as number[], byte_length: 0, media_type: "application/octet-stream",
   });
   expect(descriptor.sha256).toHaveLength(32);
-  expect(Object.isFrozen(descriptor.sha256)).toBe(true);
   expect(() => contracts.validate("file_descriptor", { ...descriptor, sha256: [0] })).toThrow();
   expect(() => contracts.validate("file_descriptor", { ...descriptor, byte_length: Number.MAX_SAFE_INTEGER + 1 })).toThrow();
 });

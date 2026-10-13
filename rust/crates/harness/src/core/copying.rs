@@ -61,31 +61,12 @@ pub(crate) fn copy_resource(
     )
 }
 
-pub(crate) fn copy_file(
-    source: &FileRef,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<FileRef> {
-    if quota.work().is_none() {
-        return Ok(source.clone());
-    }
-    let file = source.copy(quota.work())?;
-    quota.adopt(file.logical_owned_bytes()?)?;
-    Ok(file)
-}
 pub(crate) fn copy_vector<T>(
     source: &[T],
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    mut copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<Vec<T>> {
-    copy_iter(source.len(), source.iter(), quota, copy)
-}
-pub(crate) fn copy_iter<'s, T: 's, U>(
-    count: usize,
-    source: impl Iterator<Item = &'s T>,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    mut copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<U>,
-) -> Result<Vec<U>> {
-    let mut values = reserve_copy_vector(count, quota)?;
+    let mut values = reserve_copy_vector(source.len(), quota)?;
     for value in source {
         values.push(copy(value, quota)?);
     }
@@ -142,7 +123,7 @@ pub(crate) fn copy_copy_vector<T: Copy>(
     values.extend_from_slice(source);
     Ok(values)
 }
-pub(crate) fn copy_owned<T: Clone + Serialize>(
+pub(crate) fn copy<T: Clone + Serialize>(
     source: &T,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     owned: impl FnOnce(&T, &mut Option<&mut dyn HistoryIo>) -> Result<u64>,
@@ -169,8 +150,10 @@ pub(crate) fn copy_owned<T: Clone + Serialize>(
 impl crate::resource_preparation::ResourceCreationProofRef {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
-            copy_owned(self, quota, |proof, work| {
-                proof.validate(work)?;
+            copy(self, quota, |proof, work| {
+                proof.provider.validate(work)?;
+                proof.resource.validate(work)?;
+                proof.evidence.validate(work)?;
                 owned_sum([
                     proof.provider.logical_owned_bytes()?,
                     proof.resource.logical_owned_bytes()?,
@@ -180,116 +163,6 @@ impl crate::resource_preparation::ResourceCreationProofRef {
         })
     }
 }
-
-macro_rules! copy_fields {
-    ($name:ident, $ty:ty, $owned:expr) => {
-        pub(crate) fn $name(
-            source: &$ty,
-            quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-        ) -> Result<$ty> {
-            copy_owned(source, quota, $owned)
-        }
-    };
-}
-copy_fields!(
-    copy_reference,
-    EventReference,
-    |value: &EventReference, _| Ok(value.authority.id.capacity() as u64)
-);
-copy_fields!(
-    copy_dependency,
-    ExtensionDependency,
-    |value: &ExtensionDependency, _| Ok(value.name.capacity() as u64)
-);
-copy_fields!(
-    copy_configuration,
-    ExtensionConfiguration,
-    |value: &ExtensionConfiguration, work| {
-        value.content.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_extension_record,
-    ExtensionRecord,
-    |value: &ExtensionRecord, work| {
-        value.content.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(copy_status, EffectStatus, |value: &EffectStatus, work| {
-    if let EffectStatus::Succeeded { result } = value {
-        result.validate(work)?;
-    }
-    owned_bytes(value)
-});
-copy_fields!(copy_effect, EffectState, |value: &EffectState, work| {
-    value.request.validate(work)?;
-    value.result_schema.validate(work)?;
-    if let EffectStatus::Succeeded { result } = &value.status {
-        result.validate(work)?;
-    }
-    owned_effect(value)
-});
-copy_fields!(copy_value, Value, |value: &Value, _| {
-    json_value_logical_owned_bytes(value)
-});
-copy_fields!(
-    copy_ticket,
-    InteractionTicket,
-    |value: &InteractionTicket, work| {
-        value.request.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_interaction_outcome,
-    InteractionOutcome,
-    |value: &InteractionOutcome, work| {
-        if let InteractionOutcome::Answered { answer } = value {
-            answer.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_resolution,
-    InteractionResolution,
-    |value: &InteractionResolution, work| {
-        if let InteractionOutcome::Answered { answer } = &value.outcome {
-            answer.validate(work)?;
-        }
-        if let Some(file) = &value.detail {
-            file.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_capabilities,
-    Capabilities,
-    |value: &Capabilities, _| value.logical_owned_bytes()
-);
-copy_fields!(
-    copy_observation,
-    EffectAttestation,
-    |value: &EffectAttestation, work| {
-        if let EffectStatus::Succeeded { result } = &value.status {
-            result.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
-copy_fields!(
-    copy_selection,
-    ModelContextSelection,
-    |value: &ModelContextSelection, work| {
-        if let Some(file) = &value.checkpoint {
-            file.validate(work)?;
-        }
-        owned_bytes(value)
-    }
-);
 
 impl<'a, 'w> crate::wire_codec::CodecQuota<'a, 'w> {
     pub(crate) fn produce<T>(
@@ -312,27 +185,11 @@ pub(crate) fn copy_boxed<T>(
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
 }
-pub(in crate::core) fn copy_receipt(
-    source: &ProjectMergeReceipt,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<ProjectMergeReceipt> {
-    source.copy(quota)
-}
-pub(in crate::core) fn copy_message(
-    source: &ConversationMessage,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<ConversationMessage> {
-    copy_owned(source, quota, |value, work| {
-        value.validate(work)?;
-        owned_message(value)
-    })
-}
-
 pub(crate) fn copy_event(
     source: &Event,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Event> {
-    copy_owned(source, quota, |value, work| {
+    copy(source, quota, |value, work| {
         match &value.payload {
             EventPayload::Custom { record }
             | EventPayload::ExtensionStateMigrated {

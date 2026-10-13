@@ -669,10 +669,10 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
         match accounting {
             SimulationWriteWork::Ordinary(budget) => match object {
                 SimulationWrite::Plain(id, bytes) => {
-                    ({ let __object_args = (id, bytes, *budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self.inner.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
+                    { let __object_args = (id, bytes, *budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self.inner.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }
                 }
                 SimulationWrite::Hashed(object) => {
-                    ({ let __object_args = (object, *budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.put_hashed(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+                    { let __object_args = (object, *budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.put_hashed(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }
                 }
             }
             .map(|receipt| receipt.work)
@@ -681,10 +681,10 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
             SimulationWriteWork::Native(work) => {
                 let result = match object {
                     SimulationWrite::Plain(id, bytes) => {
-                        ({ let __object_args = (id, bytes, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = self.inner.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })
+                        { let __object_args = (id, bytes, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = self.inner.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_result }
                     }
                     SimulationWrite::Hashed(object) => {
-                        ({ let __object_args = (object, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.put_hashed(__object_args.0, &mut __object_work).await; __object_result })
+                        { let __object_args = (object, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.put_hashed(__object_args.0, &mut __object_work).await; __object_result }
                     }
                 };
                 result
@@ -729,8 +729,8 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
             KernelAccounting::NativeOriginal { work, .. } => {
                 ({ let __object_args = (object_id, maximum_bytes, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = self.inner.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })?
             }
-            _ => match ({ let __object_args = (object_id, maximum_bytes, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
-                .inner.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
+            _ => match { let __object_args = (object_id, maximum_bytes, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
+                .inner.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }
             {
                 Ok(receipt) => {
                     crate::async_storage::merge_completed_object_read(
@@ -771,8 +771,8 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
                     .inner.read_many(__object_args.0, &mut __object_work).await.map(|(values, allocation)| (values, allocation.expect("native batch allocation"))); __object_result })?;
                 (reads, KernelOwnedAllocation::NativeOriginal(allocation))
             }
-            _ => match ({ let __object_args = (requests, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self
-                .inner.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
+            _ => match { let __object_args = (requests, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self
+                .inner.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) }
             {
                 Ok(receipt) => {
                     let retained = receipt.value.iter().try_fold(
@@ -1414,7 +1414,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        ({ let __object_args = (authority_id, record, maximum_bytes, maximum_objects, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5); let __object_result = self.inner.historical_generation_evidence(__object_args.0, __object_args.1, __object_args.2, __object_args.3, &mut __object_work).await; __object_work.receipt(__object_result) })
+        { let __object_args = (authority_id, record, maximum_bytes, maximum_objects, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5); let __object_result = self.inner.historical_generation_evidence(__object_args.0, __object_args.1, __object_args.2, __object_args.3, &mut __object_work).await; __object_work.receipt(__object_result) }
      }.await;
         context.accept(result)
     }
@@ -1458,7 +1458,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)?;
         work.remaining()?;
-        ({ let __object_args = (writes, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.put_many(__object_args.0, &mut __object_work).await; __object_result })
+        { let __object_args = (writes, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.put_many(__object_args.0, &mut __object_work).await; __object_result }
      }.await;
         }
         let budget = context.work.remaining(context.budget)?;
@@ -1467,7 +1467,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        ({ let __object_args = (writes, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.put_many(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+        { let __object_args = (writes, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.put_many(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }
      }.await;
         context.accept(result)
     }
@@ -1517,13 +1517,13 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)?;
         work.remaining()?;
-        ({ let __object_args = (scope, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.flush_before_publish(__object_args.0, &mut __object_work).await; __object_result })
+        { let __object_args = (scope, work, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.flush_before_publish(__object_args.0, &mut __object_work).await; __object_result }
      }.await;
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        ({ let __object_args = (scope, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.flush_before_publish(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+        { let __object_args = (scope, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.flush_before_publish(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }
      }.await;
         context.accept(result)
     }
@@ -1583,7 +1583,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
             .map_err(crate::async_storage::object_error)?;
         match allocation {
             KernelOwnedAllocation::NativeOriginal(allocation) => {
-                crate::async_storage::native_read_batch(reads, allocation)
+                Ok::<_, crate::ObjectStoreError>((reads, allocation))
             }
             KernelOwnedAllocation::Standalone => Err(ObjectStoreError::Corrupt),
         }
@@ -1635,7 +1635,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
             }
             _ => {}
         }
-        ({ let __object_args = (object_id, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+        { let __object_args = (object_id, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }
      }.await;
         context.accept(result)
     }

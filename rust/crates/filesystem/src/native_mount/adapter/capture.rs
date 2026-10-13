@@ -27,8 +27,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         if paths.is_empty() {
             return Ok(());
         }
-        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)?;
         invoke(&self.runtime, &work, || {
             self.capture_host(source_root, paths, identity, scope, None, &work)
         })
@@ -63,29 +62,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         self.cancellation
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
-        let mut credit = self.reserve_capture_poll()?;
-        let _producer = {
-            let mut gate = self
-                .capture_gate
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if gate.cancelled {
-                return Err(MountSourceError::Stale);
-            }
-            self.accept_capture_poll(&mut credit)?;
-            gate.producers = gate
-                .producers
-                .checked_add(1)
-                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-            gate.ever_used = true;
-            CaptureProducer {
-                gate: Arc::clone(&self.capture_gate),
-                quiesced: Arc::clone(&self.capture_quiesced),
-                original: None,
-                _owner: None,
-                _allocation: None,
-            }
-        };
+        let _producer = self.capture_producer(self.reserve_capture_poll()?)?;
         for _ in 0..3 {
             let mut carrier = NativeDemandCarrier::Native(work);
             let (mut candidate, epoch, stamp) = self
@@ -186,8 +163,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?;
         let Some(publication) = publication else {
@@ -205,11 +180,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                     &work,
                     cancellation,
                     Some(&self.cancellation),
-                    &mut source_publication_guard(self.native_callback_guard.clone(), Some(self.cancellation.clone())),
+                    &mut source_publication_guard(
+                        self.native_callback_guard.clone(),
+                        Some(self.cancellation.clone()),
+                    ),
                     None,
                     &mut None,
                 )
-                .await.map_err(|(cause, _)| cause)?;
+                .await
+                .map_err(|(cause, _)| cause)?;
         }
         Ok(true)
     }

@@ -112,11 +112,11 @@ impl NativeHostWork for DemandWork {
         self.charge(delta)
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
-        self.allocate(bytes)?;
+        self.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
         Ok(bytes)
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.adopt(logical_max)?;
+        self.claim_allocation(logical_max, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(logical_max)
     }
     fn reconcile_allocation(
@@ -130,17 +130,11 @@ impl NativeHostWork for DemandWork {
         DemandWork::release(self, bytes)
     }
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.reserve(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            1,
-        )
+        self.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
         .map(|()| 1)
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.refund(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            reservation,
-        )
+        self.refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
         .expect("original reservation is balanced");
     }
     fn attempt_cleanup_write<T>(
@@ -148,11 +142,7 @@ impl NativeHostWork for DemandWork {
         reservation: u64,
         operation: impl FnOnce() -> T,
     ) -> (T, Result<(), Self::Error>) {
-        let recorded = self.complete(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            reservation,
-            1,
-        );
+        let recorded = self.complete(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation), crate::materializer::NativeResourceCredit::WriteOperations.delta(1));
         (operation(), recorded)
     }
 }
@@ -260,4 +250,27 @@ pub(crate) fn ordinary_error(error: DemandError) -> io::Error {
         DemandError::Io(error) => error,
         error => io::Error::other(error),
     }
+}
+
+#[cfg(windows)]
+pub(super) fn decode_windows_name<W: NativeHostWork>(
+    name: &[u16],
+    work: &mut W,
+) -> Result<(OsString, W::Allocation), W::Error> {
+    use std::os::windows::ffi::OsStringExt as _;
+    let bytes = name
+        .len()
+        .checked_mul(3)
+        .ok_or(crate::WorkError::Overflow)? as u64;
+    let mut allocation = work.reserve_opaque_decode(bytes)?;
+    let name = OsString::from_wide(name);
+    let result = work
+        .reconcile_allocation(&mut allocation, name.capacity() as u64)
+        .and_then(|()| work.started_io(copy_work(name.len() as u64)));
+    if let Err(error) = result {
+        drop(name);
+        work.release(allocation)?;
+        return Err(error);
+    }
+    Ok((name, allocation))
 }

@@ -127,10 +127,10 @@ pub(super) fn encode_record<T: serde::Serialize + ?Sized>(
     value: &T, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
     let io = super::PreparationIo::from_native_work(work)?;
-    io.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
+    io.retain_owned(crate::executor::json::sdk_json_diagnostic_bytes())?;
     let remaining = work.remaining()?;
     let bytes = crate::store::history::canonical_bytes_for_bounds_with_work(value,
-        crate::contract::JsonBounds { maximum_bytes: remaining.bytes_encoded,
+        crate::executor::json::JsonBounds { maximum_bytes: remaining.bytes_encoded,
             maximum_items: remaining.items_examined, maximum_depth: 256 },
         &mut Some(&mut &io));
     match bytes {

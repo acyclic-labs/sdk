@@ -58,8 +58,7 @@ export interface ReferenceGrant {
   readonly attachment_manifest?: FileRef;
 }
 
-/** Retained RootService MAC descriptor. Shape is not proof of authorization;
- * only the trusted Rust owner verifies the exact project-read policy scope. */
+/** Rust owner verifies this retained project-read MAC descriptor. */
 export interface ProjectSourceAuthorization {
   readonly owner: Authority;
   readonly caller_task: TaskId;

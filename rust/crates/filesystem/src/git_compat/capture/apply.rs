@@ -12,13 +12,13 @@ pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStor
     let workspace_hash = hex::encode(&parent.workspace_id().into_bytes()[..6]);
     let capture = parent
         .workspace()
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             format!("git-capture-{workspace_hash}-{}", hex::encode(bytes)),
             crate::ForkOptions::from_generation(parent.clone(), IdempotencyKey::from_bytes(bytes)),
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
                     crate::OperationReceipt {
                         value: (),

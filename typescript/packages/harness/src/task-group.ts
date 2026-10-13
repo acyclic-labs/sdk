@@ -1,4 +1,4 @@
-import { type GroupId, type BatchId, type InputKey, type Admission, type Outcome, type TaskDefinition, type TaskRef, registeredTaskDefinition, type HostBatchReplay, AdmissionUncertainError, pinnedOutputSchema, validateTaskOutcome, observeAdmittedTask, validatedHostTask, durableMachineDigest, nativeLimits, nativeRunLimits, type Task, type CancelReceipt } from "./task.js";
+import { type GroupId, type BatchId, type InputKey, type Admission, type Outcome, type TaskDefinition, type TaskRef, registeredTaskDefinition, type HostBatchReplay, AdmissionUncertainError, pinnedOutputSchema, validateTaskOutcome, observeAdmittedTask, validatedHostTask, durableMachineDigest, nativeLimits, nativeRunLimits, type CancelReceipt } from "./task.js";
 import { type TaskId } from "./index.js";
 import { type GroupPolicy } from "./enums.js";
 import { type WasmTaskAdmissionWire, type WasmDurableBatchWire, type WasmExecutionPlacementWire, type WasmBatchAdmissionInput, type WasmToolJsonValue } from "./native-contracts.js";
@@ -51,8 +51,7 @@ type GroupTask<Authority extends "owner" | "scoped", Input, Output> = Authority 
 export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   readonly #harness: AgentHarness;
   readonly #authorizeTask: TaskAuthorizer | undefined;
-  readonly #entries: GroupEntry<Output>[] = [];
-  readonly #entryKeys = new Map<string, { readonly index: number; readonly registration: string }>();
+  readonly #entries = new Map<string, GroupEntry<Output>>();
   readonly #batchDigests = new Map<BatchId, Uint8Array>();
   readonly #durableBatchIds = new Set<BatchId>();
   #closed = false;
@@ -65,14 +64,13 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     if (this.#closed) return batch.inputs.map((_input, index) => ({ key: { batchId: batch.id, index }, admission: { kind: "rejected", reason: { code: "group_closed", message: "group is closed" } } }));
     let definition: TaskDefinition<Input, Output>;
     try {
-      definition = registeredTaskDefinition(selected as TaskDefinition<Input, Output> | TaskRef<Input, Output>);
+      definition = registeredTaskDefinition<Input, Output>(selected);
       this.#authorizeTask?.(definition);
     }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return batch.inputs.map((_input, index) => ({ key: { batchId: batch.id, index }, admission: { kind: "rejected", reason: { code: "unsupported", message } } }));
     }
-    const registration = registrationKey(definition);
     if (definition.implementation.kind === "resumable" && (!this.#harness.components.spawner?.admitBatch
       || !this.#harness.components.state)) {
       return batch.inputs.map((_input, index) => ({ key: { batchId: batch.id, index },
@@ -105,10 +103,9 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         admission: { kind: "rejected", reason: { code: "invalid_input", message } } }));
     }
     if (request) {
-      const local = this.#entries.filter(entry => entry.key.batchId === batch.id);
+      const local = [...this.#entries.values()].filter(entry => entry.key.batchId === batch.id);
       if (local.length) {
-        if (local.length !== batch.inputs.length || local.some(entry =>
-          this.#entryKeys.get(`${batch.id}:${entry.key.index}`)?.registration !== registration)) {
+        if (local.length !== batch.inputs.length) {
           throw new Error("batch identity belongs to another admission request");
         }
         return local;
@@ -130,12 +127,9 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     }
     const entries = await Promise.all(batch.inputs.map(async (input, index): Promise<GroupEntry<Output>> => {
       const key = { batchId: batch.id, index };
-      const existing = this.#entryKeys.get(`${batch.id}:${index}`);
-      if (existing && existing.registration !== registration) {
-        return { key, admission: { kind: "rejected", reason: { code: "unsupported", message: "batch entry identity is already bound to another task definition" } } };
-      }
+      const existing = this.#entries.get(`${batch.id}:${index}`);
       let admission: Admission<Output>;
-      if (existing) admission = this.#entries[existing.index]!.admission;
+      if (existing) admission = existing.admission;
       else if (definition.implementation.kind === "live") {
         if (this.parentTaskId) admission = { kind: "rejected", reason: { code: "unsupported", message: "durable groups cannot spawn local-only tasks" } };
         else if (this.#harness.components.execution) admission = { kind: "rejected", reason: { code: "unsupported", message: "live task closures cannot cross an execution provider" } };
@@ -146,22 +140,15 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       } else throw new Error("durable batch bypassed immutable admission");
       return { key, admission };
     }));
-    entries.forEach((entry, index) => {
-      const identity = `${batch.id}:${index}`;
-      const existing = this.#entryKeys.get(identity);
-      if (existing && existing.registration !== registration) return;
-      if (existing) this.#entries[existing.index] = entry;
-      else { this.#entryKeys.set(identity, { index: this.#entries.length, registration }); this.#entries.push(entry); }
-    });
+    for (const entry of entries) this.#entries.set(`${batch.id}:${entry.key.index}`, entry);
     return entries;
   }
   async reconcileBatch<Input>(selected: GroupTask<Authority, Input, Output>, batch: Batch<Input>): Promise<readonly GroupEntry<Output>[]> {
     if (!batch.id) throw new TypeError("batch id is required");
-    const definition = registeredTaskDefinition(selected as TaskDefinition<Input, Output> | TaskRef<Input, Output>);
+    const definition = registeredTaskDefinition<Input, Output>(selected);
     this.#authorizeTask?.(definition);
     this.#harness.task(definition);
     await this.#harness.assertPolicyIdentity();
-    const registration = registrationKey(definition);
     const spawner = this.#harness.components.spawner;
     const host = this.#harness.components.state;
     if (!spawner?.loadBatch || !spawner.reconcileBatch || !host) throw new Error("durable batch reconciliation requires retained owner manifest and state bindings");
@@ -172,11 +159,8 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     if (!this.#harness.contracts.canonicalEqual(loaded, request.canonical)) {
       throw new Error("retained batch differs from its pinned task, inputs, or scope");
     }
-    const local = this.#entries.filter(entry => entry.key.batchId === batch.id);
+    const local = [...this.#entries.values()].filter(entry => entry.key.batchId === batch.id);
     if (local.length) {
-      if (local.some(entry => this.#entryKeys.get(`${batch.id}:${entry.key.index}`)?.registration !== registration)) {
-        throw new Error("batch identity belongs to another task definition");
-      }
       if (local.length === batch.inputs.length && local.every(entry => entry.admission.kind !== "indeterminate"
         && entry.outcome?.kind !== "indeterminate")) return local;
     }
@@ -187,7 +171,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   }
   /** Reattach by the caller-retained ID after losing the original input vector. */
   async reconcileBatchId<Input>(selected: GroupTask<Authority, Input, Output>, batchId: BatchId): Promise<readonly GroupEntry<Output>[] | null> {
-    const definition = registeredTaskDefinition(selected as TaskDefinition<Input, Output> | TaskRef<Input, Output>);
+    const definition = registeredTaskDefinition<Input, Output>(selected);
     this.#authorizeTask?.(definition);
     this.#harness.task(definition);
     if (definition.implementation.kind !== "resumable") throw new Error("batch task is not resumable");
@@ -211,8 +195,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     await this.#harness.assertPolicyIdentity();
     return this.#acceptBatchReplay(definition, batch, expected, recovered);
   }
-  /** Reconciles a retained batch, then asks its owner to retain one
-   * cancellation declaration before requesting accepted members. */
+  /** Retain batch cancellation before requesting member cancellation. */
   async cancelBatchId<Input>(selected: GroupTask<Authority, Input, Output>, batchId: BatchId): Promise<BatchCancellationReport | null> {
     const admitted = await this.reconcileBatchId(selected, batchId);
     if (admitted === null) return null;
@@ -224,18 +207,16 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   }
   async #acceptBatchReplay<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>,
     request: BatchAdmissionRequest, recovered: HostBatchReplay): Promise<readonly GroupEntry<Output>[]> {
-    const registration = registrationKey(definition);
-    const { inputDigest: suppliedDigest } = request;
+    const { inputDigest } = request;
     const canonical = this.#harness.contracts.validate("durable_batch_request", request.canonical);
     const recomputedDigest = this.#harness.contracts.digestCanonicalJson(canonical);
     const pinned = this.#batchDigests.get(batch.id);
     if (!pinned || pinned.length !== recomputedDigest.length
       || pinned.some((byte, index) => byte !== recomputedDigest[index])
-      || suppliedDigest.length !== recomputedDigest.length
-      || suppliedDigest.some((byte, index) => byte !== recomputedDigest[index])) {
+      || inputDigest.length !== recomputedDigest.length
+      || inputDigest.some((byte, index) => byte !== recomputedDigest[index])) {
       throw new Error("batch request changed after admission binding");
     }
-    const inputDigest = request.inputDigest;
     const host = this.#harness.components.state;
     if (!host) throw new Error("durable batch state is not bound");
     if (inputDigest.length !== recovered.inputDigest.length
@@ -255,14 +236,11 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         throw new Error("host returned an invalid batch entry identity");
       }
       seen.add(entry.key.index);
-      const identity = `${batch.id}:${entry.key.index}`;
-      const prior = this.#entryKeys.get(identity);
-      if (prior && prior.registration !== registration) throw new Error("batch identity belongs to another task definition");
       const operationId = this.#harness.contracts.batchMemberOperationId(this.id, batch.id, entry.key.index);
       if (entry.admission.kind === "indeterminate" && entry.admission.operationId !== operationId) {
         throw new Error("host returned an unrelated batch admission");
       }
-        const outcome = entry.outcome === undefined ? undefined : validateTaskOutcome(entry.outcome, outputSchema, this.#harness.contracts);
+      const outcome = entry.outcome === undefined ? undefined : validateTaskOutcome(entry.outcome, outputSchema, this.#harness.contracts);
       let admission: Admission<Output>;
       if (entry.admission.kind === "accepted") {
         const observed = await observeAdmittedTask(host, entry.admission.task.id(), this.#harness, operationId);
@@ -273,9 +251,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
             || observed.implementationDigest !== definition.options.implementationDigest) {
             throw new Error("spawner and state host batch bindings differ");
           }
-          if (this.#harness.components.spawner || this.#harness.components.state) {
-            await this.#harness.attestAdmission(observed, request.members[entry.key.index]!);
-          }
+          await this.#harness.attestAdmission(observed, request.members[entry.key.index]!);
           admission = { kind: "accepted", task: validatedHostTask(observed.task, operationId, outputSchema, this.#harness.contracts) };
         }
       } else admission = entry.admission;
@@ -286,12 +262,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       entries.push(validated);
     }
     entries.sort((a, b) => a.key.index - b.key.index);
-    for (const entry of entries) {
-      const identity = `${batch.id}:${entry.key.index}`;
-      const prior = this.#entryKeys.get(identity);
-      if (prior) this.#entries[prior.index] = entry;
-      else { this.#entryKeys.set(identity, { index: this.#entries.length, registration }); this.#entries.push(entry); }
-    }
+    for (const entry of entries) this.#entries.set(`${batch.id}:${entry.key.index}`, entry);
     this.#durableBatchIds.add(batch.id);
     return entries;
   }
@@ -391,12 +362,12 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     this.#pinBatchDigest(batch.id, digest);
   }
   async *asCompleted(): AsyncIterable<GroupEntry<Output>> {
-    for (const entry of this.#entries) if (entry.admission.kind !== "accepted") yield entry;
+    for (const entry of this.#entries.values()) if (entry.admission.kind !== "accepted") yield entry;
     const completed: GroupEntry<Output>[] = [];
     let next = 0;
     let total = 0;
     let wake: (() => void) | undefined;
-    for (const entry of this.#entries) {
+    for (const entry of this.#entries.values()) {
       if (entry.admission.kind !== "accepted") continue;
       total++;
       void entry.admission.task.result().then(outcome => {
@@ -409,24 +380,6 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       if (next === completed.length) await new Promise<void>(resolve => { wake = resolve; });
       while (next < completed.length) yield completed[next++]!;
     }
-  }
-  async map<Input>(definition: GroupTask<Authority, Input, Output>, inputs: readonly Input[]): Promise<readonly Output[]> {
-    if (!inputs.length) return [];
-    if (registeredTaskDefinition(definition as TaskDefinition<Input, Output> | TaskRef<Input, Output>).implementation.kind === "resumable") throw new Error("durable map requires a stable Batch ID; use spawnMany and join");
-    const entries = await this.spawnMany(definition, { id: (crypto.randomUUID() as BatchId), inputs: inputs });
-    const outcomes = await Promise.all(entries.map(entry => entry.admission.kind === "accepted" ? entry.admission.task.result().then(async outcome => { if (outcome.kind !== "succeeded" && this.policy.kind === "cancel-on-failure") await this.cancel(); return outcome; }) : undefined));
-    const values: Output[] = [];
-    for (const outcome of outcomes) {
-      if (outcome?.kind !== "succeeded") {
-        if (this.policy.kind === "cancel-on-failure") await this.cancel();
-        throw new GroupError(this.id, entries.map((entry, index) => {
-          const result = outcomes[index];
-          return result === undefined ? entry : { ...entry, outcome: result };
-        }));
-      }
-      values.push(outcome.value);
-    }
-    return values;
   }
   async join(): Promise<GroupOutcome<Output>> {
     this.#closed = true;
@@ -442,29 +395,27 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         if (cancellation === "indeterminate") break;
       }
     }
-    const entries = this.#entries.map(entry => observed.get(`${entry.key.batchId}:${entry.key.index}`) ?? entry);
+    const entries = [...this.#entries.values()].map(entry => observed.get(`${entry.key.batchId}:${entry.key.index}`) ?? entry);
     const complete = cancellation !== "indeterminate" && entries.every(entry =>
       entry.admission.kind !== "indeterminate" && entry.outcome?.kind !== "indeterminate"
       && (entry.admission.kind !== "accepted" || entry.outcome !== undefined));
     return { groupId: this.id, complete, entries, cancellation };
   }
   async race(): Promise<GroupEntry<Output>> {
-    const accepted = this.#entries.filter((entry): entry is GroupEntry<Output> & { admission: { kind: "accepted"; task: Task<Output> } } => entry.admission.kind === "accepted");
-    if (!accepted.length) throw new GroupError(this.id, this.#entries);
-    const settled = accepted.map(async entry => ({ ...entry, outcome: await entry.admission.task.result() }));
-    return Promise.race(settled);
+    for await (const entry of this.asCompleted()) if (entry.admission.kind === "accepted") return entry;
+    throw new GroupError(this.id, [...this.#entries.values()]);
   }
   async firstSuccess(): Promise<{ readonly key: InputKey; readonly value: Output }> {
-    const accepted = this.#entries.filter((entry): entry is GroupEntry<Output> & { admission: { kind: "accepted"; task: Task<Output> } } => entry.admission.kind === "accepted");
-    if (!accepted.length) throw new GroupError(this.id, this.#entries);
-    const settled = accepted.map(async entry => ({ ...entry, outcome: await entry.admission.task.result() }));
-    try {
-      return await Promise.any(settled.map(async result => {
-        const entry = await result;
-        if (entry.outcome.kind !== "succeeded") throw entry;
-        return { key: entry.key, value: entry.outcome.value };
-      }));
-    } catch { throw new GroupError(this.id, await Promise.all(settled)); }
+    const completed = new Map<string, GroupEntry<Output>>();
+    for await (const entry of this.asCompleted()) {
+      if (entry.admission.kind !== "accepted") continue;
+      if (entry.outcome?.kind === "succeeded") return { key: entry.key, value: entry.outcome.value };
+      completed.set(entry.key.batchId + ":" + entry.key.index, entry);
+    }
+    const entries = [...this.#entries.values()];
+    throw new GroupError(this.id, completed.size
+      ? entries.filter(entry => entry.admission.kind === "accepted").map(entry => completed.get(entry.key.batchId + ":" + entry.key.index)!)
+      : entries);
   }
   close(): void { this.#closed = true; }
   async cancel(): Promise<CancelReceipt> {
@@ -476,10 +427,10 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     const reports = await Promise.all([...this.#durableBatchIds].map(async batchId => {
       const report = await spawner!.cancelBatch!(batchId, this.#harness);
       assertBatchCancellationReport(report, this.id, batchId,
-        this.#entries.filter(entry => entry.key.batchId === batchId).length);
+        [...this.#entries.values()].filter(entry => entry.key.batchId === batchId).length);
       return report;
     }));
-    const liveReceipts = await Promise.all(this.#entries.map(entry =>
+    const liveReceipts = await Promise.all([...this.#entries.values()].map(entry =>
       !this.#durableBatchIds.has(entry.key.batchId) && entry.admission.kind === "accepted"
         ? entry.admission.task.cancel() : undefined));
     const requested = reports.every(report => report.entries.every(entry =>

@@ -140,7 +140,7 @@ export class MemoryConversation {
     return reader.readPath(volume, grantedPrefix, path, expectedGeneration);
   }
   /** Mount this owner's volume read-only under an exact owner-issued scope. */
-  readBindings(scope: Scope): ContentBindings & Readonly<{ requireFileRead(file: FileRef): void }> {
+  readBindings(scope: Scope): ContentReader & Readonly<{ requireFileRead(file: FileRef): void }> {
     const admittedScope = structuredClone(scope);
     this.#core.verifyScope(admittedScope);
     return {
@@ -414,7 +414,7 @@ export class MemoryConversation {
       }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
         maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
         maxRenderBytes: limits.render_bytes,
-        validateMessage: message => this.#core.contracts.validate("conversation_message", message, limits) });
+        limits });
       if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
       let output: RunOutput;
       try { output = await runtime.runSelectedContext(selected, operationId); }

@@ -260,7 +260,7 @@ fn native_original_token_registry_has_no_strong_cycle_after_last_future_drop() {
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
         .map_err(|(error, _)| error).unwrap();
     let state = Arc::downgrade(&token.state);
-    let original = work.original_demand_work();
+    let original = work.clone();
     let accounting = Arc::downgrade(&original.state);
     let prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
     drop(original);

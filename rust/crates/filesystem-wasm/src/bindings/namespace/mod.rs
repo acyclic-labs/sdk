@@ -2,7 +2,6 @@ use super::*;
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Creates one regular file in the private COW overlay.
     #[wasm_bindgen(js_name = createFile)]
     pub async fn create_file(
         &mut self,
@@ -22,7 +21,6 @@ impl BrowserCheckout {
         mutation_created(&receipt)
     }
 
-    /// Creates one empty directory in the private COW overlay.
     #[wasm_bindgen(js_name = createDirectory)]
     pub async fn create_directory(
         &mut self,
@@ -39,7 +37,6 @@ impl BrowserCheckout {
         mutation_created(&receipt)
     }
 
-    /// Creates one symbolic link with exact opaque target bytes.
     #[wasm_bindgen(js_name = createSymbolicLink)]
     pub async fn create_symbolic_link(
         &mut self,
@@ -59,7 +56,6 @@ impl BrowserCheckout {
         mutation_created(&receipt)
     }
 
-    /// Creates an exact empty special namespace entry.
     #[wasm_bindgen(js_name = createSpecial)]
     pub async fn create_special(
         &mut self,
@@ -79,7 +75,6 @@ impl BrowserCheckout {
         mutation_created(&receipt)
     }
 
-    /// Creates an exact POSIX character or block device identity.
     #[wasm_bindgen(js_name = createDevice)]
     pub async fn create_device(
         &mut self,
@@ -106,7 +101,6 @@ impl BrowserCheckout {
         mutation_created(&receipt)
     }
 
-    /// Creates an opaque exact Windows reparse-point payload.
     #[wasm_bindgen(js_name = createReparsePoint)]
     pub async fn create_reparse_point(
         &mut self,
@@ -125,7 +119,6 @@ impl BrowserCheckout {
         mutation_created(&receipt)
     }
 
-    /// Removes one namespace binding.
     pub async fn remove(
         &mut self,
         path: String,
@@ -150,7 +143,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Atomically renames one binding within the volume.
     pub async fn rename(
         &mut self,
         source: String,
@@ -170,7 +162,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Creates one hard link within the volume.
     #[wasm_bindgen(js_name = hardLink)]
     pub async fn hard_link(
         &mut self,

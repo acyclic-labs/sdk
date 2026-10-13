@@ -6,17 +6,7 @@ pub(super) fn native_mount_name(
     inputs.items(1)?;
     let bytes = match (name.encoding(), std::env::consts::OS) {
         (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos")
-        | (NameEncoding::WindowsUtf16Le, "windows") => {
-            let delta = crate::WorkCounters {
-                bytes_copied: name.as_bytes().len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            inputs.admit(delta)?;
-            let mut bytes = inputs.vec(name.as_bytes().len())?;
-            bytes.extend_from_slice(name.as_bytes());
-            inputs.record(delta)?;
-            bytes
-        }
+        | (NameEncoding::WindowsUtf16Le, "windows") => inputs.copy_bytes(name.as_bytes())?,
         (NameEncoding::Utf8, "windows") => {
             let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
                 MountSourceError::Invalid("authenticated UTF-8 name is malformed".into())
@@ -52,17 +42,10 @@ pub(super) fn native_mount_name(
 
 impl<A, O> CheckoutMountSource<A, O> {
     fn path(&self, path: &MountPath) -> Result<NamespacePath, MountSourceError> {
-        let mut work = crate::demand::DemandWork::new(boundary_budget(), &self.cancellation);
+        let mut work = crate::demand::DemandWork::new(BOUNDARY_BUDGET, &self.cancellation);
         let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         self.namespace_inputs(path, &mut inputs)
-    }
-
-    fn logical_name(&self, bytes: &[u8]) -> Result<LogicalName, MountSourceError> {
-        let mut work = crate::demand::DemandWork::new(boundary_budget(), &self.cancellation);
-        let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
-        let mut inputs = InputBuffers::new(&mut carrier)?;
-        native_name(bytes, self.profile, self.limits, &mut inputs)
     }
 }
 fn profile_is_native(profile: FilesystemProfile) -> bool {

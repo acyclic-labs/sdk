@@ -155,28 +155,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
     }
 
-    /// Applies a large ordered capture without exposing an intermediate candidate.
-    pub(crate) async fn apply_authored_bulk_transaction(
-        &mut self,
-        authored: Vec<AuthoredMutation>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = async {
-            let input = Self::admit_authored_input(authored, &mut accounting)?;
-            self.apply_authored_bulk_transaction_with_accounting(
-                input,
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
-        measured(result, &accounting)
-    }
-
     pub(super) fn admit_authored_input(
         authored: Vec<AuthoredMutation>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -342,7 +320,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             {
                 return Err(FsError::MutationNotAllowed);
             }
-            self.mutate_owned_with_accounting(operations, accounting, cancellation)
+            self.apply_mutations(operations, accounting, cancellation)
                 .await?;
         }
         Ok(Owned::new(
@@ -370,7 +348,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if maximum == 0 {
             return Err(FsError::TooManyPendingMutations);
         }
-        let mut candidate = self.private_candidate_with_accounting(accounting, cancellation)?;
+        let mut candidate = self.private_candidate(accounting, cancellation)?;
         let backing =
             crate::foundation::usize_to_u64(input.value.capacity() * size_of::<AuthoredMutation>());
         let mut input = (input.value.into_iter(), input.allocation);
@@ -398,16 +376,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ..WorkCounters::UNCHARGED
             })?;
             batch.value.push(mutation.value);
-            match (&mut batch.allocation, &mut mutation.allocation) {
-                (KernelOwnedAllocation::Standalone, KernelOwnedAllocation::Standalone) => {}
-                #[cfg(not(target_arch = "wasm32"))]
-                (
-                    KernelOwnedAllocation::NativeOriginal(target),
-                    KernelOwnedAllocation::NativeOriginal(source),
-                ) => target.absorb(source)?,
-                #[cfg(not(target_arch = "wasm32"))]
-                _ => unreachable!("authored batches preserve one ledger"),
-            }
+            batch.allocation.absorb(&mut mutation.allocation)?;
             batch.bytes = batch.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
             count += next;
         }

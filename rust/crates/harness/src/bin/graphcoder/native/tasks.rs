@@ -14,7 +14,7 @@ impl NativeSession {
                 let admission = self.runtime.task_host().observe_admission(parent).await?;
                 self.runtime
                     .harness()
-                    .durable_context(parent, admission.operation_id)
+                    .durable_context(parent, admission.operation_id, None)
                     .await?
                     .admit(operation, &definition, command)
                     .await
@@ -26,25 +26,6 @@ impl NativeSession {
                     .await
             }
         }
-    }
-    pub async fn queue_preparation(
-        &self,
-        operation: OperationId,
-        parent: TaskId,
-        lease: &WorkLease,
-        request: ResourcePreparationRequest,
-    ) -> Result<Admission<RuntimeTask<ForkReport>>> {
-        request.validate(&mut None)?;
-        if request.child.parent != Some(parent) {
-            return Err(Error::Unauthorized(
-                "preparation child belongs to a different caller".into(),
-            ));
-        }
-        let definition = self.runtime.harness().task("acyclic.fork_preparation@1")?;
-        self.caller_context(parent, lease)
-            .await?
-            .admit(operation, &definition, request)
-            .await
     }
     pub async fn prompt_command(
         &self,
@@ -59,7 +40,7 @@ impl NativeSession {
             mailbox_operation: None,
             selected_output_volume: None,
         })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(invalid)?;
         if bytes.len() > MAX_FRAME_BYTES {
             return Err(Error::Invalid(
                 "published prompt command exceeds terminal bounds".into(),
@@ -93,16 +74,8 @@ impl NativeSession {
         self.runtime.poll_task_wake(task, None).await?;
         self.runtime
             .task_host()
-            .pull_operation(worker, admission.operation_id, &mut None)
+            .pull_work(worker, Some(admission.operation_id), &mut None)
             .await
-    }
-    pub async fn cancel_task(&self, task: TaskId) -> Result<String> {
-        let admission = self.runtime.task_host().observe_admission(task).await?;
-        self.runtime.task_host().cancel(task, None).await?;
-        Ok(format!(
-            "cancellation requested task={task} admission-operation={}; completion requires authoritative observation\n",
-            admission.operation_id
-        ))
     }
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
         let context = self
@@ -170,84 +143,24 @@ impl NativeSession {
         }
         Ok(binding)
     }
-    pub async fn queue_mailbox(
-        &self,
-        operation: OperationId,
-        caller: TaskId,
-        lease: &WorkLease,
-        input: serde_json::Value,
-    ) -> Result<Admission<RuntimeTask<serde_json::Value>>> {
-        let definition = self.runtime.harness().task("acyclic.mailbox_model@1")?;
-        self.caller_context(caller, lease)
-            .await?
-            .admit(operation, &definition, input)
-            .await
-    }
-    pub async fn reconcile(&self, operation: OperationId) -> Result<String> {
-        let found = self
-            .runtime
-            .harness()
-            .reconcile_admission(operation)
-            .await?;
-        Ok(crate::terminal::text(&format!(
-            "admission operation={operation} retained={found:?}\n"
-        )))
-    }
-    pub async fn children(
-        &self,
-        task: TaskId,
-        revision: Option<u64>,
-        after: Option<String>,
-    ) -> Result<String> {
-        let page = self
-            .runtime
-            .harness()
-            .children(task, revision, after, MAX_PAGE_EVENTS)
-            .await?;
-        let encoded =
-            serde_json::to_string(&page).map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(format!(
-            "{}children-json={encoded}\n",
-            crate::terminal::text(&format!("children parent-task={task} {page:?}\n"))
-        ))
-    }
-    pub async fn outcome(&self, task: TaskId) -> Result<String> {
-        let admission = self.runtime.task_host().observe_admission(task).await?;
-        let outcome = self.runtime.task_host().outcome(task).await?;
-        let encoded = serde_json::to_string(&serde_json::json!({
-            "task": task, "admission_operation": admission.operation_id, "outcome": outcome,
-        }))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(format!(
-            "{}task-json={encoded}\n",
-            crate::terminal::text(&format!(
-                "task={task} admission-operation={} outcome={outcome:?}\n",
-                admission.operation_id
-            ))
-        ))
-    }
 }
 pub fn lease_hex(lease: &WorkLease) -> Result<String> {
-    Ok(hex::encode(
-        serde_json::to_vec(lease).map_err(|error| Error::Invalid(error.to_string()))?,
-    ))
+    Ok(hex::encode(serde_json::to_vec(lease).map_err(invalid)?))
 }
 pub fn render_attempt(attempt: TaskWorkerAttempt) -> Result<String> {
     match attempt {
-        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task }) => Ok(format!(
-            "worker completed task={task}; observe /outcome for the authoritative result\n"
-        )),
-        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended { task, revision }) => {
-            Ok(format!(
-                "worker suspended task={task} checkpoint={revision}; no active future retained\n"
-            ))
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task }) => {
+            Ok(format!("worker completed task={task}\n"))
         }
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended { task, revision }) => Ok(
+            format!("worker suspended task={task} checkpoint={revision}\n"),
+        ),
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) => Ok(format!(
             "worker yielded lease-json-hex={}\n",
             lease_hex(&lease)?
         )),
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { lease }) => Ok(format!(
-            "worker reconciling lease-json-hex={}; no new work pulled\n",
+            "worker reconciling lease-json-hex={}\n",
             lease_hex(&lease)?
         )),
         TaskWorkerAttempt::Unresolved { lease, error } => Ok(format!(

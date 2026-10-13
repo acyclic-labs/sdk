@@ -1,5 +1,6 @@
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use crate::store::checkpoints::native_staging_custody_tests::budget;
+use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
@@ -82,25 +83,6 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     }
 }
 
-fn budget() -> WorkBudget {
-    WorkBudget {
-        authority_records_read: 32,
-        authority_bytes_read: 1_048_576,
-        backend_read_operations: 32,
-        source_bytes_read: 1_048_576,
-        bytes_copied: 1_048_576,
-        bytes_encoded: 1_048_576,
-        bytes_hashed: 1_048_576,
-        authority_records_appended: 32,
-        authority_bytes_written: 1_048_576,
-        backend_write_operations: 32,
-        items_examined: 1_048_576,
-        allocation_operations: 1_048_576,
-        peak_allocation_bytes: 1_048_576,
-        ..WorkBudget::default()
-    }
-}
-
 async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     use super::super::history::{HistoryIo, HistoryReadLimits, HistoryReader};
     use crate::core::{
@@ -142,7 +124,7 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     };
     let encoded = crate::wire_codec::encode_event(&authority, &event, &mut None)?;
     let event_bytes = encoded.len() as u64;
-    let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
+    let publication = IndexedPublication::new(&authority, &event, encoded, None, &mut None)?;
     let request = publication
         .request(
             &ordinary,
@@ -197,24 +179,22 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     let cursor = reader.pin(0, Some(&mut io)).await?;
     assert_eq!(cursor.through_revision, 1);
     let page = reader
-        .read_page_with_work(
+        .read_page(
             &cursor,
             HistoryReadLimits {
                 maximum_events: 1,
                 maximum_bytes: event_bytes,
             },
-            true,
             Some(&mut io),
         )
         .await?;
-    assert_eq!(page.0.events.as_slice(), std::slice::from_ref(&event));
-    assert_eq!(page.1.len(), 1);
+    assert_eq!(page.events.as_slice(), std::slice::from_ref(&event));
     assert_eq!(native.receipt().authority_bytes_read, event_bytes);
     assert_eq!(native.receipt().source_bytes_read, event_bytes);
     let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
     let bounds = bounds_with_work(&client, &publication.path, &mut work)
         .await?
-        .map_err(|error| sdk_error(error, &work))?;
+        .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
     assert_eq!(bounds.tail, 1);
     drop(page);
     drop(cursor);
@@ -252,10 +232,17 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         crate::filesystem::PreparationIo::from_native_work(&native)
             .expect("original checkpoint observer"),
     );
-    super::super::checkpoints::stage_immutable_record_with_work(
+    let bytes = {
+        let mut observer = Some(&mut io as &mut dyn crate::store::HistoryIo);
+        let mut source = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+        let bytes = crate::core::copy_copy_vector(b"native-checkpoint", &mut source)?;
+        source.transfer();
+        bytes
+    };
+    super::super::checkpoints::stage_immutable(
         &client,
-        StreamPath::new("harness/v3/native-only-checkpoint")?,
-        OwnedBytes::from_static(b"native-checkpoint"),
+        (StreamPath::new("harness/v3/native-only-checkpoint")?, 0),
+        Ok(bytes),
         &mut Some(&mut io),
     )
     .await?;
@@ -272,13 +259,12 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         if maximum_bytes == 1 {
             assert!(
                 reader
-                    .read_page_with_work(
+                    .read_page(
                         &cursor,
                         HistoryReadLimits {
                             maximum_events: 1,
                             maximum_bytes
                         },
-                        false,
                         Some(&mut io)
                     )
                     .await
@@ -289,13 +275,12 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
             cancellation.cancel();
             assert!(
                 reader
-                    .read_page_with_work(
+                    .read_page(
                         &cursor,
                         HistoryReadLimits {
                             maximum_events: 1,
                             maximum_bytes
                         },
-                        false,
                         Some(&mut io)
                     )
                     .await

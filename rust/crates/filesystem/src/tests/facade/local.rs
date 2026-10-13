@@ -190,7 +190,6 @@ async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let opening = tokio::spawn(run_local_initialization(
         ownership,
-        crate::obs::span!(DEBUG, "test.local_initialization"),
         move |ownership| async move {
             let _ownership = ownership;
             let _ = started_tx.send(());

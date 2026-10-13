@@ -19,27 +19,11 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         calls: AtomicUsize::new(0),
         reconciles: AtomicUsize::new(0),
     });
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            Tool {
-                definition: ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({"type":"object"}),
-                    output_schema: json!({"type":"object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type":"object"}),
-                    ),
-                },
-                executor: tool.clone(),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        tool.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let model = Arc::new(ScriptedModel::default());
     let base = StockExecutor::new(
@@ -141,27 +125,11 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
     for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
         let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::default();
-        tools.register(
-            (
-                crate::tool::Tool {
-                    definition: crate::tool::ToolDefinition {
-                        name: "example.echo".into(),
-                        revision: "1".into(),
-                        description: "Echo".into(),
-                        input_schema: json!({"type": "object"}),
-                        output_schema: json!({"type": "object"}),
-                        projection_schema: crate::tool::json_projection_schema(
-                            json!({"type": "object"}),
-                        ),
-                    },
-                    executor: tool_executor.clone(),
-                    projection: Arc::new(Projection),
-                },
-                None,
-            ),
-            &mut None,
-            None,
+        let tools = echo_tools(
+            tool_executor.clone(),
+            json!({"type": "object"}),
+            json!({"type": "object"}),
+            crate::tool::json_projection_schema(json!({"type": "object"})),
         )?;
         let executor = uncompacted_executor(
             Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
@@ -245,11 +213,16 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             )
             .await?;
             journal
-                .append(input.operation_id, &"tool:0:call-1:started", &ExecutionEvent::ToolStarted {
+                .append(
+                    input.operation_id,
+                    &"tool:0:call-1:started",
+                    &ExecutionEvent::ToolStarted {
                         step: 0,
                         call_id: invocation.call_id.clone(),
                         invocation: reference,
-                    }, None)?
+                    },
+                    None,
+                )?
                 .await?;
             assert!(
                 matches!(executor.execute_progress(input, &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
@@ -272,27 +245,11 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         model
     });
     let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({"type":"object"}),
-                    output_schema: json!({"type":"object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type":"object"}),
-                    ),
-                },
-                executor: tool.clone(),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        tool.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let executor = uncompacted_executor(
         Model::new("example".into(), "batch".into(), "1".into(), Value::Null)?,
@@ -443,27 +400,11 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
 async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
     let model = Arc::new(ScriptedModel::default());
     let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({"type": "object"}),
-                    output_schema: json!({"type": "object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type": "object"}),
-                    ),
-                },
-                executor: tool_executor.clone(),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        tool_executor.clone(),
+        json!({"type": "object"}),
+        json!({"type": "object"}),
+        crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
@@ -649,27 +590,11 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
 async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
     use crate::obs::capture;
     let (seen, _guard) = capture::install();
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({"type": "object"}),
-                    output_schema: json!({"type": "object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type": "object"}),
-                    ),
-                },
-                executor: Arc::new(FakeTool(AtomicUsize::new(0))),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        Arc::new(FakeTool(AtomicUsize::new(0))),
+        json!({"type": "object"}),
+        json!({"type": "object"}),
+        crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
@@ -713,27 +638,11 @@ async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
 async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> {
     let model = Arc::new(ScriptedModel::default());
     let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({"type":"object"}),
-                    output_schema: json!({"type":"object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type":"object"}),
-                    ),
-                },
-                executor: tool_executor.clone(),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        tool_executor.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
@@ -775,31 +684,15 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
 async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
     let model = Arc::new(ScriptedModel::slipping());
     let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {"value": {"type": "string"}},
-                        "additionalProperties": false,
-                    }),
-                    output_schema: json!({"type": "object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type": "object"}),
-                    ),
-                },
-                executor: tool_executor.clone(),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        tool_executor.clone(),
+        json!({
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "additionalProperties": false,
+        }),
+        json!({"type": "object"}),
+        crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
@@ -835,31 +728,15 @@ async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
 async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
     let model = Arc::new(ScriptedModel::slipping());
     let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {"value": {"type": "string"}},
-                        "additionalProperties": false,
-                    }),
-                    output_schema: json!({"type": "object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type": "object"}),
-                    ),
-                },
-                executor: tool_executor.clone(),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        tool_executor.clone(),
+        json!({
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "additionalProperties": false,
+        }),
+        json!({"type": "object"}),
+        crate::tool::json_projection_schema(json!({"type": "object"})),
     )?;
     let executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
@@ -945,19 +822,29 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
         .await?;
         let projection = stage_json(&journal, operation, "projection", &projected, None).await?;
         journal
-            .append(operation, &"started", &ExecutionEvent::ToolStarted {
+            .append(
+                operation,
+                &"started",
+                &ExecutionEvent::ToolStarted {
                     step: 0,
                     call_id: invocation.call_id.clone(),
                     invocation: invocation_ref,
-                }, None)?
+                },
+                None,
+            )?
             .await?;
         journal
-            .append(operation, &"completed", &ExecutionEvent::ToolCompleted {
+            .append(
+                operation,
+                &"completed",
+                &ExecutionEvent::ToolCompleted {
                     step: 0,
                     call_id: invocation.call_id.clone(),
                     result,
                     projection,
-                }, None)?
+                },
+                None,
+            )?
             .await?;
         let records = journal.replay(operation, 0, 64, None)?.await?;
         let retained = completed_tool_projection(
