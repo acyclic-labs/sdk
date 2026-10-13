@@ -29,7 +29,6 @@ pub(crate) struct CreationFixture {
     pub(crate) filesystem_provider: ProviderRef,
     pub(crate) filesystem_creator:
         Arc<FilesystemResourceCreationProvider<MemoryAuthorityBackend, MemoryObjectBackend>>,
-    pub(crate) root_scope: RuntimeScope,
     pub(crate) root: TaskId,
     pub(crate) root_lease: crate::distributed::WorkLease,
     pub(crate) worker: crate::distributed::Worker,

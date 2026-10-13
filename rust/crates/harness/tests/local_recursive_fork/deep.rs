@@ -211,7 +211,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                             .resolve(&workspace_ref(
                                 provider.clone(),
                                 &private.storage_name(&mut None)?,
-                            )?)
+                            )?, None)
                             .await?
                             .generation,
                         paths: Vec::new(),
@@ -417,7 +417,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             .resolve(&workspace_ref(
                 provider.clone(),
                 &child_project.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?;
         previous_file = child_file;
         previous_attachment = child_attachment;

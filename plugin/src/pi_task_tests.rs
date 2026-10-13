@@ -319,7 +319,13 @@ async fn selected_root_recovery_requires_original_admission() {
             allocation: crate::RootAllocation::Preparing,
         },
     );
-    let intent = PiRootIntent::from_state(&state).unwrap();
+    let intent = PiRootIntent::Project {
+        context_id: state.root_context_id,
+        root_id: state.root_id,
+        paths: state.roots.iter().map(|(key, root)| {
+            (key.clone(), root.path.to_str().unwrap().to_owned())
+        }).collect(),
+    };
     assert!(
         observe_pi_session(&runtime.runtime, &state, &work)
             .await
@@ -360,7 +366,13 @@ async fn selected_root_recovery_requires_original_admission() {
                 runtime
                     .admit_root(
                         &binding,
-                        &PiRootIntent::from_state(&changed).unwrap(),
+                        &PiRootIntent::Project {
+                            context_id: changed.root_context_id,
+                            root_id: changed.root_id,
+                            paths: changed.roots.iter().map(|(key, root)| {
+                                (key.clone(), root.path.to_str().unwrap().to_owned())
+                            }).collect(),
+                        },
                         &preparation(),
                         &work
                     )
@@ -500,7 +512,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .task_context_with_native_work(task, &fence, &work)
         .await
         .unwrap();
-    let acyclic_harness::effects::EffectStatus::Succeeded { result: allocation } =
+    let acyclic_harness::core::EffectStatus::Succeeded { result: allocation } =
         fixture.execute().await.unwrap().0
     else {
         panic!("original root allocation");
@@ -647,7 +659,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .unwrap();
     runtime
         .task_host()
-        .cancel(task, Some(&query))
+        .cancel(task)
         .await
         .unwrap();
     let retry = guard(&input, &query);
@@ -688,7 +700,7 @@ fn malformed_task_inputs_and_cancelled_work_are_denied() {
     assert!(
         machine
             .initialize_with_native_work(
-                &serde_json::to_value(PiTaskInput {
+                &serde_json::to_value(PiTaskInput::<PiTaskBinding, PiRootIntent> {
                     binding: binding(),
                     execution: PiTaskExecution::Child {
                         launch: preparation()

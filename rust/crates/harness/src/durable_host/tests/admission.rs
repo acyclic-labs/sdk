@@ -112,7 +112,7 @@ async fn b04_descendants_only_narrow_authority() -> Result<()> {
         child.operation_id = OperationId::new();
         child.parent = Some(TaskId::from_bytes([5; 16]));
         match change {
-            0 => child.grants = f.scope.grants().clone(),
+            0 => child.grants = f.host.root_scope.grants().clone(),
             1 => child.limits.model_steps = 3,
             2 => child.run_limits.max_steps = Some(3),
             3 => child.run_limits.max_steps = None,

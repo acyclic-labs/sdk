@@ -136,10 +136,10 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
     let retained = selected.join("retained.txt");
     fs::write(&retained, b"preserve concurrent user content").unwrap();
     let data = directory.path().join("catalog");
-    let (_lock, configured, work) = crate::tests::configured_test_service_bootstrap(&data)
+    let (_lock, configured, private, work) = crate::tests::configured_test_service_bootstrap(&data)
         .await
         .unwrap();
-    let (resources, mut sessions) = crate::service::ServiceResources::open(data, configured, &work)
+    let (resources, mut sessions) = crate::service::ServiceResources::open(data, configured, private, &work)
         .await
         .unwrap();
     let mut controller = resources.open_session_directory(resources.session_directory("pi-root")).await.unwrap();

@@ -51,6 +51,7 @@ mod unix_path;
 pub(crate) use unix_path::*;
 mod open;
 pub(crate) use open::*;
+pub use open::file_transfer;
 mod mutation;
 pub(crate) use mutation::*;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]

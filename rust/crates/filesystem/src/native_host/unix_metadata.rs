@@ -1,3 +1,5 @@
+#[cfg(any(feature = "native-mount", test))]
+use super::metadata::{unix_metadata_nanos, unix_metadata_timespec};
 use super::*;
 
 #[cfg(all(

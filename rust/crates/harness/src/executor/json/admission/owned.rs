@@ -59,17 +59,17 @@ fn tree(
                 {
                     let text = field.as_str().unwrap();
                     resident.visit(depth + 1, text.len(), charge)?;
-                    let mut source = text.bytes().map(|byte| {
-                        charge.borrow_mut()(JsonCodecCharge::Inspect { items: 1 })?;
-                        Ok(byte)
-                    });
-                    let reader: &mut Input<'_> = &mut source;
-                    let mut reader = Iterator::peekable(reader);
-                    let (mut selected, valid) =
-                        super::value(&mut reader, &ROOT, depth + 1, true, charge)?;
-                    let ended = space(&mut reader)?.is_none();
-                    while next(&mut reader)?.is_some() {}
-                    selected.always.unresolved |= !valid || !ended;
+                    charge.borrow_mut()(JsonCodecCharge::Inspect {
+                        items: text.len() as u64,
+                    })?;
+                    let mut selected = super::document(
+                        text.as_bytes(),
+                        &ROOT,
+                        depth + 1,
+                        true,
+                        charge,
+                        &RefCell::new(None),
+                    )?;
                     selected.always.bytes = checked(
                         selected.always.bytes.checked_add(text.len() as u64),
                         "JSON byte count overflow",

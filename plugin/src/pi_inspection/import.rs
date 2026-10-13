@@ -45,39 +45,49 @@ where
         return Err(selected_invalid("import repeats a selected path"));
     }
     for path in paths {
-        let absolute = source.path(path, work)?;
+        let absolute = source.path(path, work).await?;
         source.owner.verify(false, &mut Some(&mut io)).await?;
-        let mut parsed = source
-            .workspace
-            .workspace()
-            .namespace_path_with_native_work(&absolute.0, work, work.cancellation())?;
-        requested.2.absorb(&mut parsed.1)?;
+        let parsed = acyclic_fs::kernel::NamespacePath::parse_in_profile(
+            &absolute.0,
+            source.workspace.workspace().profile(),
+            source.workspace.workspace().limits(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work, cancellation: work.cancellation(),
+            },
+            work.cancellation(),
+        )?;
+        let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(mut custody) = parsed.1 else {
+            return Err(selected_invalid("selected path lost its original ledger"));
+        };
+        requested.2.absorb(&mut custody)?;
         requested.0.push(parsed.0);
     }
-    let plan = source
-        .inspection
-        .prepare_native_selected_import_with_native_work(
-            &source.workspace,
-            source.snapshot,
-            &requested.0,
-            work,
-        )
-        .await?;
+    source.inspection.require_project_selection(source.snapshot, work).await?;
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work, cancellation: work.cancellation(),
+    };
+    let plan = source.workspace.prepare_selected_import(
+        source.snapshot, &requested.0, &mut accounting,
+    ).await.map_err(crate::pi_fork_host::native_lazy_error)?;
+    source.inspection.require_project_selection(source.snapshot, work).await?;
     before_publication(work).await?;
-    if plan.0.logical_bytes() > maximum_bytes
-        || plan.0.maximum_regular_file_bytes() > source.context.scope().limits().file_bytes
+    let (logical_bytes, maximum_regular_file_bytes) = plan.0.byte_limits(&mut accounting)
+        .map_err(crate::pi_fork_host::native_lazy_error)?;
+    if logical_bytes > maximum_bytes
+        || maximum_regular_file_bytes > source.context.scope().limits().file_bytes
     {
-        return Err(selected_invalid(
-            "import exceeds its selected byte allowance",
-        ));
+        return Err(selected_invalid("import exceeds its selected byte allowance"));
     }
+    let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(custody) = plan.1 else {
+        return Err(selected_invalid("selected plan lost its original ledger"));
+    };
     let operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
     if let Some(mount) = mount {
         mount
             .import_selected(
                 checkpoint,
                 plan.0,
-                plan.1,
+                custody,
                 operation,
                 permit,
                 work,
@@ -86,20 +96,8 @@ where
             )
             .await
     } else {
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
-        workspace
-            .import_selected(
-                checkpoint,
-                plan.0,
-                plan.1,
-                operation,
-                permit,
-                &mut accounting,
-                before_publication,
-            )
-            .await
+        workspace.import_selected(
+            checkpoint, (plan.0, custody), operation, permit, work, before_publication,
+        ).await
     }
 }

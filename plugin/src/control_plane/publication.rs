@@ -208,31 +208,43 @@ impl ControlPlane {
             Ok(())
         }
 
-    pub(crate) async fn finalize_applied_publication(
-            &mut self,
-            coordinator: &LocalPublicationCoordinator,
-            parent_agent: &str,
-            child_agent: &str,
-            publication: &MultiRootPublication,
-        ) -> Result<(), String> {
-            self.record_publication_history(parent_agent, child_agent, publication)
+    pub(crate) fn finalize_applied_publication<'a>(
+        &'a mut self,
+        coordinator: &'a LocalPublicationCoordinator,
+        parent_agent: &str,
+        child_agent: &str,
+        publication: &'a MultiRootPublication,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send + 'a + use<'a> {
+        let parent_agent = parent_agent.to_owned();
+        let child_agent = child_agent.to_owned();
+        async move {
+            self.record_publication_history(&parent_agent, &child_agent, publication)
                 .await
                 .map_err(|error| format!("recording published compatibility history: {error}"))?;
             // Before the child rebases onto the new head: every path that
             // finishes a merge (a first attempt, `--continue`, recovery) carries
             // the child's deletions of source files, which no generation holds.
             let deletions = self
-                .source_deletions(parent_agent, child_agent, &publication.candidate.plan)
+                .source_deletions(&parent_agent, &child_agent, &publication.candidate.plan)
                 .await?;
-            self.apply_source_deletions(parent_agent, deletions).await?;
+            self.apply_source_deletions(&parent_agent, deletions)
+                .await?;
             let limits = OperationReconcileLimits::default();
             let mut published_heads = BTreeMap::new();
             for (root_id, root) in &publication.candidate.plan.roots {
-                let source = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, root.source_workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                let source = WorkspaceGraph::new(self.store.clone())
+                    .workspace(
+                        &self.fs,
+                        root.source_workspace_id,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
                     .await
                     .map_err(display)?;
                 let rebase_key = derived_idempotency_key(
-                    IdempotencyKey::from_bytes(publication.candidate.plan.operation_id.into_bytes()),
+                    IdempotencyKey::from_bytes(
+                        publication.candidate.plan.operation_id.into_bytes(),
+                    ),
                     *root_id,
                 );
                 let generation = match source
@@ -243,8 +255,9 @@ impl ControlPlane {
                         limits.maximum_conflicts,
                     )
                     .await
-                    .map_err(|error| format!("rebasing published child root {root_id:?}: {error}"))?
-                {
+                    .map_err(|error| {
+                        format!("rebasing published child root {root_id:?}: {error}")
+                    })? {
                     acyclic_fs::WorkspaceRebase::Rebased(generation)
                     | acyclic_fs::WorkspaceRebase::AlreadyRebased(generation)
                     | acyclic_fs::WorkspaceRebase::Current(generation) => generation,
@@ -254,24 +267,28 @@ impl ControlPlane {
                         );
                     }
                     acyclic_fs::WorkspaceRebase::Conflicted { .. } => {
-                        return Err("published child could not advance to its parent result".to_owned());
+                        return Err(
+                            "published child could not advance to its parent result".to_owned()
+                        );
                     }
                     acyclic_fs::WorkspaceRebase::Fenced => {
                         return Err("published child rebase was fenced".to_owned());
                     }
                     acyclic_fs::WorkspaceRebase::IdempotencyConflict => {
-                        return Err("published child rebase reused an operation identity".to_owned());
+                        return Err(
+                            "published child rebase reused an operation identity".to_owned()
+                        );
                     }
                 };
                 published_heads.insert(*root_id, generation.id());
             }
-            if let Some(child_mount) = self.mounts.get(child_agent) {
+            if let Some(child_mount) = self.mounts.get(&child_agent) {
                 child_mount.advance_to_head().await.map_err(display)?;
             }
             let route = self
                 .state
                 .routes
-                .get_mut(child_agent)
+                .get_mut(&child_agent)
                 .ok_or_else(|| "merged agent route disappeared".to_owned())?;
             for (root_id, generation) in &published_heads {
                 let routed = route
@@ -286,6 +303,7 @@ impl ControlPlane {
                 .await
                 .map_err(display)
         }
+    }
 
     pub(crate) async fn agent_merge_transition(
             &mut self,

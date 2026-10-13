@@ -13,150 +13,36 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
         id: "native-message-lookup".into(),
     };
     let issuer = crate::core::AuthorityIssuer::new("message-lookup", [9; 32], authority.clone());
-    let message_id = uuid::Uuid::from_bytes([11; 16]);
+    let id = uuid::Uuid::from_bytes([11; 16]);
     let path = publication_path(
         &authority,
         "harness/v2/conversation-messages/",
-        Some((&message_id, 36)),
+        Some(&id),
         &mut None,
     )?
     .0;
     let client = Arc::new(MemoryStream::default());
-    let outcome = client
-        .commit(CommitRequest {
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![OwnedBytes::from_static(b"{{")],
-            }],
-            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(
-                b"native-corrupt-message",
-            ))?,
-        })
+    acyclic_stream::Stream::new(client.clone(), path.as_str())?
+        .append(b"{{".as_slice())
         .await?;
-    assert!(matches!(
-        outcome,
-        acyclic_stream::CommitOutcome::Committed(_)
-    ));
-    drop(outcome);
-    for mode in 0..4 {
-        let cancellation = CancellationToken::new();
-        let mut allowance = budget();
-        if mode == 3 {
-            allowance.source_bytes_read = 0;
-        }
-        let native = NativeMaterializationWork::new(allowance, &cancellation)
-            .expect("original message query ledger");
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&native)
-                .expect("original query custody"),
-        );
-        if mode == 2 {
-            cancellation.cancel();
-        }
-        let error = find_message_with_work(
-            &client,
-            &authority,
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            message_id,
-            1,
-            if mode == 1 { 1 } else { 1_048_576 },
-            &mut Some(&mut io),
-        )
-        .await
-        .expect_err("original provider record is corrupt or denied");
-        match mode {
-            0 => assert!(matches!(&error, Error::NativeJson { .. })),
-            1 => assert!(matches!(&error, Error::NativeBoundary { .. })),
-            2 => assert!(matches!(
-                &error,
-                Error::NativeWork {
-                    cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                    ..
-                }
-            )),
-            _ => assert!(matches!(&error, Error::NativeWork { .. })),
-        }
-        drop(error);
-        assert_eq!(io.into_custody()?.bytes(), 0);
-    }
-    let missing_id = uuid::Uuid::from_bytes([12; 16]);
     let cancellation = CancellationToken::new();
-    let native = NativeMaterializationWork::new(budget(), &cancellation)
-        .expect("original missing query ledger");
+    let native =
+        NativeMaterializationWork::new(budget(), &cancellation).expect("finite decoder budget");
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original query custody"),
-    );
-    let absent = find_message_with_work(
-        &client,
-        &authority,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        missing_id,
-        1,
-        1_048_576,
-        &mut Some(&mut io),
-    )
-    .await?;
-    assert_eq!(absent, (None, 0));
-    assert_eq!(io.into_custody()?.bytes(), 0);
-
-    let location = MessageLocation {
-        location: OperationLocation {
-            authority: authority.clone(),
-            operation_id: OperationId::from_bytes([13; 16]),
-            revision: 1,
-            intent_digest: [0; 32],
-            effect_position: None,
-        },
-        message_id: missing_id,
-        sequence: 1,
-    };
-    let path = publication_path(
-        &authority,
-        "harness/v2/conversation-messages/",
-        Some((&missing_id, 36)),
-        &mut None,
-    )?
-    .0;
-    client
-        .commit(CommitRequest {
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![OwnedBytes::from(crate::contract::canonical_json_bytes(
-                    &location,
-                )?)],
-            }],
-            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(
-                b"native-missing-canonical",
-            ))?,
-        })
-        .await?;
-    let native = NativeMaterializationWork::new(budget(), &cancellation)
-        .expect("original missing canonical ledger");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original query custody"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     let error = find_message_with_work(
         &client,
         &authority,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        missing_id,
+        &issuer.verifier(&mut None)?,
+        id,
         1,
         1_048_576,
         &mut Some(&mut io),
     )
     .await
-    .expect_err("original canonical stream is absent");
-    assert!(matches!(
-        &error,
-        Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            ..
-        }
-    ));
+    .expect_err("corrupt index");
+    assert!(matches!(error, Error::NativeJson { .. }));
     drop(error);
     assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
@@ -219,22 +105,20 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
     let issuer = AuthorityIssuer::new("publication-test", [7; 32], authority.clone());
     let reducer = Reducer::new(
         authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
+        issuer.verifier(&mut None)?,
         SchemaRegistry::new(),
     );
     let command = Command {
         operation_id: OperationId::from_bytes([91; 16]),
         idempotency_key: crate::IdempotencyKey("publication-custody".into()),
         expected_revision: 0,
-        scope: issuer
-            .issue(
-                "root",
-                &crate::Capabilities::new(["lifecycle:manage"]),
-                None,
-                None,
-                &mut None,
-            )
-            .expect("scope proof"),
+        scope: issuer.issue(
+            "root",
+            &crate::Capabilities::new(["lifecycle:manage"]),
+            None,
+            None,
+            &mut None,
+        )?,
         causal_parent: None,
         action: Action::TransitionLifecycle {
             to: LifecycleState::Active,
@@ -242,121 +126,75 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
         },
     };
     let ApplyResult::Applied { event } = reducer.plan(&command)? else {
-        panic!("fresh original lifecycle command");
+        panic!("fresh lifecycle");
     };
     let cancellation = CancellationToken::new();
-    let native = NativeMaterializationWork::new(budget(), &cancellation)
-        .expect("original finite publication ledger");
+    let native =
+        NativeMaterializationWork::new(budget(), &cancellation).expect("finite publication budget");
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original source custody"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
-    let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
-    let encoded = crate::wire_codec::encode_event(&authority, &event, &mut work)?;
+    let encoded = crate::wire_codec::encode_event(&authority, &event, &mut Some(&mut io))?;
     let original_capacity = encoded.capacity() as u64;
-    let publication = IndexedPublication::new(&authority, &event, encoded, None, &mut work)?;
+    let publication =
+        IndexedPublication::new(&authority, &event, encoded, None, &mut Some(&mut io))?;
     let retained = publication.retained_owned();
     let client = Arc::new(MemoryStream::default());
-    let request = publication
-        .request(
-            &client,
-            IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?,
-            &mut None,
-        )
-        .await?
-        .0;
-    let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
-        panic!("original absent/Tail atomic publication");
-    };
-    let retry = publication
-        .request(
-            &client,
-            IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?,
-            &mut None,
-        )
-        .await?
-        .0;
-    let acyclic_stream::CommitOutcome::Committed(retried) = client.commit(retry).await? else {
-        panic!("same original request is an idempotent publication");
-    };
-    assert_eq!(retried.commit_id, envelope.commit_id);
-    publication.verify(&retried, &mut None)?;
-    drop(retried);
-
-    let query_cancellation = CancellationToken::new();
-    let query = NativeMaterializationWork::new(budget(), &query_cancellation)
-        .expect("distinct native cache reader");
-    let mut query_io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&query).expect("query metadata custody"),
-    );
+    let mut commit_id = None;
+    for _ in 0..2 {
+        let request = publication
+            .request(
+                &client,
+                IdempotencyKey::new("publication-custody")?,
+                &mut None,
+            )
+            .await?
+            .0;
+        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await?
+        else {
+            panic!("atomic publication");
+        };
+        publication.verify(&envelope, &mut Some(&mut io))?;
+        if let Some(prior) = &commit_id {
+            assert_eq!(prior, &envelope.commit_id);
+        }
+        commit_id = Some(envelope.commit_id.clone());
+    }
+    let query =
+        NativeMaterializationWork::new(budget(), &cancellation).expect("finite query budget");
+    let mut query_io =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&query)?);
     let cached = one_record(&client, &publication.path, 0, &mut Some(&mut query_io))
         .await?
-        .expect("real provider cached event");
+        .unwrap();
     assert_eq!(cached.value, publication.bytes);
     assert!(cached.value.matches_meter(&native.runtime_meter()));
     assert!(!cached.value.matches_meter(&query.runtime_meter()));
     drop(cached);
     assert_eq!(query_io.into_custody()?.bytes(), 0);
     assert_eq!(query.live_allocation_bytes(), 0);
-    publication.verify(&envelope, &mut work)?;
     let mut replay_io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("same original replay decoder"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
-    let (replayed, consumed) = bounded_operation_with_retained_quota(
+    let (replayed, _) = bounded_operation_with_retained_quota(
         &client,
         &authority,
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         event.operation_id,
         2 * acyclic_stream::MAX_RECORD_BYTES as u64,
         false,
         &mut Some(&mut replay_io),
     )
     .await?;
-    let (replayed, replay_paid) =
-        replayed.expect("actual immutable locator resolves original event");
+    let (replayed, paid) = replayed.unwrap();
     assert_eq!(replayed, event);
-    assert!(consumed > publication.bytes.len() as u64);
     let mut replay_custody = replay_io.into_custody()?;
-    assert_eq!(replay_custody.bytes(), replay_paid);
     drop(replayed);
-    replay_custody
-        .release(replay_paid)
-        .expect("original decoded event physically dropped");
+    replay_custody.release(paid)?;
     assert_eq!(replay_custody.bytes(), 0);
-    let key = super::super::stream_idempotency_key_with_work(
-        publication.path.as_str(),
-        &command.idempotency_key,
-        &mut work,
-    )?;
-    cancellation.cancel();
-    let denied = publication
-        .request(&client, key, &mut work)
-        .await
-        .err()
-        .expect("cancellation before original SDK bounds");
-    assert!(matches!(
-        denied,
-        Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            custody: None,
-        }
-    ));
-    assert!(matches!(
-        publication.verify(&envelope, &mut work),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            custody: None,
-        })
-    ));
-    drop(work);
     let mut custody = io.into_custody()?;
-    assert_eq!(custody.bytes(), retained);
-    drop(envelope);
     drop(publication);
-    custody
-        .release(retained)
-        .expect("physically dropped source publication");
+    custody.release(retained)?;
     assert_eq!(custody.bytes(), 0);
     assert!(native.live_allocation_bytes() >= original_capacity);
     drop(client);

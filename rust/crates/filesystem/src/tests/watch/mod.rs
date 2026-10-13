@@ -238,6 +238,7 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
     let to = root.join("to");
     let context = NativeEventContext {
         root,
+        _root_allocation: None,
         root_identity: NativeRootIdentity {
             device: 0,
             object: 0,
@@ -261,7 +262,7 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         None
     );
     assert_eq!(queued.load(Ordering::Acquire), 1);
-    assert!(matches!(receiver.try_recv()?, WatchChange::Renamed { .. }));
+    assert!(matches!(receiver.try_recv()?.change, WatchChange::Renamed { .. }));
     assert!(receiver.try_recv().is_err());
     Ok(())
 }
@@ -275,7 +276,6 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
     let context = NativeEventContext {
         _root_allocation: None,
         root: root.clone(),
-        _root_allocation: None,
         root_identity: NativeRootIdentity {
             device: 0,
             object: 0,
@@ -354,7 +354,12 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
     watch.begin_rescan()?;
     watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
         tracker: 7,
-        from: directory.path().join("moved-out"),
+        from: relative_namespace_path(
+            directory.path(),
+            &directory.path().join("moved-out"),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )?,
         to: None,
         allocation: None,
     });
@@ -377,7 +382,12 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
     watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
         tracker: 8,
-        from: directory.path().join("moved-out-again"),
+        from: relative_namespace_path(
+            directory.path(),
+            &directory.path().join("moved-out-again"),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )?,
         to: None,
         allocation: None,
     });

@@ -25,7 +25,7 @@ pub(crate) struct PiNativeSelectedSource {
     pub(crate) _custody: (NativeAllocation, Option<NativeAllocation>),
 }
 impl PiNativeSelectedSource {
-    pub(super) fn path(
+    pub(super) async fn path(
         &self,
         path: &str,
         work: &NativeMaterializationWork,
@@ -35,6 +35,7 @@ impl PiNativeSelectedSource {
                 "selected reader names another caller",
             ));
         }
+        self.inspection.require_project_selection(self.snapshot, work).await?;
         if !path.is_empty() {
             let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
             validate_content_path(path, &mut Some(&mut io))?;
@@ -48,7 +49,7 @@ impl PiNativeSelectedSource {
         maximum: u32,
         work: &NativeMaterializationWork,
     ) -> Result<(acyclic_fs::LazyDirectoryPage, NativeAllocation)> {
-        let path = self.path(directory, work)?;
+        let path = self.path(directory, work).await?;
         let cancellation = work.cancellation();
         if maximum == 0 || maximum as usize > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(selected_invalid(
@@ -63,28 +64,26 @@ impl PiNativeSelectedSource {
                     ));
                 }
                 Some(
-                    acyclic_fs::LazyDirectoryCursor::decode_with_native_work(
+                    acyclic_fs::LazyDirectoryCursor::decode(
                         bytes,
                         self.workspace.workspace().profile(),
                         self.workspace.workspace().limits(),
                         work,
-                        cancellation,
                     )
-                    .map_err(|(source, custody)| Error::NativeSource { source, custody })?,
+                    .map_err(crate::pi_fork_host::native_lazy_error)?,
                 )
             }
             None => None,
         };
-        self.inspection
-            .list_native_directory_with_native_work(
-                &self.workspace,
-                self.snapshot,
-                &path.0,
-                continuation.map(|(cursor, _)| cursor),
-                maximum,
-                work,
-            )
-            .await
+        let page = self.workspace.list_directory_at_snapshot(
+            self.snapshot, &path.0, continuation, maximum,
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, cancellation },
+        ).await.map_err(crate::pi_fork_host::native_lazy_error)?;
+        self.inspection.require_project_selection(self.snapshot, work).await?;
+        let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(custody) = page.2 else {
+            return Err(selected_invalid("selected page lost its original ledger"));
+        };
+        Ok((page.0, custody))
     }
     pub(crate) async fn inspect(
         &self,
@@ -128,8 +127,8 @@ impl PiNativeSelectedSource {
         output.1 = match &page.0.next {
             Some(next) => {
                 let (continuation, mut next_custody) = next
-                    .encode_with_native_work(work, cancellation)
-                    .map_err(|(source, custody)| Error::NativeSource { source, custody })?;
+                    .encode(work)
+                    .map_err(crate::pi_fork_host::native_lazy_error)?;
                 output.2.absorb(&mut next_custody)?;
                 Some(PiNativeInspectionCursor {
                     snapshot: self.snapshot,
@@ -148,35 +147,36 @@ impl PiNativeSelectedSource {
         maximum_bytes: u64,
         work: &NativeMaterializationWork,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let path = self.path(path, work)?;
-        self.inspection
-            .read_native_path_with_native_work(
-                &self.workspace,
-                self.snapshot,
-                &path.0,
-                maximum_bytes.min(self.context.scope().limits().file_bytes),
-                work,
-            )
-            .await
+        let path = self.path(path, work).await?;
+        let bytes = self.workspace.read_at_snapshot(
+            self.snapshot, &path.0, None,
+            maximum_bytes.min(self.context.scope().limits().file_bytes),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work, cancellation: work.cancellation(),
+            },
+        ).await.map_err(crate::pi_fork_host::native_lazy_error)?;
+        self.inspection.require_project_selection(self.snapshot, work).await?;
+        Ok(bytes.0.bytes)
     }
     pub(crate) async fn lookup(
         &self,
         path: &str,
         work: &NativeMaterializationWork,
     ) -> Result<(acyclic_fs::LazyLookup, NativeAllocation)> {
-        let path = self.path(path, work)?;
-        self.inspection
-            .lookup_native_path_with_native_work(&self.workspace, self.snapshot, &path.0, work)
-            .await
-    }
-    pub(crate) async fn read_link(
-        &self,
-        path: &str,
-        work: &NativeMaterializationWork,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        let path = self.path(path, work)?;
-        self.inspection
-            .read_native_link_with_native_work(&self.workspace, self.snapshot, &path.0, work)
-            .await
+        let path = self.path(path, work).await?;
+        let found = self.workspace.lookup_at_snapshot(
+            self.snapshot, &path.0,
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work, cancellation: work.cancellation(),
+            },
+        ).await.map_err(crate::pi_fork_host::native_lazy_error)?;
+        self.inspection.require_project_selection(self.snapshot, work).await?;
+        let lookup = found.0.ok_or_else(|| crate::pi_fork_host::native_lazy_error(
+            acyclic_fs::LazyWorkspaceError::NotFound,
+        ))?;
+        let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(custody) = found.2 else {
+            return Err(selected_invalid("selected lookup lost its original ledger"));
+        };
+        Ok((lookup, custody))
     }
 }

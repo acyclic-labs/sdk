@@ -97,9 +97,7 @@ impl PiSession {
         request: &PiBuiltinRequest,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<(Value, acyclic_fs::NativeAllocation)> {
-        use acyclic_harness::filesystem::{
-            TOOL_TASK_COMMAND_KIND, TaskCommandHost as _, TaskCommandProgress,
-        };
+        use acyclic_harness::filesystem::TaskCommandProgress;
         let live = native
             .live_source(request.caller, work)
             .await?
@@ -116,7 +114,12 @@ impl PiSession {
                 "builtin command substituted the original native task binding",
             ));
         }
-        let original_fence = live.owner.task_binding().1;
+        let original_fence = live
+            .context
+            .owned_task_binding(Some(
+                &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            ))?
+            .1;
         let reservation = work.display(&original_fence.reservation_id)?;
         let _reservation_custody = reservation.1;
         let placement = work.display(&original_fence.placement)?;
@@ -125,21 +128,7 @@ impl PiSession {
             reservation_id: reservation.0,
             placement: placement.0,
         };
-        #[derive(Serialize)]
-        struct ToolCommand<'a> {
-            name: &'a str,
-            revision: &'a str,
-            arguments: &'a PiBuiltinRequest,
-        }
-        let payload = pi_root_provider::guarded_pi_value(
-            &ToolCommand {
-                name: PI_BUILTIN_COMMAND_KIND,
-                revision: crate::pi_builtin::PI_BUILTIN_TOOL_REVISION,
-                arguments: request,
-            },
-            MAXIMUM_BUILTIN_BYTES * 2,
-            work,
-        )?;
+        let payload = pi_root_provider::guarded_pi_value(request, MAXIMUM_BUILTIN_BYTES * 2, work)?;
         let _payload_custody = payload.1;
         let operation = request.operation(owner.policy().root_task, &work)?;
         let staged = pi_root_provider::stage_pi_input(
@@ -152,16 +141,16 @@ impl PiSession {
         )
         .await?;
         let _reference_custody = staged.1;
-        let kind = work.display(TOOL_TASK_COMMAND_KIND)?;
+        let kind = work.display(PI_BUILTIN_COMMAND_KIND)?;
         let _kind_custody = kind.1;
         let command = acyclic_harness::workflow::WorkflowCommand {
             operation_id: operation,
             kind: kind.0,
             payload: staged.0,
         };
-        let commands = self.runtime.runtime.commands();
-        match commands
-            .execute_with_native_work(live.context.clone(), fence, command, payload.0, work)?
+        let host = self.command_host(work, Some(native.clone()))?;
+        match host
+            .run(live.context.clone(), fence, command, payload.0, false, work)
             .await?
         {
             TaskCommandProgress::ReadyWithNativeCustody { value, custody } => Ok((value, custody)),

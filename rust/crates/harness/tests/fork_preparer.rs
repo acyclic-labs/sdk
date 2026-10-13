@@ -335,7 +335,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                         .resolve(&workspace_ref(
                             provider.clone(),
                             &parent_private.storage_name(&mut None)?,
-                        )?)
+                        )?, None)
                         .await?
                         .generation,
                     paths: Vec::new(),
@@ -620,7 +620,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                 .preparation
                 .child_private_volume
                 .storage_name(&mut None)?,
-        )?)
+        )?, None)
         .await?
         .generation,
         recovered.child_private_generation,

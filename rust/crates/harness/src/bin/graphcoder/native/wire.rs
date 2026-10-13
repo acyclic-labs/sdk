@@ -162,7 +162,7 @@ impl HarnessWireApi for NativeSession {
             let events = page
                 .events
                 .iter()
-                .map(|event| encode_event_envelope(&binding.authority, event))
+                .map(|event| encode_event_envelope(&binding.authority, event, &mut None))
                 .collect::<Result<Vec<_>>>()?;
             let delivery = wire::Delivery {
                 authority: cursor.authority,

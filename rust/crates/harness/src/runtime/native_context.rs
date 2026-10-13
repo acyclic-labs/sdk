@@ -88,28 +88,6 @@ impl TaskContext {
         self.require_original_native_work(work)?;
         validate_scope_attenuation(&self.scope, requested, limits, work)
     }
-
-    pub(crate) fn into_shared(mut self) -> Result<Arc<TaskContext>> {
-        if let Some(mut custody) = self.native_custody.take() {
-            let mut slot = match custody.work().claim(
-                (2 * std::mem::size_of::<usize>()) as u64,
-                1,
-                WorkCounters::UNCHARGED,
-            ) {
-                Ok(slot) => slot,
-                Err(cause) => {
-                    drop(self);
-                    return Err(Error::NativeWork {
-                        cause,
-                        custody: Some(custody),
-                    });
-                }
-            };
-            custody.absorb(&mut slot)?;
-            self.native_custody = Some(custody);
-        }
-        Ok(Arc::new(self))
-    }
 }
 
 impl TaskContext {
@@ -179,20 +157,10 @@ impl TaskContext {
         )?;
         let (scope, mut scope_custody) = self.scope.clone_with_native_work(work)?;
         custody.absorb(&mut scope_custody)?;
-        let context = TaskContext {
-            harness: Arc::clone(&self.harness),
-            task_id: self.task_id,
-            durable_task: self.durable_task,
-            descendants: self.descendants.clone(),
-            scope,
-            policy_overrides: Vec::new(),
-            owned_interactions: self.owned_interactions.clone(),
-            owned_mailbox: self.owned_mailbox.clone(),
-            output_content: Some(binding.clone()),
-            model_steps: Arc::clone(&self.model_steps),
-            native_purpose: Some(purpose),
-            native_custody: Some(custody),
-        };
+        let mut context = self.copy_with_scope(scope);
+        context.output_content = Some(binding.clone());
+        context.native_purpose = Some(purpose);
+        context.native_custody = Some(custody);
         context.into_shared()
     }
 

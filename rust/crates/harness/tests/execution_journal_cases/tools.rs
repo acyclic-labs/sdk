@@ -281,12 +281,13 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     );
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    drop(runner);
     registry.remove_from_model("example.noop")?;
     assert!(registry.get("example.noop", None, None)?.is_none());
-    let rebuilt =
+    let runner =
         DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     assert!(matches!(
-        rebuilt
+        runner
             .run(
                 first_task,
                 &definition,

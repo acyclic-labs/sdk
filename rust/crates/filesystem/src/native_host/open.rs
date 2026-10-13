@@ -36,7 +36,7 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     Ok(())
 }
 
-pub(super) fn directory_path<W: NativeHostWork>(
+pub(crate) fn directory_path<W: NativeHostWork>(
     parent: &Dir,
     path: &NativePath,
     create: bool,
@@ -124,7 +124,8 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     })
 }
 
-pub(crate) fn builtin_io(
+/// Records one bounded native file transfer on the original work ledger.
+pub fn file_transfer(
     kind: acyclic_native_runtime::NativeOperationKind,
     maximum: usize,
     work: &NativeMaterializationWork,

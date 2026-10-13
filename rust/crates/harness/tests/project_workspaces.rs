@@ -202,10 +202,13 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 &child,
                 &child_project,
                 &host
-                    .resolve(&workspace_ref(
-                        provider.clone(),
-                        &(child_project).storage_name(&mut None)?
-                    )?)
+                    .resolve(
+                        &workspace_ref(
+                            provider.clone(),
+                            &(child_project).storage_name(&mut None)?
+                        )?,
+                        None,
+                    )
                     .await?
                     .generation
             )
@@ -220,10 +223,13 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 &unrelated,
                 &child_project,
                 &host
-                    .resolve(&workspace_ref(
-                        provider.clone(),
-                        &(child_project).storage_name(&mut None)?
-                    )?)
+                    .resolve(
+                        &workspace_ref(
+                            provider.clone(),
+                            &(child_project).storage_name(&mut None)?
+                        )?,
+                        None,
+                    )
                     .await?
                     .generation
             )

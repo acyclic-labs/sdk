@@ -575,7 +575,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             volume.provider().clone(),
             &volume.storage_name(&mut None)?,
         )?;
-        let before_rejected_head = filesystem.resolve(&workspace).await?.generation;
+        let before_rejected_head = filesystem.resolve(&workspace, None).await?.generation;
         for (tool, arguments) in &mutations {
             let operation = OperationId::new();
             assert!(matches!(
@@ -710,7 +710,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         assert_eq!(executor.reconciliations.load(Ordering::SeqCst), 0);
         assert_eq!(journal.inner.replay(call, 0, 16, None)?.await?, records);
         assert_eq!(
-            filesystem.resolve(&workspace).await?.generation,
+            filesystem.resolve(&workspace, None).await?.generation,
             before_rejected_head
         );
         assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);

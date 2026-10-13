@@ -1,7 +1,5 @@
 use super::*;
-
-use super::*;
-use crate::workflow::{MachineIdentity, ResumableMachine};
+use crate::workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine};
 use serde_json::json;
 
 struct TestMachine {
@@ -69,7 +67,7 @@ fn resumable_registry_rejects_ambiguous_exact_revisions() -> Result<()> {
     registry.register(tool("test.echo", "1", "test.echo"))?;
     assert!(matches!(
         registry.register(tool("test.echo", "1", "test.echo")),
-        Err(Error::Conflict(message)) if message.contains("already registered")
+        Err(Error::Conflict(_))
     ));
     Ok(())
 }

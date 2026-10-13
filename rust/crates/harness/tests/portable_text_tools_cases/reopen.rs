@@ -108,7 +108,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         .map_err(|error| Error::Storage(error.to_string()))?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let workspace = workspace_ref(provider, &volume.storage_name(&mut None)?)?;
-    let head = host.resolve(&workspace).await?.generation;
+    let head = host.resolve(&workspace, None).await?.generation;
     for maximum_bytes in [0, u64::MAX] {
         assert!(matches!(
             host.edit_text(&source, &read, &write, &replacement, maximum_bytes, &key)
@@ -137,7 +137,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
             .await?,
         edited
     );
-    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    assert_eq!(host.resolve(&workspace, None).await?.generation, head);
     assert_eq!(
         host.read_content(&edited, &read, 64, None).await?.as_ref(),
         b"after\n"
@@ -158,6 +158,6 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         .await,
         Err(Error::Conflict(_))
     ));
-    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    assert_eq!(host.resolve(&workspace, None).await?.generation, head);
     Ok(())
 }

@@ -62,7 +62,7 @@ impl PiControlHost<'_> {
                 .ok_or_else(|| denied("destination project is not mounted"))?;
             let permit = live
                 .view
-                .project_publication(volume)
+                .publication_permit(volume)
                 .ok_or_else(|| denied("destination lost its project publication permit"))?;
             (Some(mount), work, permit)
         } else {
@@ -175,7 +175,7 @@ impl PiControlHost<'_> {
                     if matches!(
                         error.semantic_error(),
                         acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable
-                    ) || matches!(error.semantic_error(), acyclic_fs::LazyWorkspaceError::SelectedImportIndeterminate { operation } if *operation == fs_operation) =>
+                    ) =>
                 {
                     return Ok(None);
                 }
@@ -188,7 +188,7 @@ impl PiControlHost<'_> {
             if reconcile || resuming {
                 return Ok(None);
             }
-            match import_native_project(
+            import_native_project(
                 source,
                 workspace,
                 mount.as_deref(),
@@ -217,16 +217,7 @@ impl PiControlHost<'_> {
                     }
                 },
             )
-            .await
-            {
-                Err(Error::NativeSource { source, .. })
-                    if matches!(source.semantic_error(),
-                    acyclic_fs::LazyWorkspaceError::SelectedImportIndeterminate { operation } if *operation == fs_operation) =>
-                {
-                    return Ok(None);
-                }
-                result => result?,
-            }
+            .await?
         };
         caller_guard.check_write(&publication_work)?.await?;
         if let Some(guard) = &destination_guard {

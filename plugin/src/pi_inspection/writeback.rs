@@ -21,9 +21,7 @@ pub(crate) async fn prepare_writeback(
         ));
     }
     let operation = acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes());
-    let guard_work = native_work.clone();
-    let guard_cause = std::sync::Mutex::new(None);
-    let prepared = acyclic_fs::materializer::publish_native_transition_inner(
+    let prepared = acyclic_fs::materializer::prepare_native_generation_transition(
         from,
         candidate,
         state,
@@ -36,29 +34,18 @@ pub(crate) async fn prepare_writeback(
             to: candidate.id(),
             excluded_names: &[".git"],
             options,
-            budget: native_work.budget(),
+            budget: native_work.remaining()?,
             cancellation: native_work.cancellation(),
         },
-        native_work.clone(),
-        true,
-        &mut || async {
-            root.verify(&guard_work)
-                .await
-                .map_err(|error| native_guard_cause(error, &guard_cause))
-        },
-    )
-    .await;
+    ).await;
     let journal = match prepared {
-        Ok(journal) => journal,
-        Err(source) => {
-            return Err(guard_cause
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .unwrap_or_else(|| Error::NativeWorkspacePublication {
-                    source,
-                    custody: None,
-                }));
+        Ok(receipt) => {
+            native_work.spent(receipt.work)?;
+            receipt.value
+        }
+        Err((source, spent)) => {
+            native_work.spent(spent)?;
+            return Err(Error::NativeWorkspacePublication { source, custody: None });
         }
     };
     if journal.root_identity != Some(root.identity.to_bytes())

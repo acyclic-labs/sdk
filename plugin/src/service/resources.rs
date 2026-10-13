@@ -207,10 +207,10 @@ impl ServiceResources {
         Ok(relative)
     }
 
-    pub(crate) async fn open_session_directory(
+    pub(crate) fn open_session_directory(
         &self,
         directory: PathBuf,
-    ) -> Result<ControlPlane, String> {
+    ) -> impl std::future::Future<Output = Result<ControlPlane, String>> + Send + use<> {
         ControlPlane::open_with(
             directory,
             self.data.clone(),
@@ -218,6 +218,5 @@ impl ServiceResources {
             self.store.clone(),
             self.shared_roots.clone(),
         )
-        .await
     }
 }

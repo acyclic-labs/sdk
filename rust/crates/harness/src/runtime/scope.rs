@@ -430,6 +430,31 @@ impl RuntimeScope {
         &self.resource_proofs
     }
 
+    pub(super) fn validate_resumed_scope(
+        &self,
+        admitted: &Self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        crate::executor::with_history_io(io, |work| {
+            crate::core::inspect_metadata(&admitted.grants, work)?;
+            let created = admitted.created_access.as_ref();
+            if admitted.grants.iter().any(|grant| {
+                !self.grants.contains(grant)
+                    && !created.is_some_and(|access| access.grants.contains(grant))
+            }) || !self.allows_authority(&self.grants, &admitted.limits)
+                || !self.run_limits.allows(&admitted.run_limits)
+                || self.extensions != admitted.extensions
+            {
+                return Err(crate::store::guarded_boundary(
+                    work,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "resumed scope widens authority or changes its admission seal",
+                ));
+            }
+            Ok(())
+        })
+    }
+
     pub(super) fn resume_sealed(&self, admitted: Self, operation: OperationId) -> Result<Self> {
         let mut permitted = self.clone();
         if let Some(access) = &admitted.created_access {

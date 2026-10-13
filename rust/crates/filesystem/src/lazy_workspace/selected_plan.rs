@@ -25,6 +25,22 @@ impl SelectedImportPlan {
                 .map(|e| e.path.capacity() as u64)
                 .sum::<u64>()
     }
+    /// Returns total selected content bytes and the largest regular file.
+    pub fn byte_limits(&self, ctx: &mut KernelAccounting<'_>) -> Result<(u64, u64), LazyWorkspaceError> {
+        let (mut total, mut regular) = (0u64, 0u64);
+        for entry in &self.entries {
+            ctx.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            if let Some((record, _)) = entry.record {
+                let bytes = record_logical_bytes(record).unwrap_or(0);
+                total = total.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
+                if record.kind == FileKind::Regular {
+                    regular = regular.max(bytes);
+                }
+            }
+        }
+        Ok((total, regular))
+    }
+
     pub(crate) fn input_digest(
         &self,
         destination: LazySnapshotRef,

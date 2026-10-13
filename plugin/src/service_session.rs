@@ -30,30 +30,36 @@ pub(crate) enum SessionController {
 }
 
 impl SessionController {
-    pub(crate) async fn open(
+    pub(crate) fn open<'a>(
         directory: PathBuf,
         resources: &ServiceResources,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<Self> {
-        resources.private_session_data(&directory)?;
-        let (state, slots) = crate::adapter_state::load_state(&directory).map_err(RootError::Storage)?;
-        match &state.task_binding {
-            PluginTaskBinding::HostManaged => {
-                let host = resources
-                    .open_session_directory(directory)
-                    .await
-                    .map_err(RootError::Storage)?;
-                Ok(Self::HostManaged(Box::new(host)))
-            }
-            PluginTaskBinding::Pi(_) => {
-                let custody = work.claim(
-                    std::mem::size_of::<PiSession>() as u64,
-                    0,
-                    acyclic_fs::WorkCounters::UNCHARGED,
-                )?;
-                let session =
-                    PiSession::open(directory, state, slots, resources, work).await?;
-                Self::Pi(Box::new(session)).retain_original_input(custody)
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = acyclic_harness::Result<Self>> + Send + 'a + use<'a>
+    {
+        let resources = pi_root_provider::service_resources_with_native_work(resources, work);
+        async move {
+            let resources = resources?;
+            resources.0.private_session_data(&directory)?;
+            let (state, slots) =
+                crate::adapter_state::load_state(&directory).map_err(RootError::Storage)?;
+            match &state.task_binding {
+                PluginTaskBinding::HostManaged => {
+                    let host = resources
+                        .0
+                        .open_session_directory(directory)
+                        .await
+                        .map_err(RootError::Storage)?;
+                    Ok(Self::HostManaged(Box::new(host)))
+                }
+                PluginTaskBinding::Pi(_) => {
+                    let custody = work.claim(
+                        std::mem::size_of::<PiSession>() as u64,
+                        0,
+                        acyclic_fs::WorkCounters::UNCHARGED,
+                    )?;
+                    let session = PiSession::open(directory, state, slots, resources, work).await?;
+                    Self::Pi(Box::new(session)).retain_original_input(custody)
+                }
             }
         }
     }
@@ -268,7 +274,7 @@ impl PiSession {
         directory: PathBuf,
         state: AdapterState,
         slots: StateSlots,
-        resources: &ServiceResources,
+        resources: (ServiceResources, acyclic_fs::NativeAllocation),
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Self> {
         let PluginTaskBinding::Pi(binding) = &state.task_binding else {
@@ -276,8 +282,8 @@ impl PiSession {
                 "Pi session has no original task binding".to_owned(),
             ));
         };
-        let relative_directory = resources.private_session_data(&directory)?;
-        if !resources.original_session_directory_matches(
+        let relative_directory = resources.0.private_session_data(&directory)?;
+        if !resources.0.original_session_directory_matches(
             relative_directory,
             &state.root_session_id,
             work,
@@ -288,7 +294,7 @@ impl PiSession {
         }
         let relative_directory = work.path(relative_directory, None)?;
         let owner = pi_owner::PiOwnerConfig::load(
-            &resources.data,
+            &resources.0.data,
             &relative_directory.0,
             work,
         )?;
@@ -300,7 +306,7 @@ impl PiSession {
             ));
         }
         let filesystem = FilesystemHost::new(
-            resources.fs.clone(),
+            resources.0.fs.clone(),
             owner.policy().journal.provider(),
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         )?;
@@ -313,7 +319,6 @@ impl PiSession {
             PiTaskRuntime::reopen(&owner, &state, stream.clone(), filesystem.clone(), work).await?;
         drop(observations);
         drop(custody);
-        let resources = pi_root_provider::service_resources_with_native_work(resources, work)?;
         let mut owned = (
             Self {
                 directory,
@@ -461,18 +466,18 @@ impl PiSession {
         Ok(work)
     }
 
-    async fn mail_work(
-        &mut self,
-        caller: TaskId,
-        owner: &pi_owner::PiOwnerConfig,
+    fn mail_work(
+        &mut self, caller: TaskId, owner: &pi_owner::PiOwnerConfig,
         query_work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_fs::NativeMaterializationWork> {
-        if caller == owner.policy().root_task {
-            Ok(query_work.clone())
-        } else {
-            self.native_host_with_native_work(query_work)?
-                .invocation_work(caller)
-                .await
+    ) -> impl std::future::Future<Output = acyclic_harness::Result<acyclic_fs::NativeMaterializationWork>> + Send + use<> {
+        let result = if caller == owner.policy().root_task { Ok(None) }
+            else { self.native_host_with_native_work(query_work).map(Some) };
+        let work = query_work.clone();
+        async move {
+            match result? {
+                None => Ok(work),
+                Some(host) => host.invocation_work(caller).await,
+            }
         }
     }
 

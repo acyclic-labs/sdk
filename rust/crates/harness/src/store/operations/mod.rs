@@ -2,19 +2,23 @@
 
 use crate::{
     Error, OperationId, Result,
-    core::{Authority, AuthorityVerifier, Event},
+    core::{Authority, AuthorityVerifier, Event, EventPayload},
+    store::{HistoryIo, guarded_boundary as boundary},
+    wire::ErrorCode::{Invalid, Storage},
+    wire_codec::CodecQuota,
 };
 
 use acyclic_stream::{
-    CommitCondition, CommittedEnvelope, CommittedMutation, IdempotencyKey, OwnedBytes, Record,
-    StreamPath, StreamProvider,
+    CommitCondition, CommitRequest, CommittedEnvelope, CommittedMutation, IdempotencyKey,
+    OwnedBytes, ReadRequest, Record, RecordStream, StreamBounds, StreamError, StreamPath,
+    StreamProvider,
 };
 
 #[cfg(test)]
-use acyclic_stream::{CommitMutation, CommitRequest};
+use acyclic_stream::CommitMutation;
 
 use serde::{Deserialize, Serialize};
-
+use std::sync::Arc;
 
 mod codec;
 pub(crate) use codec::*;
@@ -30,3 +34,6 @@ pub(crate) use lookup::*;
 mod native_only_provider_tests;
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_publication_custody_tests;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_stream::{NativeRecordStream, NativeStreamOutput};

@@ -1117,12 +1117,18 @@ where
 
     pub(super) fn bind_context_interactions(
         &self,
-        context: TaskContext,
+        mut context: TaskContext,
         task: TaskId,
         journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     ) -> Result<TaskContext> {
         if self.interaction_owner.is_some() {
-            context.with_owned_interactions(task, journal)
+            if context.durable_task_id() != Some(task) {
+                return Err(Error::Unauthorized(
+                    "interaction owner differs from task context".into(),
+                ));
+            }
+            context.owned_interactions = Some(journal);
+            Ok(context)
         } else {
             Ok(context)
         }
@@ -1222,16 +1228,14 @@ where
             .harness
             .durable_context(task, OperationId::from_bytes(task.into_bytes()), None)
             .await?;
-        let context = Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
-        context.with_owned_mailbox(
-            task,
-            Arc::new(TaskJournalMailbox {
-                host: Arc::clone(&self.host),
-                owner: Arc::new(owner),
-                #[cfg(not(target_arch = "wasm32"))]
-                native_custody: None,
-            }),
-        )
+        let mut context = Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
+        context.owned_mailbox = Some(Arc::new(TaskJournalMailbox {
+            host: Arc::clone(&self.host),
+            owner: Arc::new(owner),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        }));
+        Ok(context)
     }
 
     /// Issues the stock runtime's genuine current-owner native task context.
@@ -1357,18 +1361,15 @@ where
             })
         };
         let operation = OperationId::from_bytes(task.into_bytes());
-        let source = if allow_settlement {
-            crate::runtime::ContextSource::Reconciliation { work, fence, mailbox }
+        let purpose = if allow_settlement {
+            crate::runtime::IssuedContextPurpose::Reconciliation
         } else {
-            crate::runtime::ContextSource::Dispatch { work, fence, mailbox }
+            crate::runtime::IssuedContextPurpose::Dispatch
         };
+        let io = super::PreparationIo::from_native_work(work)?;
         let context = self
             .harness
-            .open_durable_context(
-                task,
-                operation,
-                source,
-            )
+            .open_durable_context(task, operation, Some(&io), purpose, Some(mailbox))
             .await?;
         Ok(context)
     }

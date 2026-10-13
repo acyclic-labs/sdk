@@ -30,7 +30,7 @@ pub(crate) async fn build_writeback_generations<'a>(
         || imported.workspace_id() != root.workspace
         || actual_root.workspace.workspace().id() != root.workspace
         || actual_root.workspace.workspace().name().as_str() != storage_name.0
-        || actual_root.physical.source.inner().root_identity() != root.identity
+        || actual_root.physical.source.root_identity() != root.identity
         || paths.is_empty()
         || paths.len() > MAX_PRIVATE_DIRECTORY_PAGE
     {
@@ -38,47 +38,153 @@ pub(crate) async fn build_writeback_generations<'a>(
             "writeback baseline is not the ORIGINAL creator's frozen native root",
         ));
     }
-    let (names, mut names_custody) =
-        crate::pi_native::pi_native_vec::<&str>(paths.len(), native_work)?;
-    let (absolute, mut custody) = crate::pi_native::pi_native_vec(paths.len(), native_work)?;
-    custody.absorb(&mut names_custody)?;
-    let mut absolute_paths = (absolute, names, custody);
-    absolute_paths.1.extend(paths.iter().map(String::as_str));
-    absolute_paths.1.sort_unstable();
-    if absolute_paths.1.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(selected_invalid("writeback repeats a selected path"));
-    }
+    let (absolute, custody) = crate::pi_native::pi_native_vec(paths.len(), native_work)?;
+    let mut absolute_paths = (absolute, custody);
     for path in paths {
         validate_content_path(path, &mut Some(&mut grant_io))?;
-        let mut absolute = native_work.display(&format_args!("/{path}"))?;
-        absolute_paths.2.absorb(&mut absolute.1)?;
-        absolute_paths.0.push(absolute.0);
+        let (path, mut custody) = native_work.display(&format_args!("/{path}"))?;
+        absolute_paths.1.absorb(&mut custody)?;
+        absolute_paths.0.push(path);
+    }
+    absolute_paths.0.sort_unstable();
+    if absolute_paths
+        .0
+        .windows(2)
+        .any(|paths| paths[0] == paths[1])
+    {
+        return Err(selected_invalid("writeback repeats a selected path"));
     }
     let destination = native_work.display(&format_args!("pi-writeback-{operation}-baseline"))?;
-    let publication_guard = std::sync::Arc::clone(root);
-    let (from, candidate) = actual_root
+    let baseline_key = acyclic_fs::IdempotencyKey::from_bytes(
+        phase_operation(operation, b"pi-writeback-baseline").into_bytes(),
+    );
+    let candidate_key = acyclic_fs::IdempotencyKey::from_bytes(
+        phase_operation(operation, b"pi-writeback-candidate").into_bytes(),
+    );
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work: native_work,
+        cancellation: native_work.cancellation(),
+    };
+    let (baseline, _) = actual_root
         .workspace
-        .exactify_snapshot_selected_at_generation_with_native_work_guarded(
-            original,
-            imported,
-            &absolute_paths.0,
+        .fork_snapshot(
             &destination.0,
+            original,
             acyclic_fs::IdempotencyKey::from_bytes(
-                phase_operation(operation, b"pi-writeback-baseline").into_bytes(),
+                phase_operation(operation, b"pi-writeback-fork").into_bytes(),
             ),
-            acyclic_fs::IdempotencyKey::from_bytes(
-                phase_operation(operation, b"pi-writeback-candidate").into_bytes(),
-            ),
-            acyclic_fs::PublicationPermit::Unrestricted,
-            native_work,
-            native_work.cancellation(),
-            move |original: &acyclic_fs::NativeMaterializationWork| {
-                let publication_guard = std::sync::Arc::clone(&publication_guard);
-                let original = original.clone();
-                async move { publication_guard.verify(&original).await }
-            },
+            &mut accounting,
         )
-        .await?;
+        .await
+        .map_err(crate::pi_fork_host::native_lazy_error)?;
+    let workspace = baseline.workspace();
+    let mut guard = {
+        let root = std::sync::Arc::clone(root);
+        move |work: &acyclic_fs::NativeMaterializationWork| {
+            let root = std::sync::Arc::clone(&root);
+            let work = work.clone();
+            async move { root.verify(&work).await }
+        }
+    };
+    let from = if let Some(generation) = workspace
+        .operation_generation(baseline_key, native_work, native_work.cancellation())
+        .await?
+    {
+        generation
+    } else {
+        for absolute in &absolute_paths.0 {
+            root.verify(native_work).await?;
+            let found = baseline.lookup(absolute, &mut accounting).await;
+            match found {
+                Ok(lookup) => {
+                    let directory =
+                        lookup.0.stat().kind == acyclic_fs::demand::SourceNodeKind::Directory;
+                    baseline
+                        .retire_lookup(lookup, &mut accounting)
+                        .map_err(crate::pi_fork_host::native_lazy_error)?;
+                    if directory {
+                        baseline
+                            .exactify(
+                                absolute,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                &mut accounting,
+                            )
+                            .await
+                            .map_err(crate::pi_fork_host::native_lazy_error)?;
+                    } else {
+                        let committed = baseline
+                            .promote(
+                                absolute,
+                                native_work.remaining()?.source_bytes_read,
+                                acyclic_fs::IdempotencyKey::from_bytes(
+                                    phase_operation(operation, absolute.as_bytes()).into_bytes(),
+                                ),
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                &mut accounting,
+                            )
+                            .await
+                            .map_err(crate::pi_fork_host::native_lazy_error)?;
+                        if !matches!(
+                            committed,
+                            acyclic_fs::TransactionCommit::Committed(_)
+                                | acyclic_fs::TransactionCommit::AlreadyCommitted(_)
+                        ) {
+                            return Err(selected_invalid(
+                                "selected baseline publication conflicted",
+                            ));
+                        }
+                    }
+                }
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
+                Err(error) => return Err(crate::pi_fork_host::native_lazy_error(error)),
+            }
+        }
+        let mut transaction = workspace
+            .begin_transaction(baseline_key, native_work, native_work.cancellation())
+            .await?;
+        match transaction
+            .commit_with_native_work::<Error, _, _>(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                native_work,
+                native_work.cancellation(),
+                &mut guard,
+            )
+            .await?
+        {
+            acyclic_fs::TransactionCommit::Committed(generation)
+            | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => return Err(selected_invalid("selected baseline publication conflicted")),
+        }
+    };
+    let candidate = if let Some(generation) = workspace
+        .operation_generation(candidate_key, native_work, native_work.cancellation())
+        .await?
+    {
+        generation
+    } else {
+        match workspace
+            .restore_paths_from_with_native_work::<Error, _, _>(
+                imported,
+                &absolute_paths.0,
+                from.id(),
+                candidate_key,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                native_work,
+                native_work.cancellation(),
+                &mut guard,
+            )
+            .await?
+        {
+            acyclic_fs::TransactionCommit::Committed(generation)
+            | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => {
+                return Err(selected_invalid(
+                    "selected candidate publication conflicted",
+                ));
+            }
+        }
+    };
     root.verify(native_work).await?;
     Ok(PiWritebackGenerations {
         from,

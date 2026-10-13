@@ -8,7 +8,7 @@ fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
     let baseline = original.live_allocation_bytes();
     for invalid in [true, false] {
         let mut accounting = crate::kernel::KernelAccounting::native(&original, &cancellation);
-        let (root, allocation) = NamespacePath::parse_in_profile_with_accounting(
+        let (root, allocation) = NamespacePath::parse_in_profile(
             "/branch",
             config.profile,
             config.limits,

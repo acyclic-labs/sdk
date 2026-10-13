@@ -105,12 +105,6 @@ impl crate::native_mount::NativeMountCallbackGuard for FuseWriteGuard {
         &'a self,
         work: &'a crate::NativeMaterializationWork,
     ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, crate::NativeMountError> {
-        if !self.writable.load(Ordering::Acquire) {
-            return Err(
-                crate::native_mount::NativeMountCallbackReservation::prepare(work)?
-                    .into_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
-            );
-        }
         crate::native_mount::NativeMountCallbackFuture::new_guarded(work, move || async move {
             if self.writable.load(Ordering::Acquire) {
                 Ok(())
@@ -427,7 +421,7 @@ pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
 pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = shared_sources(posix_config())?;
-    let source: Arc<dyn MountFilesystem> = Arc::new(source);
+    let source = Arc::new(source);
     let path = name("deferred-rebound");
     let opened = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&path, FileMetadata::default(), None, work)
@@ -445,7 +439,7 @@ pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
                 crate::WorkCounters::UNCHARGED,
             )?;
             Ok(Arc::new(crate::native_mount::fuse::DeferredOpenFile {
-                source: Arc::clone(&source),
+                source: source.clone(),
                 path,
                 file_id: opened.node.file_id,
                 file: std::sync::Mutex::new(None),

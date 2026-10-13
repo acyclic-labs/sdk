@@ -128,7 +128,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         b"one\r\ntwo\n"
     );
     let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
-    let head = host.resolve(&workspace).await?.generation;
+    let head = host.resolve(&workspace, None).await?.generation;
     let user = host
         .put_content(
             &volume,

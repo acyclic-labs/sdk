@@ -187,7 +187,14 @@ pub(super) fn fuse_source_chunk(
         copied.custody,
         work.runtime_meter(),
     )
-    .map_err(|error| NativeMountError::from(work.runtime_error(error)))?;
+    .map_err(|failure| match failure.into_error() {
+        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+            NativeMountError::from(work.runtime_error(error))
+        }
+        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+            unreachable!("initialized vector")
+        }
+    })?;
     Ok(crate::kernel::OwnedSourceChunk::intrinsic(
         owned,
         logical_owned_bytes,

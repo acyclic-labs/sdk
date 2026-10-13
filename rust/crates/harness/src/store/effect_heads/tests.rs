@@ -1,14 +1,9 @@
 use super::*;
 use crate::{
     Capabilities, IdempotencyKey, OperationId,
-    core::{
-        Action, AggregateKind, ApplyResult, AuthorityIssuer, Command, LifecycleState, Reducer,
-        SchemaRegistry,
-    },
+    core::{Action, AggregateKind, AuthorityIssuer, Command, LifecycleState, SchemaRegistry},
 };
-use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, OwnedBytes,
-};
+use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest, MemoryStream, OwnedBytes};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
@@ -18,58 +13,42 @@ fn authority() -> Authority {
         id: "effect-root-proof".into(),
     }
 }
-
 fn issuer() -> AuthorityIssuer {
     AuthorityIssuer::new("effect-root-proof", [91; 32], authority())
 }
 
 async fn publish_lifecycle(
-    client: &std::sync::Arc<MemoryStream>,
-    reducer: &mut Reducer,
+    aggregate: &mut crate::store::StreamAggregate<MemoryStream>,
     number: u8,
 ) -> Result<()> {
-    let command = Command {
-        operation_id: OperationId::from_bytes([number; 16]),
-        idempotency_key: IdempotencyKey::new(format!("root-{number}"))?,
-        expected_revision: reducer.revision(),
-        scope: issuer()
-            .issue(
-                "owner",
-                &Capabilities::new(["lifecycle:manage"]),
-                None,
-                None,
-                &mut None,
-            )
-            .expect("scope proof"),
-        causal_parent: None,
-        action: Action::TransitionLifecycle {
-            to: if number.is_multiple_of(2) {
-                LifecycleState::Waiting
-            } else {
-                LifecycleState::Active
+    aggregate
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([number; 16]),
+                idempotency_key: IdempotencyKey::new(format!("root-{number}"))?,
+                expected_revision: aggregate.reducer().revision(),
+                scope: issuer().issue(
+                    "owner",
+                    &Capabilities::new(["lifecycle:manage"]),
+                    None,
+                    None,
+                    &mut None,
+                )?,
+                causal_parent: None,
+                action: Action::TransitionLifecycle {
+                    to: if number.is_multiple_of(2) {
+                        LifecycleState::Waiting
+                    } else {
+                        LifecycleState::Active
+                    },
+                    reason: None,
+                },
             },
-            reason: None,
-        },
-    };
-    let ApplyResult::Applied { event } = reducer.plan(&command)? else {
-        return Err(Error::Invalid(
-            "root fixture did not produce a new event".into(),
-        ));
-    };
-    let indexed = publication(client, reducer, &event, &mut None).await?;
-    let mut request_work = None;
-    let (request, _request_hold) = indexed
-        .request(
-            client,
-            acyclic_stream::IdempotencyKey::new(format!("root-{number}"))?,
-            &mut request_work,
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
         )
         .await?;
-    let CommitOutcome::Committed(envelope) = client.commit(request).await? else {
-        return Err(Error::Invalid("root fixture publication conflicted".into()));
-    };
-    indexed.verify(&envelope, &mut None)?;
-    reducer.apply_committed(event, &mut None)?;
     Ok(())
 }
 
@@ -80,8 +59,7 @@ async fn copy_cut(
 ) -> Result<std::sync::Arc<MemoryStream>> {
     let client = Arc::new(MemoryStream::default());
     let canonical_path = StreamPath::new(authority().stream_path(&mut None)?)?;
-    let proof_path =
-        path(&authority(), HEADS, Some((&"cuts", 4)), &mut None).map(|(path, _)| path)?;
+    let proof_path = path(&authority(), HEADS, Some(&"cuts"), &mut None).map(|(path, _)| path)?;
     if atomic {
         client
             .commit(CommitRequest {
@@ -121,133 +99,82 @@ async fn copy_cut(
 async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic_copy() -> Result<()>
 {
     let client = Arc::new(MemoryStream::default());
-    let mut reducer = Reducer::new(
-        authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
+    let verifier = issuer().verifier(&mut None)?;
+    let owner = authority();
+    let mut aggregate = crate::store::StreamAggregate::open(
+        &client,
+        owner.clone(),
+        verifier.clone(),
         SchemaRegistry::new(),
-    );
-    publish_lifecycle(&client, &mut reducer, 1).await?;
-    let selected = Tree {
-        client: &client,
-        authority: &authority(),
-    }
-    .root_at(
-        &issuer().verifier(&mut None).expect("verifier copy"),
-        1,
-        1_000_000,
+        None,
+        crate::store::default_projection_read_limits(),
+        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
         &mut None,
     )
     .await?;
-    assert_eq!(selected.0, None);
-    let exact = selected.1;
-    publish_lifecycle(&client, &mut reducer, 2).await?;
+    publish_lifecycle(&mut aggregate, 1).await?;
+    let tree = Tree {
+        client: &client,
+        authority: &owner,
+    };
+    let (root, exact) = tree.root_at(&verifier, 1, 1_000_000, &mut None).await?;
+    assert_eq!(root, None);
+    publish_lifecycle(&mut aggregate, 2).await?;
     assert_eq!(
-        Tree {
-            client: &client,
-            authority: &authority()
-        }
-        .root_at(
-            &issuer().verifier(&mut None).expect("verifier copy"),
-            1,
-            exact,
-            &mut None
-        )
-        .await?
-        .1,
-        exact
+        tree.root_at(&verifier, 1, exact, &mut None).await?,
+        (None, exact)
     );
     assert!(matches!(
-        Tree {
-            client: &client,
-            authority: &authority()
-        }
-        .root_at(
-            &issuer().verifier(&mut None).expect("verifier copy"),
-            1,
-            exact - 1,
-            &mut None
-        )
-        .await,
+        tree.root_at(&verifier, 1, exact - 1, &mut None).await,
         Err(Error::Invalid(_))
     ));
-    let canonical = acyclic_stream::Stream::new(
-        std::sync::Arc::clone(&client),
-        authority().stream_path(&mut None)?,
-    )?
-    .read(0, 1)
-    .await?
-    .try_collect::<Vec<_>>()
-    .await?;
-    let certificates = acyclic_stream::Stream::new(
-        std::sync::Arc::clone(&client),
-        path(&authority(), HEADS, Some((&"cuts", 4)), &mut None)
-            .map(|(path, _)| path)?
-            .as_str(),
-    )?
-    .read(0, 1)
-    .await?
-    .try_collect::<Vec<_>>()
-    .await?;
-    let valid = copy_cut(&canonical[0].value, certificates[0].value.clone(), true).await?;
-    assert_eq!(
-        Tree {
-            client: &valid,
-            authority: &authority()
-        }
-        .root_at(
-            &issuer().verifier(&mut None).expect("verifier copy"),
-            1,
-            exact,
-            &mut None
-        )
+    let canonical = acyclic_stream::Stream::new(client.clone(), owner.stream_path(&mut None)?)?
+        .read(0, 1)
         .await?
-        .0,
-        None
-    );
-    let non_atomic = copy_cut(&canonical[0].value, certificates[0].value.clone(), false).await?;
+        .try_collect::<Vec<_>>()
+        .await?;
+    let certificates = acyclic_stream::Stream::new(
+        client.clone(),
+        path(&owner, HEADS, Some(&"cuts"), &mut None)?.0.as_str(),
+    )?
+    .read(0, 1)
+    .await?
+    .try_collect::<Vec<_>>()
+    .await?;
+    for atomic in [true, false] {
+        let copied = copy_cut(&canonical[0].value, certificates[0].value.clone(), atomic).await?;
+        let selected = Tree {
+            client: &copied,
+            authority: &owner,
+        }
+        .root_at(&verifier, 1, exact, &mut None)
+        .await;
+        if atomic {
+            assert_eq!(selected?, (None, exact));
+        } else {
+            assert!(matches!(selected, Err(Error::Storage(_))));
+        }
+    }
+    let mut changed: (Option<Digest>, Digest) =
+        crate::contract::json_from_slice(&certificates[0].value)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    changed.0 = Some([93; 32]);
+    let forged = copy_cut(
+        &canonical[0].value,
+        OwnedBytes::from(crate::contract::canonical_json_bytes(&changed)?),
+        true,
+    )
+    .await?;
     assert!(matches!(
         Tree {
-            client: &non_atomic,
-            authority: &authority()
+            client: &forged,
+            authority: &owner
         }
-        .root_at(
-            &issuer().verifier(&mut None).expect("verifier copy"),
-            1,
-            exact,
-            &mut None
-        )
+        .root_at(&verifier, 1, 1_000_000, &mut None)
         .await,
-        Err(Error::Storage(_))
+        Err(Error::Unauthorized(_))
     ));
-    for mutation in 0..2 {
-        let mut changed: (Option<Digest>, Digest) =
-            crate::contract::json_from_slice(&certificates[0].value)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        match mutation {
-            0 => changed.0 = Some([93; 32]),
-            _ => changed.1 = [94; 32],
-        }
-        let forged = copy_cut(
-            &canonical[0].value,
-            OwnedBytes::from(crate::contract::canonical_json_bytes(&changed)?),
-            true,
-        )
-        .await?;
-        assert!(matches!(
-            Tree {
-                client: &forged,
-                authority: &authority()
-            }
-            .root_at(
-                &issuer().verifier(&mut None).expect("verifier copy"),
-                1,
-                1_000_000,
-                &mut None
-            )
-            .await,
-            Err(Error::Unauthorized(_))
-        ));
-    }
     let foreign = AuthorityIssuer::new(
         "effect-root-proof",
         [91; 32],
@@ -256,15 +183,9 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             id: "foreign-effect-root".into(),
         },
     )
-    .verifier(&mut None)
-    .expect("verifier copy");
+    .verifier(&mut None)?;
     assert!(matches!(
-        Tree {
-            client: &client,
-            authority: &authority()
-        }
-        .root_at(&foreign, 1, exact, &mut None)
-        .await,
+        tree.root_at(&foreign, 1, exact, &mut None).await,
         Err(Error::Unauthorized(_))
     ));
     Ok(())

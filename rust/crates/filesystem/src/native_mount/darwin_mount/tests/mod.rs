@@ -513,6 +513,7 @@ fn live_mount() -> Result<
 
 fn mount_socket(destination: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let destination = destination.canonicalize()?;
+    let _table = MOUNT_TABLE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut mounts = std::ptr::null_mut::<libc::statfs>();
     // SAFETY: `getmntinfo` points `mounts` at an OS-owned array of the returned length, valid until the next call.
     let count = unsafe { libc::getmntinfo(&raw mut mounts, libc::MNT_NOWAIT) };

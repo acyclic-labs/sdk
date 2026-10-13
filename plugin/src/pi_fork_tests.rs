@@ -26,19 +26,23 @@ impl Fixture {
             paths: BTreeMap::new(),
         })
         .await;
-        let acyclic_harness::effects::EffectStatus::Succeeded { result } =
+        let acyclic_harness::core::EffectStatus::Succeeded { result } =
             root.execute().await.unwrap().0
         else {
             panic!("original root allocation");
         };
         let allocation = root
             .provider
-            .read_with_native_work::<crate::pi_root_allocation::PiRootAllocation>(
-                &result,
+            .observe_allocation_with_native_work(
+                acyclic_harness::EffectAttemptId::from_bytes(
+                    root.provider.effect_id_with_native_work(&root.startup).unwrap().into_bytes(),
+                ),
                 &root.startup,
             )
             .await
+            .unwrap()
             .unwrap();
+        assert_eq!(allocation.0.0, result);
         let mut handles = root.provider.take_created_handles().await;
         let key = root.request.binding.project_volumes.keys().next().unwrap();
         let handle = handles.remove(key).unwrap();
@@ -63,7 +67,7 @@ impl Fixture {
             context,
             journal,
             root_request: root.request,
-            root_allocation: allocation.0,
+            root_allocation: allocation.0.1,
             _allocation: allocation.1,
             _service_lock: root._lock,
             _directory: root.directory,

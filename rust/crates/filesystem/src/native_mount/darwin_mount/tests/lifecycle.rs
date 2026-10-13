@@ -117,7 +117,9 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
     let mut detach = DirectDetach {
         task,
         started: false,
-        original: original.allocation_work(),
+        credit: original
+            .reserve_work(WorkCounters::UNCHARGED)?
+            .into_runtime_credit()?,
     };
     let mut credit = original.reserve_work(WorkCounters {
         backend_read_operations: 1,
@@ -131,9 +133,7 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
     drop(release);
     let deadline = Instant::now() + Duration::from_secs(3);
     let error = loop {
-        if let std::task::Poll::Ready(result) =
-            detach.poll(&ProbeWork::Cleanup(&credit, None))?
-        {
+        if let std::task::Poll::Ready(result) = detach.poll(&ProbeWork::Cleanup(&credit, None))? {
             break result.expect_err("original panic");
         }
         assert!(Instant::now() < deadline, "detach completes");

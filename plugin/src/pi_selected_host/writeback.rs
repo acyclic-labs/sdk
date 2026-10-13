@@ -1,5 +1,6 @@
 //! Exact user-approved publication to the original Root.
 use super::*;
+use acyclic_fs::demand::DemandSource as _;
 
 impl PiControlHost<'_> {
     pub(super) async fn writeback(
@@ -36,7 +37,7 @@ impl PiControlHost<'_> {
             .get(key)
             .ok_or_else(|| denied("Root identity unavailable"))?;
         let creation = retained.created().map_err(Error::Unauthorized)?;
-        let identity = actual.physical.source.inner().root_identity();
+        let identity = actual.physical.source.root_identity();
         if creation.native_root_identity != identity.to_bytes()
             || creation.source_identity != actual.physical.source.reference().identity
             || imported.workspace_id != actual.workspace.workspace().id()

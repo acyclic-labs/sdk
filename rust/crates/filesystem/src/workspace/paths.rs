@@ -80,7 +80,7 @@ pub(crate) fn customer_path_with_accounting(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(NamespacePath, KernelOwnedAllocation), WorkspaceError> {
-    NamespacePath::parse_in_profile_with_accounting(
+    NamespacePath::parse_in_profile(
         path,
         config.profile,
         config.limits,

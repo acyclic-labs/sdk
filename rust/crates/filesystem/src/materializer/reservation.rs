@@ -146,7 +146,7 @@ impl NativeWorkReservation {
             }
         }
     }
-    pub(crate) fn started_drop_io(&mut self, actual: WorkCounters) {
+    pub(crate) fn started_drop_io(&self, actual: WorkCounters) {
         self.begin_drop(&mut self.state.lock(), actual);
     }
     pub(super) fn complete(

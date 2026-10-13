@@ -41,32 +41,23 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             None => None,
         };
         drop(coordinator);
-        match observed {
+        let outcome = match observed {
             Some(Outcome::Succeeded(file)) => {
                 let value = self.read_json(&file, io).await?;
                 let retained = crate::executor::json::json_value_logical_owned_bytes(&value)?;
                 drop(file);
                 quota.replace(std::mem::size_of::<Option<Outcome<Value>>>() as u64)?;
                 quota.adopt(retained)?;
-                quota.transfer();
-                Ok(Some(Outcome::Succeeded(value)))
+                Some(Outcome::Succeeded(value))
             }
-            Some(Outcome::Failed { message }) => {
-                quota.transfer();
-                Ok(Some(Outcome::Failed { message }))
-            }
-            Some(Outcome::Cancelled) => {
-                quota.transfer();
-                Ok(Some(Outcome::Cancelled))
-            }
+            Some(Outcome::Failed { message }) => Some(Outcome::Failed { message }),
+            Some(Outcome::Cancelled) => Some(Outcome::Cancelled),
             Some(Outcome::Indeterminate { operation_id }) => {
-                quota.transfer();
-                Ok(Some(Outcome::Indeterminate { operation_id }))
+                Some(Outcome::Indeterminate { operation_id })
             }
-            None => {
-                quota.transfer();
-                Ok(None)
-            }
-        }
+            None => None,
+        };
+        quota.transfer();
+        Ok(outcome)
     }
 }

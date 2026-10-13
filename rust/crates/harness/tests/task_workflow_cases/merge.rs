@@ -148,7 +148,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             .resolve(&workspace_ref(
                 provider.clone(),
                 &project.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?;
         let fork = controller
             .fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?)
@@ -393,7 +393,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 &workspace_ref(provider.clone(), &project.storage_name(&mut None)?)?,
                 None,
                 "/concurrent.txt",
-                128
+                128, None
             )
             .await?
             .as_ref(),
@@ -404,7 +404,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 &workspace_ref(provider.clone(), &project.storage_name(&mut None)?)?,
                 None,
                 "/shared.txt",
-                128
+                128, None
             )
             .await?
             .as_ref(),
@@ -414,7 +414,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             host.resolve(&workspace_ref(
                 provider.clone(),
                 &source.storage_name(&mut None)?
-            )?)
+            )?, None)
             .await?
             .generation,
             source_head

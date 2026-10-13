@@ -144,8 +144,9 @@ impl FuseSession {
             work,
         )?;
         let _startup = NativeMountWorkScope::new(&core, work)?;
+        let observer: Arc<dyn ViewObserver> = core.clone();
         core.source
-            .observe_view_with_meter(Arc::downgrade(&core), work)?;
+            .observe_view_with_meter(Arc::downgrade(&observer), work)?;
         let allocation = work.claim(
             (std::mem::size_of::<Mutex<FuseSessionState>>()
                 + std::mem::size_of::<(Arc<ProjectionCore>, Arc<Mutex<FuseSessionState>>)>()
@@ -304,9 +305,7 @@ impl FuseSession {
         state.stop(&self.core, meter)?;
         state.failure.take();
         if self.invalidator.is_some() {
-            state
-                .cleanup
-                .started_io(ReadOperations.delta(1), None)?;
+            state.cleanup.started_io(ReadOperations.delta(1), None)?;
         }
         drop(state);
         if let Some(invalidator) = self.invalidator.take() {

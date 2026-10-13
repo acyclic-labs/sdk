@@ -366,7 +366,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         .workspace()
         .head(&fixture_work, &fixture_token)
         .await?
-        .stat("/hot/file.txt")
+        .stat("/hot/file.txt", &fixture_work, &fixture_token)
         .await?
         .metadata;
     #[cfg(unix)]
@@ -379,7 +379,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             .workspace()
             .head(&fixture_work, &fixture_token)
             .await?
-            .stat("/hot/file.txt")
+            .stat("/hot/file.txt", &fixture_work, &fixture_token)
             .await?
             .metadata;
         assert_eq!(canonical_after.changed_ns, canonical_before.changed_ns);
@@ -396,7 +396,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             .workspace()
             .head(&fixture_work, &fixture_token)
             .await?
-            .stat("/hot/file.txt")
+            .stat("/hot/file.txt", &fixture_work, &fixture_token)
             .await?
             .metadata;
         assert_eq!(canonical.accessed_ns, Some(1_700_000_000_000_000_000));
