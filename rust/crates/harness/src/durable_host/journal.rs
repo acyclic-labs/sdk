@@ -163,6 +163,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn scope(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(RuntimeScope, acyclic_fs::NativeAllocation)> {
+        if !self.native_shared_work_matches(work) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "task owner uses another scope ledger",
+            });
+        }
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let (scope, retained) = self
+            .host
+            .authenticated_scope(&self.admission, &mut Some(&mut io.history_io()))
+            .await?;
+        Ok((scope, io.into_native_custody(retained)?))
+    }
+
     /// Returns the workflow pinned by the retained admission.
     #[must_use]
     pub const fn workflow_admission(&self) -> &crate::workflow::WorkflowAdmission {

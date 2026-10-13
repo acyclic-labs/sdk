@@ -99,6 +99,7 @@ where
                 ),
             )
             .await?;
+        let scope = owner.scope(work).await?;
         let owner = Arc::new(owner);
         let mailbox: Arc<dyn OwnedTaskMailbox> = {
             if !owner.original_host_binding_matches(self.host.as_ref()) {
@@ -127,7 +128,13 @@ where
         let io = super::super::PreparationIo::from_native_work(work)?;
         let context = self
             .harness
-            .open_durable_context(task, operation, Some(&io), purpose, Some(mailbox))
+            .open_durable_context(
+                task,
+                operation,
+                Some(&io),
+                purpose,
+                Some((mailbox, scope.0, scope.1)),
+            )
             .await?;
         Ok(context)
     }
