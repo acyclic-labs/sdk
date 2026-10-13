@@ -60,15 +60,25 @@ impl<A, O> SharedCheckoutState<A, O> {
             Some(_) => return Err(MountSourceError::Stale),
             None => self.ensure_publication_resolved()?,
         }
-        let work = carrier.original_native_work().expect("native SDK callback");
+        let work = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
         Ok(CheckoutCandidate {
             base: self
                 .checkout
-                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .private_candidate(
+                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                    cancellation,
+                )
                 .map_err(MountSourceError::from)?,
             checkout: self
                 .checkout
-                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .private_candidate(
+                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                    cancellation,
+                )
                 .map_err(MountSourceError::from)?,
             operation,
         })

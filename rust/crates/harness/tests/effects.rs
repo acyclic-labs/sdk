@@ -406,9 +406,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         causal_parent: None,
                         action: Action::TransitionLifecycle {
                             to: if retained.is_multiple_of(2) {
-                                LifecycleState::Active
-                            } else {
                                 LifecycleState::Waiting
+                            } else {
+                                LifecycleState::Active
                             },
                             reason: None,
                         },

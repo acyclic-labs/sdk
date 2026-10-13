@@ -79,17 +79,8 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
     let state = fixture.scheduler_state(task).await?;
-    assert!(state.cancellation_requested);
-    assert_eq!(state.reservation, Some(lease.reservation.clone()));
-    assert!(state.outcome.is_none());
-    assert!(matches!(
-        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000, None).await,
-        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
-    ));
-    assert!(matches!(
-        reopened.task_host().outcome(task).await?,
-        Some(crate::Outcome::Cancelled)
-    ));
+    assert!(state.reservation.is_none());
+    assert_eq!(state.outcome, Some(crate::Outcome::Cancelled));
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);

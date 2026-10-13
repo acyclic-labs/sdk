@@ -7,11 +7,11 @@ use crate::kernel::{
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
 use crate::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use crate::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
-    DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
-    JoinOutcome, MergeConflict, ObjectId, Sequence, Transaction, TransactionCommit,
-    RebaseConflict, DependencyState, DependencyRegion, TransactionRebase, Workspace, WorkspaceDelete,
-    WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
+    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
+    DependencyRegion, DependencyState, Digest, DurableCommit, ForkOptions, Fs, Generation,
+    GenerationId, IdempotencyKey, JoinHistory, JoinOutcome, MergeConflict, ObjectId,
+    RebaseConflict, Sequence, Transaction, TransactionCommit, TransactionRebase, WorkBudget,
+    Workspace, WorkspaceDelete, WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -279,9 +279,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let reference = required(reference, "workspace")?;
         let workspace = self
             .filesystem
-            .open_workspace(&reference.name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .open_workspace(
+                &reference.name,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         if workspace.id().into_bytes().as_slice() != reference.workspace_id {
             return Err(Status::failed_precondition(
                 "workspace name and identity disagree",
@@ -315,8 +320,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
     ) -> Result<wire::SourceResponse, Status> {
         let generation = match result.generation_id {
             Some(id) => Some(generation_ref(
-                &workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(|error| status(&error))?,
+                &workspace
+                    .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value,
             )),
             None => None,
         };
@@ -344,8 +352,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let reference = required(reference, "generation")?;
         let workspace = self.workspace(reference.workspace).await?;
         let id = generation_id(&reference.generation_id)?;
-        workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))
+        workspace
+            .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| status(&failure.error))
+            .map(|receipt| receipt.value)
     }
 
     async fn join_target_head(
@@ -379,8 +390,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 existing_operation: true,
             });
         }
-        let cancellation = crate::CancellationToken::new();
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let cancellation = CancellationToken::new();
+        let mut accounting =
+            crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let (current, head) = self
             .filesystem
             .workspace_head_state(&target.volume, &mut accounting, &cancellation)
@@ -394,9 +406,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         } else {
             Ok(JoinTargetHead::Stale(
                 target
-                    .generation(current, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                    .await.map(|receipt| receipt.value)
-                    .map_err(|failure| status(&failure.error))?,
+                    .generation(current, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value,
             ))
         }
     }
@@ -495,9 +508,16 @@ where
         config.profile = profile;
         let workspace = self
             .filesystem
-            .create_workspace_with_config_operation(request.name, config, Some(operation_id), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .create_workspace_with_config_operation(
+                request.name,
+                config,
+                Some(operation_id),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -513,11 +533,13 @@ where
             wire::open_workspace_request::Selector::Workspace(reference) => {
                 self.workspace(Some(reference)).await?
             }
-            wire::open_workspace_request::Selector::Name(name) => self
-                .filesystem
-                .open_workspace(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| status(&error))?,
+            wire::open_workspace_request::Selector::Name(name) => {
+                self.filesystem
+                    .open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+            }
         };
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
@@ -551,7 +573,11 @@ where
     ) -> Result<Response<wire::GenerationResponse>, Status> {
         self.admit(&request)?;
         let workspace = self.workspace(request.into_inner().workspace).await?;
-        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
+        let generation = workspace
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(generation_message(&generation).await?))
     }
 
@@ -577,16 +603,38 @@ where
             ));
         }
         let generation = self.generation(request.generation).await?;
+        let cancellation = CancellationToken::new();
         let bytes = match request.range {
             Some(range) => {
                 if range.length > request.maximum_bytes {
                     return Err(Status::invalid_argument("range exceeds maximum_bytes"));
                 }
-                generation.read_range(&request.path, range.offset, range.length, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
+                generation
+                    .read_range(
+                        &request.path,
+                        range.offset,
+                        range.length,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+                    .bytes
             }
-            None => generation.read(&request.path, request.maximum_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-        }
-        .map_err(|error| status(&error))?;
+            None => {
+                generation
+                    .read(
+                        &request.path,
+                        request.maximum_bytes,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+            }
+        };
         Ok(Response::new(wire::ReadResponse {
             contents: bytes.to_vec(),
         }))
@@ -600,8 +648,15 @@ where
         let request = request.into_inner();
         let value = self
             .generation(request.generation)
-            .await?.stat(&request.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .await?
+            .stat(
+                &request.path,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::StatResponse {
             stat: Some(stat_message(&value)),
         }))
@@ -619,8 +674,18 @@ where
         }
         let generation = self.generation(request.generation).await?;
         let after = page.after.map(input_logical_name).transpose()?;
-        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+        let listed = generation
+            .list_directory(
+                &request.path,
+                after.as_ref(),
+                page.maximum_items,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value
+            .0;
         let next = listed
             .has_more
             .then(|| listed.entries.last().map(|entry| logical_name(&entry.name)))
@@ -637,8 +702,11 @@ where
             } else {
                 format!("{}/{name}", request.path.trim_end_matches('/'))
             };
-            let stat = generation.stat(&child, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| status(&error))?;
+            let stat = generation
+                .stat(&child, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value;
             if stat.file_id != entry.file_id || stat.kind != entry.kind {
                 return Err(Status::data_loss(
                     "directory binding changed within immutable generation",
@@ -662,8 +730,16 @@ where
         let request = request.into_inner();
         let contents = self
             .generation(request.generation)
-            .await?.read_symbolic_link(&request.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .await?
+            .read_symbolic_link(
+                &request.path,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value
+            .bytes;
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > request.maximum_bytes
             || request.maximum_bytes > self.limits.maximum_response_bytes
         {
@@ -740,22 +816,66 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .begin_transaction_at(
+                &base,
+                operation(request.operation)?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
-        let first = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
+        let first = transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         if !matches!(first, TransactionCommit::Conflict { .. }) {
             return Ok(Response::new(commit_message(first)));
         }
         match transaction
-            .rebase(request.maximum_conflicts, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?
+            .rebase(
+                request.maximum_conflicts,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value
         {
             TransactionRebase::Rebased(_) => Ok(Response::new(commit_message(
-                transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?,
+                transaction
+                    .commit(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                        |_| async {
+                            Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                                crate::OperationReceipt {
+                                    value: (),
+                                    work: crate::WorkCounters::UNCHARGED,
+                                },
+                            )
+                        },
+                    )
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value,
             ))),
             TransactionRebase::Conflicted {
                 conflicts,
@@ -787,15 +907,27 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .begin_transaction_at(
+                &base,
+                operation(request.operation)?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
         match transaction
-            .rebase(request.maximum_conflicts, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?
+            .rebase(
+                request.maximum_conflicts,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value
         {
             TransactionRebase::Rebased(generation) => {
                 Ok(Response::new(wire::RebaseTransactionResponse {
@@ -830,9 +962,22 @@ where
             None => options,
         };
         let destination = source_workspace
-            .fork::<_, _, crate::WorkspaceError>(request.destination_name, options, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &mut |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .fork::<_, _, WorkspaceError>(
+                request.destination_name,
+                options,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                &mut |_| {
+                    std::future::ready(Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&destination).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -853,8 +998,16 @@ where
         let to = self.generation(request.to).await?;
         let workspace = from.workspace.clone();
         let changes = workspace
-            .diff(&from, &to, request.maximum_changes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .diff(
+                &from,
+                &to,
+                request.maximum_changes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::DiffResponse {
             from: Some(generation_ref(changes.from())),
             to: Some(generation_ref(changes.to())),
@@ -923,12 +1076,18 @@ where
         let target = self.generation(request.target).await?;
         let source_workspace = source.workspace.clone();
         let target_workspace = target.workspace.clone();
-        if source_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?
+        if source_workspace
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value
             .id()
             != source.id()
-            || target_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| status(&error))?
+            || target_workspace
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value
                 .id()
                 != target.id()
         {
@@ -944,8 +1103,10 @@ where
                 request.maximum_changes,
                 request.maximum_conflicts,
             )
-            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         if plan.source_head() != source.id() || plan.target_head() != target.id() {
             return Err(Status::failed_precondition(
                 "join endpoints changed while the plan was computed",
@@ -965,7 +1126,20 @@ where
             request.maximum_changes,
             request.maximum_conflicts,
         );
-        let changes = source_workspace.volume.fs.workspace_join_changes(plan.common_ancestor(), &source, request.maximum_changes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| status(&failure.error))?.value.0;
+        let changes = source_workspace
+            .volume
+            .fs
+            .workspace_join_changes(
+                plan.common_ancestor(),
+                &source,
+                request.maximum_changes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value
+            .0;
         let file_changes = changes.files.iter().map(file_record_change).collect();
         let binding_changes = changes
             .bindings
@@ -1051,7 +1225,16 @@ where
                 supplied.maximum_changes,
                 supplied.maximum_conflicts,
             )
-            .plan_generations(source, target, target_authority_head, &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()), &crate::CancellationToken::new())
+            .plan_generations(
+                source,
+                target,
+                target_authority_head,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                ),
+                &CancellationToken::new(),
+            )
             .await
             .map_err(|error| status(&error))?;
         let expected_base_ref =
@@ -1060,8 +1243,11 @@ where
             || plan.target_head() != target_id
             || base_ref != expected_base_ref
         {
-            let actual = target_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| status(&error))?;
+            let actual = target_workspace
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value;
             return Ok(Response::new(wire::JoinResponse {
                 status: wire::JoinStatus::StaleTarget as i32,
                 generation: Some(generation_ref(&actual)),
@@ -1070,10 +1256,14 @@ where
             }));
         }
         let outcome = plan
-            .apply(ApplyOptions {
-                if_target: target_id,
-                idempotency_key: operation,
-            }, std::collections::BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+            .apply(
+                ApplyOptions {
+                    if_target: target_id,
+                    idempotency_key: operation,
+                },
+                std::collections::BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
             .await
             .map_err(|error| status(&error))?;
         let outcome = if existing_operation
@@ -1122,8 +1312,13 @@ where
             .workspace
             .checkout(
                 crate::model::GenerationSelector::Exact(generation.id()),
-                crate::model::CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+                crate::model::CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         let manifest = checkout
             .export_manifest(crate::WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
@@ -1293,14 +1488,23 @@ where
             .map_err(|failure| Status::unavailable(failure.error.to_string()))?;
         let workspace = self
             .filesystem
-            .open_workspace(&workspace_ref.name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| status(&error))?;
+            .open_workspace(
+                &workspace_ref.name,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::ImportResponse {
             outcome: Some(mutation(
                 wire::MutationStatus::Committed,
                 Some(generation_ref(
-                    &workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?,
+                    &workspace
+                        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                        .await
+                        .map_err(|failure| status(&failure.error))?
+                        .value,
                 )),
                 None,
             )),
@@ -1469,7 +1673,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 }
                 generation
             }
-            None => workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?,
+            None => {
+                workspace
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+            }
         };
         let issuer = self.credential_issuer.as_ref().ok_or_else(|| {
             Status::unimplemented("credential issuance is unavailable in this deployment")
@@ -1562,7 +1772,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
             let workspace = self
                 .workspace(generation_ref(&generation).workspace)
                 .await?;
-            let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
+            let head = workspace
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value;
             if head.id() != generation.id() {
                 return Err(Status::failed_precondition(
                     "checkpoint requires the current head",
@@ -1574,8 +1788,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 .map_err(|error| status(&error))?;
         } else {
             generation
-                .pin(&request.identity, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| status(&failure.error))?;
+                .pin(
+                    &request.identity,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value;
         }
         Ok(Response::new(wire::RetainGenerationResponse {
             generation: Some(generation_ref(&generation)),
@@ -1590,50 +1810,99 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     value: wire::Mutation,
 ) -> Result<(), Status> {
     use wire::mutation::Mutation;
+    let cancellation = CancellationToken::new();
     match required(value.mutation, "mutation")? {
         Mutation::CreateFile(value) => {
             transaction
                 .create_file(
                     &value.path,
                     Bytes::from(value.contents),
-                    metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
         Mutation::CreateDirectory(value) => {
             transaction
-                .create_directory(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| status(&error))?;
+                .create_directory(&value.path, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(|failure| status(&failure.error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .set_metadata(
+                    &value.path,
+                    metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
         Mutation::CreateSymbolicLink(value) => {
             transaction
-                .create_symbolic_link(&value.path, Bytes::from(value.target), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| status(&error))?;
+                .create_symbolic_link(
+                    &value.path,
+                    Bytes::from(value.target),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| status(&failure.error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .set_metadata(
+                    &value.path,
+                    metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
-        Mutation::Remove(value) => transaction.remove(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        Mutation::Remove(value) => {
+            transaction
+                .remove(&value.path, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        }
         Mutation::Rename(value) => {
             transaction
-                .rename(&value.source, &value.destination, value.replace, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .rename(
+                    &value.source,
+                    &value.destination,
+                    value.replace,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
         Mutation::HardLink(value) => {
             transaction
-                .hard_link(&value.source, &value.destination, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .hard_link(
+                    &value.source,
+                    &value.destination,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
         Mutation::Write(value) => {
             transaction
-                .write_range(&value.path, value.offset, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .write_range(
+                    &value.path,
+                    value.offset,
+                    Bytes::from(value.contents),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
-        Mutation::Resize(value) => transaction.resize(&value.path, value.logical_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        Mutation::Resize(value) => {
+            transaction
+                .resize(
+                    &value.path,
+                    value.logical_bytes,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+        }
         Mutation::ZeroRange(value) => {
             let range = required(value.range, "range")?;
             transaction
@@ -1644,8 +1913,11 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         length: range.length,
                     },
                     value.allocated,
-                    value.extend, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-                ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    value.extend,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
         Mutation::Preallocate(value) => {
             let range = required(value.range, "range")?;
@@ -1656,8 +1928,11 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         offset: range.offset,
                         length: range.length,
                     },
-                    value.keep_size, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-                ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    value.keep_size,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
         Mutation::CloneRange(value) => {
             transaction
@@ -1666,23 +1941,50 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     value.source_offset,
                     &value.destination,
                     value.destination_offset,
-                    value.length, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-                ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    value.length,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
         Mutation::SetMetadata(value) => {
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .set_metadata(
+                    &value.path,
+                    metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
-        Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        Mutation::CreateDirectories(value) => {
+            transaction
+                .create_dir_all(&value.path, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        }
         Mutation::PutFile(value) => {
             transaction
-                .write(&value.path, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .write(
+                    &value.path,
+                    Bytes::from(value.contents),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
         }
-        Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        Mutation::CopyFile(value) => {
+            transaction
+                .copy(
+                    &value.source,
+                    &value.destination,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+        }
     }
-    .map_err(|error| status(&error))
+    .map(|_| ())
+    .map_err(|failure| status(&failure.error))
 }
 
 fn metadata(value: Option<wire::Metadata>) -> Result<FileMetadata, Status> {
@@ -1867,14 +2169,17 @@ fn observed_mutation<A, O>(
         return Ok(mutation(wire::MutationStatus::Committed, None, None));
     }
     let root = if let Ok(publication) =
-        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
-    {
+        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES, |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        }) {
         if publication.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));
         }
         publication.generation_root
     } else if let Ok(created) =
-        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))
+        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES, &mut |_| {
+            Ok::<_, crate::kernel::VolumeCreatedError>(())
+        })
     {
         if created.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));
@@ -1898,7 +2203,11 @@ fn observed_mutation<A, O>(
 async fn workspace_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
 ) -> Result<wire::Workspace, Status> {
-    let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
+    let head = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| status(&failure.error))?
+        .value;
     Ok(wire::Workspace {
         workspace: Some(workspace_ref(workspace)),
         name: workspace.name().as_str().to_owned(),
@@ -1914,8 +2223,10 @@ async fn generation_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let reference = generation_ref(generation);
     let workspace = reference.workspace.clone();
     let parents = generation
-        .parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-        .map_err(|error| status(&error))?
+        .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| status(&failure.error))?
+        .value
         .into_iter()
         .map(|id| wire::GenerationRef {
             workspace: workspace.clone(),
@@ -2259,8 +2570,14 @@ fn transaction_conflict(value: RebaseConflict) -> wire::Conflict {
     wire::Conflict {
         region: Some(region),
         r#use: hosted_contract::conflict_use(value.usage) as i32,
-        expected_digest: match value.expected { DependencyState::Absent => Vec::new(), DependencyState::Present(digest) => digest.as_bytes().to_vec() },
-        actual_digest: match value.actual { DependencyState::Absent => Vec::new(), DependencyState::Present(digest) => digest.as_bytes().to_vec() },
+        expected_digest: match value.expected {
+            DependencyState::Absent => Vec::new(),
+            DependencyState::Present(digest) => digest.as_bytes().to_vec(),
+        },
+        actual_digest: match value.actual {
+            DependencyState::Absent => Vec::new(),
+            DependencyState::Present(digest) => digest.as_bytes().to_vec(),
+        },
     }
 }
 
@@ -2422,9 +2739,12 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::ChangedPathLimit
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
         WorkspaceError::Cancelled(_) => Status::cancelled(error.to_string()),
-        WorkspaceError::Work(_) | WorkspaceError::WorkMerge { .. } =>
-            Status::resource_exhausted(error.to_string()),
-        WorkspaceError::Engine(_) | WorkspaceError::Filesystem(_) => Status::unavailable(error.to_string()),
+        WorkspaceError::Work(_) | WorkspaceError::WorkMerge { .. } => {
+            Status::resource_exhausted(error.to_string())
+        }
+        WorkspaceError::Engine(_) | WorkspaceError::Filesystem(_) => {
+            Status::unavailable(error.to_string())
+        }
     }
 }
 

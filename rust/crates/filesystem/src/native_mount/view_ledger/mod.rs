@@ -349,20 +349,6 @@ impl ViewLedger {
         })
     }
 
-    /// Whether every binding in this path is unchanged since the stamp.
-    pub(super) fn binding_unchanged_since(
-        &self,
-        path: &NamespacePath,
-        stamp: ViewStamp,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, MountSourceError> {
-        admitted_names(path.components(), work, || {
-            stamp.precedes_none_of(&self.unconfirmed)
-                && stamp.precedes_none_of(&self.everything)
-                && storage::unchanged_since(&self.bindings, stamp, path_keys(path))
-        })
-    }
-
     /// Whether this directory listing is unchanged since the stamp.
     pub(super) fn listing_unchanged_since(
         &self,

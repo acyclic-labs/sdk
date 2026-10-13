@@ -54,15 +54,6 @@ pub enum MountLifecycleError {
     /// Fixed native-view policy refusal.
     #[error("{0}")]
     NativePolicy(&'static str),
-    /// Physical retirement retained an authored capture and cleanup failure.
-    #[error("native capture or namespace cleanup failed: {source}")]
-    NativeCaptureFailure {
-        /// Original authored-capture failure.
-        #[source]
-        source: NativeMountError,
-        /// Distinct namespace cleanup failure.
-        cleanup_failure: Option<NativeMountError>,
-    },
 }
 
 impl From<crate::FsError> for MountLifecycleError {
@@ -80,18 +71,12 @@ pub struct NativeMountDrainProof {
 
 impl NativeMountDrainProof {
     /// Takes the preserved authored failure and any distinct namespace failure.
-    pub fn take_retained_capture_failure(&mut self) -> Option<MountLifecycleError> {
+    pub fn take_retained_capture_failure(
+        &mut self,
+    ) -> Option<(NativeMountError, Option<NativeMountError>)> {
         #[cfg(windows)]
         {
-            self.namespace_outcome
-                .as_mut()?
-                .take_capture_failures()
-                .map(
-                    |(source, cleanup_failure)| MountLifecycleError::NativeCaptureFailure {
-                        source,
-                        cleanup_failure,
-                    },
-                )
+            self.namespace_outcome.as_mut()?.take_capture_failures()
         }
         #[cfg(not(windows))]
         {
