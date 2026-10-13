@@ -2124,11 +2124,20 @@ impl StockExecutor {
             tool.executor
                 .authorize(Some(&self.tool_scope), &invocation)?;
         }
-        validate_value(
+        let invalid_input = match validate_value(
             &tool.definition.input_schema,
             &invocation.arguments,
             "tool input",
-        )?;
+        ) {
+            Ok(()) => None,
+            Err(error) => match tool
+                .executor
+                .invalid_input_result(&invocation, &error.to_string())
+            {
+                Some(result) => Some(result),
+                None => return Err(error),
+            },
+        };
         let (_, records) =
             Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
         let started = records.iter().find_map(|record| match &record.event {
@@ -2281,7 +2290,11 @@ impl StockExecutor {
                 }
             };
             let tool_context = self.invocation_context(&invocation)?;
-            let result = if claimed {
+            let result = if let Some(result) = invalid_input {
+                // An admitted input rejection is pure, including recovery after
+                // its journal claim. Never dispatch or reconcile malformed input.
+                result
+            } else if claimed {
                 let execution = if let Some(context) = tool_context {
                     tool.executor
                         .execute_with_context(context, invocation.clone())
@@ -6177,6 +6190,207 @@ mod tests {
         ));
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
         assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    struct InputValidationTool {
+        recover: bool,
+        calls: AtomicUsize,
+        reconciles: AtomicUsize,
+        rejections: AtomicUsize,
+    }
+
+    impl crate::tool::ToolExecutor for InputValidationTool {
+        fn invalid_input_result(&self, _: &ToolInvocation, error: &str) -> Option<ToolResult> {
+            self.recover.then(|| {
+                self.rejections.fetch_add(1, Ordering::SeqCst);
+                ToolResult {
+                    value: json!({"error": error}),
+                }
+            })
+        }
+
+        fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Ok(ToolResult {
+                    value: invocation.arguments,
+                })
+            }
+            .boxed()
+        }
+
+        fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            self.reconciles.fetch_add(1, Ordering::SeqCst);
+            async { Ok(None) }.boxed()
+        }
+    }
+
+    fn input_validation_fixture(
+        recover: bool,
+        granted: bool,
+    ) -> Result<(StockExecutor, Arc<InputValidationTool>, Arc<FakeModel>)> {
+        let tool = Arc::new(InputValidationTool {
+            recover,
+            calls: AtomicUsize::new(0),
+            reconciles: AtomicUsize::new(0),
+            rejections: AtomicUsize::new(0),
+        });
+        let provider = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "An explicitly recoverable coding tool".into(),
+                input_schema: json!({"type":"object","required":["operation"],"properties":{"operation":{"const":"read"}}}),
+                output_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
+            },
+            executor: tool.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let scope = RuntimeScope::new(
+            Capabilities::new([if granted {
+                "tool:call:example.echo"
+            } else {
+                "tool:call:other"
+            }]),
+            Limits::default(),
+        )?;
+        let executor = uncompacted_executor(
+            Model::new("example", "model", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            registry,
+        )
+        .with_tool_authority(scope, None)?;
+        Ok((executor, tool, provider))
+    }
+
+    #[tokio::test]
+    async fn invalid_input_result_continues_the_model_and_replays_without_dispatch() -> Result<()> {
+        let (executor, tool, provider) = input_validation_fixture(true, true)?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("Correct malformed tool arguments".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(output.text, "done");
+        {
+            let requests = provider.requests.lock().unwrap();
+            let tool_messages: Vec<_> = requests
+                .last()
+                .unwrap()
+                .messages
+                .iter()
+                .filter(|message| message.role == ModelRole::Tool)
+                .collect();
+            assert_eq!(tool_messages.len(), 1);
+            let visible = serde_json::to_string(tool_messages[0])
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(visible.contains("failed validation") && visible.contains("operation"));
+        }
+        assert_eq!(executor.clone().execute(input, &journal).await?, output);
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(tool.reconciles.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_input_recovery_preserves_authorization_and_strict_default() -> Result<()> {
+        for (recover, granted) in [(false, true), (true, false)] {
+            let (executor, tool, _) = input_validation_fixture(recover, granted)?;
+            let journal = Journal::default();
+            let operation = OperationId::new();
+            let invocation = ToolInvocation::for_model_call(
+                operation,
+                0,
+                "bad".into(),
+                "example.echo".into(),
+                json!({}),
+            );
+            let result = executor
+                .settle_tool_call(&journal, operation, 0, invocation, &mut Vec::new())
+                .await;
+            if granted {
+                assert!(matches!(result, Err(Error::Invalid(_))));
+            } else {
+                assert!(matches!(result, Err(Error::Unauthorized(_))));
+            }
+            assert_eq!(tool.rejections.load(Ordering::SeqCst), 0);
+            assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
+            assert!(journal.0.lock().unwrap().is_empty());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claimed_invalid_input_recovers_purely_and_correction_requires_a_new_identity()
+    -> Result<()> {
+        let (executor, tool, _) = input_validation_fixture(true, true)?;
+        let journal = Journal::default();
+        let operation = OperationId::new();
+        let invalid = ToolInvocation::for_model_call(
+            operation,
+            0,
+            "bad".into(),
+            "example.echo".into(),
+            json!({}),
+        );
+        let reference = stage_json(&journal, operation, "invocation", &invalid).await?;
+        journal
+            .append(
+                operation,
+                "claimed".into(),
+                ExecutionEvent::ToolStarted {
+                    step: 0,
+                    call_id: invalid.call_id.clone(),
+                    invocation: reference,
+                },
+            )
+            .await?;
+        let mut messages = Vec::new();
+        assert!(matches!(
+            executor
+                .settle_tool_call(&journal, operation, 0, invalid.clone(), &mut messages)
+                .await?,
+            ToolCallProgress::Settled
+        ));
+        let original = messages.clone();
+        messages.clear();
+        executor
+            .clone()
+            .settle_tool_call(&journal, operation, 0, invalid.clone(), &mut messages)
+            .await?;
+        assert_eq!(messages, original);
+        let mut changed = invalid;
+        changed.arguments = json!({"operation":"read"});
+        assert!(matches!(
+            executor
+                .settle_tool_call(&journal, operation, 0, changed, &mut Vec::new())
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let corrected = ToolInvocation::for_model_call(
+            operation,
+            1,
+            "fixed".into(),
+            "example.echo".into(),
+            json!({"operation":"read"}),
+        );
+        executor
+            .settle_tool_call(&journal, operation, 1, corrected, &mut messages)
+            .await?;
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(tool.reconciles.load(Ordering::SeqCst), 0);
         Ok(())
     }
 

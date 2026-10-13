@@ -670,21 +670,20 @@ impl ModelRequest {
             let parts = message.content.parts();
             for part in parts {
                 match part {
-                    ModelContentPart::ToolCall {
-                        call_id,
-                        name,
-                        arguments,
-                    } => {
+                    ModelContentPart::ToolCall { call_id, name, .. } => {
                         ToolInvocation::validate_identity(call_id, name)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                             return Err(Error::Invalid(
                                 "model tool call role or identity is invalid".into(),
                             ));
                         }
-                        let tool = tools
+                        tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                        validate_value(&tool.input_schema, arguments, "model tool arguments")?;
+                        // History records what the model actually emitted, including rejected
+                        // arguments. The executor validates input before dispatch; rejecting
+                        // that same input here would prevent the model from seeing its paired
+                        // validation error and correcting the next call.
                         pending.insert(call_id, name);
                     }
                     ModelContentPart::ToolResult {
@@ -1668,6 +1667,14 @@ mod tests {
         {
             *arguments = json!(false);
         }
+        // A completed exchange must retain even invalid arguments, so the next
+        // provider request can show the model its canonical validation result.
+        let rejected = PreparedModelRequest::prepare(changed.clone(), Limits::default())?;
+        assert_eq!(
+            PreparedModelRequest::decode(rejected.bytes(), Limits::default())?.request(),
+            &changed
+        );
+        changed.messages.pop();
         candidates.push(changed);
         for candidate in candidates {
             assert!(PreparedModelRequest::prepare(candidate, Limits::default()).is_err());

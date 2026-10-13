@@ -107,7 +107,7 @@ pub struct ToolInvocation {
     pub call_id: String,
     /// Registered tool name.
     pub name: String,
-    /// Schema-validated arguments.
+    /// Model-supplied arguments, validated before effectful execution.
     pub arguments: Value,
 }
 
@@ -177,6 +177,21 @@ pub struct ToolResult {
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Optionally reports schema-invalid arguments as a canonical tool result.
+    ///
+    /// This pure mapping runs only after invocation identity, authority, byte bounds
+    /// and resource authorization pass. It must perform no effects. The returned
+    /// value must satisfy the pinned output and projection schemas. Invalid input
+    /// never reaches execution or reconciliation; its result is journaled normally.
+    /// Returning `None` retains strict rejection, the default for existing tools.
+    fn invalid_input_result(
+        &self,
+        _invocation: &ToolInvocation,
+        _error: &str,
+    ) -> Option<ToolResult> {
+        None
+    }
+
     /// Checks invocation-specific resource grants before a result is replayed,
     /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
     fn authorize(
