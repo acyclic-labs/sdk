@@ -1,18 +1,14 @@
 use super::*;
+use crate::demand::DemandWork;
 
 macro_rules! demand_meter {
     ($owner:ty $(, $allocation_owner:expr)?) => {
         impl $owner {
-            fn io<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> Result<T, crate::DemandError>) -> std::io::Result<T> {
+            fn io<T>(&self, operation: impl FnOnce(&mut DemandWork) -> Result<T, crate::DemandError>) -> std::io::Result<T> {
                 self.with_original_leaf(|state| operation(state).map_err(|error| state.record_native_io_failure(error)))
             }
-            fn cancel(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> Result<(), crate::DemandError>) {
-                self.with_original_leaf(|state| {
-                    if let Err(error) = operation(state) {
-                        state.record_native_io_failure(error);
-                        state.poison_native_original_work();
-                    }
-                });
+            fn cancel(&self, operation: impl FnOnce(&mut DemandWork) -> Result<(), crate::DemandError>) {
+                self.with_original_leaf(|state| { if let Err(error) = operation(state) { state.record_native_io_failure(error); state.poison_native_original_work(); } });
             }
         }
         impl acyclic_native_runtime::NativeReadMeter for $owner {
@@ -79,24 +75,21 @@ macro_rules! demand_meter {
             fn admit_durability(&self) -> std::io::Result<()> {
                 self.io(|state| state.charge(NativeResourceCredit::DurabilityOperations.delta(1)))
             }
-            fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
-                self.io(|state| state.admit(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed, ..crate::WorkCounters::UNCHARGED }))
-            }
-            fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
-                self.io(|state| state.record(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed, ..crate::WorkCounters::UNCHARGED }))
-            }
-            fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
-                self.io(|state| state.charge(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
-            }
             fn admit_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
                 self.io(|state| state.admit(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
             }
             fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
                 self.io(|state| state.record(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
             }
-            fn reserve_cleanup_write(&self) -> std::io::Result<u64> { self.io(|state| crate::native_host::NativeHostWork::reserve_cleanup_write(state)) }
-            fn cancel_cleanup_write(&self, reservation: u64) { self.with_original_leaf(|state| crate::native_host::NativeHostWork::cancel_cleanup_write(state, reservation)); }
-            fn record_cleanup_write(&self, reservation: u64) -> std::io::Result<()> { self.io(|state| crate::native_host::NativeHostWork::attempt_cleanup_write(state, reservation, || ()).1) }
+            fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
+                self.io(|state| state.charge(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
+            }
+            fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+                self.io(|state| state.admit(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed, ..crate::WorkCounters::UNCHARGED }))
+            }
+            fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+                self.io(|state| state.record(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed, ..crate::WorkCounters::UNCHARGED }))
+            }
         }
     };
 }

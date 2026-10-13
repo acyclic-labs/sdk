@@ -70,7 +70,7 @@ pub(crate) fn commit_len(request: &CommitRequest) -> usize {
         + block_len(request.idempotency_key.as_bytes().len())
 }
 
-fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
+pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
     prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
     prost::encoding::encode_varint(length as u64, out);
 }
@@ -159,8 +159,4 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
         }
     }
     bytes(out, 3, request.idempotency_key.as_bytes());
-}
-
-pub(crate) fn message_header(out: &mut Vec<u8>, tag: u32, length: usize) {
-    header(out, tag, length);
 }

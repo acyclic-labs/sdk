@@ -79,7 +79,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
             continue;
         }
         let (edit, structural) = if (before_directory || promoted) && after_directory {
-            let (absolute, _absolute_allocation) = native_absolute_string(&path, work)?;
+            let (absolute, _absolute_allocation) = work.display(&format_args!("/{path}"))?;
             let stat = to.stat(&absolute, work, work.cancellation()).await?;
             let (image, mut image_allocation) = encode_native_metadata(&stat.metadata, work)?;
             allocation.absorb(&mut image_allocation)?;
@@ -103,7 +103,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
             };
             (edit, structural)
         };
-        native_vec_push(&mut edits, (edit, structural, allocation), &mut storage)?;
+        push_buffer(&mut edits, (edit, structural, allocation), &mut storage)?;
     }
     drop(changed_allocation);
     let mut index = 0;
@@ -161,7 +161,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
             return Err(NativeTreeMaterializationError::ExternalMutation.into());
         }
         allocation.absorb(&mut owned)?;
-        native_vec_push(&mut plan_edits, edit, &mut allocation)?;
+        push_buffer(&mut plan_edits, edit, &mut allocation)?;
     }
     let plan = MaterializationPlan {
         operation_id: request.operation_id,

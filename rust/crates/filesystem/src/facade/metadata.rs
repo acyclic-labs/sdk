@@ -359,16 +359,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-    pub(crate) async fn read_metadata_with_accounting(
+    pub(crate) async fn read_metadata_with_accounting<F: ContentFile>(
         &mut self,
-        path: &NamespacePath,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        file: F,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
-        self.lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
-            .await?
-            .map(|lookup| lookup.metadata)
-            .ok_or(FsError::NotFound)
+        match file.address() {
+            ContentAddress::File(id) => {
+                self.read_metadata_by_id_with_accounting(id, accounting, cancellation)
+                    .await
+            }
+            ContentAddress::Path(path) => self
+                .lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
+                .await?
+                .map(|lookup| lookup.metadata)
+                .ok_or(FsError::NotFound),
+        }
     }
 }
 

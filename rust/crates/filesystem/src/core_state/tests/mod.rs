@@ -339,7 +339,7 @@ pub(super) fn lose_unflushed_writes(root: &Path, flushed: usize) {
         for record in change.0 {
             let key = record.key;
             let paths = key.paths(&namespace).expect("record paths");
-            std::fs::create_dir_all(&paths.directory).expect("record directory");
+            std::fs::create_dir_all(paths.directory()).expect("record directory");
             std::fs::write(paths.current, b"{\"torn").expect("tear unflushed record");
         }
     }

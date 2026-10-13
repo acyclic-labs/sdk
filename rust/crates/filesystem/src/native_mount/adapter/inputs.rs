@@ -60,26 +60,14 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        let extra = actual
-            .checked_sub(requested)
+        let mut retained = requested;
+        let reconciled = self
+            .carrier
+            .with_work(|work| work.reconcile_native_allocation(&mut retained, actual));
+        self.bytes = (self.bytes - requested)
+            .checked_add(retained)
             .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        if extra != 0 {
-            self.bytes = self
-                .bytes
-                .checked_add(extra)
-                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-            if let Err(error) = self
-                .carrier
-                .with_work(|work| {
-                    work.record_native_owned_completed(extra, &work.capture_custody())
-                        .1
-                })
-                .map_err(super::lazy::mount_demand_error)
-            {
-                drop(vector);
-                return Err(error);
-            }
-        }
+        reconciled.map_err(super::lazy::mount_demand_error)?;
         Ok(vector)
     }
 
