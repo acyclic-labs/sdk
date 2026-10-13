@@ -18,6 +18,7 @@ pub(super) struct FuseSessionState {
     pub(super) unmounter: Option<fuser::SessionUnmounter>,
     pub(super) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     pub(super) device: Option<OwnedFd>,
+    pub(super) notifier: Option<Notifier>,
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
     pub(super) cleanup: NativeWorkReservation,
@@ -170,6 +171,7 @@ impl FuseSession {
             unmounter: None,
             worker: None,
             device: None,
+            notifier: None,
             identity: None,
             retirement: None,
             cleanup,
@@ -214,7 +216,7 @@ impl FuseSession {
                         .map(|failure| failure.0)
                         .unwrap_or_else(|| error.into())
                 })?;
-            let _ = core.notifier.set(session.notifier());
+            started.notifier = Some(session.notifier());
             started.unmounter = Some(session.unmount_callable());
             started.device = Some(std::os::fd::AsFd::as_fd(&session).try_clone_to_owned()?);
             // Session::spawn consumes its join handle on unmount refusal; retain it ourselves.
@@ -321,17 +323,22 @@ impl FuseSession {
 }
 
 pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<FuseSessionState>>)) {
-    drop(state.lock().unwrap_or_else(PoisonError::into_inner));
-    if let Some(notifier) = core.notifier.get() {
-        run_invalidator(&core, notifier);
+    let notifier = state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .notifier
+        .take();
+    if let Some(notifier) = notifier {
+        run_invalidator(&core, &notifier);
     } else {
-        let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while !core.stopping.load(Ordering::Acquire) {
-            state = core
-                .invalidation
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
+        drop(
+            core.invalidation
+                .wait_while(
+                    core.state.lock().unwrap_or_else(PoisonError::into_inner),
+                    |_| !core.stopping.load(Ordering::Acquire),
+                )
+                .unwrap_or_else(PoisonError::into_inner),
+        );
     }
     let mut retiring = state.lock().unwrap_or_else(PoisonError::into_inner);
     if let Err(error) = retiring.stop(&core, None) {
