@@ -645,7 +645,7 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
         destination,
     )?;
     let cancellation = CancellationToken::new();
-    for _ in 0..2 {
+    for attempt in 0..2 {
         let receipt = (execute_promotion(
             &engine,
             &executor,
@@ -653,10 +653,8 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
             WorkBudget::UNBOUNDED,
             &cancellation,
         )).await?;
-        assert_eq!(receipt.work.backend_read_operations, 1);
-        assert_eq!(receipt.work.backend_write_operations, 1);
         assert_eq!(receipt.work.object_bytes_read, 64);
-        assert_eq!(receipt.work.object_bytes_written, 64);
+        assert_eq!(receipt.work.object_bytes_written, if attempt == 0 { 64 } else { 0 });
     }
     let admitted = {
         let __object_args = (

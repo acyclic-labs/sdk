@@ -335,15 +335,25 @@ async fn default_guarded_fork_preserves_owner_rejection_and_rejects_managed_perm
     };
     let baseline = MemoryAuthorityStore::default();
     let mut prefix = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
-    first_record(
-        &baseline,
-        fork.retention,
-        fork.retained.clone(),
-        &mut prefix,
-        None::<&mut ()>,
-    )
-    .await
-    .map_err(|error| error.into_error(std::convert::identity))?;
+    let mut baseline_guard = |_: WorkBudget| {
+        std::future::ready(Err(crate::OperationFailure::new(
+            crate::FsError::WorkspaceDeleted,
+            WorkCounters::UNCHARGED,
+        )))
+    };
+    let rejected = baseline
+        .fork_workspace(
+            fork.clone(),
+            PublicationPermit::Unrestricted,
+            &mut prefix,
+            Some(&mut &mut baseline_guard),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        rejected.into_error(crate::FsError::from),
+        crate::FsError::WorkspaceDeleted
+    ));
     let guard_work = WorkCounters {
         backend_read_operations: 1,
         authority_bytes_read: 13,

@@ -190,6 +190,16 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         if !native {
             quota = quota.min(remaining.peak_allocation_bytes);
         }
+        if total > quota {
+            drop(incoming);
+            release(work, custody, request_bytes)?;
+            for request in requests {
+                let (read, allocation) = self.fetch(request.object_id, request.maximum_bytes, work).await?;
+                drop(allocation);
+                values.push(read);
+            }
+            return Ok((values, output));
+        }
         let body = if native {
             KernelOwnedAllocation::Standalone
         } else {

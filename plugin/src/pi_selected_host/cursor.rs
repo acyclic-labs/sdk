@@ -56,7 +56,7 @@ pub(super) fn decode_cursor(
     value: &str,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(CursorEnvelope, acyclic_fs::NativeAllocation)> {
-    if value.len() > crate::MAXIMUM_CONTROL_MESSAGE_BYTES || value.len() % 2 != 0 {
+    if value.len() > crate::MAXIMUM_CONTROL_MESSAGE_BYTES || !value.len().is_multiple_of(2) {
         return Err(invalid("cursor exceeds bounded transport"));
     }
     work.cancellation()

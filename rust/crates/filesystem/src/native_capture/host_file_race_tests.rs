@@ -16,7 +16,7 @@ fn rejects_a_replaced_file_between_path_metadata_and_open() -> Result<(), Box<dy
     let opened = test_open_file(&root, Path::new("current"))?;
     assert!(matches!(
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
-        Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
+        Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::SourceSnapshotStale)
     ));
     Ok(())
 }
@@ -34,7 +34,7 @@ fn rejects_a_changed_file_after_open() -> Result<(), Box<dyn std::error::Error>>
     std::fs::write(&current, b"changed body")?;
     assert!(matches!(
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
-        Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
+        Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::SourceSnapshotStale)
     ));
     Ok(())
 }
@@ -55,7 +55,7 @@ fn rejects_a_permission_change_after_open() -> Result<(), Box<dyn std::error::Er
     std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
     assert!(matches!(
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
-        Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
+        Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::SourceSnapshotStale)
     ));
     Ok(())
 }
@@ -84,7 +84,7 @@ fn rejects_a_replaced_directory_before_capture_admission() -> Result<(), Box<dyn
             &expected,
             &scope.native,
         ),
-        Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
+        Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::SourceSnapshotStale)
     ));
     Ok(())
 }

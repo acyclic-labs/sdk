@@ -16,16 +16,13 @@ use acyclic_harness::{
     rename_all = "snake_case",
     deny_unknown_fields
 )]
+#[derive(Default)]
 pub(crate) enum PluginTaskBinding<B = Box<PiTaskBinding>> {
+    #[default]
     HostManaged,
     Pi(B),
 }
 
-impl Default for PluginTaskBinding {
-    fn default() -> Self {
-        Self::HostManaged
-    }
-}
 
 impl PluginTaskBinding {
     /// The host-managed reopen path has no retained task owner and therefore cannot authorize Pi workspace access, allocation or publication.
@@ -84,14 +81,6 @@ pub(crate) struct PiScratchCreation {
 impl PiScratchCreation {
     pub(crate) fn validate(&self, volume: &VolumeRef) -> acyclic_harness::Result<()> {
         self.validate_inner(volume, None)
-    }
-
-    pub(crate) fn validate_with_native_work(
-        &self,
-        volume: &VolumeRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<()> {
-        self.validate_inner(volume, Some(work))
     }
 
     fn validate_inner(
@@ -317,7 +306,7 @@ impl PiTaskBinding {
             }
             match &results.allocation {
                 PiScratchAllocation::Created(creation) => {
-                    creation.validate_inner(&results.volume, work)?
+                    creation.validate_inner(&results.volume, work)?;
                 }
                 PiScratchAllocation::Preparing if preparing => {}
                 _ => {

@@ -26,14 +26,14 @@ fn binary_handoff_drains_live_sessions_before_reopen() {
                 .await
                 .unwrap()
         );
-        tokio::time::timeout(std::time::Duration::from_secs(5), service)
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), service)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
         let (_lock, reopened) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         assert!(reopened.catalog.lock().await.active.is_empty());
-        reopened.shutdown().await.unwrap();
+        let _ = reopened.shutdown().await.unwrap();
     });
 }
 
@@ -63,7 +63,7 @@ fn durable_drain_is_identity_bound_and_answers_concurrent_requesters() {
         );
         drop(first.unwrap());
         drop(second.unwrap());
-        tokio::time::timeout(std::time::Duration::from_secs(5), service)
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), service)
             .await
             .unwrap()
             .unwrap()
@@ -88,7 +88,7 @@ fn failed_startup_releases_the_service_and_root() {
         let fence = acquire_service_lock(&fixture.data).unwrap().unwrap();
         drop(fence);
         let (_lock, reopened) = test_concurrent_service(fixture.data.clone()).await.unwrap();
-        reopened.shutdown().await.unwrap();
+        let _ = reopened.shutdown().await.unwrap();
     });
 }
 

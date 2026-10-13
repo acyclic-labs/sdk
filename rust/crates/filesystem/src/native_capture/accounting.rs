@@ -80,7 +80,7 @@ pub(super) fn capture_demand_error(error: DemandError) -> CaptureError {
         DemandError::Work(error) => CaptureError::from(error),
         DemandError::Io(error) => CaptureError::from(error),
         DemandError::Allocation(error) => CaptureError::from(error),
-        DemandError::StaleVersion => CaptureError::Kernel(crate::FsError::SourceSnapshotStale),
+        DemandError::StaleVersion => CaptureError::from(crate::FsError::SourceSnapshotStale),
         DemandError::Cancelled => crate::CancellationError.into(),
         DemandError::OriginalWorkPoisoned => {
             crate::NativeTreeMaterializationError::OriginalWorkPoisoned.into()

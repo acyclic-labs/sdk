@@ -241,16 +241,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
+        cancellation.check().map_err(|_| OperationFailure::before_work(FsError::Cancelled(CancellationError)))?;
+        if self.mode.access != AccessMode::ReadWrite
+            || !matches!(self.mode.mutations, MutationMode::PrivateOverlay | MutationMode::DirectLive)
+        {
+            return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+        }
+        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
+            .unwrap_or(usize::MAX);
+        if operations.capacity() > maximum {
+            return Err(OperationFailure::before_work(FsError::ExcessiveMutationCapacity));
+        }
         crate::heap_future::in_heap_measured(
             move |budget| async move {
-                if self.mode.access != AccessMode::ReadWrite
-                    || !matches!(
-                        self.mode.mutations,
-                        MutationMode::PrivateOverlay | MutationMode::DirectLive
-                    )
-                {
-                    return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
-                }
                 let mut accounting = KernelAccounting::standalone(budget, cancellation);
                 let result = async {
                     accounting.check()?;
@@ -259,12 +262,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     }
                     if self.prepared_merge_parent.is_some() {
                         return Err(FsError::PreparedMergePending);
-                    }
-                    let maximum =
-                        usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-                            .unwrap_or(usize::MAX);
-                    if operations.capacity() > maximum {
-                        return Err(FsError::ExcessiveMutationCapacity);
                     }
                     let bytes = Self::mutation_input_owned_bytes(&operations, &mut accounting)?;
                     let allocation = accounting.claim_owned(bytes, 0)?;

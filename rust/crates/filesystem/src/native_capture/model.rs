@@ -180,24 +180,24 @@ pub enum CaptureError {
     UnsupportedKind,
     /// The canonical original filesystem operation retained its typed cause.
     #[error(transparent)]
-    Kernel(#[from] crate::FsError),
+    Kernel(Box<crate::FsError>),
 }
 
 impl From<crate::CancellationError> for CaptureError {
     fn from(error: crate::CancellationError) -> Self {
-        Self::Kernel(error.into())
+        Self::from(crate::FsError::from(error))
     }
 }
 
 impl From<crate::NativeTreeMaterializationError> for CaptureError {
     fn from(error: crate::NativeTreeMaterializationError) -> Self {
-        Self::Kernel(crate::FsError::NativeKernel(error))
+        Self::from(crate::FsError::NativeKernel(error))
     }
 }
 
 impl From<WorkError> for CaptureError {
     fn from(error: WorkError) -> Self {
-        Self::Kernel(crate::FsError::Work(error))
+        Self::from(crate::FsError::Work(error))
     }
 }
 
@@ -215,11 +215,17 @@ impl From<std::collections::TryReserveError> for CaptureError {
 
 impl From<crate::kernel::NamespacePathError> for CaptureError {
     fn from(error: crate::kernel::NamespacePathError) -> Self {
-        Self::Kernel(error.into())
+        Self::from(crate::FsError::from(error))
     }
 }
 impl From<crate::kernel::TreePageError> for CaptureError {
     fn from(error: crate::kernel::TreePageError) -> Self {
         crate::kernel::NamespacePathError::Name(error).into()
+    }
+}
+
+impl From<crate::FsError> for CaptureError {
+    fn from(error: crate::FsError) -> Self {
+        Self::Kernel(Box::new(error))
     }
 }

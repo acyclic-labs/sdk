@@ -121,7 +121,7 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
             let error = result.expect_err("capture ceiling ignored");
             assert!(matches!(
                 error.error,
-                crate::CaptureError::Kernel(
+                crate::CaptureError::Kernel(error) if matches!(*error,
                     FsError::Work(_)
                         | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
                 )

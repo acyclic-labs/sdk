@@ -1957,14 +1957,12 @@ impl NativeWatch {
                         Err(DemandError::Io(error))
                             if error.kind() == std::io::ErrorKind::NotADirectory =>
                         {
-                            return Err(DemandError::Observation(
+                            return Err(DemandError::from(
                                 NativeWatchError::ObservedPathNotDirectory,
                             ));
                         }
                         Err(DemandError::InvalidRequest) => {
-                            return Err(DemandError::Observation(
-                                NativeWatchError::SymbolicLinkDirectory,
-                            ));
+                            return Err(DemandError::from(NativeWatchError::SymbolicLinkDirectory));
                         }
                         Err(error) => return Err(error),
                     };
@@ -3786,7 +3784,7 @@ impl From<std::io::Error> for NativeWatchError {
 
 fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
     match error {
-        crate::demand::DemandError::Observation(error) => error,
+        crate::demand::DemandError::Observation(error) => *error,
         crate::demand::DemandError::Work(error) => NativeWatchError::Work(error),
         crate::demand::DemandError::Cancelled => NativeWatchError::Cancelled(CancellationError),
         crate::demand::DemandError::Io(error) => error.into(),
@@ -3811,7 +3809,7 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
             NativeWatchError::NativeWorkUnavailable
         }
         #[cfg(feature = "native-mount")]
-        crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(error),
+        crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(*error),
         #[cfg(all(
             any(target_os = "linux", target_os = "macos", windows),
             any(feature = "native-mount", test)
@@ -3868,10 +3866,8 @@ mod demand_admission_tests {
             &CancellationToken::new(),
         )
         .expect_err("opaque nonrecursive admission is not bounded");
-        assert!(matches!(
-            failure.error,
-            DemandError::Observation(NativeWatchError::BoundedObservationUnavailable)
-        ));
+        assert!(matches!(failure.error,
+            DemandError::Observation(error) if matches!(error.as_ref(), NativeWatchError::BoundedObservationUnavailable)));
         assert_eq!(*failure.work, WorkCounters::default());
         Ok(())
     }

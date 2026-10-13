@@ -3,9 +3,11 @@ use super::{
     pi_owner::PiOwnerConfig,
     pi_root_provider::{guarded_pi_decode, guarded_pi_value, stage_pi_input},
 };
+#[cfg(test)]
+use acyclic_fs::NativeTreeMaterializationError;
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
-    NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters,
+    NativeAllocation, NativeMaterializationWork, WorkCounters,
 };
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;

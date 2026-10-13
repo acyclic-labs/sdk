@@ -10,7 +10,7 @@ fn demand_error(error: MountSourceError) -> DemandError {
         MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
             DemandError::Cancelled
         }
-        error => DemandError::Mount(error),
+        error => DemandError::from(error),
     }
 }
 

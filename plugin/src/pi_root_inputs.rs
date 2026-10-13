@@ -53,20 +53,17 @@ impl PiRootPreparation {
         let admitted =
             super::pi_recovery::authenticate_pi_task(&runtime.runtime, binding, origin, work)
                 .await?;
-        let context = match context {
-            Some(context) => context,
-            None => {
-                let io = PreparationIo::from_native_work(work)?;
-                runtime
-                    .runtime
-                    .harness()
-                    .durable_context(
-                        binding.task_id,
-                        OperationId::from_bytes(binding.task_id.into_bytes()),
-                        Some(&io),
-                    )
-                    .await?
-            }
+        let context = if let Some(context) = context { context } else {
+            let io = PreparationIo::from_native_work(work)?;
+            runtime
+                .runtime
+                .harness()
+                .durable_context(
+                    binding.task_id,
+                    OperationId::from_bytes(binding.task_id.into_bytes()),
+                    Some(&io),
+                )
+                .await?
         };
         if context.durable_task_id() != Some(admitted.0.binding.task_id) {
             return Err(Error::NativeBoundary {

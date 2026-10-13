@@ -52,10 +52,10 @@ impl Serialize for MetadataValue<'_> {
                         (MetadataRole::State, "reply")
                             if fields.get("state").and_then(Value::as_str) == Some("hosting") =>
                         {
-                            map.serialize_entry(name, &MetadataValue(value, MetadataRole::Reply))?
+                            map.serialize_entry(name, &MetadataValue(value, MetadataRole::Reply))?;
                         }
                         (MetadataRole::Results, "commands") => {
-                            map.serialize_entry(name, &MetadataValue(value, MetadataRole::Replies))?
+                            map.serialize_entry(name, &MetadataValue(value, MetadataRole::Replies))?;
                         }
                         (MetadataRole::Reply, "value") => map.serialize_entry(name, &())?,
                         _ => map.serialize_entry(name, value)?,

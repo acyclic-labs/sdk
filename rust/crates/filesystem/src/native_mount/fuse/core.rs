@@ -7,10 +7,8 @@ use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
 
 pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
     match error {
-        NativeMountError::Source(error)
-        | NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-            crate::native_mount::errno(error)
-        }
+        NativeMountError::Source(error) => crate::native_mount::errno(error),
+        NativeMountError::Demand(crate::DemandError::Mount(error)) => crate::native_mount::errno(error),
         NativeMountError::Materialization(error) => {
             crate::native_mount::native_materialization_errno(error)
         }
@@ -285,8 +283,12 @@ impl ProjectionCore {
             let errno = callback_errno(&failure.0);
             let reply_only = match &failure.0 {
                 NativeMountError::Io(_) => true,
-                NativeMountError::Source(error)
-                | NativeMountError::Demand(crate::DemandError::Mount(error)) => {
+                NativeMountError::Source(_) | NativeMountError::Demand(crate::DemandError::Mount(_)) => {
+                    let error = match &failure.0 {
+                        NativeMountError::Source(error) => error,
+                        NativeMountError::Demand(crate::DemandError::Mount(error)) => error.as_ref(),
+                        _ => unreachable!(),
+                    };
                     match error.semantic_error() {
                         MountSourceError::Io(_, _)
                         | MountSourceError::Stale

@@ -43,7 +43,6 @@ struct NativeHeader {
 
 impl PiNativeSourceCut {
     /// Strictly checks the actual native bytes before Filesystem publication.
-
     pub(crate) fn validate_session(
         &self,
         child: &str,

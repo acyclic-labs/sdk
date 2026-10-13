@@ -10,8 +10,10 @@ use acyclic_harness::{Error as RootError, Result as RootResult};
 mod acquisition;
 pub(crate) use acquisition::{
     acquire, acquire_with_native_work, native_watch_error, native_work_error,
-    shutdown_pending_with_native_work,
 };
+
+#[cfg(test)]
+pub(crate) use acquisition::shutdown_pending_with_native_work;
 
 pub(crate) fn budget() -> WorkBudget {
     WorkBudget {
