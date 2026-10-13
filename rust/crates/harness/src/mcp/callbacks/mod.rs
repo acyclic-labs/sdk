@@ -168,18 +168,6 @@ impl McpCallbackRequest {
     }
 }
 
-/// Explicit host selection for ordinary sampling input and media admission.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpSamplingPolicy {
-    /// Exact host input used only when the remote transcript does not end in a user message.
-    pub continuation: ModelContent,
-    /// Opt-in image processing contract; absent means images are unsupported.
-    pub image: Option<NativeMediaPolicy>,
-    /// Opt-in audio duration/work/byte contract; absent means audio is unsupported.
-    pub audio: Option<NativeMediaPolicy>,
-}
-
 mod runtime;
 pub use runtime::McpRuntimeCallbacks;
 mod sampling;
