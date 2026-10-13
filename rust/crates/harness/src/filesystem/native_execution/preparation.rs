@@ -97,14 +97,16 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     return Err(invalid());
                 }
                 verify_binding(owner, binding, guard, &volume_work).await?;
-                let workspace = binding
-                    .host
-                    .open_volume_with_native_work(binding.volume, &volume_work)
-                    .await?;
-                let generation = binding
-                    .host
-                    .generation_with_native_work(&workspace, binding.generation, &volume_work)
-                    .await?;
+                let io = PreparationIo::from_native_work(&volume_work)?;
+                let reference = super::super::fork_preparer::bounded_io::content_workspace(
+                    &binding.host.provider, binding.volume, Some(&io),
+                )?;
+                let workspace = super::super::fork_preparer::bounded_io::open(
+                    binding.host, &reference, &io,
+                ).await?;
+                let generation = super::super::fork_preparer::bounded_io::generation(
+                    binding.host, &workspace, binding.generation, &io,
+                ).await?;
                 if binding.writable
                     && workspace
                         .head(&volume_work, work.cancellation())
@@ -180,7 +182,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 },
                 volumes: mappings,
             };
-            manifest.validate_with_io(Some(&io))?;
+            manifest.validate(Some(&io))?;
             let store = super::journal::Store {
                 owner: Arc::clone(owner),
                 work: work.clone(),
@@ -303,7 +305,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         .await?;
                 }
             }
-            let mut before_effect = |_source| verify();
+            let mut before_effect = || verify();
             journal = materializer
                 .recover(
                     operation,
@@ -336,18 +338,16 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         } else {
                             acyclic_fs::MountOptions::read_only()
                         };
+                        let mount = mount.native_context(&volume_work, Some(sdk), Some(&volume_work));
                         let view = generation
-                            .attach_native_working_set_with_work(
+                            .attach_native_working_set(
                                 &mount,
                                 &acyclic_fs::MaterializeOptions::native(
                                     &intent.manifest.volumes[index].path,
                                 ),
                                 identity,
                                 options.work_per_volume,
-                                &volume_work,
                                 work.cancellation(),
-                                Some(Arc::clone(&callback)),
-                                Some(&volume_work),
                             )
                             .await?;
                         PreparedVolume::Materialized {
