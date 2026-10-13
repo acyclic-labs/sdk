@@ -60,7 +60,16 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
             .record_completed(delta)
     }
     fn started_io(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
-        self.credit.started_io(delta, self.wait)
+        let io = crate::WorkCounters {
+            backend_read_operations: delta.backend_read_operations,
+            backend_write_operations: delta.backend_write_operations,
+            durability_operations: delta.durability_operations,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        let validation = io.remaining(delta)?;
+        let credit = self.credit.partition_work(delta, self.wait)?;
+        credit.record_completed(validation)?;
+        credit.started_io(io, self.wait)
     }
     fn claim(&mut self, _bytes: u64) -> Result<Self::Allocation, Self::Error> {
         Err(Self::Error::InvalidLayout)

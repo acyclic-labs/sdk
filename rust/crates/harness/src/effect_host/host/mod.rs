@@ -39,7 +39,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         #[cfg(feature = "filesystem")]
         let observed = &mut io.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
-        let observed = &mut None;
+        let observed: &mut Option<&mut dyn HistoryIo> = &mut None;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         match work {
             Some(work) => {

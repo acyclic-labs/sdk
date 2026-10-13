@@ -127,13 +127,15 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError> {
+        let nested = self.view_gate.reads_for_callback(owner);
         loop {
             let view = self
                 .view_gate
                 .read_for_callback_with_carrier(owner, None, carrier, cancellation, lifetime)
                 .await?;
             let state = await_lock(self.state.read(), carrier, cancellation, lifetime).await?;
-            if self
+            // Nested reads finish against the projection pinned by their outer lease.
+            if nested || self
                 .returned
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
