@@ -400,6 +400,10 @@ case "$lane" in
     source scripts/ensure-bun.sh
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
+    # Package builds resolve the whole locked Cargo graph offline (family
+    # admission runs `cargo metadata`), including crates that only other
+    # targets compile, which the wasm32 builds above never download.
+    cargo fetch --locked
     bun install --frozen-lockfile
     bun run --filter '@acyclic-labs/fs' build
     # The combined browser pages consume the public Stream and Harness builds;
