@@ -63,7 +63,6 @@ impl PreparationIo {
 
     fn decode_guarded<T>(
         &self,
-        schema: &'static Schema,
         labels: Option<u64>,
         code: Option<crate::wire::ErrorCode>,
         mut allowance: impl FnMut(crate::executor::json::JsonValueShape, u64) -> Result<u64>,
@@ -87,7 +86,10 @@ impl PreparationIo {
                     })
                     .transpose()?
                     .unwrap_or(0);
-                admission = Some((self.reserve_typed(owned, diagnostics, code)?, diagnostics));
+                let bytes = owned.checked_add(diagnostics).ok_or_else(|| {
+                    decode_allowance_error("typed diagnostic reservation overflow", code)
+                })?;
+                admission = Some((self.reserve_decode(bytes)?, diagnostics));
                 Ok(())
             } else {
                 self.codec_charge(charge, false)
@@ -108,7 +110,6 @@ impl PreparationIo {
         let bounds = self.bounds(bytes.len() as u64, 256)?;
         let schema = T::json_value_schema();
         let mut decoded: (T, _) = self.decode_guarded(
-            schema,
             Some(T::diagnostic_label_bytes()),
             code,
             |shape, maximum| {
@@ -154,7 +155,6 @@ impl PreparationIo {
         let schema = T::json_value_schema();
         let code = self.original_native_work().is_some().then_some(code);
         self.decode_guarded(
-            schema,
             (schema != Schema::Root).then(T::diagnostic_label_bytes),
             code,
             |shape, scratch| T::decode_owned_allowance(shape, scratch, bytes.len() as u64, code),
@@ -289,7 +289,6 @@ impl PreparationIo {
         }
         let bounds = self.bounds(u64::MAX, 128)?;
         self.decode_guarded(
-            schema,
             (schema != Schema::Root).then_some(labels),
             Some(code),
             |shape, _| owned(shape),

@@ -57,7 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     let workspace = host.open(&reference, Some(io)).await?;
     let pinned = host.generation(&workspace, selected, Some(io)).await?;
     fork_preparer_io::retain(&pinned, Some(io)).await?;
-    let name = fork_preparer_io::volume_storage_name(child, Some(io))?;
+    let name = crate::executor::with_history_io(Some(io), |work| child.storage_name(work))?;
     let operation = fork_preparer_io::operation_key(key, Some(io))?;
     let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
     let options = match paths {

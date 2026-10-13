@@ -21,7 +21,7 @@ pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub(crate) use records::{PreparationRecord, UploadRecord, preparation_slot_bytes};
 use records::{decode_allowance_error, decode_allowance_with_code};
 pub(in crate::filesystem) use sdk::{
-    content_workspace, create, generation_ref, operation_key, retain, volume_storage_name,
+    content_workspace, create, generation_ref, operation_key, retain,
 };
 
 /// Work and retained ownership for one preparation attempt.
@@ -328,18 +328,6 @@ impl PreparationIo {
         self.retain_owned(bytes)?;
         Ok(DecodeReservation { io: self, bytes })
     }
-    fn reserve_typed(
-        &self,
-        owned: u64,
-        diagnostics: u64,
-        code: Option<crate::wire::ErrorCode>,
-    ) -> Result<DecodeReservation<'_>> {
-        self.reserve_decode(
-            owned.checked_add(diagnostics).ok_or_else(|| {
-                decode_allowance_error("typed diagnostic reservation overflow", code)
-            })?,
-        )
-    }
     pub(crate) fn guard_owned(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         if bytes > self.owned_bytes()? {
             return Err(self.invalid("owned buffer exceeds retained quota"));
@@ -356,9 +344,9 @@ impl PreparationIo {
         self.guard_owned(bytes.retained_capacity().unwrap_or(0) as u64)
             .map(Some)
     }
-    pub(crate) fn receive<T>(
+    pub(crate) fn receive<T, E: Into<Error>>(
         &self,
-        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, WorkspaceError>,
+        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, E>,
     ) -> Result<T> {
         match result {
             Ok(receipt) => {
@@ -367,49 +355,34 @@ impl PreparationIo {
             }
             Err(failure) => {
                 self.spent(*failure.work)?;
+                let error = failure.error.into();
                 #[cfg(not(target_arch = "wasm32"))]
                 if self.original_native_work().is_some() {
-                    return Err(match failure.error {
-                        WorkspaceError::Work(cause) => Error::NativeWork {
+                    return Err(match error {
+                        Error::NativeWorkspace {
+                            source: WorkspaceError::Work(cause),
+                            custody: None,
+                        } => Error::NativeWork {
                             cause: acyclic_fs::NativeTreeMaterializationError::Work(cause),
                             custody: None,
                         },
-                        WorkspaceError::Cancelled(_) => Error::NativeWork {
+                        Error::NativeWorkspace {
+                            source: WorkspaceError::Cancelled(_),
+                            custody: None,
+                        } => Error::NativeWork {
                             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
                             custody: None,
                         },
-                        source => map_error(source),
+                        Error::NativeWorkspace {
+                            source,
+                            custody: None,
+                        } => map_error(source),
+                        error => error,
                     });
                 }
-                Err(Error::from(failure.error))
+                Err(error)
             }
         }
-    }
-    pub(crate) fn receive_content<T>(
-        &self,
-        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, Error>,
-    ) -> Result<T> {
-        match result {
-            Ok(receipt) => {
-                self.charge(receipt.work)?;
-                Ok(receipt.value)
-            }
-            Err(failure) => {
-                self.spent(*failure.work)?;
-                Err(failure.error)
-            }
-        }
-    }
-    pub(crate) fn finish<T>(
-        &self,
-        result: Result<T>,
-    ) -> acyclic_fs::MeasuredResult<OperationReceipt<T>, Error> {
-        result
-            .map(|value| OperationReceipt {
-                value,
-                work: self.receipt(),
-            })
-            .map_err(|error| OperationFailure::new(error, self.receipt()))
     }
 }
 
@@ -446,35 +419,24 @@ impl PreparationIo {
     }
 }
 impl PreparationIo {
-    pub(crate) fn capability<T: Serialize>(&self, value: &T, prefix: &str) -> Result<String> {
-        let hash = crate::executor::preparation_digest(value, Some(self))?;
-        let encoding = WorkCounters {
-            bytes_encoded: if self.original_native_work().is_some() {
-                64
-            } else {
-                0
-            },
-            ..Default::default()
-        };
-        self.preflight(encoding)?;
-        let hex = blake3::Hash::from_bytes(hash).to_hex();
-        self.charge(encoding)?;
-        crate::executor::with_history_io(Some(self), |work| {
-            crate::executor::preparation_format(format_args!("{prefix}{hex}"), work)
-        })
-    }
     pub(crate) fn contains_capability<T: Serialize>(
         &self,
         grants: &crate::Capabilities,
         value: &T,
         prefix: &str,
     ) -> Result<bool> {
-        let text = self.capability(value, prefix)?;
-        let held = self.guard_owned(text.capacity() as u64)?;
-        let granted = grants.contains(&text);
-        drop(text);
-        drop(held);
-        Ok(granted)
+        let digest = crate::executor::preparation_digest(value, Some(self))?;
+        self.charged(WorkCounters {
+            bytes_encoded: if self.original_native_work().is_some() {
+                64
+            } else {
+                0
+            },
+            ..Default::default()
+        })?;
+        Ok(crate::conversation::contains_content_label(
+            grants, prefix, digest,
+        ))
     }
 }
 
