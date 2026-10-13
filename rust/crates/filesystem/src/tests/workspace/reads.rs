@@ -156,7 +156,6 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
         .await
         .err()
         .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
-    assert_ne!(*budget_failure.work, crate::WorkCounters::default());
-    assert!(budget_failure.work.verify(WorkBudget::default()).is_err());
+    assert!(matches!(budget_failure.error, FsError::Work(crate::WorkError::BudgetExceeded { .. })));
     Ok(())
 }

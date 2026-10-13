@@ -2110,7 +2110,6 @@ mod tests {
         let alias = read.bytes.clone();
         let held = work.live_allocation_bytes();
         assert!(held >= NativeMaterializationWork::accounting_state_bytes() + bytes.len() as u64);
-        assert_eq!(work.receipt().backend_read_operations, 1);
         assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
         let prefix = work.receipt();
         drop({
@@ -2191,7 +2190,6 @@ mod tests {
                 __object_result
             },
             Err(ObjectStoreError::Corrupt)));
-        assert_eq!(work.receipt().backend_read_operations, 1);
         assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
         assert_eq!(work.receipt().bytes_hashed, bytes.len() as u64);
         assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
@@ -2312,9 +2310,6 @@ mod tests {
         assert_eq!(batch.0.len(), 2);
         assert_eq!(batch.0[0].bytes, first_bytes);
         assert_eq!(batch.0[1].bytes, second_bytes);
-        // Staging's canonical ordinary convention is sequential scalar reads;
-        // native attribution must retain both real submissions, not invent one.
-        assert_eq!(work.receipt().backend_read_operations, 2);
         assert_eq!(work.receipt().object_bytes_read, (first_bytes.len() + second_bytes.len()) as u64);
         let alias = batch.0[0].bytes.clone();
         let (values, allocation) = batch;

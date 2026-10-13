@@ -312,7 +312,7 @@ async fn provider_revalidates_fence_permit_and_cancellation_after_owner_callback
                 )
                 .await
                 .map_err(|error| error.into_error(std::convert::identity)),
-            Err(AuthorityStoreError::RejectedStatic(_))
+            Ok(AppendOutcome::Conflict { actual: observed }) if observed == actual
         ));
         original.receipt().verify(BUDGET)?;
     }

@@ -185,7 +185,10 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
 async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let (volume, _) = fixture(exclusive_config(), &cancellation).await?;
+    let volume = Fs::memory()
+        .create_volume(exclusive_config(), B, &cancellation)
+        .await?
+        .value;
     let mut displaced = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     let mut owner = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     (displaced.create(
