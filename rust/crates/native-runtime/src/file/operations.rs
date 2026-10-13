@@ -207,7 +207,7 @@ pub fn set_len(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Resul
             use std::os::fd::AsRawFd as _;
             let size = libc::off_t::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
             // SAFETY: ftruncate acts only on this live descriptor.
-            #[allow(unsafe_code)]
+            #[allow(unsafe_code, reason = "ftruncate acts only on the held descriptor")]
             if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 {
                 Ok(())
             } else {
@@ -234,7 +234,7 @@ pub(crate) fn write_bounded_in_place(
     while !bytes.is_empty() {
         meter.check()?;
         let length = bytes.len().min(1024 * 1024);
-        let chunk = &bytes[..length];
+        let chunk = bytes.get(..length).ok_or(io::ErrorKind::InvalidData)?;
         #[cfg(any(target_os = "linux", target_vendor = "apple"))]
         let result = (|| {
             use std::os::fd::AsRawFd as _;
@@ -243,20 +243,24 @@ pub(crate) fn write_bounded_in_place(
                 NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
             meter.admit_write(0)?;
             // SAFETY: the validated range and borrowed payload remain live through pwrite.
-            #[allow(unsafe_code)]
+            #[allow(
+                unsafe_code,
+                reason = "writes the validated borrowed range on a held descriptor"
+            )]
             let count = unsafe {
                 libc::pwrite(
                     file.as_raw_fd(),
                     chunk.as_ptr().cast(),
                     length,
-                    offset as libc::off_t,
+                    libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?,
                 )
             };
             if count < 0 {
                 return Err(io::Error::last_os_error());
             }
-            transfer.record(count as usize)?;
-            Ok(count as usize)
+            let count = usize::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?;
+            transfer.record(count)?;
+            Ok(count)
         })();
         #[cfg(windows)]
         let result = windows::write_at_known_overlapped(file, offset, chunk, meter);
@@ -274,7 +278,7 @@ pub(crate) fn write_bounded_in_place(
             return Err(io::ErrorKind::WriteZero.into());
         }
         offset += count as u64;
-        bytes = &bytes[count..];
+        bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
     }
     Ok(())
 }
@@ -295,14 +299,20 @@ pub(crate) fn validate_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
         }
     }
     ranges.sort_unstable();
-    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+    if ranges
+        .windows(2)
+        .any(|pair| matches!(pair, [left, right] if left.1 > right.0))
+    {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     Ok(())
 }
 
 #[cfg(target_vendor = "apple")]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "reads the validated destination on a held descriptor"
+)]
 pub(crate) fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
     let offset = libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?;

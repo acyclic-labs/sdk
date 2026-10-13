@@ -94,7 +94,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
         error.kind = obs::Empty
     );
     operation.in_scope(|| {
-        operation.finish((|| {
+        let spawn = || {
             #[cfg(windows)]
             {
                 windows::spawn_service_process(executable).map(ServiceReadiness)
@@ -119,7 +119,8 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
                     readiness,
                 ))))
             }
-        })())
+        };
+        operation.finish(spawn())
     })
 }
 
