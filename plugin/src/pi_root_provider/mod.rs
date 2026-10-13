@@ -73,8 +73,6 @@ pub(crate) use sources::{
     guard_root_preparation_source_with_native_work, prove_root_project_source_with_native_work,
 };
 
-/// Inline failure prefix: constructor denial never allocates a counter carrier.
-
 /// Actual handles returned by dispatch, never reconstructed from route IDs.
 pub(crate) struct PiRootHandle {
     pub(crate) workspace: Arc<LocalLazyWorkspace>,

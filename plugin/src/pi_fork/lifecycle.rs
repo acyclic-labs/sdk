@@ -56,6 +56,7 @@ impl<'a> PiForkCoordinator<'a> {
         self.authenticate(context, owner, fence).await?;
         self.validate_plan(plan, owner.task_id())?;
         self.require_original_plan(plan).await?;
+        let host = self.runtime.runtime.task_host();
         (owner)
             .verify(
                 false,
