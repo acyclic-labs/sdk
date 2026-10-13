@@ -161,7 +161,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             content_verifier: None,
             fork_verifier: None,
             merge_verifier: None,
-            extension_migrations: None,
             limits: Limits::default(),
         })
     }

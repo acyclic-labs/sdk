@@ -37,13 +37,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self
     }
 
-    /// Requires an installed, exact-digest migration implementation before accepting any `MigrateExtensionState` event.
-    #[must_use]
-    pub fn with_extension_migrations(mut self, migrations: Arc<NativeExtensionMigrations>) -> Self {
-        self.extension_migrations = Some(migrations);
-        self
-    }
-
     /// Updates admission bounds without discarding the verified projection.
     pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
         limits.validate(&mut None)?;
