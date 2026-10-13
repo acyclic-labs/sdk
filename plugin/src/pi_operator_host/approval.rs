@@ -65,12 +65,12 @@ pub(crate) fn open_prepared_approval<'a>(
     runtime: &'a PiTaskRuntime,
     filesystem: &'a Arc<PiNativeFilesystem>,
     protected: &'a PiOwnerConfig,
-    context: &'a TaskContext,
-    owner: &'a TaskJournalOwner<LocalStream>,
+    context_owner: (&'a TaskContext, &'a TaskJournalOwner<LocalStream>),
     binding: &'a PiTaskBinding,
     descriptor: &'a ApprovalRef<'a>,
     work: &'a NativeMaterializationWork,
 ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
+    let (context, owner) = context_owner;
     async move {
         validate_descriptor(protected, descriptor, work)?;
         runtime.verify_owner_with_native_work(protected, work)?;

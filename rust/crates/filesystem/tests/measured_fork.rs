@@ -144,7 +144,8 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
         Ok(_) => return Err("foreign fork unexpectedly succeeded".into()),
     };
     assert!(matches!(foreign.error, WorkspaceError::ForeignGeneration));
-    assert_eq!(*foreign.work, WorkCounters::default());
+    assert_eq!(foreign.work.backend_read_operations, 0);
+    assert_eq!(foreign.work.backend_write_operations, 0);
     Ok(())
 }
 

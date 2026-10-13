@@ -38,11 +38,11 @@ pub(super) async fn accepted_builtin_io(
     };
     let response = match &request.io {
         PiBuiltinIo::Read { maximum_bytes, .. } | PiBuiltinIo::EditRead { maximum_bytes } => {
-            let mut last_absence = None;
-            for (leaf, candidate) in std::iter::once(leaf)
+            let mut candidates = std::iter::once(leaf)
                 .chain(leaves.into_iter().flatten())
                 .zip(std::iter::once(&request.path).chain(variants.iter()))
-            {
+                .peekable();
+            while let Some((leaf, candidate)) = candidates.next() {
                 let operation = if matches!(request.io, PiBuiltinIo::EditRead { .. }) {
                     VolumeOperation::Write
                 } else {
@@ -53,7 +53,15 @@ pub(super) async fn accepted_builtin_io(
                     .await?;
                 match volume
                     .file_io(leaf, false, false, work, |file, work| {
-                        read_file(file, *maximum_bytes as usize, work)
+                        read_file(
+                            file,
+                            usize::try_from(*maximum_bytes).map_err(|_| {
+                                acyclic_fs::NativeTreeMaterializationError::from(
+                                    acyclic_fs::WorkError::Overflow,
+                                )
+                            })?,
+                            work,
+                        )
                     })
                     .await
                 {
@@ -67,15 +75,13 @@ pub(super) async fn accepted_builtin_io(
                     }
                     Err(error) => {
                         let error = Error::from(error);
-                        if is_absent(&error) {
-                            last_absence = Some(error);
-                        } else {
+                        if !is_absent(&error) || candidates.peek().is_none() {
                             return Err(error);
                         }
                     }
                 }
             }
-            return Err(last_absence.expect("the requested candidate is always checked"));
+            return Err(denied("requested candidate is absent"));
         }
         PiBuiltinIo::Write { content } | PiBuiltinIo::EditWrite { content, .. } => {
             let expected = match &request.io {
@@ -131,7 +137,9 @@ fn read_file(
         ..WorkCounters::UNCHARGED
     })?;
     let before = file.metadata()?;
-    let length = usize::try_from(before.len()).map_err(|_| acyclic_fs::WorkError::Overflow)?;
+    let length = usize::try_from(before.len()).map_err(|_| {
+        acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
+    })?;
     if !before.is_file() || length > maximum {
         return Err(E::PayloadTooLarge {
             maximum: maximum as u64,
@@ -153,18 +161,18 @@ fn read_file(
         ..WorkCounters::UNCHARGED
     })?;
     bytes.resize(length, 0);
-    let mut offset = 0;
-    while offset != length {
+    let mut remaining = bytes.as_mut_slice();
+    while !remaining.is_empty() {
         let count = acyclic_fs::native_host::file_transfer(
             acyclic_native_runtime::NativeOperationKind::Read,
-            length - offset,
+            remaining.len(),
             work,
-            || file.read(&mut bytes[offset..]),
+            || file.read(remaining),
         )?;
         if count == 0 {
             return Err(E::ExternalMutation);
         }
-        offset += count;
+        remaining = remaining.get_mut(count..).ok_or(E::ExternalMutation)?;
     }
     work.charge(WorkCounters {
         backend_read_operations: 1,
@@ -186,7 +194,13 @@ fn write_file(
     use sha2::{Digest as _, Sha256};
     use std::io::{Seek as _, Write as _};
     if let Some(expected) = expected {
-        let (before, _custody) = read_file(file, MAXIMUM_BUILTIN_BYTES as usize, work)?;
+        let (before, _custody) = read_file(
+            file,
+            usize::try_from(MAXIMUM_BUILTIN_BYTES).map_err(|_| {
+                acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
+            })?,
+            work,
+        )?;
         work.charge(WorkCounters {
             bytes_hashed: before.len() as u64,
             ..WorkCounters::UNCHARGED
@@ -196,18 +210,20 @@ fn write_file(
         }
         file.rewind()?;
     }
-    let mut offset = 0;
-    while offset != content.len() {
+    let mut remaining = content;
+    while !remaining.is_empty() {
         let count = acyclic_fs::native_host::file_transfer(
             acyclic_native_runtime::NativeOperationKind::Write,
-            content.len() - offset,
+            remaining.len(),
             work,
-            || file.write(&content[offset..]),
+            || file.write(remaining),
         )?;
         if count == 0 {
             return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
         }
-        offset += count;
+        remaining = remaining
+            .get(count..)
+            .ok_or(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)?;
     }
     work.charge(WorkCounters {
         backend_write_operations: 1,

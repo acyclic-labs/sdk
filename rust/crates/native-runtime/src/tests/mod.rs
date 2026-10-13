@@ -45,7 +45,7 @@ fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
         match future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => return result,
             Poll::Pending if Instant::now() < deadline => {
-                std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()))
+                std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
             }
             Poll::Pending => return Err(io::ErrorKind::TimedOut.into()),
         }
@@ -269,10 +269,10 @@ fn bounded_write_file(path: &Path, writable: bool) -> io::Result<NativeFile> {
         use std::os::windows::fs::OpenOptionsExt as _;
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED);
         // SAFETY: the exact open above supplies the required flag.
-        return unsafe {
+        unsafe {
             NativeFile::from_overlapped_file_unchecked(options.open(path)?, None)
                 .map_err(|(error, _)| error)
-        };
+        }
     }
     #[cfg(not(windows))]
     NativeFile::from_file(options.open(path)?, None).map_err(|(error, _)| error)

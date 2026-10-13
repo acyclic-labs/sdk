@@ -130,20 +130,20 @@ pub(super) async fn observe_writeback(
 
 /// Caller proof is verified by the existing actor before entering this passive API.
 pub(crate) async fn passive_status(
-    runtime: &PiTaskRuntime,
-    filesystem: &Arc<PiNativeFilesystem>,
-    stream: &std::sync::Arc<LocalStream>,
-    resources: &crate::ServiceResources,
+    runtime_filesystem_stream_resources: (
+        &PiTaskRuntime,
+        &Arc<PiNativeFilesystem>,
+        &std::sync::Arc<LocalStream>,
+        &crate::ServiceResources,
+    ),
     protected: &PiOwnerConfig,
-    session: &str,
-    native_session: &str,
-    caller: acyclic_harness::TaskId,
-    sdk_operation: &str,
-    source: acyclic_harness::TaskId,
-    root: &str,
-    paths: &[Value],
+    session_native_session_caller: (&str, &str, acyclic_harness::TaskId),
+    sdk_operation_source_root_paths: (&str, acyclic_harness::TaskId, &str, &[Value]),
     work: &NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    let (runtime, filesystem, stream, resources) = runtime_filesystem_stream_resources;
+    let (session, native_session, caller) = session_native_session_caller;
+    let (sdk_operation, source, root, paths) = sdk_operation_source_root_paths;
     if caller != protected.policy().root_task {
         return Err(denied(
             "writeback status belongs only to its original Root caller",

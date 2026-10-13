@@ -225,16 +225,32 @@ fn builtin_request(caller: TaskId, event: &str, arguments: &Value) -> RootResult
                 .unwrap_or_default(),
         },
         "NativeBuiltinWrite" => PiBuiltinIo::Write {
-            content: bounded_string(arguments, "content", MAXIMUM_BUILTIN_BYTES as usize)?
-                .to_owned(),
+            content: bounded_string(
+                arguments,
+                "content",
+                usize::try_from(MAXIMUM_BUILTIN_BYTES).map_err(|_| {
+                    acyclic_fs::NativeTreeMaterializationError::from(
+                        acyclic_fs::WorkError::Overflow,
+                    )
+                })?,
+            )?
+            .to_owned(),
         },
         "NativeBuiltinEdit" => match bounded_string(arguments, "phase", 5)? {
             "read" => PiBuiltinIo::EditRead {
                 maximum_bytes: maximum()?,
             },
             "write" => PiBuiltinIo::EditWrite {
-                content: bounded_string(arguments, "content", MAXIMUM_BUILTIN_BYTES as usize)?
-                    .to_owned(),
+                content: bounded_string(
+                    arguments,
+                    "content",
+                    usize::try_from(MAXIMUM_BUILTIN_BYTES).map_err(|_| {
+                        acyclic_fs::NativeTreeMaterializationError::from(
+                            acyclic_fs::WorkError::Overflow,
+                        )
+                    })?,
+                )?
+                .to_owned(),
                 expected_sha256: bounded_string(arguments, "expected_sha256", 64)?.to_owned(),
             },
             _ => return Err(invalid("unknown original builtin edit phase")),

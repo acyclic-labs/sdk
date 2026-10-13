@@ -50,7 +50,7 @@ pub(crate) async fn build_writeback_generations<'a>(
     if absolute_paths
         .0
         .windows(2)
-        .any(|paths| paths[0] == paths[1])
+        .any(|paths| matches!(paths, [left, right] if left == right))
     {
         return Err(selected_invalid("writeback repeats a selected path"));
     }
@@ -206,6 +206,8 @@ fn phase_operation(
     hash.update(operation.into_bytes());
     let digest = hash.finalize();
     let mut bytes = [0; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    for (target, byte) in bytes.iter_mut().zip(digest) {
+        *target = byte;
+    }
     acyclic_harness::OperationId::from_bytes(bytes)
 }

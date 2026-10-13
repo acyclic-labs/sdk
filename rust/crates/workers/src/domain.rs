@@ -643,13 +643,6 @@ pub fn export_typescript_with_metadata(
         .with_import_extension(Some("js"));
     let mut exports = additional;
     let mut messages = Vec::new();
-    fn paired<D, W>(config: &Config) -> (String, String)
-    where
-        D: TS + TryFrom<W>,
-        W: prost::Name + prost::Message + From<D>,
-    {
-        (W::full_name(), D::ident(config))
-    }
     macro_rules! export_roots {
         ($($root:ty),+ $(,)?) => { $(
             <$root as TS>::export_all(&config)?;
@@ -689,22 +682,23 @@ pub fn export_typescript_with_metadata(
         Error
     );
     export_roots!(JobState, ErrorCode, payload::Source, job_target::Target);
-    std::fs::write(
-        path.as_ref().join("workers/JobState.ts"),
-        format!(
-            "// Generated from Rust discriminants. Do not edit.\nexport type {} = {};\n",
+    for (name, inline) in [
+        (
             <JobState as TS>::ident(&config),
-            <JobState as TS>::inline(&config)
+            <JobState as TS>::inline(&config),
         ),
-    )?;
-    std::fs::write(
-        path.as_ref().join("workers/ErrorCode.ts"),
-        format!(
-            "// Generated from Rust discriminants. Do not edit.\nexport type {} = {};\n",
+        (
             <ErrorCode as TS>::ident(&config),
-            <ErrorCode as TS>::inline(&config)
+            <ErrorCode as TS>::inline(&config),
         ),
-    )?;
+    ] {
+        std::fs::write(
+            path.as_ref().join(format!("workers/{name}.ts")),
+            format!(
+                "// Generated from Rust discriminants. Do not edit.\nexport type {name} = {inline};\n"
+            ),
+        )?;
+    }
     exports.sort_by(|left, right| left.0.cmp(&right.0));
     let raw = exports
         .iter()
@@ -739,4 +733,12 @@ pub fn export_typescript_with_metadata(
         exports.into_iter().map(|(name, _)| name).collect(),
         messages,
     ))
+}
+
+fn paired<D, W>(config: &Config) -> (String, String)
+where
+    D: TS + TryFrom<W>,
+    W: prost::Name + prost::Message + From<D>,
+{
+    (W::full_name(), D::ident(config))
 }

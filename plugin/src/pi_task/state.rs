@@ -179,11 +179,10 @@ pub(super) fn advance(
             TransitionInput::Results(input),
         ) => {
             let allocating = matches!(&state, PiTaskState::Allocating { .. });
-            let operation = match state {
-                PiTaskState::Allocating { operation } | PiTaskState::Awaiting { operation } => {
-                    operation
-                }
-                _ => unreachable!(),
+            let (PiTaskState::Allocating { operation } | PiTaskState::Awaiting { operation }) =
+                state
+            else {
+                unreachable!()
             };
             let [result]: [CommandResult; 1] = input
                 .commands

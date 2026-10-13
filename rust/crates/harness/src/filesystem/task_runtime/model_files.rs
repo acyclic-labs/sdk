@@ -10,7 +10,7 @@ pub(super) async fn verify_native_model_files(
     for part in content.parts() {
         match part {
             ModelContentPart::File { file, policy } => {
-                verify_native_model_file(context, file, policy, work).await?
+                verify_native_model_file(context, file, policy, work).await?;
             }
             ModelContentPart::ToolResult {
                 content: ToolResultContent::Parts { parts },
