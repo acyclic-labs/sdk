@@ -25,14 +25,8 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         Limits::default(),
     )?;
     let harness = crate::runtime::Bindings {
-        tasks: TaskRegistry::default(),
-        tools: ToolRegistry::default(),
         scope: scope.clone(),
         concurrency: 1,
-        durable_host: None,
-        interactions: None,
-        content: None,
-        artifacts: None,
         policy: Some(root_policy),
         ..crate::runtime::Bindings::local()
     }
@@ -320,11 +314,8 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
     let scope = RuntimeScope::default();
     let context = TaskContext {
         harness: crate::runtime::Bindings {
-            tasks: TaskRegistry::default(),
-            tools: ToolRegistry::default(),
             scope: scope.clone(),
             concurrency: 1,
-            durable_host: None,
             ..crate::runtime::Bindings::local()
         }
         .build(None)?,

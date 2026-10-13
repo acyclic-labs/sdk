@@ -1,33 +1,35 @@
 use super::*;
 
 #[test]
-fn task_requirement_projection_rejects_missing_versions_and_cycles() {
-    let tools = BTreeSet::from([(String::from("tool"), String::from("2"))]);
-    let environment = TaskDependencyEnvironment::default();
-    let grants = BTreeSet::new();
-    let missing = dependency_fixture(&[("parent", &["task:leaf@1"])]);
-    assert!(validate_task_requirements(&missing, &tools, &environment, &grants, None).is_err());
-
-    let cycle = dependency_fixture(&[("left", &["task:right@1"]), ("right", &["task:left@1"])]);
-    let result = validate_task_requirements(&cycle, &tools, &environment, &grants, None);
-    assert!(result.is_err());
+fn task_requirements_reject_missing_versions_and_cycles() -> Result<()> {
+    assert!(
+        dependency_fixture(&[("parent", &["task:leaf@1"])])?
+            .build(None)
+            .is_err()
+    );
+    assert!(
+        dependency_fixture(&[("left", &["task:right@1"]), ("right", &["task:left@1"])])?
+            .build(None)
+            .is_err()
+    );
+    Ok(())
 }
 
 #[test]
-fn task_requirement_projection_checks_grants_and_extensions() {
-    let tasks = dependency_fixture(&[("root", &["grant:task:run", "extension:example.state@3"])]);
-    let mut environment = TaskDependencyEnvironment::default();
-    environment
-        .extensions
-        .insert((String::from("example.state"), 3));
-    let grants = BTreeSet::from([String::from("task:run")]);
+fn task_requirements_check_bound_grants_and_extensions() -> Result<()> {
+    let mut bindings = dependency_fixture(&[("root", &["grant:task:run"])])?;
+    bindings.scope = RuntimeScope::new(Capabilities::new(["task:run"]), Limits::default())?;
+    assert!(bindings.build(None).is_ok());
     assert!(
-        validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_ok()
+        dependency_fixture(&[("root", &["grant:task:run"])])?
+            .build(None)
+            .is_err()
     );
-    environment.extensions.clear();
-    assert!(
-        validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_err()
-    );
+    let mut bindings =
+        dependency_fixture(&[("root", &["grant:task:run", "extension:example.state@3"])])?;
+    bindings.scope = RuntimeScope::new(Capabilities::new(["task:run"]), Limits::default())?;
+    assert!(bindings.build(None).is_err());
+    Ok(())
 }
 
 #[tokio::test]
@@ -40,11 +42,8 @@ async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected(
     });
     let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
     let harness = crate::runtime::Bindings {
-        tasks: TaskRegistry::default(),
-        tools: ToolRegistry::default(),
         scope: scope.clone(),
         concurrency: 2,
-        durable_host: None,
         ..crate::runtime::Bindings::local()
     }
     .build(None)?
@@ -337,11 +336,8 @@ async fn independent_state_and_spawner_attest_the_full_request() -> Result<()> {
     assert!(TaskAdmissionRecord::from_canonical_value(unknown, &mut None).is_err());
     let harness = Bindings {
         tasks,
-        tools: ToolRegistry::default(),
-        resumable_tools: ResumableToolRegistry::default(),
         scope,
         concurrency: 1,
-        durable_host: None,
         state: Some(Arc::new(SplitState {
             task_id,
             record: record.clone(),
@@ -350,14 +346,7 @@ async fn independent_state_and_spawner_attest_the_full_request() -> Result<()> {
             task_id,
             record: record.clone(),
         })),
-        execution: None,
-        interactions: None,
-        interaction_resolver: None,
-        content: None,
-        artifacts: None,
-        policy: None,
-        fork_preparer: None,
-        workspaces: None,
+        ..Bindings::local()
     }
     .build(None)?;
     let admitted = harness
@@ -461,24 +450,13 @@ async fn durable_reattachment_requires_the_exact_admitted_definition() -> Result
     let polls = Arc::new(AtomicUsize::new(0));
     let harness = Bindings {
         tasks,
-        tools: ToolRegistry::default(),
-        resumable_tools: ResumableToolRegistry::default(),
         scope,
         concurrency: 1,
         durable_host: Some(Arc::new(IdentityHost {
             record,
             polls: Arc::clone(&polls),
         })),
-        state: None,
-        spawner: None,
-        execution: None,
-        interactions: None,
-        interaction_resolver: None,
-        content: None,
-        artifacts: None,
-        policy: None,
-        fork_preparer: None,
-        workspaces: None,
+        ..Bindings::local()
     }
     .build(None)?;
     let second = harness.task::<Value, u32>("test.second")?;
@@ -522,7 +500,7 @@ fn private_root_directory_grant_reads_descendants_without_write_authority() -> R
     assert!(read_granted(&grants, &file)?);
     assert!(!grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?));
     for capability in [
-        file.read_capability( &mut None)?,
+        file.read_capability(&mut None)?,
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.directory_read_capability("notes", &mut None)?,
         volume.directory_read_capability("notes/nested", &mut None)?,
@@ -583,21 +561,9 @@ async fn pinned_task_versions_coexist_without_implicit_latest_selection() -> Res
     ));
     let harness = Bindings {
         tasks,
-        tools: ToolRegistry::default(),
-        resumable_tools: ResumableToolRegistry::default(),
         scope: RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?,
         concurrency: 2,
-        durable_host: None,
-        state: None,
-        spawner: None,
-        execution: None,
-        interactions: None,
-        interaction_resolver: None,
-        content: None,
-        artifacts: None,
-        policy: None,
-        fork_preparer: None,
-        workspaces: None,
+        ..Bindings::local()
     }
     .build(None)?;
     for (version, expected) in [("1", 11), ("2", 12)] {
@@ -632,11 +598,8 @@ fn scoped_authority_never_widens_grants_or_limits() -> Result<()> {
             .is_err()
     );
     let harness = crate::runtime::Bindings {
-        tasks: TaskRegistry::default(),
-        tools: ToolRegistry::default(),
         scope: root,
         concurrency: 1,
-        durable_host: None,
         ..crate::runtime::Bindings::local()
     }
     .build(None)?;
