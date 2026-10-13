@@ -27,7 +27,11 @@ pub(super) fn task_original_work(
             });
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
+    if io.is_some() {
+        return Err(Error::Unsupported(
+            "native workflow requires original work".into(),
+        ));
+    }
     Ok(None)
 }
 
@@ -105,7 +109,10 @@ pub(super) async fn verify_task_execution_owner(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     #[cfg(not(feature = "filesystem"))]
-    let io = { let _ = io; None };
+    let io = {
+        let _ = io;
+        None
+    };
     host.verify_execution_owner(task, fence, io)?.await
 }
 

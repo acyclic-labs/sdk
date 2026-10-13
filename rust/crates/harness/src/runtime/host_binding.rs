@@ -84,9 +84,7 @@ impl AgentHarness {
             }
             match native {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Some(work) => {
-                    self.validate_native_resumed_scope(&resumed.0, observed.operation_id, work)?
-                }
+                Some(_) => self.scope.validate_resumed_scope(&resumed.0, io)?,
                 _ => {
                     self.scope.resume_sealed(resumed.0, observed.operation_id)?;
                 }

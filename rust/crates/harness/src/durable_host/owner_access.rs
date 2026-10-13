@@ -25,6 +25,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if !context.original_task_binding_matches(self.task_id(), &self.fence)
             || context.id() != self.operation_id()
             || !context
+                .harness
                 .original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
         {
             return Err(Error::Unauthorized(
