@@ -226,6 +226,12 @@ impl TaskContext {
         work: Option<&NativeWork>,
         scope: &RuntimeScope,
     ) -> Result<Option<((OperationId, Interaction), Option<NativeCustody>)>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io = None;
         let identity: (ComponentIdentity, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
@@ -236,18 +242,12 @@ impl TaskContext {
             _ => (policy.identity(), None),
         };
         if expected.is_some_and(|expected| expected != &identity.0) {
-            return Err(task_workflow_error(
-                work,
+            return Err(crate::executor::stock_boundary(
+                io.as_ref(),
                 crate::wire::ErrorCode::Conflict,
                 "policy identity changed after binding",
             ));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let io = work
-            .map(crate::filesystem::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let io = None;
         let future = policy.evaluate(invocation, scope, io.as_ref())?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
@@ -274,8 +274,8 @@ impl TaskContext {
             _ => (policy.identity(), None),
         };
         if after.0 != identity.0 {
-            return Err(task_workflow_error(
-                work,
+            return Err(crate::executor::stock_boundary(
+                io.as_ref(),
                 crate::wire::ErrorCode::Conflict,
                 "policy identity changed during evaluation",
             ));

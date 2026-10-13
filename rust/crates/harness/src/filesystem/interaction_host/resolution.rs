@@ -1,6 +1,116 @@
 use super::*;
 use crate::executor::with_history_io;
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    async fn inspect(
+        &self,
+        scope: Scope,
+        id: InteractionId,
+    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
+        self.verifier.verify(&scope, &mut None)?;
+        let result = self.read(id, None).await?;
+        if let Some((ticket, _)) = &result
+            && !scope.capabilities().contains(&ticket.viewer_grant())
+            && !scope.capabilities().contains(&ticket.responder_grant())
+        {
+            return Err(Error::Unauthorized(
+                "scope lacks interaction view grant".into(),
+            ));
+        }
+        Ok(result)
+    }
+
+    async fn resolve_answer(
+        &self,
+        operation_id: OperationId,
+        scope: Scope,
+        id: InteractionId,
+        expected_version: u64,
+        response: InteractionResponse,
+    ) -> Result<ResolutionReceipt> {
+        let ticket = self.open_resolution(&scope, id, expected_version).await?;
+        if ticket.kind == InteractionKind::Approval {
+            return Err(Error::Invalid("approval requires a decision".into()));
+        }
+        let request = self
+            .read_request(id, None)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
+        request.validate_response(&response, &mut None)?;
+        let answer = self
+            .stage_answer(id, expected_version, operation_id, &response, None)
+            .await?;
+        let resolution = InteractionResolution {
+            id: ticket.id,
+            expected_version,
+            outcome: InteractionOutcome::Answered {
+                answer: Box::new(answer),
+            },
+            detail: None,
+        };
+        resolution.validate(&ticket)?;
+        ResolutionReceipt::from_apply_result(
+            self.execute(
+                operation_id,
+                &scope,
+                Action::ResolveInteraction { resolution },
+                None,
+                None,
+            )
+            .await?,
+        )
+    }
+
+    async fn resolve_approval(
+        &self,
+        operation_id: OperationId,
+        scope: Scope,
+        id: InteractionId,
+        expected_version: u64,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<ResolutionReceipt> {
+        let ticket = self.open_resolution(&scope, id, expected_version).await?;
+        if ticket.kind != InteractionKind::Approval {
+            return Err(Error::Invalid("interaction is not an approval".into()));
+        }
+        let outcome = if approved {
+            InteractionOutcome::Approved
+        } else {
+            InteractionOutcome::Declined
+        };
+        let response = InteractionResponse::Approval { approved, reason };
+        let detail = Some(
+            self.stage_answer(id, expected_version, operation_id, &response, None)
+                .await?,
+        );
+        let resolution = InteractionResolution {
+            id: ticket.id,
+            expected_version,
+            outcome,
+            detail,
+        };
+        resolution.validate(&ticket)?;
+        ResolutionReceipt::from_apply_result(
+            self.execute(
+                operation_id,
+                &scope,
+                Action::ResolveInteraction { resolution },
+                None,
+                None,
+            )
+            .await?,
+        )
+    }
+}
+
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
     P: StreamProvider,
@@ -43,94 +153,6 @@ where
             ));
         }
         Ok(())
-    }
-
-    /// Resolves with the exact responder grant and pinned version.
-    pub async fn resolve(
-        &self,
-        operation_id: OperationId,
-        scope: &Scope,
-        resolution: InteractionResolution,
-        io: Option<&PreparationIo>,
-    ) -> Result<ApplyResult> {
-        self.execute(
-            operation_id,
-            scope,
-            Action::ResolveInteraction { resolution },
-            None,
-            io,
-        )
-        .await
-    }
-    /// Validates and publishes the answer to a pinned request.
-    pub async fn resolve_answer(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        id: InteractionId,
-        expected_version: u64,
-        response: InteractionResponse,
-    ) -> Result<ResolutionReceipt> {
-        let ticket = self.open_resolution(&scope, id, expected_version).await?;
-        if ticket.kind == InteractionKind::Approval {
-            return Err(Error::Invalid("approval requires a decision".into()));
-        }
-        let request = self
-            .read_request(id, None)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-        request.validate_response(&response, &mut None)?;
-        let answer = self
-            .stage_answer(id, expected_version, operation_id, &response, None)
-            .await?;
-        let resolution = InteractionResolution {
-            id: ticket.id,
-            expected_version,
-            outcome: InteractionOutcome::Answered {
-                answer: Box::new(answer),
-            },
-            detail: None,
-        };
-        resolution.validate(&ticket)?;
-        ResolutionReceipt::from_apply_result(
-            self.resolve(operation_id, &scope, resolution, None).await?,
-        )
-    }
-
-    /// Resolves the ticket's exact operation and argument digest.
-    pub async fn resolve_approval(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        id: InteractionId,
-        expected_version: u64,
-        approved: bool,
-        reason: Option<String>,
-    ) -> Result<ResolutionReceipt> {
-        let ticket = self.open_resolution(&scope, id, expected_version).await?;
-        if ticket.kind != InteractionKind::Approval {
-            return Err(Error::Invalid("interaction is not an approval".into()));
-        }
-        let outcome = if approved {
-            InteractionOutcome::Approved
-        } else {
-            InteractionOutcome::Declined
-        };
-        let response = InteractionResponse::Approval { approved, reason };
-        let detail = Some(
-            self.stage_answer(id, expected_version, operation_id, &response, None)
-                .await?,
-        );
-        let resolution = InteractionResolution {
-            id: ticket.id,
-            expected_version,
-            outcome,
-            detail,
-        };
-        resolution.validate(&ticket)?;
-        ResolutionReceipt::from_apply_result(
-            self.resolve(operation_id, &scope, resolution, None).await?,
-        )
     }
 
     async fn open_resolution(

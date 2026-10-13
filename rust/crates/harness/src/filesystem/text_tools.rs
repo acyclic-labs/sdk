@@ -1,16 +1,15 @@
-//! Portable text editing through the existing pinned content publication path.
-
+//! Portable text editing through pinned content publication.
 use super::FilesystemHost;
 use crate::{
     Error, IdempotencyKey, Result,
     conversation::{ContentGrant, FileRef, VolumeOperation, is_internal_path},
-    tool::edit::{exact_replace, validate_edit_bound},
+    tool::edit::{allocation, exact_replace, validate_edit_bound},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
 
 /// Exact text to locate and replace once in a pinned source file.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExactTextReplacement {
     /// Nonempty exact needle; overlapping matches are ambiguous.
@@ -21,10 +20,7 @@ pub struct ExactTextReplacement {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
     /// Edits one immutable source under separate verified read/write grants.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each authority, pinned input, finite bound and retry identity is explicit"
-    )]
+    #[allow(clippy::too_many_arguments)]
     pub async fn edit_text(
         &self,
         source: &FileRef,
@@ -50,10 +46,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &replacement.old_text,
             &replacement.new_text,
             maximum_bytes,
-            &mut crate::tool::edit::allocation(None, 0)?,
+            &mut allocation(None, 0)?,
         )?;
         let generation = self.file_generation(source, None)?;
-        self.put_content(source.volume(), write, source.path(), result.as_bytes(), source.descriptor().media_type(), source.display_name(), maximum_bytes, idempotency_key, Some(&generation), None)
+        self.put_content(
+            source.volume(),
+            write,
+            source.path(),
+            result.as_bytes(),
+            source.descriptor().media_type(),
+            source.display_name(),
+            maximum_bytes,
+            idempotency_key,
+            Some(&generation),
+            None,
+        )
         .await
     }
 }

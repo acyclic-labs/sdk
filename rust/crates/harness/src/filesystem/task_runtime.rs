@@ -2278,15 +2278,15 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "native transition requires original observer",
                     })?;
-                    let (value, custody) = session.latest_transition_with_native_work(work).await?;
-                    _transition_custody = Some(custody);
+                    let (value, custody) = session.latest_transition(Some(io)).await?;
+                    _transition_custody = custody;
                     value
                 } else {
                     _transition_custody = None;
-                    session.latest_transition().await?
+                    session.latest_transition(None).await?.0
                 };
                 #[cfg(target_arch = "wasm32")]
-                let mut transition = session.latest_transition().await?;
+                let mut transition = session.latest_transition(None).await?.0;
                 if advanced == maximum_transitions
                     && transition.as_ref().is_none_or(|value| {
                         matches!(value.status, MachineStatus::Suspended)
@@ -2449,7 +2449,7 @@ where
                         reason: "native input has no original command custody",
                     })?;
                     session
-                        .step_with_native_work(OperationId::from_bytes(bytes), key, input, custody)
+                        .step(OperationId::from_bytes(bytes), key, input, Some(&crate::filesystem::PreparationIo::from_native_custody(custody)))
                         .await?;
                 } else if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
@@ -2479,24 +2479,16 @@ where
                         }
                     };
                     session
-                        .step_with_native_work(OperationId::from_bytes(bytes), key, input, custody)
+                        .step(OperationId::from_bytes(bytes), key, input, Some(&crate::filesystem::PreparationIo::from_native_custody(custody)))
                         .await?;
                 } else {
                     session
-                        .step(
-                            OperationId::from_bytes(bytes),
-                            IdempotencyKey::new(format!("task-step:{revision}"))?,
-                            input,
-                        )
+                        .step(OperationId::from_bytes(bytes), IdempotencyKey::new(format!("task-step:{revision}"))?, input, None)
                         .await?;
                 }
                 #[cfg(target_arch = "wasm32")]
                 session
-                    .step(
-                        OperationId::from_bytes(bytes),
-                        IdempotencyKey::new(format!("task-step:{revision}"))?,
-                        input,
-                    )
+                    .step(OperationId::from_bytes(bytes), IdempotencyKey::new(format!("task-step:{revision}"))?, input, None)
                     .await?;
                 advanced += 1;
             }

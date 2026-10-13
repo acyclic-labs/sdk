@@ -1,7 +1,6 @@
 use super::*;
 
 use acyclic_fs::{CancellationToken, WorkBudget};
-
 use std::sync::atomic::Ordering;
 
 type Provider = crate::test_stream::LostSessionAck<MemoryStream>;
@@ -54,24 +53,6 @@ fn budget() -> WorkBudget {
         peak_allocation_bytes: bytes,
         ..WorkBudget::default()
     }
-}
-
-async fn fixture() -> Result<Arc<Provider>> {
-    let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-    let mut writer = with_content(&provider).await?;
-    for revision in 0..69 {
-        writer
-            .execute(
-                projection_command(u128::from(revision + 1), revision)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await?;
-    }
-    provider.forbid_writes.store(true, Ordering::SeqCst);
-    provider.reset_io();
-    Ok(provider)
 }
 
 mod checkpoints;

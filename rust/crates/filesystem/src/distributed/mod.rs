@@ -1,5 +1,6 @@
 //! Filesystem storage bindings over the canonical public service providers.
 
+use crate::async_storage::authority_error;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, GenerationId, Head, OperationId, ProposedCommit,
@@ -80,3 +81,6 @@ use records::*;
 mod accounting;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use records::{stream_key, stream_path};

@@ -124,12 +124,12 @@ impl TaskRegistry {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let io = None;
         for stored in &self.0 {
-            inspect_task_metadata(io.as_ref(), 1)?;
+            crate::model::charge_items(io.as_ref(), 1)?;
             if stored.identity().name == definition.identity.name
                 && stored.identity().version == definition.identity.version
             {
-                return Err(task_workflow_error(
-                    task_original_work(io.as_ref())?,
+                return Err(crate::executor::stock_boundary(
+                    io.as_ref(),
                     crate::wire::ErrorCode::Conflict,
                     "task version is already registered",
                 ));
@@ -282,7 +282,7 @@ impl TaskRegistry {
     ) -> Result<Self> {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         for definition in &self.0 {
-            inspect_task_metadata(Some(&io), 1)?;
+            crate::model::charge_items(Some(&io), 1)?;
             definition.require_native_identity(work)?;
         }
         let bytes = (self.0.len() * std::mem::size_of::<Arc<dyn RegisteredTaskDefinition>>()

@@ -78,10 +78,7 @@ fn digest(
             .checked_add(1 + 8 + path.as_str().len() as u64 + scalar)
             .ok_or(crate::WorkError::Overflow)?;
     }
-    let hashing = WorkCounters {
-        bytes_hashed: bytes,
-        ..WorkCounters::UNCHARGED
-    };
+    let hashing = codec_work(0, 0, bytes);
     work.admit(hashing)?;
     let digest =
         acyclic_stream::request::commit_digest(request).map_err(AuthorityStoreError::from)?;
@@ -134,10 +131,7 @@ fn qualified(
     let [record] = append.records.as_slice() else {
         return Ok(false);
     };
-    let encoding = WorkCounters {
-        bytes_encoded: 32,
-        ..WorkCounters::UNCHARGED
-    };
+    let encoding = codec_work(32, 0, 0);
     if work.is_native() {
         work.admit(encoding)?;
     }
@@ -316,7 +310,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let (records, epochs) = tails.ok_or_else(unavailable)?;
         drop(candidate);
         drop(observed);
-        work.release_opaque(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
+        work.release(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
         work.release_request()?;
         let epoch = self
             .read_at(authority_id, "/epochs", epochs - 1, work, |record, work| {
@@ -521,7 +515,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             drop(request);
             drop(observed);
             work.release_request()?;
-            work.release_opaque(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
+            work.release(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
             return work.finish(());
         }
         drop(observed);

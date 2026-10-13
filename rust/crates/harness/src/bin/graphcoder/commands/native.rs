@@ -405,7 +405,7 @@ pub(super) async fn execute(
                 .await?;
             json_line(
                 "checkpoint",
-                &json!({"task": caller, "checkpoint": session.checkpoint(), "transition": session.latest_transition().await?}),
+                &json!({"task": caller, "checkpoint": session.checkpoint(), "transition": session.latest_transition(None).await?.0}),
             )
         }
         "/read-path" => {

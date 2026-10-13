@@ -158,7 +158,7 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
 /// Layout the existing semantic event types without resolving any referenced content, interpreting grants, or conflating task and operation identities.
 fn render_payload(event_type: &str, bytes: &[u8]) -> Result<String> {
     use acyclic_harness::core::EventPayload;
-    let decoded = acyclic_harness::wire_codec::decode_event_payload(event_type, bytes)?;
+    let decoded = acyclic_harness::wire_codec::decode_event_payload(event_type, bytes, &mut None)?.0;
     let rendered = match decoded {
         EventPayload::ConversationMessageAppended { message } => format!(
             "transcript {:?} message={} sequence={}\ncontent {}\n",
