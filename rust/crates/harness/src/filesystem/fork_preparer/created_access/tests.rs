@@ -1,6 +1,6 @@
 use super::*;
 use crate::core::AggregateKind;
-use crate::durable_host::tests::created_resource_access::CreationFixture;
+use crate::durable_host::tests::created_fixture::CreationFixture;
 use crate::source_authorization::{
     ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
 };
@@ -20,7 +20,11 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     let birth = &fixture.original_root_births.as_ref().unwrap()[0];
     let owner = fixture
         .host
-        .journal_owner(fixture.root, &((&fixture.root_lease.reservation).into()), None)
+        .journal_owner(
+            fixture.root,
+            &((&fixture.root_lease.reservation).into()),
+            None,
+        )
         .await?;
     let agent = owner
         .authenticated_binding_agent(&mut Some(
@@ -89,12 +93,9 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
         .await?;
     admission_hold = hold;
     creator.bind_root_bootstrap_allocation_with_native_work(Arc::clone(&token), &work)?;
-    let root_context = owner.root_bootstrap_context(
-        &admission,
-        &token.witness.0,
-        &work,
-    )
-    .await?;
+    let root_context = owner
+        .root_bootstrap_context(&admission, &token.witness.0, &work)
+        .await?;
     let receipt = creator
         .verify_root_bootstrap_with_native_work(root_context, token.request(), &work)?
         .await?;
@@ -102,7 +103,8 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     let bare = crate::filesystem::root_source::FsRootProjectSourceProvider::new(
         fixture.filesystem.clone(),
         creator.issuer.audience(),
-        fixture.root, None,
+        fixture.root,
+        None,
         Some(&PreparationIo::from_native_work(&work)?),
     )?;
     let selection = ProjectSourceSnapshot {
@@ -127,7 +129,13 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
             Err(_) => true,
         }
     );
-    let policy = crate::filesystem::root_source::FsRootProjectSourceProvider::new(fixture.filesystem.clone(), creator.issuer.audience(), fixture.root, Some(token), Some(&PreparationIo::from_native_work(&work)?))?;
+    let policy = crate::filesystem::root_source::FsRootProjectSourceProvider::new(
+        fixture.filesystem.clone(),
+        creator.issuer.audience(),
+        fixture.root,
+        Some(token),
+        Some(&PreparationIo::from_native_work(&work)?),
+    )?;
     policy
         .verify_with_native_work(context(), &selection, &work)?
         .await?;

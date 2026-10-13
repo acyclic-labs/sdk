@@ -5,7 +5,7 @@ use crate::{
     conversation::{VolumeClass, VolumeRef},
     core::Authority,
     executor::json::JsonBounds,
-    executor::{stock_boundary, with_history_io},
+    executor::with_history_io,
     source_authorization::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
     },
@@ -105,7 +105,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             _native_custody,
         }))
     }
-    fn native_source(&self, project: &VolumeRef) -> Option<&FsRootNativeSource<A, O>> {
+    fn native_source(&self, project: &VolumeRef) -> Option<&Arc<FsRootNativeSource<A, O>>> {
         self.bootstrap
             .as_ref()
             .filter(|proof| &proof.request.volume == project)

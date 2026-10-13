@@ -68,7 +68,7 @@ struct BoundSummary {
 
 struct PreparationAttempt<'a, A, O> {
     preparer: &'a FilesystemForkPreparer<A, O>,
-    io: Option<PreparationIo>,
+    io: Option<&'a PreparationIo>,
     task_preparation: Option<&'a Arc<TaskResourcePreparation>>,
 }
 
@@ -300,10 +300,15 @@ where
 
     fn prepare<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<ForkReport>> {
         Box::pin(async move {
-            let attempt = self.attempt(self.task_preparation.as_ref())?;
+            let io = self.preparation_io(self.task_preparation.as_ref())?;
+            let attempt = PreparationAttempt {
+                preparer: self,
+                io: io.as_ref(),
+                task_preparation: self.task_preparation.as_ref(),
+            };
             self.check_request(
                 &request,
-                attempt.io.as_ref(),
+                attempt.io,
                 attempt.task_preparation.map(Arc::as_ref),
             )?;
             attempt.prepare(request).await
@@ -312,12 +317,13 @@ where
 
     fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>> {
         Box::pin(async move {
-            let this = self.attempt(self.task_preparation.as_ref())?;
-            self.check_request(
-                &request,
-                this.io.as_ref(),
-                this.task_preparation.map(Arc::as_ref),
-            )?;
+            let io = self.preparation_io(self.task_preparation.as_ref())?;
+            let this = PreparationAttempt {
+                preparer: self,
+                io: io.as_ref(),
+                task_preparation: self.task_preparation.as_ref(),
+            };
+            self.check_request(&request, this.io, this.task_preparation.map(Arc::as_ref))?;
             if request.authorized_source.is_some() && this.task_preparation.is_none() {
                 return Err(Error::Unauthorized(
                     "authorized workspace reconciliation requires its original preparation lease"

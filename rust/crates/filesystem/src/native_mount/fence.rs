@@ -20,12 +20,13 @@ pub(super) struct MountDestinationGuard {
 }
 
 /// The accepted fence path has no allocator or new cleanup-reservation ingress.
-pub(super) struct NativeFenceReleaseWork<'a, 'credit> {
-    pub(super) loan: &'a crate::materializer::NativeCleanupLoan<'credit>,
+pub(super) struct NativeFenceReleaseWork<'a> {
+    pub(super) credit: &'a crate::NativeWorkReservation,
+    pub(super) wait: Option<&'a crate::CancellationToken>,
     pub(super) pending: Option<crate::NativeWorkReservation>,
 }
 
-impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_, '_> {
+impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
     type Error = crate::NativeTreeMaterializationError;
     type Allocation = std::convert::Infallible;
     type CleanupWrite = std::convert::Infallible;
@@ -43,13 +44,13 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_, '_> {
         Self::Error::InvalidLayout
     }
     fn check(&self) -> Result<(), Self::Error> {
-        self.loan.check_wait()
+        self.credit.check_wait(self.wait)
     }
     fn admit(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
         if self.pending.is_some() {
             return Err(Self::Error::InvalidLayout);
         }
-        self.pending = Some(self.loan.admit_completed(delta)?);
+        self.pending = Some(self.credit.partition_work(delta, self.wait)?);
         Ok(())
     }
     fn record(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
@@ -59,7 +60,7 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_, '_> {
             .record_completed(delta)
     }
     fn started_io(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
-        self.loan.started_io(delta)
+        self.credit.started_io(delta, self.wait)
     }
     fn claim(&mut self, _bytes: u64) -> Result<Self::Allocation, Self::Error> {
         Err(Self::Error::InvalidLayout)
@@ -428,9 +429,9 @@ impl MountDestinationGuard {
         let registry = self.registry_file.as_ref().ok_or_else(invalid)?;
         let name = self.cleanup_name.as_ref().ok_or_else(invalid)?;
         let credit = self.birth_cleanup.as_mut().ok_or_else(invalid)?;
-        let loan = credit.loan(wait);
         let mut work = NativeFenceReleaseWork {
-            loan: &loan,
+            credit,
+            wait,
             pending: None,
         };
         // A contended registry is a real pending control. Do not spend an

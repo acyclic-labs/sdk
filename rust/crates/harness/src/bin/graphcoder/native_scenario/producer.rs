@@ -1,30 +1,68 @@
 use super::*;
-use acyclic_harness::runtime::TaskSpawner as _;
+use acyclic_harness::{
+    filesystem::{
+        BorrowedNativeVolumeBinding, FilesystemContentVerifier, FilesystemInteractionHost,
+        FsRootProjectSourceProvider, NativePreparationRoot, NativeProcessRequest,
+        NativeViewOptions, NativeVolumeNamespace, NativeVolumeView, ParentProjectController,
+        PreparationIo,
+    },
+    source_authorization::ProjectSourceSnapshot,
+    store::HistoryReader,
+};
+
 impl Producer {
+    pub(super) async fn file(
+        &self,
+        caller: &Caller,
+        volume: &VolumeRef,
+        path: &str,
+        bytes: &[u8],
+        media: &str,
+    ) -> Result<FileRef> {
+        let writer = ContentGrant::verify(
+            &caller.binding.verifier()?,
+            &caller.binding.scope,
+            volume,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        self.files
+            .put_content(
+                volume,
+                &writer,
+                path,
+                bytes,
+                media,
+                path,
+                PAYLOAD_BYTES,
+                &IdempotencyKey::new(OperationId::new().to_string())?,
+                None,
+                None,
+            )
+            .await
+    }
+
     pub(super) async fn native_command(&mut self, caller: &Caller) -> Result<Value> {
         use acyclic_harness::{
             InteractionId,
             core::EffectGuarantee,
             effect_host::TaskEffectPlan,
-            filesystem::{
-                BorrowedNativeVolumeBinding, FilesystemInteractionHost, NATIVE_PROCESS_EFFECT_KIND,
-                NativePreparationRoot, NativeProcessRequest, NativeViewOptions,
-                NativeVolumeNamespace, NativeVolumeView,
-            },
+            filesystem::NATIVE_PROCESS_EFFECT_KIND,
             interaction::{ApprovalBinding, Interaction, InteractionKind, InteractionTicket},
         };
         let operation = OperationId::new();
-        let approval = InteractionId::new_v4();
-        let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let verifier = issuer.verifier(&mut None)?;
+        let approval = InteractionId::new();
+        let verifier = caller.binding.verifier()?;
         let budget = self.config.tools.content_budget;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
         let fence = LeaseFence::from(&caller.lease.reservation);
         let owner = self
             .runtime
             .task_host()
-            .journal_owner(caller.task, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
+            .journal_owner(caller.task, &fence, Some(&io))
             .await?
             .into_native_shared(&work)?;
         let context = self
@@ -32,7 +70,6 @@ impl Producer {
             .task_context_with_native_work(caller.task, &fence, &work)
             .await?;
         context.verify_volume_owner(&owner, &work).await?;
-        let guards = [Arc::clone(&context)];
         let namespace = self.root.join("native-command-view");
         let preparation = self.root.join("native-command-preparation");
         for directory in [
@@ -50,48 +87,43 @@ impl Producer {
             maximum_volumes: 1,
             work_per_volume: budget,
         };
-        let (allocation, _allocation_custody) =
+        let (allocation, _custody) =
             NativePreparationRoot::witness(&namespace, &preparation, &work)?.await?;
         let generation = self.generation(&caller.project).await?;
-        let volumes = [BorrowedNativeVolumeBinding {
-            host: self.files.as_ref(),
-            volume: &caller.project,
-            generation: &generation,
-            namespace: &NativeVolumeNamespace::MaterializedDirectory,
-            path: "project",
-            writable: false,
-            verifier: &verifier,
-            scope: &caller.binding.scope,
-            publication: acyclic_fs::PublicationPermit::Unrestricted,
-        }];
         let view = NativeVolumeView::prepare(
             &owner,
-            &guards,
+            &[context],
             &allocation,
             &options,
-            &volumes,
-            &[None],
+            &[BorrowedNativeVolumeBinding {
+                host: self.files.as_ref(),
+                volume: &caller.project,
+                generation: &generation,
+                namespace: &NativeVolumeNamespace::MaterializedDirectory,
+                path: "project",
+                writable: false,
+                verifier: &verifier,
+                scope: &caller.binding.scope,
+                publication: acyclic_fs::PublicationPermit::Unrestricted,
+            }],
             &work,
         )?
         .await?;
-        #[cfg(windows)]
-        let (executable, argv) = (
+        let executable = if cfg!(windows) {
             PathBuf::from(
                 std::env::var_os("SystemRoot")
                     .ok_or_else(|| Error::NotFound("SystemRoot".into()))?,
             )
-            .join("System32/cmd.exe"),
-            vec![
-                "/d".into(),
-                "/c".into(),
-                "echo graphcoder-approved-command".into(),
-            ],
-        );
-        #[cfg(not(windows))]
-        let (executable, argv) = (
-            PathBuf::from("/bin/sh"),
-            vec!["-c".into(), "printf graphcoder-approved-command".into()],
-        );
+            .join("System32/cmd.exe")
+        } else {
+            PathBuf::from("/bin/sh")
+        };
+        let mut argv = if cfg!(windows) {
+            vec!["/d".into(), "/c".into()]
+        } else {
+            vec!["-c".into()]
+        };
+        argv.push("echo graphcoder-approved-command".into());
         let request = NativeProcessRequest {
             executable,
             argv,
@@ -106,46 +138,40 @@ impl Producer {
             standard_input: None,
             view: view.manifest().clone(),
         };
-        let request_file = write(
-            &self.files,
-            &caller.binding,
-            &caller.private,
-            "command/request.json",
-            &serde_json::to_vec(&request).map_err(invalid)?,
-            "application/json",
-            "request.json",
-            "native-command-request",
-        )
-        .await?;
-        let schema = write(
-            &self.files,
-            &caller.binding,
-            &caller.private,
-            "command/schema.json",
-            br#"{"type":"object"}"#,
-            "application/schema+json",
-            "schema.json",
-            "native-command-schema",
-        )
-        .await?;
+        let request_file = self
+            .file(
+                caller,
+                &caller.private,
+                "command/request.json",
+                &serde_json::to_vec(&request).map_err(invalid)?,
+                "application/json",
+            )
+            .await?;
+        let schema = self
+            .file(
+                caller,
+                &caller.private,
+                "command/schema.json",
+                br#"{"type":"object"}"#,
+                "application/schema+json",
+            )
+            .await?;
         let digest = request.approval_digest(caller.task, operation, None)?;
-        let interaction = Interaction::approval(
-            "Run the exact native qualification command".into(),
-            operation,
-            digest,
-        )?;
-        let prompt = write(
-            &self.files,
-            &caller.binding,
-            &caller.private,
-            "command/approval.json",
-            &serde_json::to_vec(&interaction).map_err(invalid)?,
-            "application/json",
-            "approval.json",
-            "native-command-approval",
-        )
-        .await?;
-        let interactions = FilesystemInteractionHost::new(
+        let prompt = self
+            .file(
+                caller,
+                &caller.private,
+                "command/approval.json",
+                &serde_json::to_vec(&Interaction::approval(
+                    "Run the exact native qualification command".into(),
+                    operation,
+                    digest,
+                )?)
+                .map_err(invalid)?,
+                "application/json",
+            )
+            .await?;
+        FilesystemInteractionHost::new(
             self.stream.clone(),
             self.files.clone(),
             &caller.binding.authority,
@@ -155,125 +181,92 @@ impl Producer {
             &caller.private,
             PAYLOAD_BYTES,
             None,
-        )?;
-        let ticket = InteractionTicket {
-            id: approval,
-            kind: InteractionKind::Approval,
-            request: prompt,
-            deadline_unix_ms: None,
-            approval: Some(ApprovalBinding {
-                operation_id: operation,
-                action_digest: digest,
-            }),
-        };
-        interactions
-            .open(OperationId::new(), caller.binding.scope.clone(), ticket)
-            .await?;
-        let plan = TaskEffectPlan {
-            provider: "graphcoder.native".into(),
-            guarantee: EffectGuarantee::AtMostOnce,
-            effect_kind: NATIVE_PROCESS_EFFECT_KIND.into(),
-            request: request_file,
-            result_schema: schema,
-        };
+        )?
+        .open(
+            OperationId::new(),
+            Some(&caller.binding.scope),
+            &InteractionTicket {
+                id: uuid::Uuid::from_bytes(approval.into_bytes()),
+                kind: InteractionKind::Approval,
+                request: prompt,
+                deadline_unix_ms: None,
+                approval: Some(ApprovalBinding {
+                    operation_id: operation,
+                    action_digest: digest,
+                }),
+            },
+            None,
+            None,
+        )
+        .await?;
         self.config
             .tools
             .commands
             .push(crate::native_tools::NativeCommandConfig {
                 caller: caller.task,
                 operation,
-                plan,
                 approval,
+                operation_directory: allocation.operation_directory.clone(),
+                root_identity: allocation.expected_identity.to_bytes(),
+                preparation_identity: allocation.expected_preparation_identity,
+                plan: TaskEffectPlan {
+                    provider: "graphcoder.native".into(),
+                    guarantee: EffectGuarantee::AtMostOnce,
+                    effect_kind: NATIVE_PROCESS_EFFECT_KIND.into(),
+                    request: request_file,
+                    result_schema: schema,
+                },
             });
-        Ok(
-            json!({ "caller": caller.task, "lease": caller.lease, "operation": operation,
-            "approval": approval, "source": self.references["right_project"] }),
-        )
+        Ok(json!({ "caller": caller.task, "lease": caller.lease, "operation": operation }))
     }
+
     pub(super) async fn seed(
         &mut self,
         caller: &mut Caller,
         label: &str,
         messages: usize,
     ) -> Result<()> {
-        let scratch = write(
-            &self.files,
-            &caller.binding,
-            &caller.private,
-            "scratch/caller-marker.txt",
-            format!("{label} private scratch; must never be copied as child scratch\n").as_bytes(),
-            "text/plain",
-            "caller-marker.txt",
-            &format!("{label}-scratch"),
-        )
-        .await?;
-        self.references.insert(format!("{label}_scratch"), scratch);
-        for index in 0..messages {
-            let file = write(
-                &self.files,
-                &caller.binding,
+        let scratch = self
+            .file(
+                caller,
                 &caller.private,
-                &format!("messages/{label}-{index}.txt"),
-                format!("{label} ORIGINAL CALLER transcript marker {index}\n").as_bytes(),
+                "scratch/caller-marker.txt",
+                format!("{label} private scratch; must never be copied as child scratch\n")
+                    .as_bytes(),
                 "text/plain",
-                "transcript.txt",
-                &format!("{label}-message-{index}"),
             )
             .await?;
+        self.references.insert(format!("{label}_scratch"), scratch);
+        for index in 0..messages {
+            let file = self
+                .file(
+                    caller,
+                    &caller.private,
+                    &format!("messages/{label}-{index}.txt"),
+                    format!("{label} ORIGINAL CALLER transcript marker {index}\n").as_bytes(),
+                    "text/plain",
+                )
+                .await?;
             if index == 0 {
                 self.references
                     .insert(format!("{label}_transcript"), file.clone());
             }
-            let sequence = caller
-                .aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::Invalid("caller conversation was not initialized".into()))?
-                .logical_revision()
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("caller conversation sequence overflow".into()))?;
             caller
-                .aggregate
-                .execute(
-                    Command {
-                        operation_id: OperationId::new(),
-                        idempotency_key: IdempotencyKey::new(format!("{label}-append-{index}"))?,
-                        expected_revision: caller.aggregate.reducer().revision(),
-                        scope: caller.binding.scope.clone(),
-                        causal_parent: None,
-                        action: Action::AppendConversationMessage {
-                            message: Box::new(ConversationMessage {
-                                id: uuid::Uuid::new_v4(),
-                                sequence,
-                                kind: MessageKind::User,
-                                content: file,
-                                attachments: Default::default(),
-                                reply_to: None,
-                                tool_call_id: None,
-                                extensions: Default::default(),
-                            }),
-                        },
-                    },
-                    None,
-                    &mut None,
-                )
+                .apply(Action::AppendConversationMessage {
+                    message: Box::new(caller.message(MessageKind::User, file)?),
+                })
                 .await?;
         }
-        for (suffix, text, key) in [
-            ("before", "baseline", "baseline"),
-            ("after", "selected generation", "selected"),
-        ] {
-            let file = write(
-                &self.files,
-                &caller.binding,
-                &caller.project,
-                "sentinel.txt",
-                format!("{label} project {text}\n").as_bytes(),
-                "text/plain",
-                "sentinel.txt",
-                &format!("{label}-project-{key}"),
-            )
-            .await?;
+        for (suffix, text) in [("before", "baseline"), ("after", "selected generation")] {
+            let file = self
+                .file(
+                    caller,
+                    &caller.project,
+                    "sentinel.txt",
+                    format!("{label} project {text}\n").as_bytes(),
+                    "text/plain",
+                )
+                .await?;
             self.references
                 .insert(format!("{label}_project_{suffix}"), file);
         }
@@ -283,6 +276,7 @@ impl Producer {
         );
         Ok(())
     }
+
     pub(super) async fn fork(
         &mut self,
         parent: &mut Caller,
@@ -294,44 +288,43 @@ impl Producer {
             kind: AggregateKind::Conversation,
             id: format!("qualification-{label}-{agent}"),
         };
-        let project = VolumeRef::new(
-            self.config.filesystem_provider.clone(),
-            (format!("{label}-project")).into(),
-            VolumeClass::Project,
-            VolumeOwner::Project("qualification-project".into()),
-            &mut None,
-        )?;
-        let private = VolumeRef::new(
-            self.config.filesystem_provider.clone(),
-            (format!("{label}-private")).into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
-        let result = VolumeRef::new(
-            self.config.filesystem_provider.clone(),
-            (format!("{label}-result")).into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
+        let [project, private, result] = [
+            (
+                "project",
+                VolumeOwner::Project("qualification-project".into()),
+            ),
+            ("private", VolumeOwner::Agent(agent)),
+            ("result", VolumeOwner::Agent(agent)),
+        ]
+        .map(|(suffix, owner)| {
+            VolumeRef::new(
+                self.config.filesystem_provider.clone(),
+                format!("{label}-{suffix}").into(),
+                if matches!(owner, VolumeOwner::Agent(_)) {
+                    VolumeClass::AgentPrivate
+                } else {
+                    VolumeClass::Project
+                },
+                owner,
+                &mut None,
+            )
+        });
+        let (project, private, result) = (project?, private?, result?);
         let operation = OperationId::new();
         let preparation_operation = OperationId::new();
         let preparation_task =
             acyclic_harness::runtime::task_id_for_admission(preparation_operation);
         let child_operation = OperationId::new();
-        let initial_prompt = format!("real isolated {label} qualification task");
-        let verifier = AuthorityIssuer::new(ISSUER, TEST_KEY, parent.binding.authority.clone())
-            .verifier(&mut None)
-            .expect("verifier copy");
+        let verifier = parent.binding.verifier()?;
         let admission = self
             .runtime
             .task_host()
             .observe_admission(parent.task)
             .await?;
+        let fence = LeaseFence::from(&parent.lease.reservation);
         let context = self
             .runtime
-            .task_context(parent.task, LeaseFence::from(&parent.lease.reservation))
+            .task_context(parent.task, fence.clone())
             .await?;
         let source_read = if let Some(source_task) = source.filter(|task| *task != parent.task) {
             let inspection = self
@@ -340,45 +333,60 @@ impl Producer {
                 .await?;
             let selected = inspection.project()?;
             let graph_root = self.config.project_source_root.ok_or_else(|| {
-                Error::Unsupported(
-                    "actual coordinator graph root source policy is not configured".into(),
-                )
+                Error::Unsupported("coordinator graph root source policy is not configured".into())
             })?;
-            let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
+            let policy = FsRootProjectSourceProvider::new(
                 self.files.clone(),
                 &self.config.owner.authority,
-                graph_root, None,
+                graph_root,
+                None,
                 None,
             )?;
-            let service_issuer = AuthorityIssuer::new(
+            let issuer = AuthorityIssuer::new(
                 &self.config.owner.issuer,
                 self.config.owner.key,
                 self.config.owner.authority.clone(),
             );
-            let owner = Arc::new(
-                self.runtime
-                    .task_host()
-                    .journal_owner(parent.task, &(LeaseFence::from(&parent.lease.reservation)), None)
-                    .await?
-                    .with_invocation_cancellation(&self.cancellation),
-            );
+            let owner = self
+                .runtime
+                .task_host()
+                .journal_owner(parent.task, &fence, None)
+                .await?
+                .with_invocation_cancellation(&self.cancellation);
             Some(
                 owner
-                    .authorize_project_source(&context, &service_issuer, policy.as_ref(), source_task, operation, &(acyclic_harness::source_authorization::ProjectSourceSnapshot {
+                    .authorize_project_source(
+                        &context,
+                        &issuer,
+                        policy.as_ref(),
+                        source_task,
+                        operation,
+                        &ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: selected.generation.clone(),
                             native_snapshot: None,
-                        }), 16 * 1024 * 1024, 16 * 1024 * 1024, None)
+                        },
+                        FORK_LIMITS.work,
+                        FORK_LIMITS.bytes,
+                        None,
+                    )
                     .await?,
             )
         } else {
             None
         };
+        let resolver = FilesystemContentVerifier::new(
+            self.files.clone(),
+            &verifier,
+            &parent.binding.scope,
+            PAYLOAD_BYTES,
+            None,
+        )?;
         let binding = recursive_fork_source(
             self.files.clone(),
             &self.stream,
             &parent.aggregate,
-            verifier,
+            verifier.copy(&mut None)?,
             parent.binding.scope.clone(),
             &context,
             RecursiveSourceSnapshot {
@@ -392,7 +400,7 @@ impl Producer {
             operation,
             &ForkToolArguments {
                 id: agent,
-                msg: initial_prompt.clone(),
+                msg: format!("real isolated {label} qualification task"),
                 source,
             },
             RecursiveForkConfig {
@@ -407,110 +415,145 @@ impl Producer {
                 history_limits: HISTORY_LIMITS,
             },
             source_read,
+            resolver.clone(),
             &self.cancellation,
         )
         .await?;
-        let projected_reference_grants = binding
-            .preparer
-            .required_reference_grants(&binding.request, None)
-            .await?;
-        let checkpoint = ForkSourceConfig {
+        self.config.fork_sources.push(ForkSourceConfig {
             caller: parent.task,
-            owner: parent.binding.clone(),
-            snapshot: parent
-                .aggregate
-                .reducer()
-                .snapshot(usize::MAX, &mut None)?
-                .0,
             request: binding.request.clone(),
-        };
-        self.config.fork_sources.push(checkpoint);
+        });
         let mut child = self.template.clone();
         child.operation_id = child_operation;
         child.parent = Some(parent.task);
         child.input = serde_json::to_value(&self.planned_commands[label]).map_err(invalid)?;
-        // Parent-owned scratch rights never become generic child rights.
         let mut grants = COMMON_GRANTS
             .iter()
             .map(|grant| (*grant).to_owned())
             .collect::<Vec<_>>();
-        let parent_project_read = parent
-            .project
-            .capability(VolumeOperation::Read, &mut None)?;
-        if admission.grants.contains(&parent_project_read) {
-            grants.push(parent_project_read);
-        }
-        for command in self.planned_commands.values() {
-            let capability = command.payload.read_capability(&mut None)?;
+        let capabilities =
+            std::iter::once(parent.project.capability(VolumeOperation::Read, &mut None)).chain(
+                self.planned_commands
+                    .values()
+                    .map(|command| command.payload.read_capability(&mut None)),
+            );
+        for capability in capabilities {
+            let capability = capability?;
             if admission.grants.contains(&capability) {
                 grants.push(capability);
             }
         }
-        for grant in &projected_reference_grants {
+        let state = parent.aggregate.reducer();
+        let preparation = &binding.request.preparation;
+        let history = HistoryReader::new(
+            &self.stream,
+            &parent.binding.authority,
+            &verifier,
+            &mut None,
+        )?
+        .fork_history(
+            state,
+            preparation.inherited_through_sequence,
+            HISTORY_LIMITS,
+            &mut None,
+        )
+        .await?;
+        let (references, _) = ParentProjectController::new(
+            &self.files,
+            state,
+            &verifier,
+            &parent.binding.scope,
+            &parent.project,
+            None,
+        )?
+        .inherited_reference_grants(
+            state,
+            agent,
+            &binding.request.attached_agents,
+            preparation.inherited_through_sequence,
+            preparation.maximum_inherited_messages as usize,
+            preparation.maximum_inherited_bytes,
+            preparation.maximum_inherited_references as usize,
+            resolver.as_ref(),
+            Some(&history),
+        )
+        .await?;
+        for grant in references {
             if grant.reader != agent {
                 return Err(Error::Unauthorized(
-                    "canonical projection unexpectedly grants another reader".into(),
+                    "canonical projection grants another reader".into(),
                 ));
             }
             grants.push(grant.capability()?);
         }
         child.grants = Capabilities::new(grants);
-        let fork_bytes = serde_json::to_vec(&binding.request).map_err(invalid)?;
-        if fork_bytes.len() as u64 > PAYLOAD_BYTES {
+        let bytes = serde_json::to_vec(&binding.request).map_err(invalid)?;
+        if bytes.len() as u64 > PAYLOAD_BYTES {
             return Err(Error::Invalid(
                 "retained fork command exceeds fixture artifact bound".into(),
             ));
         }
-        let command_file = context
-            .stage_file_once(OperationId::new(), &format!(".qualification-forks/{operation}.json"), &fork_bytes, "application/json", "fork-request.json", None).await.map(|(file, _)| file)?;
-        let command = WorkflowCommand {
-            operation_id: operation,
-            kind: FORK_PREPARE_TASK_COMMAND_KIND.into(),
-            payload: command_file.clone(),
-        };
+        let (command_file, _) = context
+            .stage_file_once(
+                OperationId::new(),
+                &format!(".qualification-forks/{operation}.json"),
+                &bytes,
+                "application/json",
+                "fork-request.json",
+                None,
+            )
+            .await?;
         let request = fork_preparation_request(
             &binding.preparer,
-            binding.request,
+            &binding.request,
             preparation_task,
             child,
-            command,
+            WorkflowCommand {
+                operation_id: operation,
+                kind: FORK_PREPARE_TASK_COMMAND_KIND.into(),
+                payload: command_file.clone(),
+            },
             FORK_LIMITS,
             None,
             vec![command_file, self.planned_commands[label].payload.clone()],
+            None,
         )?;
         let request_path = self
             .root
             .join("inputs")
             .join(format!("{label}-prepare.json"));
-        persist(
-            &request_path,
-            &json!({ "operation": preparation_operation, "parent": parent.task,
-            "caller_lease": parent.lease, "request": request }),
-        )
-        .await?;
         let report_path = self
             .root
             .join("inputs")
             .join(format!("{label}-report.json"));
-        self.preparations.push(json!({ "label": label, "parent": parent.task, "operation": preparation_operation,
-            "task": preparation_task, "child_task_operation": child_operation,
-            "request": request_path, "report": if source.is_none() { Some(report_path.clone()) } else { None },
-            "executed": source.is_none() }));
-        let child_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, child_authority.clone());
+        persist(
+            &request_path,
+            &json!({
+                "operation": preparation_operation, "parent": parent.task,
+                "caller_lease": parent.lease, "request": request,
+            }),
+        )
+        .await?;
+        self.preparations.push(json!({
+            "label": label, "parent": parent.task, "operation": preparation_operation,
+            "task": preparation_task, "child_task_operation": child_operation, "request": request_path,
+            "report": if source.is_none() { Some(&report_path) } else { None }, "executed": source.is_none(),
+        }));
         let grants = Capabilities::new(request.child.grants.iter().map(str::to_owned).chain([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
         ]));
-        let purpose = if source.is_none() {
-            "explicit-trusted-created-child"
-        } else {
-            "explicit-trusted-pending-child"
-        };
         let owner = AuthorityBinding {
-            authority: child_authority,
+            authority: child_authority.clone(),
             issuer: ISSUER.into(),
             key: TEST_KEY,
-            scope: child_issuer.issue(purpose, &grants, Some(agent), None, &mut None)?,
+            scope: AuthorityIssuer::new(ISSUER, TEST_KEY, child_authority).issue(
+                "explicit-trusted-child",
+                &grants,
+                Some(agent),
+                None,
+                &mut None,
+            )?,
         };
         if source.is_some() {
             self.config.tools.forks.push(NativeToolFork {
@@ -518,7 +561,7 @@ impl Producer {
                 child: owner,
                 project,
                 private_volume: private,
-                admission: request.child.clone(),
+                admission: request.child,
                 limits: FORK_LIMITS,
                 result_volume: Some(result),
             });
@@ -526,39 +569,32 @@ impl Producer {
         }
         let definition: Arc<TaskDefinition<ResourcePreparationRequest, ForkReport>> =
             self.runtime.harness().task("acyclic.fork_preparation@1")?;
-        let admitted = admitted_task(
+        if admitted_task(
             context
                 .admit(preparation_operation, &definition, request.clone())
                 .await?,
-        )?;
-        if admitted != preparation_task {
+        )? != preparation_task
+        {
             return Err(Error::Conflict(
                 "ordinary preparation task identity differs".into(),
             ));
         }
-        let preparation_lease = claim(&self.runtime, preparation_task, &self.worker).await?;
+        let lease = claim(&self.runtime, preparation_task, &self.worker).await?;
         let commands = self.runtime.commands().with_fork_preparer(binding.preparer);
-        let attempt = self
-            .runtime
-            .resume_task(preparation_lease.clone(), &commands, 16, None)
-            .await;
-        if let acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved { error, .. } = attempt {
+        if let acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved { error, .. } =
+            self.runtime.resume_task(lease, &commands, 16, None).await
+        {
             return Err(error);
         }
         let report: ForkReport = match self.runtime.task_host().outcome(preparation_task).await? {
             Some(Outcome::Succeeded(value)) => serde_json::from_value(value).map_err(invalid)?,
-            Some(Outcome::Failed { message }) => {
-                return Err(Error::Conflict(format!(
-                    "real fork {label} failed: {message}"
-                )));
-            }
+            Some(Outcome::Failed { message }) => return Err(Error::Conflict(message)),
             _ => {
                 return Err(Error::Unsupported(format!(
-                    "real fork {label} did not authoritatively complete; no synthetic report is allowed"
+                    "real fork {label} has no successful report"
                 )));
             }
         };
-        // Capture cannot widen the already admitted exact child rights.
         for grant in &report.reference_grants {
             if !request.child.grants.contains(&grant.capability()?) {
                 return Err(Error::Unauthorized(
@@ -566,9 +602,9 @@ impl Producer {
                 ));
             }
         }
-        let mut child_aggregate =
+        let mut aggregate =
             aggregate(&self.stream, self.files.clone(), &owner, &self.config).await?;
-        let seed = child_aggregate
+        let seed = aggregate
             .spawn_from_report(
                 &mut parent.aggregate,
                 report.clone(),
@@ -576,13 +612,10 @@ impl Producer {
                 owner.scope.clone(),
             )
             .await?;
-        let child_task = match self
+        let task = match self
             .runtime
             .task_host()
-            .admit_owned(
-                request.child.clone(),
-                LeaseFence::from(&parent.lease.reservation),
-            )
+            .admit_owned(request.child, fence)
             .await?
         {
             Admission::Accepted(task) => task,
@@ -591,33 +624,32 @@ impl Producer {
                 return Err(Error::Indeterminate(operation_id));
             }
         };
-        let child_lease = claim(&self.runtime, child_task, &self.worker).await?;
-        let child_lease_path = self
+        let lease = claim(&self.runtime, task, &self.worker).await?;
+        let lease_path = self
             .root
             .join("inputs")
             .join(format!("{label}-original-lease.json"));
-        persist(&child_lease_path, &child_lease).await?;
-        self.leases.insert(label.to_owned(), child_lease_path);
+        persist(&lease_path, &lease).await?;
+        self.leases.insert(label.to_owned(), lease_path);
         persist(
             &report_path,
-            &json!({ "report": report, "seed": seed,
-            "child": self.runtime.task_host().observe_admission(child_task).await? }),
+            &json!({
+                "report": report, "seed": seed,
+                "child": self.runtime.task_host().observe_admission(task).await?,
+            }),
         )
         .await?;
-        println!(
-            "native-scenario real-fork label={label} parent={} preparation={preparation_task} child={child_task}",
-            parent.task
-        );
         Ok(Some(Caller {
-            task: child_task,
+            task,
             binding: owner,
             project,
             private,
             result: Some(result),
-            aggregate: child_aggregate,
-            lease: child_lease,
+            aggregate,
+            lease,
         }))
     }
+
     async fn generation(
         &self,
         volume: &VolumeRef,

@@ -1,31 +1,26 @@
-//! Shared Rust-owned hosted Stream request projection for native and browser clients.
-use crate::http_response::{json_bytes, json_object, json_string, json_u64};
+//! Hosted Stream requests shared by native and browser clients.
 use crate::{MAX_COMMAND_BYTES, TOKEN_OPERATIONS, memory, wire, wire_codec};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use prost::Message;
-use serde_json::Value;
+use serde_json::{Value, json};
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
-fn optional_key_json(value: Option<&crate::IdempotencyKey>) -> Option<Value> {
-    value.map(|value| json_bytes(value.as_bytes()))
-}
-
-fn options_json(
-    sequence_name: &str,
+fn options(
+    name: &str,
     sequence: Option<u64>,
     key: Option<&crate::IdempotencyKey>,
 ) -> Option<Value> {
-    let mut entries = Vec::new();
+    if sequence.is_none() && key.is_none() {
+        return None;
+    }
+    let mut value = json!({});
     if let Some(sequence) = sequence {
-        entries.push((sequence_name, json_u64(sequence)));
+        value[name] = json!(sequence.to_string());
     }
-    if let Some(key) = optional_key_json(key) {
-        entries.push(("idempotencyKey", key));
+    if let Some(key) = key {
+        value["idempotencyKey"] = json!(STANDARD.encode(key.as_bytes()));
     }
-    (!entries.is_empty()).then(|| json_object(entries))
-}
-
-fn valid_token_operation(value: &str) -> bool {
-    TOKEN_OPERATIONS.contains(&value)
+    Some(value)
 }
 
 fn valid_token_expiry(value: &str) -> bool {
@@ -48,7 +43,7 @@ fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
             || grant
                 .operations
                 .iter()
-                .any(|operation| !valid_token_operation(operation))
+                .any(|operation| !TOKEN_OPERATIONS.contains(&operation.as_str()))
         {
             return Err("invalid_argument");
         }
@@ -61,20 +56,19 @@ fn request_json_append(input: &[u8]) -> Result<Value> {
     let request = wire_codec::append_from_wire(request).map_err(|error| error.code())?;
     crate::request::validate_records(&request.records).map_err(|error| error.code())?;
     crate::request::validate_append_size(&request).map_err(|error| error.code())?;
-    let values = request
+    let values: Vec<_> = request
         .records
         .iter()
-        .map(|value| json_bytes(value))
+        .map(|value| STANDARD.encode(value))
         .collect();
-    let mut entries = vec![
-        ("path", json_string(request.path.to_string())),
-        ("values", Value::Array(values)),
-    ];
-    if let Some(options) = options_json("ifTail", request.if_tail, request.idempotency_key.as_ref())
-    {
-        entries.push(("options", options));
+    let mut value = json!({
+        "path": request.path.to_string(),
+        "values": values,
+    });
+    if let Some(options) = options("ifTail", request.if_tail, request.idempotency_key.as_ref()) {
+        value["options"] = options;
     }
-    Ok(json_object(entries))
+    Ok(value)
 }
 
 fn request_json_fork(input: &[u8]) -> Result<Value> {
@@ -84,15 +78,14 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
         return Err("invalid_argument");
     }
     crate::request::validate_fork_size(&request).map_err(|error| error.code())?;
-    let mut entries = vec![
-        ("source", json_string(request.source.to_string())),
-        ("destination", json_string(request.destination.to_string())),
-    ];
-    if let Some(options) = options_json("atTail", request.at_tail, request.idempotency_key.as_ref())
-    {
-        entries.push(("options", options));
+    let mut value = json!({
+        "source": request.source.to_string(),
+        "destination": request.destination.to_string(),
+    });
+    if let Some(options) = options("atTail", request.at_tail, request.idempotency_key.as_ref()) {
+        value["options"] = options;
     }
-    Ok(json_object(entries))
+    Ok(value)
 }
 
 fn request_json_commit(input: &[u8]) -> Result<Value> {
@@ -101,107 +94,64 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
     let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
     crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
     crate::request::validate_commit_shape(&request).map_err(|error| error.code())?;
-    let conditions = request
+    let conditions: Vec<_> = request
         .conditions
         .iter()
         .map(|condition| match condition {
-            crate::CommitCondition::Tail { path, expected } => json_object(vec![
-                ("path", json_string(path.to_string())),
-                ("ifTail", json_u64(*expected)),
-            ]),
-            crate::CommitCondition::Absent { path } => json_object(vec![
-                ("path", json_string(path.to_string())),
-                ("ifAbsent", Value::Bool(true)),
-            ]),
+            crate::CommitCondition::Tail { path, expected } => json!({
+                "path": path.to_string(),
+                "ifTail": expected.to_string(),
+            }),
+            crate::CommitCondition::Absent { path } => json!({
+                "path": path.to_string(),
+                "ifAbsent": true,
+            }),
         })
         .collect();
-    let mutations = request
-        .mutations
-        .iter()
-        .map(|mutation| match mutation {
-            crate::CommitMutation::Append { path, records } => json_object(vec![(
-                "append",
-                json_object(vec![
-                    ("path", json_string(path.to_string())),
-                    (
-                        "values",
-                        Value::Array(records.iter().map(|value| json_bytes(value)).collect()),
-                    ),
-                ]),
-            )]),
-            crate::CommitMutation::Fork {
-                source,
-                destination,
-                at_tail,
-                records,
-            } => json_object(vec![(
-                "fork",
-                json_object(vec![
-                    ("source", json_string(source.to_string())),
-                    ("destination", json_string(destination.to_string())),
-                    ("atTail", json_u64(*at_tail)),
-                    (
-                        "values",
-                        Value::Array(records.iter().map(|record| json_bytes(record)).collect()),
-                    ),
-                ]),
-            )]),
-        })
-        .collect();
-    let mut options = vec![(
-        "idempotencyKey",
-        json_bytes(request.idempotency_key.as_bytes()),
-    )];
+    let mutations: Vec<_> = request.mutations.iter().map(|mutation| match mutation {
+        crate::CommitMutation::Append { path, records } => json!({
+            "append": {
+                "path": path.to_string(),
+                "values": records.iter().map(|record| STANDARD.encode(record)).collect::<Vec<_>>(),
+            },
+        }),
+        crate::CommitMutation::Fork { source, destination, at_tail, records } => json!({
+            "fork": {
+                "source": source.to_string(),
+                "destination": destination.to_string(),
+                "atTail": at_tail.to_string(),
+                "values": records.iter().map(|record| STANDARD.encode(record)).collect::<Vec<_>>(),
+            },
+        }),
+    }).collect();
+    let mut value = json!({
+        "request": {
+            "conditions": conditions,
+            "mutations": mutations,
+        },
+        "options": { "idempotencyKey": STANDARD.encode(request.idempotency_key.as_bytes()) },
+    });
     if let Some(deadline) = deadline {
-        options.push(("deadlineUnixMillis", json_u64(deadline)));
+        value["options"]["deadlineUnixMillis"] = json!(deadline.to_string());
     }
-    Ok(json_object(vec![
-        (
-            "request",
-            json_object(vec![
-                ("conditions", Value::Array(conditions)),
-                ("mutations", Value::Array(mutations)),
-            ]),
-        ),
-        ("options", json_object(options)),
-    ]))
+    Ok(value)
 }
 
 fn request_json_tokens_create(input: &[u8]) -> Result<Value> {
     let request = wire::CreateTokenRequest::decode(input).map_err(|_| "invalid_argument")?;
     validate_token_request(&request)?;
-    let allow = request
-        .allow
-        .iter()
-        .map(|grant| {
-            let mut entries = vec![(
-                "path",
-                json_string(
-                    wire_codec::path(grant.path.clone())
-                        .map_err(|error| error.code())?
-                        .to_string(),
-                ),
-            )];
-            if let Some(subtree) = grant.subtree {
-                entries.push(("subtree", Value::Bool(subtree)));
-            }
-            entries.push((
-                "operations",
-                Value::Array(
-                    grant
-                        .operations
-                        .iter()
-                        .map(|operation| json_string(operation.clone()))
-                        .collect(),
-                ),
-            ));
-            Ok(json_object(entries))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(json_object(vec![
-        ("expiresIn", json_string(request.expires_in)),
-        ("allow", Value::Array(allow)),
-    ]))
+    let allow = request.allow.iter().map(|grant| {
+        let mut value = json!({
+            "path": wire_codec::path(grant.path.clone()).map_err(|error| error.code())?.to_string(),
+            "operations": grant.operations,
+        });
+        if let Some(subtree) = grant.subtree { value["subtree"] = json!(subtree); }
+        Ok(value)
+    }).collect::<Result<Vec<_>>>()?;
+    Ok(json!({
+        "expiresIn": request.expires_in,
+        "allow": allow,
+    }))
 }
 
 fn request_json(route: &str, input: &[u8]) -> Result<Value> {
@@ -214,15 +164,12 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 wire::InspectIdempotencyRequest::decode(input).map_err(|_| "invalid_argument")?;
             let key = crate::IdempotencyKey::new(request.idempotency_key)
                 .map_err(|_| "invalid_argument")?;
-            Ok(json_object(vec![(
-                "idempotencyKey",
-                json_bytes(key.as_bytes()),
-            )]))
+            Ok(json!({ "idempotencyKey": STANDARD.encode(key.as_bytes()) }))
         }
         "tail" => {
             let request = wire::TailRequest::decode(input).map_err(|_| "invalid_argument")?;
             let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
-            Ok(json_object(vec![("path", json_string(path.to_string()))]))
+            Ok(json!({ "path": path.to_string() }))
         }
         "append" => request_json_append(input),
         "fork" => request_json_fork(input),
@@ -230,21 +177,21 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
             let request = wire::ReadRequest::decode(input).map_err(|_| "invalid_argument")?;
             let request = wire_codec::read_from_wire(request).map_err(|error| error.code())?;
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
-            Ok(json_object(vec![
-                ("path", json_string(request.path.to_string())),
-                ("from", json_u64(request.from)),
-                ("limit", Value::from(request.limit)),
-            ]))
+            Ok(json!({
+                "path": request.path.to_string(),
+                "from": request.from.to_string(),
+                "limit": request.limit,
+            }))
         }
         "children" => {
             let request = wire::ChildrenRequest::decode(input).map_err(|_| "invalid_argument")?;
             let request = wire_codec::children_from_wire(request).map_err(|error| error.code())?;
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
-            let mut entries = vec![("limit", Value::from(request.limit))];
+            let mut value = json!({ "limit": request.limit });
             if let Some(parent) = request.parent {
-                entries.insert(0, ("parent", json_string(parent.to_string())));
+                value["parent"] = json!(parent.to_string());
             }
-            Ok(json_object(entries))
+            Ok(value)
         }
         "children/page" => {
             let request =
@@ -255,24 +202,24 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 return Err("invalid_argument");
             }
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
-            let mut entries = vec![("limit", Value::from(request.limit))];
+            let mut value = json!({ "limit": request.limit });
             if let Some(parent) = request.parent {
-                entries.insert(0, ("parent", json_string(parent.to_string())));
+                value["parent"] = json!(parent.to_string());
             }
             if let Some(after) = request.after {
-                entries.insert(0, ("after", json_string(after.to_string())));
+                value["after"] = json!(after.to_string());
             }
             if let Some(version) = request.hierarchy_version {
-                entries.insert(0, ("hierarchyVersion", json_bytes(version.as_bytes())));
+                value["hierarchyVersion"] = json!(STANDARD.encode(version.as_bytes()));
             }
-            Ok(json_object(entries))
+            Ok(value)
         }
         "commit" => request_json_commit(input),
         "commits/read" => {
             let request = wire::ReadCommitRequest::decode(input).map_err(|_| "invalid_argument")?;
-            let commit_id =
+            let id =
                 <[u8; 32]>::try_from(request.commit_id.as_ref()).map_err(|_| "invalid_argument")?;
-            Ok(json_object(vec![("commitId", json_bytes(&commit_id))]))
+            Ok(json!({ "commitId": STANDARD.encode(id) }))
         }
         "tokens/create" => request_json_tokens_create(input),
         _ => Err("invalid_argument"),

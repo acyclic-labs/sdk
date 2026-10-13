@@ -16,6 +16,19 @@ fn denied_vector_growth_does_not_retain_storage() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn denied_text_growth_releases_its_preclaim() -> Result<()> {
+    use crate::store::history::HistoryIo;
+    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    budget.allocation_operations = 0;
+    let io = PreparationIo::from_budget(budget, &CancellationToken::new())?;
+    let mut text = String::new();
+    assert!(io.history_io().reserve_text(&mut text, 32).is_err());
+    assert_eq!(text.capacity(), 0);
+    assert_eq!(io.owned_bytes()?, 0);
+    Ok(())
+}
+
 #[tokio::test]
 async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
     let io = PreparationIo::from_budget(

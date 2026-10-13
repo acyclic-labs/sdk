@@ -5,13 +5,12 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     stager: &Checkout<A, O>,
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
-    snapshot: &HostSnapshot,
+    snapshot: &HostStat,
     maximum_extent_spans: u32,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
-    cancellation.check()?;
+    meter.cancellation().check()?;
     #[cfg(unix)]
     let file = source_root
         .open_file(host_path, &mut meter.clone())
@@ -28,7 +27,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let metadata = source_root
         .stat_file(&file, &mut meter.clone())
         .map_err(capture_demand_error)?;
-    if !metadata.file_type().is_file() {
+    if (metadata.file_type() != crate::demand::SourceNodeKind::RegularFile) {
         return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
     }
     ensure_same_host_node(snapshot, &metadata)?;
@@ -45,112 +44,22 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     capture_allocate(meter, native_bytes)?;
     let native = std::sync::Arc::new(positional);
     #[cfg(windows)]
-    let ranges = settled_sparse_ranges(
-        &native,
-        &metadata,
-        ranges,
-        maximum_extent_spans,
-        cancellation,
-        meter,
-    )
-    .await?;
-    let content = stage_host_ranges(stager, &native, &ranges, meter, staged_file_bytes).await?;
-    cancellation.check()?;
-    let after = source_root
-        .stat_file(native.as_file(), &mut meter.clone())
-        .map_err(capture_demand_error)?;
-    ensure_same_host_node(snapshot, &after)?;
-    let current = source_root
-        .stat(host_path, &mut meter.clone())
-        .map_err(capture_demand_error)?;
-    ensure_same_host_node(snapshot, &current)?;
-    cancellation.check()?;
-    meter.clone().check().map_err(capture_demand_error)?;
-    let bytes = vector_bytes(&ranges)
-        .checked_add(native_bytes)
-        .ok_or(WorkError::Overflow)?;
-    drop(ranges);
-    drop(native);
-    meter.clone().release(bytes).map_err(capture_demand_error)?;
-    Ok(content)
-}
-
-pub(super) fn append_staged_regular_state(
-    path: NamespacePath,
-    logical_bytes: u64,
-    exists_with_kind: bool,
-    canonical_metadata: FileMetadata,
-    ranges: Vec<(HostDataRange, StagedContent)>,
-    mutations: &mut Vec<AuthoredMutation>,
-    meter: &NativeMaterializationWork,
-) -> Result<(), CaptureError> {
-    {
-        let ranges_bytes =
-            ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        let count = ranges
-            .len()
-            .checked_add(2 + usize::from(logical_bytes != 0))
-            .ok_or(CaptureError::from(WorkError::Overflow))?;
-        capture_reserve(mutations, count, meter)?;
-        if exists_with_kind {
-            mutations.push(AuthoredMutation::Resize {
-                path: clone_capture_path(&path, meter)?,
-                logical_bytes: 0,
-            });
-        } else {
-            mutations.push(AuthoredMutation::CreateFile {
-                path: clone_capture_path(&path, meter)?,
-                bytes: acyclic_stream::OwnedBytes::new(),
-                metadata: canonical_metadata,
-            });
-        }
-        if logical_bytes != 0 {
-            mutations.push(AuthoredMutation::Resize {
-                path: clone_capture_path(&path, meter)?,
-                logical_bytes,
-            });
-        }
-        for (range, content) in ranges {
-            mutations.push(AuthoredMutation::WriteFromContent {
-                path: clone_capture_path(&path, meter)?,
-                offset: range.offset,
-                content,
-            });
-        }
-        meter
-            .clone()
-            .release(ranges_bytes)
-            .map_err(capture_demand_error)?;
-        mutations.push(AuthoredMutation::SetMetadata {
-            path,
-            metadata: canonical_metadata,
-        });
-        Ok(())
-    }
-}
-
-pub(super) async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &Checkout<A, O>,
-    native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
-    ranges: &[HostDataRange],
-    meter: &NativeMaterializationWork,
-    staged_file_bytes: &mut u64,
-) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
+    let ranges =
+        settled_sparse_ranges(&native, &metadata, ranges, maximum_extent_spans, meter).await?;
     let mut staged = capture_vec(ranges.len(), meter)?;
-    for range in ranges {
+    for range in &ranges {
         let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
-            std::sync::Arc::clone(native),
+            std::sync::Arc::clone(&native),
             range.offset,
             range.length,
         );
-        let stage_cancellation = meter.cancellation().clone();
-        let mut accounting = crate::kernel::KernelAccounting::native(meter, &stage_cancellation);
+        let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
         let content = stager
             .stage_content_with_accounting(
                 &mut bounded,
                 range.length,
                 &mut accounting,
-                &stage_cancellation,
+                meter.cancellation(),
             )
             .await;
         drop(bounded);
@@ -164,6 +73,22 @@ pub(super) async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStor
             .ok_or(CaptureError::from(WorkError::Overflow))?;
         staged.push((*range, content));
     }
+    meter.cancellation().check()?;
+    let after = source_root
+        .stat_file(native.as_file(), &mut meter.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &after)?;
+    let current = source_root
+        .stat(host_path, &mut meter.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &current)?;
+    meter.clone().check().map_err(capture_demand_error)?;
+    let bytes = vector_bytes(&ranges)
+        .checked_add(native_bytes)
+        .ok_or(WorkError::Overflow)?;
+    drop(ranges);
+    drop(native);
+    meter.clone().release(bytes).map_err(capture_demand_error)?;
     Ok(staged)
 }
 

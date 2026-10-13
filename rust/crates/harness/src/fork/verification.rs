@@ -56,6 +56,15 @@ impl CompositeForkVerifier {
             ));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if owned
+            .work()
+            .as_deref()
+            .is_some_and(|io| io.original_native_work().is_some())
+        {
+            admit_verifier_allocation(std::mem::size_of::<Self>(), owned.work())?;
+            owned.slots::<Self>(1)?;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _native_metadata = {
             let bytes = owned.retained();
             owned
@@ -71,8 +80,6 @@ impl CompositeForkVerifier {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_metadata,
         };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        admit_verifier_allocation(std::mem::size_of::<Self>(), owned.work())?;
         Ok(std::sync::Arc::new(verifier))
     }
 
@@ -80,7 +87,7 @@ impl CompositeForkVerifier {
     pub(crate) async fn activate(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<ObservedForkPublicationGuard> {
         seed.validate(work)?;
         let private = self.provider(
@@ -108,7 +115,7 @@ impl CompositeForkVerifier {
     pub async fn release_private_fence(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         seed.validate(work)?;
         let private = self.provider(
@@ -127,7 +134,7 @@ impl CompositeForkVerifier {
     pub async fn verify(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         seed.validate(work)?;
         let mut owned = CodecQuota::observed(work)?;
@@ -227,8 +234,21 @@ impl CompositeForkVerifier {
             )
             .await?;
             let verifier = self.provider(manifest.volume().provider(), owned)?;
-            let (bytes, retained) =
-                read_fork_manifest(verifier.as_ref(), seed, manifest, owned.work()).await?;
+            let (bytes, retained) = {
+                let future = verifier.read_manifest(seed, manifest, owned.work())?;
+                let frame = frame_bytes(&future);
+                let result = future.await;
+                let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
+                let result = release_frame(result, frame, owned.work());
+                if result.is_err() && retained != 0 {
+                    let _ = owned
+                        .work()
+                        .as_deref_mut()
+                        .expect("retained manifest observer")
+                        .release_owned(retained);
+                }
+                result
+            }?;
             if let Err(error) = owned.adopt(retained) {
                 drop(bytes);
                 if let Some(observer) = owned.work().as_deref_mut() {
@@ -248,7 +268,24 @@ impl CompositeForkVerifier {
                     "fork manifests exceed aggregate member limit".into(),
                 ));
             }
-            Self::verify_manifest_grants(seed, manifest, &items, owned)?;
+            for grant in &seed.reference_grants {
+                owned.checkpoint()?;
+                if grant.attachment_manifest.as_ref() == Some(manifest) && grant.file != *manifest {
+                    let mut member = false;
+                    for item in &items {
+                        owned.checkpoint()?;
+                        member |= item.file == grant.file;
+                    }
+                    if !member {
+                        return Err(
+                            owned.invalid("fork reference is not in its published manifest")
+                        );
+                    }
+                    if !seed.allows_manifest(manifest, grant.reader, owned)? {
+                        return Err(owned.invalid("fork omits a manifest attachment read grant"));
+                    }
+                }
+            }
             for item in items {
                 self.verify_file(
                     seed,
@@ -271,7 +308,12 @@ impl CompositeForkVerifier {
         reference_bytes: &mut BTreeMap<&'a ProviderRef, u64>,
         owned: &mut CodecQuota<'_, '_>,
     ) -> Result<()> {
-        let capability = owned.file_digest(file)?;
+        file.validate(owned.work())?;
+        let capability = crate::executor::json::canonical_json_digest(
+            file,
+            crate::store::default_projection_read_limits().maximum_bytes,
+            owned.work(),
+        )?;
         if verified_files.contains(&capability) {
             return Ok(());
         }
@@ -283,30 +325,5 @@ impl CompositeForkVerifier {
         let frame = frame_bytes(&future);
         let result = future.await;
         release_frame(result, frame, owned.work())
-    }
-
-    pub(in crate::fork) fn verify_manifest_grants(
-        seed: &ForkSeed,
-        manifest: &FileRef,
-        items: &[crate::conversation::Attachment],
-        owned: &mut CodecQuota<'_, '_>,
-    ) -> Result<()> {
-        for grant in &seed.reference_grants {
-            owned.checkpoint()?;
-            if grant.attachment_manifest.as_ref() == Some(manifest) && grant.file != *manifest {
-                let mut member = false;
-                for item in items {
-                    owned.checkpoint()?;
-                    member |= item.file == grant.file;
-                }
-                if !member {
-                    return Err(owned.invalid("fork reference is not in its published manifest"));
-                }
-                if !seed.allows_manifest(manifest, grant.reader, owned)? {
-                    return Err(owned.invalid("fork omits a manifest attachment read grant"));
-                }
-            }
-        }
-        Ok(())
     }
 }

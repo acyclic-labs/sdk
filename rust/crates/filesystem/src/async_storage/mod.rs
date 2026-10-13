@@ -13,7 +13,6 @@ use crate::storage::{
 use acyclic_stream::{OwnedBytes, ProviderPlatform, ProviderTask};
 use std::any::{Any, TypeId};
 use std::future::Future;
-use std::mem::size_of;
 use std::sync::Arc;
 
 #[macro_use]

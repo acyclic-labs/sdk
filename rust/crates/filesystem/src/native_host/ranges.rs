@@ -133,20 +133,14 @@ pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
                         count * element,
                     )
                 };
-                let read = work
-                    .with_native_read_meter(|meter| {
-                        acyclic_native_runtime::device_control_in_place(
-                            file,
-                            FSCTL_QUERY_ALLOCATED_RANGES,
-                            input,
-                            output,
-                            Some((meter, acyclic_native_runtime::NativeOperationKind::Read)),
-                        )
-                    })
-                    .map_err(|error| {
-                        work.with_original_leaf(|original| original.take_native_io_failure())
-                            .unwrap_or_else(|| crate::demand::native_demand_error(error))
-                    });
+                let read = source_control(
+                    file,
+                    FSCTL_QUERY_ALLOCATED_RANGES,
+                    input,
+                    output,
+                    acyclic_native_runtime::NativeOperationKind::Read,
+                    work,
+                );
                 match read {
                     Ok(returned) => break returned,
                     Err(DemandError::Io(error))
@@ -211,4 +205,28 @@ pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
         return Err(error);
     }
     Ok(ranges)
+}
+
+#[cfg(windows)]
+pub(super) fn source_control<W: SourceDemandReadWork>(
+    file: &File,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+    kind: acyclic_native_runtime::NativeOperationKind,
+    work: &mut W,
+) -> Result<usize, DemandError> {
+    work.with_native_read_meter(|meter| {
+        acyclic_native_runtime::device_control_in_place(
+            file,
+            code,
+            input,
+            output,
+            Some((meter, kind)),
+        )
+    })
+    .map_err(|error| {
+        work.with_original_leaf(|original| original.take_native_io_failure())
+            .unwrap_or_else(|| crate::demand::native_demand_error(error))
+    })
 }

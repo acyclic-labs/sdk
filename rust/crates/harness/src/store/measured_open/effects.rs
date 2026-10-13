@@ -118,8 +118,6 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
     let receipt = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         None,
         crate::store::default_projection_read_limits(),
         budget(),
@@ -327,8 +325,6 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
     let failure = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         None,
         crate::store::default_projection_read_limits(),
         budget(),
@@ -351,8 +347,6 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
     let failure = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         None,
         crate::store::default_projection_read_limits(),
         budget(),
@@ -374,8 +368,6 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
         open_history(
             &provider,
             authority(),
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
             None,
             crate::store::default_projection_read_limits(),
             budget(),

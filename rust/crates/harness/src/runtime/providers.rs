@@ -1,48 +1,41 @@
 use super::*;
 
-fn unbound<'a, T>(reason: &'static str) -> BoxFuture<'a, Result<T>> {
-    Box::pin(async move { Err(Error::Unsupported(reason.into())) })
+fn unbound(reason: &str) -> Error {
+    Error::Unsupported(reason.into())
+}
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::NativeFutureBundle;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_unbound(reason: &'static str) -> Error {
+    Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Unsupported,
+        reason,
+    }
 }
 
 /// Provider boundary for stable durable admission and outcome observation.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
-    /// Requires the current uncancelled running lease before a fresh task step or dispatch.
-    fn verify_dispatch_owner<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable dispatch ownership is not bound")
-    }
-
-    /// Checks that this lease still owns execution or reconciliation.
-    fn verify_execution_owner<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable execution ownership is not bound")
-    }
-
     /// Native execution support is an allocation-free preflight, not authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_execution(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<bool> {
+    fn supports_native_execution(&self, _work: &NativeMaterializationWork) -> Result<bool> {
         Ok(false)
     }
 
     /// Charges one exact durable model attempt under the current task owner.
-    fn claim_model_dispatch<'a>(
-        &'a self,
+    async fn claim_model_dispatch(
+        &self,
         _task_id: TaskId,
         _attempt_id: OperationId,
         _step: u32,
         _request_digest: [u8; 32],
         _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable model accounting is not bound")
+    ) -> Result<()> {
+        Err(unbound("durable model accounting is not bound"))
     }
 
     /// Claims the same durable model attempt on its original native ledger.
@@ -54,17 +47,44 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
         _step: u32,
         _request_digest: [u8; 32],
         _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original-ledger model claim",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, ()>> {
+        Err(native_unbound(
+            "durable host has no original-ledger model claim",
+        ))
     }
 }
 
 /// Owner-bound durable task state, independently replaceable from admission and execution.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
+    /// Verifies the current dispatch owner on caller IO.
+    fn verify_dispatch_owner<'a>(
+        &'a self,
+        _task: TaskId,
+        _fence: &'a crate::scheduler::LeaseFence,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(crate::conversation::content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "durable dispatch ownership is not bound",
+        ))
+    }
+    /// Verifies the current execution owner on caller IO.
+    fn verify_execution_owner<'a>(
+        &'a self,
+        _task: TaskId,
+        _fence: &'a crate::scheduler::LeaseFence,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(crate::conversation::content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "durable execution ownership is not bound",
+        ))
+    }
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route retained and observable by this state owner.
@@ -75,59 +95,52 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     /// Borrows the policy identity on the original work.
     fn policy_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original native policy binding source",
-        })
+        Err(native_unbound(
+            "task state has no original native policy binding source",
+        ))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Borrows the execution identity on the original work.
     fn execution_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original native execution binding source",
-        })
+        Err(native_unbound(
+            "task state has no original native execution binding source",
+        ))
     }
     /// Reads the complete immutable admission for cross-provider attestation.
-    fn observe_admission<'a>(
-        &'a self,
-        task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>>;
+    async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord>;
 
     /// Native admission observation must preserve its original metadata custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn observe_admission_with_native_work<'a>(
         &'a self,
         _task: TaskId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>>
-    {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger admission observer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (TaskAdmissionRecord, NativeAllocation)>> {
+        Err(native_unbound(
+            "task state has no original-ledger admission observer",
+        ))
     }
     /// Discovers direct owner-retained children with revision-checked pagination.
-    fn children<'a>(
-        &'a self,
+    async fn children(
+        &self,
         _parent: TaskId,
         _expected_revision: Option<u64>,
         _after_slot: Option<String>,
         _maximum: usize,
-    ) -> BoxFuture<'a, Result<TaskChildrenPage>> {
-        unbound("durable task hierarchy is not bound")
+    ) -> Result<TaskChildrenPage> {
+        Err(unbound("durable task hierarchy is not bound"))
     }
     /// Authenticates and reconstructs the admitted scope after process restart.
-    fn resume_scope<'a>(
-        &'a self,
+    async fn resume_scope(
+        &self,
         task_id: TaskId,
         operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>>;
+    ) -> Result<RuntimeScope>;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Restores the admitted scope on the original work.
@@ -135,92 +148,56 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         _task: TaskId,
         _operation: OperationId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger scope producer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (RuntimeScope, NativeAllocation)>> {
+        Err(native_unbound(
+            "task state has no original-ledger scope producer",
+        ))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Verifies fresh dispatch ownership on the original work.
-    fn verify_dispatch_owner_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger fresh owner verifier",
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Verifies execution ownership on the original work.
-    fn verify_execution_owner_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger settlement owner verifier",
-        })
-    }
     /// Observes a terminal result or ordinary pending state without dispatch.
-    fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+    async fn outcome(&self, task_id: TaskId) -> Result<Option<Outcome<Value>>>;
 
     /// Native terminal observation never re-executes the admitted task.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn outcome_with_native_work<'a>(
         &'a self,
         _task: TaskId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Outcome<Value>>, acyclic_fs::NativeAllocation)>>
-    {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger outcome observer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (Option<Outcome<Value>>, NativeAllocation)>> {
+        Err(native_unbound(
+            "task state has no original-ledger outcome observer",
+        ))
     }
     /// Waits for a terminal result; providers may override polling.
-    fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
-        Box::pin(async move {
-            let mut delay_ms = 50_u64;
-            loop {
-                if let Some(outcome) = self.outcome(task_id).await? {
-                    return Ok(outcome);
-                }
-                crate::live::sleep_millis(delay_ms).await?;
-                delay_ms = delay_ms.saturating_mul(2).min(1_000);
+    async fn wait_outcome(&self, task_id: TaskId) -> Result<Outcome<Value>> {
+        let mut delay_ms = 50_u64;
+        loop {
+            if let Some(outcome) = self.outcome(task_id).await? {
+                return Ok(outcome);
             }
-        })
+            crate::live::sleep_millis(delay_ms).await?;
+            delay_ms = delay_ms.saturating_mul(2).min(1_000);
+        }
     }
     /// Requests cancellation without claiming a terminal result.
-    fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>>;
+    async fn cancel(&self, task_id: TaskId) -> Result<()>;
     /// Routes an addressable interaction through owner-retained state.
-    fn interact<'a>(
-        &'a self,
+    async fn interact(
+        &self,
         _task_id: TaskId,
         _operation_id: OperationId,
         _interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        unbound("durable interaction routing is not bound")
+    ) -> Result<InteractionOutcome> {
+        Err(unbound("durable interaction routing is not bound"))
     }
 
     /// Pure discovery before request validation or future construction.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_interactions(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger interaction route",
-        })
+    fn supports_native_interactions(&self, _work: &NativeMaterializationWork) -> Result<()> {
+        Err(native_unbound(
+            "task state has no original-ledger interaction route",
+        ))
     }
 
     /// Native routing is independently replaceable, never an ordinary fallback.
@@ -230,55 +207,42 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _task_id: TaskId,
         _operation_id: OperationId,
         _interaction: Interaction,
-        _request_custody: acyclic_fs::NativeAllocation,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>>
-    {
+        _request_custody: NativeAllocation,
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (InteractionOutcome, NativeAllocation)>> {
         let _paid = (_interaction, _request_custody);
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger interaction route",
-        })
+        Err(native_unbound(
+            "task state has no original-ledger interaction route",
+        ))
     }
     /// Publishes one idempotent ref-only mailbox item.
-    fn send<'a>(
-        &'a self,
+    async fn send(
+        &self,
         _sender: TaskId,
         _recipient: TaskId,
         _message_id: OperationId,
         _payload: FileRef,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable task mail is not bound")
+    ) -> Result<()> {
+        Err(unbound("durable task mail is not bound"))
     }
     /// Reads a bounded ordered inbox page.
-    fn inbox<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _after: u64,
-        _limit: usize,
-    ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
-        unbound("durable task inbox is not bound")
+    async fn inbox(&self, _task_id: TaskId, _after: u64, _limit: usize) -> Result<Vec<InboxItem>> {
+        Err(unbound("durable task inbox is not bound"))
     }
     /// Retains or reconciles an absolute timer wait.
-    fn wait_until<'a>(
-        &'a self,
+    async fn wait_until(
+        &self,
         _task_id: TaskId,
         _operation_id: OperationId,
         _deadline_unix_ms: u64,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable timers are not bound")
-    }
-    /// Observes one recorded effect without redispatching it.
-    fn reconcile_effect<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _effect_id: EffectId,
-    ) -> BoxFuture<'a, Result<crate::core::EffectStatus>> {
-        unbound("durable effect reconciliation is not bound")
+    ) -> Result<()> {
+        Err(unbound("durable timers are not bound"))
     }
 }
 
 /// Independently replaceable durable admission boundary.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
@@ -290,60 +254,53 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Borrows the policy identity on the original work.
     fn policy_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original native policy binding source",
-        })
+        Err(native_unbound(
+            "task spawner has no original native policy binding source",
+        ))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Borrows the execution identity on the original work.
     fn execution_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original native execution binding source",
-        })
+        Err(native_unbound(
+            "task spawner has no original native execution binding source",
+        ))
     }
     /// Publishes or reconciles one complete caller-identified admission.
-    fn admit<'a>(
-        &'a self,
-        request: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>>;
+    async fn admit(&self, request: TaskAdmissionRecord) -> Result<Admission<TaskId>>;
     /// Publishes a child only while this exact original parent lease is current.
-    fn admit_owned<'a>(
-        &'a self,
+    async fn admit_owned(
+        &self,
         _request: TaskAdmissionRecord,
         _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        unbound("owned child spawner is not bound")
+    ) -> Result<Admission<TaskId>> {
+        Err(unbound("owned child spawner is not bound"))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Admits a child under its original parent lease.
     fn admit_owned_with_native_work<'a>(
         &'a self,
-        request: (TaskAdmissionRecord, acyclic_fs::NativeAllocation),
-        fence: (crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation),
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Admission<TaskId>, acyclic_fs::NativeAllocation)>>
-    {
+        request: (TaskAdmissionRecord, NativeAllocation),
+        fence: (crate::scheduler::LeaseFence, NativeAllocation),
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (Admission<TaskId>, NativeAllocation)>> {
         drop(request);
         drop(fence);
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original-ledger owned admission producer",
-        })
+        Err(native_unbound(
+            "task spawner has no original-ledger owned admission producer",
+        ))
     }
     /// Observes one possibly lost admission without resubmission.
-    fn reconcile_admission<'a>(
-        &'a self,
+    async fn reconcile_admission(
+        &self,
         _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        unbound("durable admission reconciliation is not bound")
+    ) -> Result<Option<(TaskId, TaskAdmissionRecord)>> {
+        Err(unbound("durable admission reconciliation is not bound"))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -351,56 +308,37 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     fn reconcile_admission_with_native_work<'a>(
         &'a self,
         _operation: OperationId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<
-            'a,
-            (
-                Option<(TaskId, TaskAdmissionRecord)>,
-                acyclic_fs::NativeAllocation,
-            ),
-        >,
-    > {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original-ledger admission reconciliation producer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (Option<(TaskId, TaskAdmissionRecord)>, NativeAllocation)>>
+    {
+        Err(native_unbound(
+            "task spawner has no original-ledger admission reconciliation producer",
+        ))
     }
     /// Publishes the immutable request before any indexed child admission.
-    fn admit_batch<'a>(
-        &'a self,
-        _request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Vec<Admission<TaskId>>>> {
-        unbound("durable batch admission is not bound")
+    async fn admit_batch(&self, _request: DurableBatchRequest) -> Result<Vec<Admission<TaskId>>> {
+        Err(unbound("durable batch admission is not bound"))
     }
     /// Observes the original batch and current indexed admissions only.
-    fn reconcile_batch<'a>(
-        &'a self,
+    async fn reconcile_batch(
+        &self,
         _request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Option<Vec<Admission<TaskId>>>>> {
-        unbound("durable batch reconciliation is not bound")
+    ) -> Result<Option<Vec<Admission<TaskId>>>> {
+        Err(unbound("durable batch reconciliation is not bound"))
     }
     /// Loads a retained request by identity after the caller loses its inputs.
-    fn load_batch<'a>(
-        &'a self,
-        _batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<DurableBatchRequest>>> {
-        unbound("durable batch lookup is not bound")
+    async fn load_batch(&self, _batch_id: BatchId) -> Result<Option<DurableBatchRequest>> {
+        Err(unbound("durable batch lookup is not bound"))
     }
     /// Retains an idempotent cancellation declaration at the batch owner.
-    fn cancel_batch<'a>(
-        &'a self,
-        _batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<BatchCancellationReport>>> {
-        unbound("durable batch cancellation is not bound")
-    }
-    /// Whether this spawner can retain a cancellation declaration.
-    fn supports_batch_cancellation(&self) -> bool {
-        false
+    async fn cancel_batch(&self, _batch_id: BatchId) -> Result<Option<BatchCancellationReport>> {
+        Err(unbound("durable batch cancellation is not bound"))
     }
 }
 
 /// One replaceable execution route.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Immutable provider implementation pinned in every admitted placement.
     fn identity(&self) -> ComponentIdentity;
@@ -408,52 +346,45 @@ pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Borrows the provider identity on the original work.
     fn identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<&ComponentIdentity> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "execution provider has no original native identity source",
-        })
+        Err(native_unbound(
+            "execution provider has no original native identity source",
+        ))
     }
     /// Durable spawner for this provider's task build and environment.
     fn spawner(&self) -> Arc<dyn TaskSpawner>;
     /// Owner-bound observation and cancellation for the same route.
     fn state(&self) -> Arc<dyn TaskStateProvider>;
     /// Read-only qualification of one exact admitted task and its accessible input.
-    fn qualify<'a>(
-        &'a self,
-        request: &'a TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<ExecutionPlacement>>;
+    async fn qualify(&self, request: &TaskAdmissionRecord) -> Result<ExecutionPlacement>;
 }
 
 /// Replaceable owner-bound observer for an already planned provider effect.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
     /// Returns the latest attested status after querying the pinned attempt.
-    fn reconcile<'a>(
-        &'a self,
-        effect_id: EffectId,
-    ) -> BoxFuture<'a, Result<crate::core::EffectStatus>>;
+    async fn reconcile(&self, effect_id: EffectId) -> Result<crate::core::EffectStatus>;
 }
 
 /// Replaceable local interaction router.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
     /// Routes an interaction while retaining its payloads in the provider.
-    fn route<'a>(
-        &'a self,
+    async fn route(
+        &self,
         operation_id: OperationId,
         interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>>;
+    ) -> Result<InteractionOutcome>;
 
     /// Pure native support discovery, before building a callback future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_interactions(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "interaction router has no original-ledger implementation",
-        })
+    fn supports_native_interactions(&self, _work: &NativeMaterializationWork) -> Result<()> {
+        Err(native_unbound(
+            "interaction router has no original-ledger implementation",
+        ))
     }
 
     /// Moves the paid request into the original owner's guarded journal route.
@@ -462,15 +393,13 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
         _interaction: Interaction,
-        _request_custody: acyclic_fs::NativeAllocation,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>>
-    {
+        _request_custody: NativeAllocation,
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (InteractionOutcome, NativeAllocation)>> {
         let _paid = (_interaction, _request_custody);
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "interaction router has no original-ledger route",
-        })
+        Err(native_unbound(
+            "interaction router has no original-ledger route",
+        ))
     }
 }
 
@@ -478,32 +407,30 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
 pub type InteractionInspection = Option<(InteractionTicket, Option<InteractionResolution>)>;
 
 /// Owner-mediated resolver for versioned questions and approvals.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait InteractionResolver: acyclic_stream::ProviderPlatform {
     /// Reads the admitted request and current decision before a CAS reply.
-    fn inspect<'a>(
-        &'a self,
-        scope: Scope,
-        id: InteractionId,
-    ) -> BoxFuture<'a, Result<InteractionInspection>>;
+    async fn inspect(&self, scope: Scope, id: InteractionId) -> Result<InteractionInspection>;
 
     /// Stages and validates a question, choice, or form answer before CAS.
-    fn resolve_answer<'a>(
-        &'a self,
+    async fn resolve_answer(
+        &self,
         operation_id: OperationId,
         scope: Scope,
         id: InteractionId,
         expected_version: u64,
         response: InteractionResponse,
-    ) -> BoxFuture<'a, Result<ResolutionReceipt>>;
+    ) -> Result<ResolutionReceipt>;
 
     /// Accepts or declines only the ticket's pinned approval action.
-    fn resolve_approval<'a>(
-        &'a self,
+    async fn resolve_approval(
+        &self,
         operation_id: OperationId,
         scope: Scope,
         id: InteractionId,
         expected_version: u64,
         approved: bool,
         reason: Option<String>,
-    ) -> BoxFuture<'a, Result<ResolutionReceipt>>;
+    ) -> Result<ResolutionReceipt>;
 }

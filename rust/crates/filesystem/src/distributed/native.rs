@@ -1,61 +1,14 @@
 use super::*;
 
 impl<'a> AuthorityWork<'a> {
-    pub(super) fn operation(&self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
-        self.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
-            return Ok(Self::native(original, self.cancellation));
-        }
-        Ok(Self::new(self.remaining()?, self.cancellation))
-    }
-
     pub(super) fn absorb(&mut self, child: &AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
-        if self.is_native() {
-            return Ok(());
+        if !self.is_native() {
+            self.work = self
+                .work
+                .with_backend(child.spent(), self.allocations.live_bytes())?;
+            self.check()?;
         }
-        let mut delta = child.spent();
-        delta.peak_allocation_bytes = self
-            .allocations
-            .live_bytes()
-            .checked_add(delta.peak_allocation_bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        self.charge(delta)
-    }
-
-    pub(super) fn record_completed(
-        &mut self,
-        delta: WorkCounters,
-    ) -> Result<(), AuthorityStoreError> {
-        self.charge(delta)?;
-        self.check()
-    }
-
-    pub(super) fn admit(&self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
-        self.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
-            return original.admit(delta).map_err(AuthorityStoreError::from);
-        }
-        let mut admitted = delta;
-        admitted.peak_allocation_bytes = delta
-            .peak_allocation_bytes
-            .max(self.allocations.live_bytes())
-            .checked_add(self.opaque_live_upper_bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        self.work
-            .admit(&admitted, &self.budget)
-            .map_err(AuthorityStoreError::from)
-    }
-
-    pub(super) fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
-            let result = original.record_admitted(delta);
-            return result.map_err(AuthorityStoreError::from);
-        }
-        self.work.try_add_assign(&delta)?;
-        self.check()
+        Ok(())
     }
 
     pub(super) fn release(&mut self, bytes: u64) -> Result<(), AuthorityStoreError> {
@@ -82,23 +35,18 @@ impl<'a> AuthorityWork<'a> {
         if self.is_native() {
             return self.check();
         }
-        let next = self
+        self.admit(WorkCounters {
+            peak_allocation_bytes: self
+                .allocations
+                .live_bytes()
+                .checked_add(bytes)
+                .ok_or(crate::WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        })?;
+        self.opaque_live_upper_bytes = self
             .opaque_live_upper_bytes
             .checked_add(bytes)
             .ok_or(crate::WorkError::Overflow)?;
-        let peak = self
-            .allocations
-            .live_bytes()
-            .checked_add(next)
-            .ok_or(crate::WorkError::Overflow)?;
-        self.work.admit(
-            &WorkCounters {
-                peak_allocation_bytes: peak,
-                ..WorkCounters::default()
-            },
-            &self.budget,
-        )?;
-        self.opaque_live_upper_bytes = next;
         Ok(())
     }
 
@@ -157,72 +105,14 @@ impl<'a> AuthorityWork<'a> {
         Ok((value, Some(allocation)))
     }
 
-    pub(super) fn vec_owned<T>(
-        &mut self,
-        capacity: usize,
-    ) -> Result<(Vec<T>, AuthorityAllocation), AuthorityStoreError> {
-        self.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
-            let buffer = crate::native_host::buffer::<T, _>(capacity, &mut &*original)?;
-            self.check()?;
-            return Ok((buffer.0, Some(buffer.1)));
-        }
-        let bytes = capacity
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or(crate::WorkError::Overflow)? as u64;
-        self.admit(WorkCounters {
-            allocation_operations: u64::from(bytes != 0),
-            peak_allocation_bytes: self
-                .allocations
-                .live_bytes()
-                .checked_add(bytes)
-                .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let allocation_error = |error: crate::kernel::allocation::AllocationError| {
-            error.into_work_or(AuthorityStoreError::RejectedStatic(
-                "fork allocation failed",
-            ))
-        };
-        self.allocations
-            .claim_bytes(bytes, u64::from(bytes != 0), &mut self.work, self.budget)
-            .map_err(allocation_error)?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(capacity)
-            .map_err(|_| AuthorityStoreError::RejectedStatic("fork allocation failed"))?;
-        let actual = values
-            .capacity()
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or(crate::WorkError::Overflow)? as u64;
-        // Successful reserve guarantees capacity >= the requested element count.
-        self.allocations
-            .record_owned_bytes(actual - bytes, &mut self.work)
-            .map_err(allocation_error)?;
-        self.check()?;
-        Ok((values, None))
-    }
-
     pub(super) fn bytes(&mut self, payload: &[u8]) -> Result<Bytes, AuthorityStoreError> {
         let buffer = self.byte_buffer(&[], &[payload])?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
+        if self.original.is_some() {
             let mut buffer = buffer;
-            let mut control = original.claim(
+            buffer.1.as_mut().expect("native buffer custody").grow(
                 crate::kernel::allocation::bytes_owner_control_bytes::<ForkBytes>()?,
-                1,
-                WorkCounters::UNCHARGED,
             )?;
-            if let Err(error) = buffer
-                .1
-                .as_mut()
-                .expect("native buffer custody")
-                .absorb(&mut control)
-            {
-                drop(buffer);
-                return Err(error.into());
-            }
             return Ok(Bytes::from_owner(ForkBytes {
                 bytes: buffer.0,
                 _allocation: buffer.1.expect("native buffer custody"),
@@ -451,29 +341,19 @@ impl<'a> AuthorityWork<'a> {
         bytes: &[u8],
         domain: &[u8],
     ) -> Result<Epoch, AuthorityStoreError> {
-        let bytes = record_bytes::<8>(bytes, domain);
-        let delta = WorkCounters {
-            bytes_copied: if self.is_native() && bytes.is_some() {
-                8
-            } else {
-                0
-            },
-            ..WorkCounters::UNCHARGED
-        };
+        if self.is_native() {
+            self.check()?;
+        }
+        let bytes = record_bytes::<8>(bytes, domain)
+            .ok_or_else(|| authority_corrupt("invalid Stream epoch record", self))?;
         // Ordinary epoch reads retain main's unmetered fixed-header decode.
-        if self.is_native() {
-            self.admit(delta)?;
-        }
-        let result = bytes
-            .ok_or_else(|| authority_corrupt("invalid Stream epoch record", self))
-            .and_then(|bytes| {
-                Epoch::new(u64::from_le_bytes(*bytes))
-                    .map_err(|_| authority_corrupt("zero Stream epoch", self))
-            });
-        if self.is_native() {
-            self.charge(delta)?;
-        }
-        result
+        let bytes = if self.is_native() {
+            self.copy_array(bytes)?
+        } else {
+            *bytes
+        };
+        Epoch::new(u64::from_le_bytes(bytes))
+            .map_err(|_| authority_corrupt("zero Stream epoch", self))
     }
 
     pub(super) fn observe_record(
@@ -495,7 +375,10 @@ impl<'a> AuthorityWork<'a> {
         };
         match step {
             BeforeCopy(_) | BeforeHash(_) => self.admit(delta),
-            Copied(_) | Hashed(_) => self.record_completed(delta),
+            Copied(_) | Hashed(_) => {
+                self.charge(delta)?;
+                self.check()
+            }
             _ => unreachable!("validated decoder step"),
         }
     }
@@ -551,6 +434,13 @@ impl<'a> AuthorityWork<'a> {
     ) -> Result<[u8; N], AuthorityStoreError> {
         let bytes =
             record_bytes::<N>(value, domain).ok_or_else(|| authority_corrupt(invalid, self))?;
+        self.copy_array(bytes)
+    }
+
+    fn copy_array<const N: usize>(
+        &mut self,
+        bytes: &[u8; N],
+    ) -> Result<[u8; N], AuthorityStoreError> {
         let copied = WorkCounters {
             bytes_copied: N as u64,
             ..WorkCounters::UNCHARGED

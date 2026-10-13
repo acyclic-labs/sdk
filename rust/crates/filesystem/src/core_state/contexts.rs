@@ -378,11 +378,10 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 };
                 let mut change = Change::default();
                 for context_id in discarded {
-                    let replacement = records.get(context_id).cloned().ok_or_else(|| {
-                        LocalCoreStateStoreError::ContextTransaction(
-                            "discarded context replacement is absent".to_owned(),
-                        )
-                    })?;
+                    let replacement = records
+                        .get(context_id)
+                        .cloned()
+                        .ok_or(LocalCoreStateStoreError::Integrity)?;
                     change.put(
                         (
                             RecordKey::Context(*context_id),
@@ -571,11 +570,7 @@ pub(super) fn plan_local_context_subtree_discard(
         let maximum_bucket_bytes = count
             .checked_mul(64)
             .and_then(|bytes| bytes.checked_add(2))
-            .ok_or_else(|| {
-                LocalCoreStateStoreError::ContextTransaction(
-                    "workspace-context child bucket bound overflowed".to_owned(),
-                )
-            })?;
+            .ok_or(LocalCoreStateStoreError::Integrity)?;
         let descendants = log
             .get::<ContextChildren>(root_path, context_id, Some(maximum_bucket_bytes), None)?
             .map(|(value, _)| value)
@@ -596,25 +591,11 @@ pub(super) fn live_context_ids(
     root: &Namespace,
     log: &mut CoreLog,
 ) -> Result<Vec<WorkspaceContextId>, LocalCoreStateStoreError> {
-    let entries = match std::fs::read_dir(root.family(WORKSPACE_CONTEXT_FAMILY)) {
-        Ok(entries) => Some(entries),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
     let mut ids = BTreeSet::new();
-    for entry in entries.into_iter().flatten() {
-        let name = entry?.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(stem) = name.strip_suffix(".json") else {
-            continue;
-        };
-        let Ok(bytes) = hex::decode(stem) else {
-            continue;
-        };
-        let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
-            continue;
-        };
-        ids.insert(WorkspaceContextId::from_bytes(bytes));
+    for stem in collection::family_stems(root, WORKSPACE_CONTEXT_FAMILY, &[".json"])? {
+        if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
+            ids.insert(WorkspaceContextId::from_bytes(bytes));
+        }
     }
     ids.extend(log.resident_keys(|key| match key {
         RecordKey::Context(context_id) => Some(context_id),
@@ -627,9 +608,7 @@ pub(super) fn live_context_ids(
             .map(|(value, _)| value)
         {
             if context.context_id != context_id {
-                return Err(LocalCoreStateStoreError::ContextTransaction(
-                    "workspace context identity does not match its stored key".to_owned(),
-                ));
+                return Err(LocalCoreStateStoreError::Integrity);
             }
             live.push(context_id);
         }
@@ -647,11 +626,7 @@ pub(super) fn load_all_contexts(
         .map(|id| {
             log.get::<WorkspaceContext>(root, id, None, None)?
                 .map(|(value, _)| value)
-                .ok_or_else(|| {
-                    LocalCoreStateStoreError::ContextTransaction(
-                        "workspace context disappeared during locked discovery".to_owned(),
-                    )
-                })
+                .ok_or(LocalCoreStateStoreError::Integrity)
         })
         .collect()
 }

@@ -8,14 +8,12 @@ pub(super) enum CurrentRecord {
 
 /// What a hinted path held before this batch: a renamed record, nothing if it was moved away, or the checkout's current binding.
 pub(super) fn current_record(
-    rename_records: &Vec<(NamespacePath, FileRecord)>,
-    moved_away: &Vec<(NamespacePath, ())>,
+    rename_records: &[(NamespacePath, Option<FileRecord>)],
     path: &NamespacePath,
     meter: &NativeMaterializationWork,
 ) -> Result<CurrentRecord, CaptureError> {
     Ok(match capture_position(rename_records, path, meter)? {
-        Ok(index) => CurrentRecord::Known(Some(rename_records[index].1)),
-        Err(_) if capture_position(moved_away, path, meter)?.is_ok() => CurrentRecord::Known(None),
+        Ok(index) => CurrentRecord::Known(rename_records[index].1),
         Err(_) => CurrentRecord::Lookup,
     })
 }
@@ -23,7 +21,8 @@ pub(super) fn current_record(
 pub(super) fn watch_ancestor_candidates<'a>(
     paths: impl Iterator<Item = &'a NamespacePath>,
     ordinary: &Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
-    rename_records: &Vec<(NamespacePath, FileRecord)>,
+    rename_records: &Vec<(NamespacePath, Option<FileRecord>)>,
+    renamed_paths: usize,
     policy: &CapturePolicy,
     maximum_paths: usize,
     limits: crate::model::VolumeLimits,
@@ -34,13 +33,14 @@ pub(super) fn watch_ancestor_candidates<'a>(
         for depth in (1..path.depth()).rev() {
             let parent = clone_capture_prefix(path, depth, limits, meter)?;
             if capture_position(ordinary, &parent, meter)?.is_err()
-                && capture_position(rename_records, &parent, meter)?.is_err()
+                && !capture_position(rename_records, &parent, meter)?
+                    .is_ok_and(|index| rename_records[index].1.is_some())
                 && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
                 if combined_path_count_exceeds(
                     ancestors.len() + ordinary.len(),
-                    rename_records.len() + 1,
+                    renamed_paths + 1,
                     maximum_paths,
                 ) {
                     return Err(CaptureError::InvalidOptions);
@@ -86,23 +86,31 @@ pub(super) fn release_host_links(
     meter.clone().release(bytes).map_err(capture_demand_error)
 }
 
-pub(super) fn capture_within_any(
+fn below_replaced_parent(
     path: &NamespacePath,
-    ancestors: &[NamespacePath],
-    exclude_self: bool,
+    parents: &[(NamespacePath, Option<FileRecord>)],
     meter: &NativeMaterializationWork,
 ) -> Result<bool, CaptureError> {
-    for ancestor in ancestors {
+    for (parent, record) in parents {
         capture_charge(
             meter,
             WorkCounters {
-                items_examined: 2,
-                source_path_components: path.depth().min(ancestor.depth()) as u64,
+                items_examined: 1,
                 ..WorkCounters::UNCHARGED
             },
         )?;
-        if (!exclude_self || path != ancestor) && path.is_within(ancestor) {
-            return Ok(true);
+        if record.is_some() {
+            capture_charge(
+                meter,
+                WorkCounters {
+                    items_examined: 1,
+                    source_path_components: path.depth().min(parent.depth()) as u64,
+                    ..WorkCounters::UNCHARGED
+                },
+            )?;
+            if path != parent && path.is_within(parent) {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -115,79 +123,49 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
     source_root: &HostRoot,
     epoch: u64,
     maximum_paths: usize,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
-) -> Result<Vec<NamespacePath>, CaptureError> {
+) -> Result<Vec<(NamespacePath, Option<FileRecord>)>, CaptureError> {
     let mut missing = Vec::new();
-    let mut replaced = Vec::new();
-    let ancestors_bytes =
-        ancestors.capacity() as u64 * std::mem::size_of::<(NamespacePath, ())>() as u64;
+    let ancestors_bytes = vector_bytes(&ancestors);
     for (path, ()) in ancestors {
-        let below_replaced = capture_within_any(&path, &replaced, false, meter)?;
-        let current = if below_replaced {
+        let current = if below_replaced_parent(&path, &missing, meter)? {
             None
         } else {
-            let lookup = checkout
-                .lookup_no_follow(&path, meter, cancellation)
-                .await?;
-            lookup.record
+            checkout
+                .lookup_no_follow(&path, meter, meter.cancellation())
+                .await?
+                .record
         };
-
         let host_path = namespace_to_host_path_measured(&path, meter)?;
         let observation = observe_host_path(source_root, &host_path, meter)?;
         capture_drop_host_path(host_path, meter)?;
-        match observation {
-            Some(observation) if observation.is_dir() => {
-                if current.is_none_or(|record| record.kind != FileKind::Directory) {
-                    if current.is_some() {
-                        {
-                            capture_reserve(&mut replaced, 1, meter)?;
-                            replaced.push(clone_capture_path(&path, meter)?);
-                            ()
-                        };
-                    }
-                    {
-                        capture_reserve(&mut missing, 1, meter)?;
-                        missing.push(clone_capture_path(&path, meter)?);
-                        ()
-                    };
-                    {
-                        capture_replace(
-                            ordinary,
-                            path,
-                            (CurrentRecord::Known(current), CaptureIntent::Replace),
-                            meter,
-                        )
-                    }?;
-                } else {
-                    capture_drop_path(path, meter)?;
-                }
+        if !observation.is_some_and(|observation| observation.is_dir()) {
+            return Err(CaptureError::RescanRequired {
+                epoch,
+                reason: WatchInvalidationReason::NativeRescanRequired,
+            });
+        }
+        if current.is_some_and(|record| record.kind == FileKind::Directory) {
+            capture_drop_path(path, meter)?;
+        } else {
+            if combined_path_count_exceeds(ordinary.len(), missing.len() + 1, maximum_paths) {
+                return Err(CaptureError::InvalidOptions);
             }
-            _ => {
-                return Err(CaptureError::RescanRequired {
-                    epoch: epoch,
-                    reason: WatchInvalidationReason::NativeRescanRequired,
-                });
-            }
+            capture_reserve(&mut missing, 1, meter)?;
+            missing.push((path, current));
         }
     }
     meter
         .clone()
         .release(ancestors_bytes)
         .map_err(capture_demand_error)?;
-    if ordinary.len() > maximum_paths {
-        return Err(CaptureError::InvalidOptions);
-    }
-
     // Descendants of a replaced file or symlink were absent in the old view.
     for (path, (current, _)) in ordinary.iter_mut() {
-        if matches!(current, CurrentRecord::Lookup)
-            && capture_within_any(path, &replaced, true, meter)?
+        if matches!(current, CurrentRecord::Lookup) && below_replaced_parent(path, &missing, meter)?
         {
             *current = CurrentRecord::Known(None);
         }
     }
-    release_capture_paths(replaced, meter)?;
     Ok(missing)
 }
 
@@ -237,7 +215,6 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     source_root: &HostRoot,
     maximum_paths: u32,
     policy: &CapturePolicy,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let maximum = usize::try_from(maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
@@ -246,49 +223,35 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     }
     let limits = checkout.volume_config().limits;
     let profile = checkout.volume_config().profile;
-    let mut roots = capture_vec(ordinary.len(), meter)?;
+    let mut paths = Vec::new();
+    for (path, _) in ordinary.iter() {
+        capture_replace(&mut paths, clone_capture_path(path, meter)?, (), meter)?;
+    }
     for (path, (_, intent)) in ordinary.iter() {
-        // Expand newly arrived directories; ordinary directory hints already name changed children.
+        // Expand arriving directories; other hints already name their changed children.
         if !cfg!(target_os = "macos")
             && !matches!(intent, CaptureIntent::Replace | CaptureIntent::Arrived)
         {
             continue;
         }
-
         let host_path = namespace_to_host_path_measured(path, meter)?;
         let observation = observe_host_path(source_root, &host_path, meter)?;
-        if observation.is_some_and(|observation| observation.is_dir()) {
-            {
-                roots.push((host_path, clone_capture_path(path, meter)?));
-                ()
-            };
-        } else {
+        if !observation.is_some_and(|observation| observation.is_dir()) {
             capture_drop_host_path(host_path, meter)?;
+            continue;
         }
-    }
-    let mut paths = Vec::new();
-    for (path, _) in ordinary.iter() {
-        {
-            let path = clone_capture_path(path, meter)?;
-            capture_replace(&mut paths, path, (), meter)
-        }?;
-    }
-    let roots_bytes =
-        roots.capacity() as u64 * std::mem::size_of::<(CaptureHostPath, NamespacePath)>() as u64;
-    for (host_path, volume_path) in roots {
-        let host_volume_path = clone_capture_path(&volume_path, meter)?;
+        capture_drop_host_path(host_path, meter)?;
         collect_host_walk_measured(
             source_root,
             profile,
             limits,
-            host_path,
-            host_volume_path,
+            clone_capture_path(path, meter)?,
             policy,
             meter,
             |path, _, meter| append_scanned_path(&mut paths, path, maximum, meter),
         )?;
         let lookup = checkout
-            .lookup_no_follow(&volume_path, meter, cancellation)
+            .lookup_no_follow(path, meter, meter.cancellation())
             .await?;
         if lookup
             .record
@@ -297,33 +260,23 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
             collect_checkout_subtree_paths(
                 checkout,
                 limits,
-                volume_path,
+                clone_capture_path(path, meter)?,
                 policy,
                 maximum,
                 &mut paths,
-                cancellation,
                 meter,
             )
             .await?;
-        } else {
-            capture_drop_path(volume_path, meter)?;
         }
     }
-    meter
-        .clone()
-        .release(roots_bytes)
-        .map_err(capture_demand_error)?;
     let paths_bytes = vector_bytes(&paths);
     for (path, ()) in paths {
-        {
-            capture_entry(
-                ordinary,
-                path,
-                (CurrentRecord::Lookup, CaptureIntent::Complete),
-                meter,
-            )
-            .map(|_| ())
-        }?;
+        capture_entry(
+            ordinary,
+            path,
+            (CurrentRecord::Lookup, CaptureIntent::Complete),
+            meter,
+        )?;
     }
     meter
         .clone()

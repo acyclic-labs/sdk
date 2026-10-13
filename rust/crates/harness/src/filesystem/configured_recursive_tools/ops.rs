@@ -7,50 +7,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn authenticate<'a>(
-        &'a self,
-        context: &ToolContext,
-        project_read: bool,
-        cancellation: &CancellationToken,
-        io: Option<&PreparationIo>,
-    ) -> Result<&'a ConfiguredRecursiveCaller> {
-        check_cancellation(cancellation, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_some() {
-            let owner = self.source_owner(context.task(), cancellation, io).await?;
-            let caller = self
-                .authenticate_caller(context.task(), Some(&owner), project_read, io)
-                .await?;
-            let io = io.expect("native authentication observer");
-            for volume in std::iter::once(&caller.private_volume)
-                .chain(project_read.then_some(&caller.project))
-            {
-                crate::model::charge_items(Some(io), 1)?;
-                if !io.contains_capability(
-                    context.effective_scope().grants(),
-                    volume,
-                    "volume:read:",
-                )? {
-                    return Err(crate::executor::stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unauthorized,
-                        "native recursive tool effective scope denies its selected volume operation",
-                    ));
-                }
-            }
-            return Ok(caller);
-        }
-        self.authenticate_caller(context.task(), None, project_read, None)
-            .await
-    }
-    pub(super) async fn read(
-        &self,
-        context: &ToolContext,
-        file: &crate::conversation::FileRef,
-        io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        context.read_file(file, Some(io)).await
-    }
     pub(super) async fn source(
         &self,
         context: &ToolContext,
@@ -62,20 +18,11 @@ where
     ) -> Result<RetainedSourceBinding<A, O>> {
         let owner = self.source_owner(context.task(), cancellation, io).await?;
         let selected = match &request.authorized_source {
-            Some(authorization) => {
-                let selected = 'selection: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                        let handle = owner
-                            .restore_project_source_authorization(context.task(), authorization, io).await?;
-                        break 'selection handle;
-                    }
-                    owner
-                        .restore_project_source_authorization(context.task(), authorization, None)
-                        .await?
-                };
-                Some(selected)
-            }
+            Some(authorization) => Some(
+                owner
+                    .restore_project_source_authorization(context.task(), authorization, io)
+                    .await?,
+            ),
             None => None,
         };
         let verifier =

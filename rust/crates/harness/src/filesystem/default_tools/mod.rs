@@ -226,5 +226,6 @@ use validation::*;
 mod tests;
 pub(super) use codec::{
     decode, encode, recursive_box, recursive_decode_slot_bytes, recursive_reject,
-    recursive_transition_owned_bytes, recursive_value_owned_bytes,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use codec::{recursive_transition_owned_bytes, recursive_value_owned_bytes};

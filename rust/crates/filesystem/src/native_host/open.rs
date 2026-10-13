@@ -29,15 +29,6 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     create_directories_owned(directory, relative, work).map(|_| ())
 }
 
-pub(crate) fn create_directories_held<W: NativeHostWork>(
-    parent: &Dir,
-    path: &Path,
-    work: &mut W,
-) -> Result<Dir, W::Error> {
-    let directory = clone_directory(parent, work)?;
-    create_directories_owned(directory, path, work)
-}
-
 fn create_directories_owned<W: NativeHostWork>(
     mut current: Dir,
     path: &Path,
@@ -155,21 +146,11 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
             };
         unix_name(name.as_os_str(), work, |name, work| {
             let file = open_unix(parent.as_raw_fd(), name, flags, work)?;
-            loop {
-                match fstat(file.as_raw_fd(), work) {
-                    Ok(stat)
-                        if stat.st_mode & libc::S_IFMT as libc::mode_t
-                            == libc::S_IFREG as libc::mode_t =>
-                    {
-                        return Ok(file);
-                    }
-                    Ok(_) => return Err(W::invalid_request()),
-                    Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
+            let stat = fstat(file.as_raw_fd(), c"", work)?;
+            if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+                return Err(W::invalid_request());
             }
+            Ok(file)
         })
     }
 }
@@ -198,25 +179,6 @@ pub(crate) fn builtin_io(
     transferred?;
     copied?;
     Ok(count)
-}
-
-pub(crate) fn lock_builtin_file(
-    file: &File,
-    writable: bool,
-    work: &NativeMaterializationWork,
-) -> Result<(), NativeTreeMaterializationError> {
-    work.charge(READ)?;
-    match if writable {
-        file.try_lock()
-    } else {
-        file.try_lock_shared()
-    } {
-        Ok(()) => Ok(()),
-        Err(std::fs::TryLockError::WouldBlock) => {
-            Err(NativeTreeMaterializationError::PreimageConflict)
-        }
-        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
-    }
 }
 
 pub(crate) fn remove_leaf<W: NativeHostWork>(
@@ -345,5 +307,30 @@ pub(crate) fn remove_prepared_ascii_leaf<W: NativeHostWork, const N: usize>(
     #[cfg(windows)]
     {
         remove_windows_leaf(parent, &name.wide[..N - 1], false, None, work)
+    }
+}
+pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
+    root: &Dir,
+    #[cfg(unix)] path: &Path,
+    #[cfg(windows)] path: &[u16],
+    work: &mut W,
+    #[cfg(unix)] operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, W::Error>,
+    #[cfg(windows)] operation: impl FnOnce(&Dir, &[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    #[cfg(unix)]
+    let (parent, leaf) = (
+        path.parent().ok_or_else(W::invalid_request)?,
+        path.file_name().ok_or_else(W::invalid_request)?,
+    );
+    #[cfg(windows)]
+    let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+    let parent = directory_path(root, parent, false, work)?;
+    #[cfg(unix)]
+    {
+        unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work))
+    }
+    #[cfg(windows)]
+    {
+        operation(&parent, leaf, work)
     }
 }

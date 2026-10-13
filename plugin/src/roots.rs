@@ -274,7 +274,7 @@ impl SharedPhysicalRoot {
     /// acquisition exposes resident source backing to lazy restore callers.
     /// The caller authenticates before entry and keeps the returned tuple
     /// through its final original-owner proof.
-    fn observe_native_transaction(
+    pub(crate) fn observe_native_transaction(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(SharedRootObservation, NativeAllocation)> {

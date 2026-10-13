@@ -24,10 +24,7 @@ impl SchemaRegistry {
     pub const fn new() -> Self {
         Self { schemas: None }
     }
-    pub(crate) fn copy(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
+    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| copying::is_native(&**io)) {
             io.check_cancellation()?;
         }
@@ -115,7 +112,7 @@ impl SchemaRegistry {
     pub fn activation_order(
         &self,
         selected: &[ExtensionDependency],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Vec<ExtensionDependency>, u64)> {
         let mut owned = crate::fork::CodecQuota::observed(work)?;
         let mut chosen = BTreeMap::<&str, &ExtensionDependency>::new();
@@ -201,39 +198,35 @@ impl SchemaRegistry {
         name: &str,
         version: u32,
         expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&ExtensionBinding> {
-        let mut selected = None;
-        if let Some(schemas) = &self.schemas {
-            for ((candidate, candidate_version), binding) in schemas.iter() {
-                if let Some(io) = work.as_deref_mut() {
-                    io.check_cancellation()?;
-                }
-                if candidate == name && *candidate_version == version {
-                    selected = Some(binding);
-                    break;
-                }
+        for ((candidate, candidate_version), binding) in
+            self.schemas.iter().flat_map(|schemas| schemas.iter())
+        {
+            if let Some(io) = work.as_deref_mut() {
+                io.check_cancellation()?;
             }
+            if candidate != name || *candidate_version != version {
+                continue;
+            }
+            if expected.is_some_and(|(schema, implementation, policy)| {
+                schema != binding.schema_digest
+                    || implementation != binding.implementation_digest
+                    || policy != binding.fork_policy
+            }) {
+                return Err(crate::fork::boundary_error(
+                    work,
+                    crate::wire::ErrorCode::Conflict,
+                    "extension binding mismatch",
+                ));
+            }
+            return Ok(binding);
         }
-        let binding = selected.ok_or_else(|| {
-            crate::fork::boundary_error(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "extension implementation is not installed",
-            )
-        })?;
-        if expected.is_some_and(|(schema, implementation, policy)| {
-            schema != binding.schema_digest
-                || implementation != binding.implementation_digest
-                || policy != binding.fork_policy
-        }) {
-            return Err(crate::fork::boundary_error(
-                work,
-                crate::wire::ErrorCode::Conflict,
-                "extension binding mismatch",
-            ));
-        }
-        Ok(binding)
+        Err(crate::fork::boundary_error(
+            work,
+            crate::wire::ErrorCode::Unsupported,
+            "extension implementation is not installed",
+        ))
     }
 
     /// Validates exact extension content against its installed schema.
@@ -265,7 +258,7 @@ impl SchemaRegistry {
         &self,
         extension: &ExtensionDependency,
         content: &FileRef,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<ExtensionConfiguration> {
         extension.validate()?;
         let binding =
@@ -289,7 +282,7 @@ impl SchemaRegistry {
         &self,
         name: &str,
         version: u32,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         Ok(self
             .pinned_binding(name, version, None, work)?

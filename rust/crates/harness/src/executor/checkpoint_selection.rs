@@ -8,11 +8,7 @@ pub async fn canonical_checkpoint_for_operation(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<Option<FileRef>> {
-    #[cfg(feature = "filesystem")]
-    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    #[cfg(feature = "filesystem")]
-    let _records_hold;
-    let (_, records, hold) = replay_execution(
+    let records = replay_execution(
         journal,
         operation_id,
         1,
@@ -20,14 +16,7 @@ pub async fn canonical_checkpoint_for_operation(
         io,
     )
     .await?;
-    let records = retain_preparation((records, hold));
-    #[cfg(feature = "filesystem")]
-    {
-        _records_hold = io
-            .map(|io| io.guard_owned(io.owned_bytes()? - before))
-            .transpose()?;
-    }
-    let Some(record) = records.first() else {
+    let Some(record) = records.1.first() else {
         return Ok(None);
     };
     let ExecutionEvent::ContextCompacted {
@@ -111,27 +100,25 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         ));
     }
     #[cfg(feature = "filesystem")]
-    let begin = || {
-        io.map(|io| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.original_native_work() {
-                return PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new);
-            }
-            PreparationIo::from_budget(io.remaining()?, io.cancellation())
-                .map(crate::store::HistoryWork::new)
-        })
-        .transpose()
-    };
-    #[cfg(feature = "filesystem")]
-    let mut observer = begin()?;
-    #[cfg(feature = "filesystem")]
-    let mut work = observer
-        .as_mut()
-        .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-    #[cfg(not(feature = "filesystem"))]
-    let mut work = None;
-    let pinned = async {
-        let committed = history.pin(0, work.take()).await?;
+    let mut observer = io.map(PreparationIo::history_io);
+    {
+        #[cfg(feature = "filesystem")]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        #[cfg(feature = "filesystem")]
+        let _pin_hold;
+        #[cfg(feature = "filesystem")]
+        let work = observer
+            .as_mut()
+            .map(|work| work as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let work = None;
+        let committed = history.pin(0, work).await?;
+        #[cfg(feature = "filesystem")]
+        {
+            _pin_hold = io
+                .map(|io| io.guard_owned(io.owned_bytes()? - before))
+                .transpose()?;
+        }
         if cursor.authority != committed.authority {
             return Err(stock_boundary(
                 io,
@@ -146,77 +133,44 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
                 "checkpoint history cut is not committed",
             ));
         }
-        Ok(())
     }
-    .await;
-    #[cfg(feature = "filesystem")]
-    {
-        drop(work);
-        if let Some(observer) = observer {
-            if stock_is_native(io) {
-                pinned?;
-            } else {
-                io.expect("history observer has an original IO")
-                    .receive_content(observer.finish(pinned))?;
-            }
-        } else {
-            pinned?;
-        }
-    }
-    #[cfg(not(feature = "filesystem"))]
-    pinned?;
     let (envelope, retained) =
         load_canonical_checkpoint(journal, reference, limits, Some(scope), io).await?;
-    #[cfg(feature = "filesystem")]
-    let mut observer = begin()?;
     #[cfg(feature = "filesystem")]
     let mut work = observer
         .as_mut()
         .map(|work| work as &mut dyn crate::store::history::HistoryIo);
     #[cfg(not(feature = "filesystem"))]
     let mut work = None;
-    let result = async {
-        let (selection, consumed) = history
-            .operation_event(envelope.operation_id, maximum_history_bytes, &mut work)
-            .await?;
-        let selection = selection.ok_or_else(|| {
-            stock_boundary(io, Conflict, "checkpoint has no owning canonical selection")
-        })?;
-        let matches = match &selection.payload {
-            crate::core::EventPayload::ModelContextSelected { selection } => {
-                selection == &envelope.selection
-            }
-            _ => false,
-        };
-        if selection.revision <= cursor.after_revision
-            || selection.revision > cursor.through_revision
-            || !matches
-        {
-            return Err(stock_boundary(
-                io,
-                Conflict,
-                "checkpoint selection differs from its history cut",
-            ));
-        }
-        Ok((envelope, retained, consumed))
-    }
-    .await;
+    #[cfg(feature = "filesystem")]
+    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+    #[cfg(feature = "filesystem")]
+    let _selection_hold;
+    let (selection, consumed) = history
+        .operation_event(envelope.operation_id, maximum_history_bytes, &mut work)
+        .await?;
     #[cfg(feature = "filesystem")]
     {
-        drop(work);
-        if let Some(mut observer) = observer {
-            let io = io.expect("history observer has an original IO");
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_some() {
-                if result.is_ok() {
-                    observer.return_staged_output()?;
-                }
-                return result;
-            }
-            return io.receive_content(observer.finish(result));
-        }
+        _selection_hold = io
+            .map(|io| io.guard_owned(io.owned_bytes()? - before))
+            .transpose()?;
     }
-    result
+    let selection = selection.ok_or_else(|| {
+        stock_boundary(io, Conflict, "checkpoint has no owning canonical selection")
+    })?;
+    if selection.revision <= cursor.after_revision
+        || selection.revision > cursor.through_revision
+        || !matches!(&selection.payload,
+            crate::core::EventPayload::ModelContextSelected { selection }
+            if selection == &envelope.selection)
+    {
+        return Err(stock_boundary(
+            io,
+            Conflict,
+            "checkpoint selection differs from its history cut",
+        ));
+    }
+    Ok((envelope, retained, consumed))
 }
 
 pub(super) fn validate_checkpoint_json_reference(

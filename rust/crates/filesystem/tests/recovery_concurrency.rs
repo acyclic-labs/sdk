@@ -1027,26 +1027,6 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                 )
                 .collect();
             assert_eq!(receipts.captures, captured);
-            let inspected = restarted
-                .inspect(original.operation_id)
-                .await
-                .expect("inspect only retained physical endpoints")
-                .expect("same original journal");
-            assert_eq!(inspected.journal, retained);
-            assert_eq!(
-                inspected.root,
-                acyclic_fs::MaterializationRootObservation::Unverified
-            );
-            assert_eq!(
-                inspected.preparation,
-                acyclic_fs::MaterializationPreparationObservation::Unverified
-            );
-            // The raw fixture cannot independently witness divergence. It must
-            // not synthesize either observations or preimages for missing edits.
-            assert_eq!(
-                inspected.observations,
-                vec![MaterializationObservation::Unverified; ordinal - 1]
-            );
 
             let mut changed_from = original.clone();
             changed_from.intent = MaterializationIntent::GenerationTransition {

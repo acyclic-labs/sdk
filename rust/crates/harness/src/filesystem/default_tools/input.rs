@@ -105,14 +105,11 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<RecursiveForkSourceIntent> {
-        if let Some(io) = io {
-            io.charge(acyclic_fs::WorkCounters {
-                bytes_hashed: (b"harness/v2/configured-recursive-checkpoint\0".len() + 16) as u64,
-                ..Default::default()
-            })?;
-        }
-        let operation =
-            super::super::configured_recursive_tools::checkpoint_operation(invocation.operation_id);
+        let operation = super::super::recursive::derive_operation(
+            b"harness/v2/configured-recursive-checkpoint\0",
+            &[invocation.operation_id.into_bytes()],
+            io,
+        )?;
         let (original, _) = context.observe_staged_file_once(operation, io).await?;
         let intent = if let Some(file) = original {
             retained_payload(context, &file, self.maximum_request_bytes, cancellation, io).await?
@@ -122,7 +119,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .source
                 .as_ref()
                 .expect("authorized source")
-                .select(context, &arguments, cancellation, io)?
+                .select(context, &arguments, cancellation, io)
                 .await?;
             let ordinary;
             let observer = match io {
@@ -199,7 +196,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             let intent = intent
                 .ok_or_else(|| recursive_reject(io, Unauthorized, "fork source is not pinned"))?;
             let binding = source
-                .fork(context, &original, intent, None, cancellation, io)?
+                .fork(context, &original, intent, None, cancellation, io)
                 .await?;
             deny(
                 binding.source.request != intent.request
@@ -242,17 +239,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                         input,
                         input_io.take_native_custody(input_io.owned_bytes()?)?,
                     );
-                    let (admission, custody) = runtime
-                        .harness()
-                        .registered_child_admission_with_native_work(
-                            operation,
-                            "acyclic.fork_preparation",
-                            "1",
-                            input,
-                            caller,
-                            context.scope(),
-                            work,
-                        )?;
+                    let (admission, custody) = runtime.harness().registered_admission(
+                        operation,
+                        "acyclic.fork_preparation",
+                        "1",
+                        input,
+                        Some((caller, context.scope())),
+                        None,
+                        work,
+                    )?;
                     io.expect("native admission")
                         .absorb_native_custody(custody)?;
                     break 'admission admission;
@@ -281,7 +276,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         } else {
             let original: MergeToolArguments = decode(arguments, io)?;
             let binding = source
-                .merge(context, &original, None, cancellation, io)?
+                .merge(context, &original, None, cancellation, io)
                 .await?;
             validate_merge_binding(context, original.source, &binding, io)?;
             let controller = ParentProjectController::new(

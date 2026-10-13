@@ -219,12 +219,13 @@ impl AgentHarness {
                     descendants,
                     Arc::new((AtomicUsize::new(0), None)),
                     None,
-                    None,
+                    None::<NativeCustody>,
                     IssuedContextPurpose::Read,
                 )
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             ContextSource::Native { work, purpose } => {
+                let io = crate::executor::PreparationIo::from_native_work(work)?;
                 work.charge(acyclic_fs::WorkCounters::default())?;
                 let issued_purpose = match &purpose {
                     NativeContextPurpose::Read => IssuedContextPurpose::Read,
@@ -236,25 +237,23 @@ impl AgentHarness {
                 let mailbox = match purpose {
                     NativeContextPurpose::Read => None,
                     NativeContextPurpose::Dispatch { fence, mailbox } => {
-                        if !mailbox.matches_task_binding(task, fence) {
+                        if mailbox.task_binding() != (task, fence) {
                             return Err(Error::NativeBoundary {
                                 code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "dispatch mailbox differs from the original task and fence",
                             });
                         }
-                        host.verify_dispatch_owner_with_native_work(task, fence, work)?
-                            .await?;
+                        host.verify_dispatch_owner(task, fence, Some(&io))?.await?;
                         Some(mailbox)
                     }
                     NativeContextPurpose::Reconciliation { fence, mailbox } => {
-                        if !mailbox.matches_task_binding(task, fence) {
+                        if mailbox.task_binding() != (task, fence) {
                             return Err(Error::NativeBoundary {
                                 code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "reconciliation mailbox differs from the original task and fence",
                             });
                         }
-                        host.verify_execution_owner_with_native_work(task, fence, work)?
-                            .await?;
+                        host.verify_execution_owner(task, fence, Some(&io))?.await?;
                         Some(mailbox)
                     }
                 };
@@ -275,7 +274,7 @@ impl AgentHarness {
                 admitted.0.extension_schemas = self.scope.extension_schemas.clone();
                 admitted.0.extensions_sealed = true;
                 if let Some(mailbox) = &mailbox {
-                    mailbox.validate_scope_with_native_work(&admitted.0, work)?;
+                    mailbox.validate_scope(&admitted.0, Some(&io))?;
                 }
                 custody.absorb(&mut admitted.1)?;
                 let bound = admitted.0.concurrency_bound(self.concurrency);

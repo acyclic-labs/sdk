@@ -348,7 +348,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if maximum == 0 {
             return Err(FsError::TooManyPendingMutations);
         }
-        let mut candidate = self.private_candidate_with_accounting(accounting, cancellation)?;
+        let mut candidate = self.private_candidate(accounting, cancellation)?;
         let backing =
             crate::foundation::usize_to_u64(input.value.capacity() * size_of::<AuthoredMutation>());
         let mut input = (input.value.into_iter(), input.allocation);

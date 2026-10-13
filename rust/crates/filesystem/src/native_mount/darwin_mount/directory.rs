@@ -88,8 +88,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
     filler: DirectoryFiller,
     offset: i64,
 ) -> c_int {
-    let span = callback_span!(TRACE, readdir, offset = offset);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         if offset < 0 {
             return Err(driver_errno(libc::EINVAL));
         }

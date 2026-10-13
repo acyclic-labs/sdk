@@ -10,7 +10,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn merge_binding(
+    pub(in crate::filesystem) async fn merge(
         &self,
         context: &ToolContext,
         arguments: &MergeToolArguments,
@@ -18,10 +18,11 @@ where
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<RecursiveMergeToolBinding<P, A, O>> {
+        native_io(io)?;
         check_cancellation(cancellation, io)?;
         let owner = self.source_owner(context.task(), cancellation, io).await?;
         let caller = self
-            .authenticate_caller(context.task(), Some(&owner), true, io)
+            .authenticate(context, Some(&owner), true, cancellation, io)
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
@@ -60,45 +61,29 @@ where
         let allocation = allocation.ok_or_else(|| {
             stock_boundary(io, ErrorCode::Unauthorized, "merge has no notice binding")
         })?;
-        let runtime = self.runtime(io)?;
-        let ordinary;
-        #[cfg(not(target_arch = "wasm32"))]
-        let native;
-        let snapshots = 'snapshots: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                native = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = runtime
-                    .task_host().observe_volume_snapshots(arguments.source, &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
-                break 'snapshots native.0.as_slice();
-            }
-            ordinary = runtime
-                .inspect_source(caller.task, arguments.source)
-                .await?;
-            if ordinary
-                .volumes()
+        let (snapshots, _hold) = self.snapshots(arguments.source, io).await?;
+        if io.is_none()
+            && (snapshots
                 .iter()
                 .filter(|snapshot| snapshot.volume == source.private_volume)
                 .count()
                 != 1
                 || source.result_volume.as_ref().is_some_and(|result| {
-                    ordinary
-                        .volumes()
+                    snapshots
                         .iter()
                         .filter(|snapshot| &snapshot.volume == result)
                         .count()
                         != 1
-                })
-            {
-                return Err(stock_boundary(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "merge source differs from its admitted allocation",
-                ));
-            }
-            ordinary.volumes()
-        };
+                }))
+        {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Unauthorized,
+                "merge source differs from its admitted allocation",
+            ));
+        }
         let mut selected = None;
-        for snapshot in snapshots {
+        for snapshot in &snapshots {
             crate::model::charge_items(io, 1)?;
             if snapshot.volume.class() == crate::conversation::VolumeClass::Project
                 && (snapshot.volume != source.project || selected.replace(snapshot).is_some())
@@ -143,16 +128,9 @@ where
         })?;
         let source_read = 'source: {
             if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                    let handle = owner
-                        .restore_project_source_authorization(context.task(), authorization, io)
-                        .await?;
-                    break 'source Some(handle);
-                }
                 break 'source Some(
                     owner
-                        .restore_project_source_authorization(context.task(), authorization, None)
+                        .restore_project_source_authorization(context.task(), authorization, io)
                         .await?,
                 );
             }
@@ -200,11 +178,21 @@ where
             })?;
             Some(
                 owner
-                    .authorize_project_source(context.task(), issuer, provider.as_ref(), arguments.source, context.operation_id(), &(ProjectSourceSnapshot {
+                    .authorize_project_source(
+                        context.task(),
+                        issuer,
+                        provider.as_ref(),
+                        arguments.source,
+                        context.operation_id(),
+                        &(ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: generation.clone(),
                             native_snapshot: source.native_snapshot.clone(),
-                        }), self.config.content_budget.items_examined, self.config.history_limits.maximum_bytes, None)
+                        }),
+                        self.config.content_budget.items_examined,
+                        self.config.history_limits.maximum_bytes,
+                        None,
+                    )
                     .await?,
             )
         };
@@ -235,7 +223,7 @@ where
                 &ordinary_io
             }
         };
-        drop(self.read(context, &notice.content, reader).await?);
+        drop(context.read_file(&notice.content, Some(reader)).await?);
         let (verifier, scope, project, source_authority, source_project) =
             with_history_io(io, |work| {
                 let verifier = caller.owner.issuer.verifier(work)?;

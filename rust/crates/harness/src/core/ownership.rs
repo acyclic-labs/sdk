@@ -88,7 +88,6 @@ impl<B> snapshot::Projection<ConversationState, B> {
         &self,
         authority: &Authority,
         events: impl Iterator<Item = &'a Event>,
-        _event_capacity: usize,
     ) -> Result<u64> {
         [
             owned_bytes(authority),

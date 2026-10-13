@@ -57,9 +57,11 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
         if let Some(io) = quota.work().as_deref_mut() {
             io.begin_write()?;
         }
-        Ok(stream
-            .append_batch(records, if_tail, Some(key.clone()))
-            .await)
+        Ok::<_, Error>(
+            stream
+                .append_batch(records, if_tail, Some(key.clone()))
+                .await,
+        )
     }
     .await?;
     quota.relinquish(quota.retained())?;
@@ -155,7 +157,7 @@ pub(crate) async fn commit<P: StreamProvider>(
             .cloned()
         {
             let result = client
-                .native_commit(request, original.runtime_meter())
+                .native_commit(request, None, original.runtime_meter())
                 .await;
             return match native_call_result(&original, result)? {
                 Ok(output) => {

@@ -117,7 +117,6 @@ mod executor;
 use executor::{TextKind, TextTool};
 #[cfg(test)]
 mod tests;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use super::value;
 use super::{edit, files, schema, text};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

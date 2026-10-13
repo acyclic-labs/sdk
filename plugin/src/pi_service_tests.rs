@@ -332,7 +332,7 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
         .unwrap(),
     )
     .unwrap();
-    PiOwnerConfig::load_readonly_with_native_work(
+    PiOwnerConfig::load(
         &resources.private_state_root,
         resources.private_session_data(&session).unwrap(),
         &work(),

@@ -375,20 +375,11 @@ class FramedConnection implements WireConnection {
         } else if (frame.frame.case === "error") {
           const error = new WireError(frame.frame.value.code, frame.frame.value.message);
           const operationId = frame.frame.value.operationId;
-          let correlated = false;
-          const observation = this.#observations.get(operationId);
-          if (observation) {
-            this.#observations.delete(operationId);
-            observation.reject(error);
-            correlated = true;
-          }
-          const cancellation = this.#cancellations.get(operationId);
-          if (cancellation) {
-            this.#cancellations.delete(operationId);
-            cancellation.reject(error);
-            correlated = true;
-          }
-          if (!correlated) throw error;
+          const pending = this.#observations.get(operationId) ?? this.#cancellations.get(operationId);
+          if (!pending) throw error;
+          this.#observations.delete(operationId);
+          this.#cancellations.delete(operationId);
+          pending.reject(error);
         } else if (frame.frame.case === "status") {
           const operationId = frame.frame.value.operation?.operationId ?? "";
           const pending = this.#observations.get(operationId);

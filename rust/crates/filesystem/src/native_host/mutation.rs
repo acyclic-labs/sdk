@@ -8,28 +8,27 @@ impl HostRoot {
         #[cfg(windows)] options: nt::NTCREATEFILE_CREATE_OPTIONS,
         work: &mut W,
     ) -> Result<File, DemandError> {
-        #[cfg(windows)]
-        {
-            let (parent, leaf) = wide_parent_leaf(path)?;
-            let access = fs::FILE_GENERIC_READ
-                | fs::FILE_GENERIC_WRITE
-                | if options.0 & nt::FILE_DELETE_ON_CLOSE.0 != 0 {
-                    fs::DELETE
-                } else {
-                    fs::FILE_ACCESS_RIGHTS(0)
-                };
-            open_windows_at(
-                &self.open_dir_held(parent, work)?,
-                leaf,
-                access,
-                nt::FILE_CREATE,
-                nt::FILE_NON_DIRECTORY_FILE | options,
-                work,
-            )
-        }
-        #[cfg(unix)]
-        {
-            with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            #[cfg(windows)]
+            {
+                let access = fs::FILE_GENERIC_READ
+                    | fs::FILE_GENERIC_WRITE
+                    | if options.0 & nt::FILE_DELETE_ON_CLOSE.0 != 0 {
+                        fs::DELETE
+                    } else {
+                        fs::FILE_ACCESS_RIGHTS(0)
+                    };
+                open_windows_at(
+                    parent,
+                    leaf,
+                    access,
+                    nt::FILE_CREATE,
+                    nt::FILE_NON_DIRECTORY_FILE | options,
+                    work,
+                )
+            }
+            #[cfg(unix)]
+            {
                 open_unix(
                     parent.as_raw_fd(),
                     leaf,
@@ -40,8 +39,8 @@ impl HostRoot {
                         | libc::O_CLOEXEC,
                     work,
                 )
-            })
-        }
+            }
+        })
     }
     pub(crate) fn create_dir<W: SourceDemandReadWork>(
         &self,
@@ -49,25 +48,24 @@ impl HostRoot {
         #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<(), DemandError> {
-        #[cfg(windows)]
-        {
-            let (parent, leaf) = wide_parent_leaf(path)?;
-            open_windows_at(
-                &self.open_dir_held(parent, work)?,
-                leaf,
-                fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE,
-                nt::FILE_CREATE,
-                nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
-                work,
-            )?;
-            Ok(())
-        }
-        #[cfg(unix)]
-        {
-            with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            #[cfg(windows)]
+            {
+                open_windows_at(
+                    parent,
+                    leaf,
+                    fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE,
+                    nt::FILE_CREATE,
+                    nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                    work,
+                )?;
+                Ok(())
+            }
+            #[cfg(unix)]
+            {
                 create_unix_directory_leaf(parent, leaf, work)
-            })
-        }
+            }
+        })
     }
     pub(crate) fn create_dir_all_held<W: SourceDemandReadWork>(
         &self,
@@ -89,7 +87,7 @@ impl HostRoot {
         destination: &Path,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        with_unix_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
             unix_name(target, work, |target, work| {
                 // SAFETY: held directory and both terminated strings are live.
                 unix_mutation(work, || unsafe {
@@ -106,9 +104,8 @@ impl HostRoot {
         mode: u32,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        let mode =
-            libc::mode_t::try_from(mode & 0o7777).map_err(|_| DemandError::InvalidRequest)?;
-        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        let mode = (mode & 0o7777) as libc::mode_t;
+        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
             // SAFETY: held parent and terminated name remain live.
             unix_mutation(work, || unsafe {
                 libc::mkfifoat(parent.as_raw_fd(), leaf.as_ptr(), mode)
@@ -129,7 +126,7 @@ impl HostRoot {
             return Err(DemandError::InvalidRequest);
         }
         let mode = libc::mode_t::try_from(mode).map_err(|_| DemandError::InvalidRequest)?;
-        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
             // SAFETY: held parent and terminated name remain live.
             unix_mutation(work, || unsafe {
                 libc::mknodat(parent.as_raw_fd(), leaf.as_ptr(), mode, device)
@@ -142,7 +139,7 @@ impl HostRoot {
         path: &Path,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
             bind_unix_socket_in(parent, leaf, work)
         })
     }

@@ -8,7 +8,7 @@ where
 {
     pub(super) async fn execute_observed(
         &self,
-        context: WorkerContext,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -17,14 +17,14 @@ where
     ) -> Result<TaskCommandProgress> {
         use crate::filesystem::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
+        mail::require_native_observer(io)?;
         let task = context
-            .context()
             .durable_task_id()
             .ok_or_else(|| boundary(io, ErrorCode::Unauthorized, "command has no admitted task"))?;
         let admission = self.runtime.admission_observed(task, io).await?;
-        if context.context().scope().grants() != &admission.grants
-            || context.context().scope().limits() != admission.limits
-            || context.context().scope().run_limits() != admission.run_limits
+        if context.as_ref().scope().grants() != &admission.grants
+            || context.as_ref().scope().limits() != admission.limits
+            || context.as_ref().scope().run_limits() != admission.run_limits
         {
             return Err(boundary(
                 io,
@@ -40,8 +40,8 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let WorkerContext::Native(shared) = &context {
-            if !shared.as_ref().original_task_binding_matches(task, &fence) {
+        if io.is_some() {
+            if !context.original_task_binding_matches(task, &fence) {
                 return Err(boundary(
                     io,
                     ErrorCode::Unauthorized,
@@ -89,13 +89,7 @@ where
                 )
                 .await
             }
-            MAIL_SEND_TASK_COMMAND_KIND if reconciliation_only => {
-                self.reconcile_mail(task, &fence, &command, payload, io)
-                    .await
-            }
-            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND
-                if !reconciliation_only =>
-            {
+            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND => {
                 self.mail_command(
                     task,
                     &fence,
@@ -103,13 +97,14 @@ where
                     payload,
                     io,
                     admission.task.name == "acyclic.stock_turn",
+                    reconciliation_only,
                 )
                 .await
             }
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
                 self.task_command(
                     task,
-                    context.context(),
+                    context.as_ref(),
                     &fence,
                     &command,
                     payload,
@@ -150,20 +145,6 @@ where
 
             TIMER_TASK_COMMAND_KIND if !reconciliation_only => {
                 let input: TimerTaskCommand = mail::decode_command(payload, io)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                let work = io
-                    .map(|io| {
-                        io.original_native_work().ok_or_else(|| {
-                            boundary(
-                                Some(io),
-                                ErrorCode::Unsupported,
-                                "native timer requires original work",
-                            )
-                        })
-                    })
-                    .transpose()?;
-                #[cfg(target_arch = "wasm32")]
-                let work = None;
                 let elapsed = self
                     .runtime
                     .task_host()
@@ -181,25 +162,14 @@ where
                     Ok(TaskCommandProgress::Pending)
                 }
             }
-            TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND
-                if reconciliation_only =>
-            {
+            TIMER_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND if reconciliation_only => {
                 mail::reconciled(io)
             }
-            _ => Err(if io.is_some() {
-                boundary(
-                    io,
-                    ErrorCode::Unsupported,
-                    "stock command kind is not bound",
-                )
-            } else if reconciliation_only {
-                Error::Unsupported(format!(
-                    "stock command kind {} has no effect reconciliation",
-                    command.kind
-                ))
-            } else {
-                Error::Unsupported(format!("stock command kind {} is not bound", command.kind))
-            }),
+            _ => Err(boundary(
+                io,
+                ErrorCode::Unsupported,
+                "stock command kind is not bound",
+            )),
         };
         #[cfg(not(target_arch = "wasm32"))]
         let progress = match progress {
@@ -218,6 +188,7 @@ where
         payload: Value,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<bool> {
+        mail::require_native_observer(io)?;
         let task = context.durable_task_id().ok_or_else(|| {
             crate::filesystem::task_runtime::observed::boundary(
                 io,
@@ -235,16 +206,16 @@ where
                     ));
                 }
                 let input: TimerTaskCommand = mail::decode_command(payload, io)?;
-                let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+                let mut history = io.map(crate::filesystem::PreparationIo::history_io);
                 self.runtime
                     .task_host()
                     .timer_ready(
                         task,
                         command.operation_id,
                         input.deadline_unix_ms,
-                        &mut observer
+                        &mut history
                             .as_mut()
-                            .map(|work| work as &mut dyn crate::store::history::HistoryIo),
+                            .map(|work| work as &mut dyn crate::store::HistoryIo),
                     )
                     .await
             }
@@ -254,31 +225,13 @@ where
             }
             TASK_OBSERVE_COMMAND_KIND => {
                 let input: TaskObserveCommand = mail::decode_command(payload, io)?;
-                let child = TaskId::from_bytes(
-                    child_operation(task, input.admission_operation, io)?.into_bytes(),
-                );
-                if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
-                    return Err(crate::filesystem::task_runtime::observed::boundary(
-                        io,
-                        crate::wire::ErrorCode::Unauthorized,
-                        "wait is not for a direct child",
-                    ));
-                }
-                Ok(matches!(self.runtime.outcome_observed(child, io).await?,
-                    Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })))
+                Ok(
+                    matches!(self.observe_child(task, input.admission_operation, io).await?,
+                    Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })),
+                )
             }
             TOOL_TASK_COMMAND_KIND => {
                 let input: ToolTaskCommand = mail::decode_command(payload, io)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io {
-                    io.original_native_work().ok_or_else(|| {
-                        crate::filesystem::task_runtime::observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "native tool wait requires original observer",
-                        )
-                    })?;
-                }
                 let definition = self
                     .runtime
                     .tool_definition(&input.name, &input.revision, io)?;
@@ -292,29 +245,14 @@ where
                 let ready = self
                     .runtime
                     .tool_approval_ready(context, definition, &invocation, io);
-                #[cfg(not(target_arch = "wasm32"))]
-                if io.is_some() {
-                    return ready.await;
-                }
-                Box::pin(ready).await
+                ready.await
             }
             MODEL_TASK_COMMAND_KIND => {
                 let input: ModelTaskCommand = mail::decode_command(payload, io)?;
                 let ready =
                     self.runtime
                         .model_approval_ready(context, command.operation_id, &input, io);
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io {
-                    io.original_native_work().ok_or_else(|| {
-                        crate::filesystem::task_runtime::observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "native model wait requires original observer",
-                        )
-                    })?;
-                    return ready.await;
-                }
-                Box::pin(ready).await
+                ready.await
             }
             _ => Ok(false),
         }

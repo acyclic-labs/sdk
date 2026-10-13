@@ -259,55 +259,27 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     } else {
         acyclic_fs::Lifecycle::Ephemeral
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let guard = Arc::clone(preparation.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native creation requires its original issued task guard",
-        })?);
-        guard.verify(false, Some(io))?.await?;
-        let mut before = acyclic_fs::NativeAuthorityGuard(
-            move |work: &acyclic_fs::NativeMaterializationWork| {
-                let work = work.clone();
-                let guard = Arc::clone(&guard);
-                async move {
-                    guard
-                        .verify(
-                            false,
-                            Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
-                        )?
-                        .await
-                }
-            },
-        );
-        let (result, recorded) = host
-            .filesystem
-            .create_workspace_with_operation::<_, _, Error>(
-                name,
-                acyclic_fs::VolumeConfig::portable(lifecycle),
-                acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
-                io,
-                io.cancellation(),
-                Some(&mut before),
-            )
-            .await;
-        recorded?;
-        result?;
-        return Ok(());
+    if io.is_some_and(|io| io.original_native_work().is_some()) && preparation.is_none() {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unauthorized,
+            "native creation requires its original issued task guard",
+        ));
     }
     if let Some(task) = preparation {
         task.verify(false, io)?.await?;
     }
     if let Some(io) = io {
+        let mut guard = preparation.map(Arc::as_ref);
         io.sdk(
             host.filesystem
-                .create_workspace_with_operation::<_, (), WorkspaceError>(
+                .create_workspace_with_operation::<_, _, Error>(
                     name,
                     acyclic_fs::VolumeConfig::portable(lifecycle),
                     acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
                     io,
                     io.cancellation(),
-                    None,
+                    guard.as_mut(),
                 )
                 .await,
         )?;
@@ -317,7 +289,9 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             .await
             .map_err(|failure| map_error(failure.error))?;
     }
-    if let Some(task) = preparation {
+    if let Some(task) =
+        preparation.filter(|_| io.is_none_or(|io| io.original_native_work().is_none()))
+    {
         task.verify(false, io)?.await?;
     }
     Ok(())
@@ -483,8 +457,9 @@ pub(in crate::filesystem) async fn publish_generation<A, O, F, Fut>(
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = acyclic_fs::MeasuredResult<OperationReceipt<()>, Error>> + Send,
+    F: FnMut(WorkBudget) -> Fut + acyclic_stream::ProviderTask,
+    Fut: Future<Output = acyclic_fs::MeasuredResult<OperationReceipt<()>, Error>>
+        + acyclic_stream::ProviderTask,
 {
     let Some(io) = io else {
         return host
@@ -623,22 +598,13 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<WorkspaceObservation> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        preparation
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "task-bound native fork requires its original issued creation guard",
-            })?
-            .verify(
-                false,
-                Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-            )?
-            .await?;
-    } else if let Some(task) = preparation {
-        task.verify(false, io)?.await?;
+    if io.is_some_and(|io| io.original_native_work().is_some()) && preparation.is_none() {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unauthorized,
+            "task-bound native fork requires its original issued creation guard",
+        ));
     }
-    #[cfg(target_arch = "wasm32")]
     if let Some(task) = preparation {
         task.verify(false, io)?.await?;
     }
@@ -669,40 +635,26 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         Some(paths) => options.inherit_paths(paths),
         None => options,
     };
-    let forked = 'forked: {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            let guard = Arc::clone(preparation.expect("native creation guard was verified"));
-            let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-                let work = work.clone();
-                let guard = Arc::clone(&guard);
-                async move {
-                    guard
-                        .verify(
-                            false,
-                            Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
-                        )?
-                        .await
-                }
-            };
-            break 'forked workspace
-                .fork::<_, _, crate::Error>(
-                    &name,
-                    options,
-                    acyclic_fs::PublicationPermit::Unrestricted,
-                    work,
-                    io.cancellation(),
-                    acyclic_fs::NativeAuthorityGuard(before.clone()),
-                )
-                .await?;
-        }
-        io.receive(
+    let forked = match preparation {
+        Some(task) => io.sdk(
             workspace
-                .fork::<_, _, acyclic_fs::WorkspaceError>(
+                .fork::<_, _, Error>(
                     &name,
                     options,
                     acyclic_fs::PublicationPermit::Unrestricted,
-                    io.remaining()?,
+                    io,
+                    io.cancellation(),
+                    task.as_ref(),
+                )
+                .await,
+        )?,
+        None => io.sdk(
+            workspace
+                .fork::<_, _, Error>(
+                    &name,
+                    options,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    io,
                     io.cancellation(),
                     &mut |_| {
                         std::future::ready(Ok(OperationReceipt {
@@ -712,7 +664,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                     },
                 )
                 .await,
-        )?
+        )?,
     };
     io.remaining()?;
     let initial = io

@@ -41,7 +41,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 Some(fork),
                 cancellation,
                 io,
-            )?
+            )
             .await?;
         validate_fork_binding(context, &fork.arguments, &binding, cancellation, io).await?;
         deny(

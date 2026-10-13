@@ -668,6 +668,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await;
             record_authority_work(&mut accounting, &authority)?;
             let resolved = resolved.map_err(|error| match error {
+                #[cfg(not(target_arch = "wasm32"))]
                 AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),
                 error => FsError::Authority(error),
             })?;

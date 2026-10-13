@@ -34,7 +34,11 @@ impl PiNativeCommandHost {
         observed: bool,
     ) -> Result<()> {
         let original_work = prepared._metadata_custody.work().clone();
-        prepared.report.validate_with_native_work(&original_work)?;
+        prepared
+            .report
+            .validate(&mut Some(&mut &PreparationIo::from_native_work(
+                &original_work,
+            )?))?;
         let binding = &prepared.binding;
         binding.validate_with_native_work(
             None,
@@ -310,33 +314,6 @@ impl PiNativeCommandHost {
         view
     }
 
-    pub(crate) fn binding(
-        &self,
-        task: TaskId,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<(PiTaskBinding, NativeAllocation)>> {
-        let Some(prepared) = self.source_prepared(task) else {
-            return Ok(None);
-        };
-        let maximum = self
-            .protected
-            .policy()
-            .maximum_payload_bytes
-            .min(prepared.admission.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value(&prepared.binding, maximum, work)?;
-        Ok(Some(crate::pi_root_provider::guarded_pi_decode::<
-            PiTaskBinding,
-        >(
-            &bytes.0,
-            maximum,
-            self.protected.policy().maximum_payload_bytes,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            JsonValueSchema::None,
-            crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,
-            work,
-        )?))
-    }
-
     /// The exact originally prepared child workspace, not a current-head reopen.
     pub(crate) fn live_workspace(&self, task: TaskId) -> Option<Arc<LocalLazyWorkspace>> {
         self.source_prepared(task)
@@ -372,11 +349,14 @@ impl PiNativeCommandHost {
         };
         effect
             .owner
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original_work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&original_work)?,
+                )),
+            )
             .await?;
-        if effect.owner.task_id() != task
-            || effect.context.durable_task_id() != Some(task)
-        {
+        if effect.owner.task_id() != task || effect.context.durable_task_id() != Some(task) {
             return Err(unauthorized(
                 "Pi live source differs from its original owner/context",
             ));
@@ -397,12 +377,6 @@ impl PiNativeCommandHost {
             .map(|prepared| prepared.frozen_source)
     }
 
-    /// The child's original authenticated FIRST native companion, not its final process publication.
-    pub(crate) fn source_frozen(&self, task: TaskId) -> Option<LazySnapshotRef> {
-        self.source_prepared(task)
-            .map(|prepared| prepared.native_lazy)
-    }
-
     pub(crate) fn selected_source_task(&self, task: TaskId) -> Option<TaskId> {
         let prepared = self.source_prepared(task)?;
         prepared
@@ -411,7 +385,7 @@ impl PiNativeCommandHost {
             .authorized_source
             .as_ref()
             .map(|source| source.source_task)
-            .or_else(|| TaskId::parse(&prepared.report.request.parent.id).ok())
+            .or(prepared.admission.parent)
     }
 
     /// Approval display metadata only; authority remains the selected FS volume.
@@ -448,68 +422,83 @@ impl PiNativeCommandHost {
         task: TaskId,
         meter: &NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {
-        async {
-            let prepared = self.prepared(task).ok_or_else(|| {
-                unauthorized("Pi selected child has no authenticated creator companion")
-            })?;
-            let entry = self
-                .find_entry(task)
-                .ok_or_else(|| unauthorized("Pi selected child has no original native handles"))?;
-            let effect = entry.handles.lock().await.effect.clone().ok_or_else(|| {
-                unauthorized("Pi selected child has not entered its original native operation")
-            })?;
-            let outcome = effect.owner.outcome_with_native_work(&meter)?.await?;
-            if outcome.0.is_none() {
-                let original_work = entry
-                    .handles
-                    .lock()
-                    .await
-                    .preparation_work
-                    .as_ref()
-                    .ok_or(Error::Indeterminate(effect.command))?
-                    .clone();
-                effect
-                    .owner
-                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original_work)?)))
-                    .await?;
-                let view = self
-                    .live_view(task)
-                    .ok_or_else(|| Error::Indeterminate(effect.command))?;
-                let snapshots = view
-                    .checkpoint_projects_with_native_work(effect.owner.as_ref(), &original_work)?
-                    .await?;
-                if snapshots.0.len() != 1 {
-                    return Err(unauthorized(
-                        "Pi selected child has no unique authenticated project checkpoint",
-                    ));
-                }
-                let snapshot = snapshots.0[0].1;
-                drop(snapshots.0);
-                return Ok((snapshot, snapshots.1));
-            }
-            if prepared.binding.project_volumes.len() != 1 {
-                return Err(unauthorized(
-                    "Pi published child has no unique original project binding",
-                ));
-            }
-            let project = prepared
-                .binding
-                .project_volumes
-                .values()
-                .next()
+        let prepared = self.prepared(task).ok_or_else(|| {
+            unauthorized("Pi selected child has no authenticated creator companion")
+        })?;
+        let entry = self
+            .find_entry(task)
+            .ok_or_else(|| unauthorized("Pi selected child has no original native handles"))?;
+        let effect = entry.handles.lock().await.effect.clone();
+        let Some(effect) = effect else {
+            let snapshot = self
+                .source_prepared(task)
+                .map(|prepared| prepared.native_lazy)
                 .ok_or_else(|| {
-                    unauthorized("Pi published child has no original project binding")
+                    unauthorized("Pi undispatched source lost its first native companion")
                 })?;
-            effect
-                .provider
-                .published_project_candidate_with_native_work(
-                    effect.provider.original_attempt(),
-                    project,
-                    meter,
-                )?
+            prepared
+                .workspace
+                .validate_snapshot(
+                    snapshot,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work: meter,
+                        cancellation: meter.cancellation(),
+                    },
+                )
                 .await
+                .map_err(crate::pi_fork_host::native_lazy_error)?;
+            return Ok((snapshot, meter.claim(0, 0, WorkCounters::UNCHARGED)?));
+        };
+        let outcome = self
+            .runtime
+            .runtime
+            .task_host()
+            .outcome_with_native_work(task, meter)?
+            .await?;
+        if !outcome
+            .0
+            .as_ref()
+            .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
+        {
+            let original_work = entry
+                .handles
+                .lock()
+                .await
+                .preparation_work
+                .as_ref()
+                .ok_or(Error::Indeterminate(effect.command))?
+                .clone();
+            let view = self
+                .live_view(task)
+                .ok_or(Error::Indeterminate(effect.command))?;
+            return crate::pi_fork_host::freeze_child_source(
+                &effect.context,
+                &effect.owner,
+                &view,
+                &prepared.workspace,
+                &original_work,
+            )
+            .await;
         }
-        .await
+        if prepared.binding.project_volumes.len() != 1 {
+            return Err(unauthorized(
+                "Pi published child has no unique original project binding",
+            ));
+        }
+        let project = prepared
+            .binding
+            .project_volumes
+            .values()
+            .next()
+            .ok_or_else(|| unauthorized("Pi published child has no original project binding"))?;
+        effect
+            .provider
+            .published_project_candidate_with_native_work(
+                effect.provider.original_attempt(),
+                project,
+                meter,
+            )?
+            .await
     }
 
     /// Authorizes a terminal metadata candidate through the actual operation's Common Project reader, then rereads the same protected publication.
@@ -605,8 +594,7 @@ impl PiNativeCommandHost {
             })?;
             (bound, work)
         };
-        if bound.owner.task_id() != task || bound.context.durable_task_id() != Some(task)
-        {
+        if bound.owner.task_id() != task || bound.context.durable_task_id() != Some(task) {
             return Err(unauthorized(
                 "Pi invocation differs from its original native owner",
             ));
@@ -617,7 +605,12 @@ impl PiNativeCommandHost {
         self.child_admission(task, &work).await?;
         bound
             .owner
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                )),
+            )
             .await?;
         Ok(work)
     }

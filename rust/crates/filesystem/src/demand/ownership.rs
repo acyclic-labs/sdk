@@ -134,13 +134,7 @@ impl NativeMountAllocationCustody {
     pub(crate) fn is_admitted(&self, work: &mut DemandWork) -> Result<bool, DemandError> {
         work.reconcile_cancellation_registry()?;
         for entry in work.roots.native_mount_admissions.0.iter() {
-            work.work.charge(
-                &WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-                &work.budget,
-            )?;
+            work.work.charge(&super::admissions::SCAN, &work.budget)?;
             if std::ptr::eq(entry.0.as_ptr(), self) {
                 return Ok(true);
             }

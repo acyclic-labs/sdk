@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         provider: &dyn ForkCaptureProvider,
     ) -> Result<Capture> {
         let host = &self.preparer.host;
-        let io = self.io.as_ref();
+        let io = self.io;
         let maximum = self.journal_limit(MAX_CAPTURE_BYTES);
         let (start, result) = crate::executor::with_history_io(io, |work| {
             Ok::<_, Error>((

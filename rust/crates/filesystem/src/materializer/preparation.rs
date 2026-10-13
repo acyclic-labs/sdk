@@ -13,6 +13,25 @@ pub struct NativeStageUncertainty<E> {
     _allocation: NativeAllocation,
 }
 impl<E> NativeStageUncertainty<E> {
+    #[cfg(feature = "native-mount")]
+    fn new(work: &NativeMaterializationWork) -> Result<Self, NativeTreeMaterializationError> {
+        let bytes = std::mem::size_of::<Option<E>>() as u64;
+        let allocation =
+            work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+        Ok(Self {
+            cause: Box::new(None),
+            last_durable_work: crate::WorkCounters::UNCHARGED,
+            observed_work: crate::WorkCounters::UNCHARGED,
+            _allocation: allocation,
+        })
+    }
+    #[cfg(feature = "native-mount")]
+    fn fail(mut self, error: E, last_durable_work: crate::WorkCounters) -> Self {
+        *self.cause = Some(error);
+        self.last_durable_work = last_durable_work;
+        self.observed_work = self._allocation.work().receipt();
+        self
+    }
     /// Original staging failure.
     pub fn cause(&self) -> &E {
         self.cause.as_ref().as_ref().expect("staging failure")
@@ -36,14 +55,8 @@ impl<S: MaterializationJournalStore>
         Fut: Future<Output = Result<(), E>> + Send,
     {
         let work = self.backend.work();
-        let allocation = work
-            .claim(
-                std::mem::size_of::<Option<E>>() as u64,
-                u64::from(std::mem::size_of::<Option<E>>() != 0),
-                crate::WorkCounters::UNCHARGED,
-            )
+        let failure = NativeStageUncertainty::new(work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-        let mut cause = Box::new(None);
         before_effect().await?;
         self.verify_effect_context(&journal)
             .await
@@ -66,15 +79,7 @@ impl<S: MaterializationJournalStore>
             Ok((journal, identity))
         }
         .await;
-        result.map_err(|error| {
-            *cause = Some(error);
-            E::from(NativeStageUncertainty {
-                cause,
-                last_durable_work,
-                observed_work: work.receipt(),
-                _allocation: allocation,
-            })
-        })
+        result.map_err(|error| E::from(failure.fail(error, last_durable_work)))
     }
 }
 impl<E: std::fmt::Display> std::fmt::Display for NativeStageUncertainty<E> {
@@ -124,14 +129,8 @@ impl<S: MaterializationJournalStore>
                     NativeTreeMaterializationError::InvalidLayout,
                 )));
             }
-            let _allocation = work
-                .claim(
-                    std::mem::size_of::<Option<E>>() as u64,
-                    u64::from(std::mem::size_of::<Option<E>>() != 0),
-                    crate::WorkCounters::UNCHARGED,
-                )
+            let failure = NativeStageUncertainty::new(work)
                 .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-            let mut cause = Box::new(None);
             let state = parking_lot::Mutex::new((
                 Some(journal),
                 None::<S::ActionCompletion<'_>>,
@@ -209,13 +208,7 @@ impl<S: MaterializationJournalStore>
             match (result, journal, last) {
                 (Ok(_), Some(journal), None) => Ok(journal),
                 (Err(error), _, Some(last_durable_work)) => {
-                    *cause = Some(error);
-                    Err(E::from(NativeStageUncertainty {
-                        cause,
-                        last_durable_work,
-                        observed_work: work.receipt(),
-                        _allocation,
-                    }))
+                    Err(E::from(failure.fail(error, last_durable_work)))
                 }
                 (Err(error), _, None) => Err(error),
                 _ => Err(E::from(MaterializationError::Backend(

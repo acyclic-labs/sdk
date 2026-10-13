@@ -82,7 +82,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .source
             .as_ref()
             .expect("authorized source")
-            .owner(context, cancellation, io)?
+            .owner(context, cancellation, io)
             .await?;
         let caller = context.durable_task_id().expect("authorized caller");
         {

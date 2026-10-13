@@ -106,10 +106,9 @@ pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObject
                 drop(previous);
                 meter.clone().release(bytes).map_err(capture_demand_error)?;
             }
-            let has_more = page.0.has_more;
             drop(page);
             after = next;
-            if !has_more {
+            if after.is_none() {
                 break;
             }
         }
@@ -126,10 +125,9 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     policy: &CapturePolicy,
     maximum: usize,
     paths: &mut Vec<(NamespacePath, ())>,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    cancellation.check()?;
+    meter.cancellation().check()?;
     walk_checkout_subtree(checkout, root, 1024, meter, |directory, entry, pending| {
         capture_charge(
             meter,

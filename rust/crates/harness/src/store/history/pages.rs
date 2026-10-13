@@ -1,21 +1,6 @@
 use super::*;
 
 impl<P: StreamProvider> HistoryReader<P> {
-    pub(crate) fn logical_owned_bytes(&self, work: &Option<&mut dyn HistoryIo>) -> Result<u64> {
-        let path = if work
-            .as_deref()
-            .is_some_and(crate::store::operations::original_native_decode_mode)
-        {
-            0
-        } else {
-            self.path.as_str().len() as u64
-        };
-        self.verifier
-            .logical_owned_bytes()?
-            .checked_add(path)
-            .ok_or_else(|| Error::Invalid("history reader metadata byte count overflows".into()))
-    }
-
     /// Binds the canonical path to its authenticated verifier.
     pub fn new(
         client: &std::sync::Arc<P>,
@@ -72,7 +57,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         limits: HistoryReadLimits,
         mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<Option<(crate::core::EffectState, u64)>> {
-        let (events, event_owned) = crate::store::effects::effect_events(
+        project_effect(
             &self.client,
             &self.verifier,
             cursor,
@@ -80,26 +65,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             limits,
             &mut work,
         )
-        .await?;
-        if events.is_empty() {
-            return Ok(None);
-        }
-        let authority = match work.as_deref_mut() {
-            Some(work) => work.clone_authority(&cursor.authority)?,
-            None => cursor.authority.clone(),
-        };
-        let verifier = self.verifier.copy(&mut work)?;
-        let result = crate::core::Reducer::project_effect_with_retained_quota(
-            authority, verifier, effect, &events, &mut work,
-        );
-        drop(events);
-        if let Some(work) = work.as_deref_mut() {
-            let released = work.release_owned(event_owned);
-            if result.is_ok() {
-                released?;
-            }
-        }
-        result.map(Some)
+        .await
     }
 
     /// Captures a committed boundary for archival traversal.
@@ -116,13 +82,12 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "history cursor exceeds committed tail",
             ));
         }
-        let authority = match work.as_deref_mut() {
-            Some(work) => work.clone_authority(self.verifier.audience())?,
-            None => self.verifier.audience().clone(),
-        };
-        if let Some(work) = work.as_deref_mut() {
-            work.check_cancellation()?;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(&mut work, 0);
+        let authority = crate::core::copy_authority(self.verifier.audience(), &mut quota)?;
+        if let Some(io) = quota.work().as_deref() {
+            io.check_cancellation()?;
         }
+        quota.transfer();
         Ok(HistoryCursor {
             authority,
             after_revision,
@@ -171,16 +136,8 @@ impl<P: StreamProvider> HistoryReader<P> {
             through_revision: cursor.through_revision,
         };
         quota.adopt(next.authority.id.capacity() as u64)?;
-        let count = u32::try_from(
-            (cursor.through_revision - cursor.after_revision).min(u64::from(limits.maximum_events)),
-        )
-        .map_err(|_| {
-            boundary(
-                quota.work(),
-                Invalid,
-                "history page count exceeds platform bounds",
-            )
-        })?;
+        let count = (cursor.through_revision - cursor.after_revision)
+            .min(u64::from(limits.maximum_events)) as u32;
         let mut events = Vec::new();
         if count != 0 {
             let mut records = crate::store::operations::read_records(
@@ -191,7 +148,9 @@ impl<P: StreamProvider> HistoryReader<P> {
                 quota.work(),
             )
             .await?
-            .map_err(|error| crate::store::operations::stream_error_with_work(error, quota.work()))?;
+            .map_err(|error| {
+                crate::store::operations::stream_error_with_work(error, quota.work())
+            })?;
             let mut bytes = 0_u64;
             loop {
                 if let Some(io) = quota.work().as_deref() {
@@ -273,4 +232,45 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
         Ok(tail.unwrap_or(0))
     }
+}
+
+pub(in crate::store) async fn project_effect<P: StreamProvider>(
+    client: &std::sync::Arc<P>,
+    verifier: &AuthorityVerifier,
+    cursor: &HistoryCursor,
+    effect: crate::EffectId,
+    limits: HistoryReadLimits,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Option<(crate::core::EffectState, u64)>> {
+    let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
+    let (events, held) = super::super::effects::effect_events(
+        client,
+        verifier,
+        cursor,
+        effect,
+        limits,
+        quota.work(),
+    )
+    .await?;
+    quota.adopt(held)?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+    let authority = crate::core::copy_authority(&cursor.authority, &mut quota)?;
+    let verifier = verifier.copy(quota.work())?;
+    // The reducer takes ownership of these metadata claims.
+    quota.transfer();
+    quota.adopt(held)?;
+    let result = crate::core::Reducer::project_effect_with_retained_quota(
+        authority,
+        verifier,
+        effect,
+        &events,
+        quota.work(),
+    );
+    drop(events);
+    let released = quota.relinquish(held);
+    let result = result?;
+    released?;
+    Ok(Some(result))
 }

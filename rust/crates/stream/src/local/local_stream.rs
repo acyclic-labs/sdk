@@ -358,21 +358,19 @@ impl LocalStream {
     }
 
     /// Runs one read under shared visibility, then returns its result once
-    async fn visible<T>(
-        &self,
-        read: impl Future<Output = Result<T, StreamError>>,
-    ) -> Result<T, StreamError> {
+    async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
         self.check_available()?;
         let (result, required) = {
             let _visibility = self.inner.visibility.read().await;
             self.check_available()?;
-            (read.await, self.inner.required()?)
+            let required = self.inner.required()?;
+            (read.await, required)
         };
         self.await_durable(required).await?;
-        result
+        Ok(result)
     }
 
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.visible(self.inner.provider.read(request)).await
+        self.visible(self.inner.provider.read(request)).await?
     }
 }

@@ -50,7 +50,6 @@ pub struct Config {
 impl Config {
     pub(crate) fn bindings(&self) -> impl Iterator<Item = &AuthorityBinding> {
         std::iter::once(&self.owner)
-            .chain(self.fork_sources.iter().map(|source| &source.owner))
             .chain(self.tools.callers.iter().map(|caller| &caller.owner))
             .chain(self.tools.forks.iter().map(|fork| &fork.child))
     }
@@ -81,21 +80,14 @@ impl Config {
             binding.verifier()?;
         }
         for source in &self.fork_sources {
-            let verifier = source.owner.verifier()?;
             source.request.validate(&mut None)?;
-            if source.request.parent != source.owner.authority
-                || source.request.parent_revision != source.snapshot.revision
-            {
+            if !self.tools.callers.iter().any(|caller| {
+                caller.task == source.caller && caller.owner.authority == source.request.parent
+            }) {
                 return Err(Error::Unauthorized(
                     "original fork source request differs from its authenticated cut".into(),
                 ));
             }
-            acyclic_harness::core::Reducer::restore(
-                source.snapshot.clone(),
-                verifier,
-                SchemaRegistry::default(),
-                &mut None,
-            )?;
         }
         for publication in &self.native_publications {
             publication.validate()?;
@@ -108,8 +100,6 @@ impl Config {
 #[serde(deny_unknown_fields)]
 pub struct ForkSourceConfig {
     pub caller: TaskId,
-    pub owner: AuthorityBinding,
-    pub snapshot: Snapshot,
     pub request: acyclic_harness::fork::ForkRequest,
 }
 

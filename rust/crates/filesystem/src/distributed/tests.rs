@@ -239,6 +239,35 @@ async fn original_custom_provider_never_falls_back_to_ordinary_io() -> TestResul
 }
 
 #[tokio::test]
+async fn replay_rejects_a_record_with_a_different_stream_sequence() -> TestResult {
+    let (stream, reservation) = reserved().await?;
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &token);
+    StreamAuthorityStore::new(stream.clone())
+        .compare_and_append(
+            append(reservation, permit(reservation)),
+            &mut work,
+            None::<&mut ()>,
+        )
+        .await?;
+    let mut spy = ReleaseSpy::new(stream);
+    spy.corrupt_observation = 11;
+    let result = StreamAuthorityStore::new(Arc::new(spy))
+        .replay(
+            reservation.authority_id,
+            Sequence::GENESIS,
+            ReplayLimit {
+                records: 2,
+                payload_bytes: 32,
+            },
+            &mut work,
+        )
+        .await;
+    assert!(matches!(result, Err(AuthorityStoreError::Corrupt(_))));
+    Ok(())
+}
+
+#[tokio::test]
 async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
     for gate in [None, Some(b"invalid-publication-gate".as_slice())] {
         let stream = Arc::new(MemoryStream::default());
@@ -591,7 +620,16 @@ impl StreamProvider for ReleaseSpy {
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.reads.store(true, SeqCst);
-        self.inner.read(request).await
+        let records = self.inner.read(request).await?;
+        if self.corrupt_observation == 11 {
+            return Ok(Box::pin(records.map(|record| {
+                record.map(|mut record| {
+                    record.sequence += 1;
+                    record
+                })
+            })));
+        }
+        Ok(records)
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.writes.store(true, SeqCst);

@@ -222,7 +222,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.child.clone())
             .issue(
                 "wrong-child-agent",
-                &Capabilities::new(["conversation:bind".into()]),
+                &Capabilities::new(["conversation:bind".to_owned()]),
                 Some(AgentId::from_bytes([96; 16])),
                 None,
                 &mut None,
@@ -372,6 +372,25 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
             &mut None,
         )
         .await?;
+    let parent_reader = setup.parent.history_reader()?;
+    let child_reader = child.history_reader()?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        budget,
+        &cancellation,
+    )?);
+    let available = io.remaining()?.peak_allocation_bytes;
+    assert!(
+        child_reader
+            .verify_published_child_with_work(
+                &parent_reader,
+                &seed,
+                default_projection_read_limits(),
+                &mut Some(&mut io),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(io.remaining()?.peak_allocation_bytes, available);
     assert!(
         bind(
             &mut child,

@@ -30,15 +30,6 @@ impl DecodeReservation<'_> {
 
 impl Drop for DecodeReservation<'_> {
     fn drop(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.io.original_native_work().is_some() {
-            drop(
-                self.io
-                    .take_native_custody(self.bytes)
-                    .expect("reservation belongs to its live ledger"),
-            );
-            return;
-        }
         self.io
             .release(self.bytes)
             .expect("reservation belongs to its live ledger");

@@ -35,10 +35,7 @@ pub struct Authority {
 }
 
 impl Authority {
-    pub(crate) fn validate_with_work(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub(crate) fn validate_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
@@ -57,10 +54,7 @@ impl Authority {
     }
 
     /// Returns the Stream path for this aggregate.
-    pub fn stream_path(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<String> {
+    pub fn stream_path(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<String> {
         self.validate_with_work(work)?;
         let segment = match self.kind {
             AggregateKind::Agent => "agents",
@@ -143,7 +137,7 @@ impl Scope {
 
     /// Copies the immutable grant under the caller's optional ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| {
+        CodecQuota::produce(work, |quota| {
             copy(self, quota, |scope, _| scope.logical_owned_bytes())
         })
         .map(|(scope, _)| scope)
@@ -196,14 +190,11 @@ impl AuthorityIssuer {
     }
 
     /// Copies the original issuer metadata under the caller's original ledger.
-    pub fn copy(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
+    pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         if work.is_none() {
             return Ok(self.clone());
         }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let cloned = Self {
             id: copying::copy_text(&self.id, &mut quota)?,
             key: self.key,
@@ -224,10 +215,7 @@ impl AuthorityIssuer {
     }
 
     /// Copies the configured verifier using the caller's ledger.
-    pub fn verifier(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<AuthorityVerifier> {
+    pub fn verifier(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<AuthorityVerifier> {
         let Self { id, key, audience } = self.copy(work)?;
         Ok(AuthorityVerifier { id, key, audience })
     }
@@ -239,9 +227,9 @@ impl AuthorityIssuer {
         capabilities: &Capabilities,
         agent: Option<AgentId>,
         parent_proof: Option<[u8; 32]>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Scope> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let id = copying::copy_text(id, &mut quota)?;
         let capabilities = copy(capabilities, &mut quota, |value: &Capabilities, _| {
             value.logical_owned_bytes()
@@ -352,9 +340,9 @@ impl AuthorityIssuer {
         effect: &EffectState,
         attempt_id: EffectAttemptId,
         status: EffectStatus,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<EffectAttestation> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let mut observation = EffectAttestation {
             provider: copying::copy_text(&effect.provider, &mut custody)?,
             effect_id,
@@ -405,10 +393,7 @@ impl AuthorityVerifier {
     }
 
     /// Copies the verifier using the caller's ledger.
-    pub fn copy(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
+    pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         match work.as_deref_mut() {
             Some(work) => Ok(Self {
                 id: work.clone_text(&self.id)?,
@@ -420,11 +405,7 @@ impl AuthorityVerifier {
     }
 
     /// Verifies issuer identity and the complete immutable grant.
-    pub fn verify(
-        &self,
-        scope: &Scope,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn verify(&self, scope: &Scope, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.verify_scope_for_with_work(&self.audience, scope, work)
     }
 
@@ -433,7 +414,7 @@ impl AuthorityVerifier {
         &self,
         audience: &Authority,
         scope: &Scope,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let expected = scope_proof(&self.key, audience, scope, work)?;
         if scope.issuer != self.id || scope.proof != expected {
@@ -446,9 +427,9 @@ impl AuthorityVerifier {
         &self,
         domain: &[u8],
         value: &T,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let bytes = crate::store::history::canonical_bytes_with_work(
             value,
             crate::store::default_projection_read_limits().maximum_bytes,
@@ -471,7 +452,7 @@ impl AuthorityVerifier {
     pub(in crate::core) fn attest_event(
         &self,
         event: &Event,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         self.canonical_proof(
             b"harness/v2/committed-event\0",
@@ -491,7 +472,7 @@ impl AuthorityVerifier {
     pub(crate) fn verify_event(
         &self,
         event: &Event,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if event.scope.issuer != self.id || event.attestation != self.attest_event(event, work)? {
             return Err(Error::Unauthorized(
@@ -506,9 +487,9 @@ impl AuthorityVerifier {
         revision: u64,
         canonical_digest: [u8; 32],
         root: Option<[u8; 32]>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let path = self.audience.stream_path(quota.work())?;
         quota.adopt(path.capacity() as u64)?;
         let proof = self.canonical_proof(
@@ -530,7 +511,7 @@ impl AuthorityVerifier {
     pub(crate) fn fork_history_proof(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         self.verify_audience(&seed.parent, work)?;
         self.canonical_proof(
@@ -573,7 +554,7 @@ impl AuthorityVerifier {
         through_sequence: u64,
         agent: Option<AgentId>,
         history_digest: [u8; 32],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         self.canonical_proof(
             b"harness/v1/fork-history-selection\0",
@@ -593,7 +574,7 @@ impl AuthorityVerifier {
     pub fn verify_audience(
         &self,
         authority: &Authority,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref() {
             io.check_cancellation()?;
@@ -611,7 +592,7 @@ impl AuthorityVerifier {
     pub(in crate::core) fn verify_effect(
         &self,
         observation: &EffectAttestation,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let expected = effect_attestation_proof(&self.key, &self.audience, observation, work)?;
         if observation.proof != expected {
@@ -627,7 +608,7 @@ fn scope_proof(
     key: &[u8; 32],
     audience: &Authority,
     scope: &Scope,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<[u8; 32]> {
     let Scope {
         id,
@@ -679,9 +660,9 @@ fn effect_attestation_proof(
     key: &[u8; 32],
     audience: &Authority,
     observation: &EffectAttestation,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<[u8; 32]> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let bytes = crate::store::history::canonical_bytes_with_work(
         &(
             audience,

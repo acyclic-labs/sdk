@@ -44,33 +44,25 @@ pub(super) fn fork_command_key_with_work(
         .len()
         .checked_add(36)
         .ok_or_else(|| Error::Invalid("fork command identity length overflows".into()))?;
+    let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
     let mut text = String::new();
-    if let Some(observer) = work.as_deref_mut() {
+    if let Some(observer) = quota.work().as_deref_mut() {
         observer.reserve_text(&mut text, capacity)?;
-        if let Err(error) = observer.copy_bytes(capacity as u64) {
-            let held = text.capacity() as u64;
-            drop(text);
-            observer.release_owned(held)?;
-            return Err(error);
-        }
+        quota.adopt(text.capacity() as u64)?;
+        quota
+            .work()
+            .as_deref_mut()
+            .expect("format observer")
+            .copy_bytes(capacity as u64)?;
     } else {
         text.try_reserve_exact(capacity)
             .map_err(|_| Error::Invalid("fork command identity allocation failed".into()))?;
     }
-    let held = if work.is_some() {
-        text.capacity() as u64
-    } else {
-        0
-    };
-    let result = write!(&mut text, "{prefix}{operation}")
-        .map_err(|_| Error::Invalid("fork command identity formatting failed".into()))
-        .and_then(|()| IdempotencyKey::new(text));
-    if result.is_err()
-        && let Some(observer) = work.as_deref_mut()
-    {
-        observer.release_owned(held)?;
-    }
-    result.map(|key| (key, held))
+    write!(&mut text, "{prefix}{operation}").expect("fixed-width operation formatting");
+    let key = IdempotencyKey::new(text)?;
+    let held = quota.retained();
+    quota.transfer();
+    Ok((key, held))
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
@@ -251,12 +243,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
         #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<()> {
-        let mut custody = crate::wire_codec::CodecQuota::observed(work)?;
-        seed.validate(custody.work())?;
+        let mut quota = crate::wire_codec::CodecQuota::observed(work)?;
+        seed.validate(quota.work())?;
         #[cfg(feature = "filesystem")]
         let parent_agent = if let Some(owner) = owner {
-            owner.authenticate_fork_parent(&seed.parent, custody.work())?;
-            Some(owner.authenticated_fork_agent(custody.work())?)
+            owner.authenticate_fork_parent(&seed.parent, quota.work())?;
+            Some(owner.authenticated_fork_agent(quota.work())?)
         } else {
             None
         };
@@ -265,114 +257,91 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if parent.reducer.authority() != &seed.parent
             || parent.reducer.fork(&seed.child) != Some(seed)
             || self.reducer.authority() != &seed.child
+            || scope.agent() != Some(seed.child_agent)
         {
             return Err(guarded_boundary(
-                custody.work(),
+                quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
-                "child binding has no published parent fork",
+                "child binding has no published parent fork or matching scope",
             ));
         }
-        if scope.agent() != Some(seed.child_agent) {
-            return Err(guarded_boundary(
-                custody.work(),
-                crate::wire::ErrorCode::Unauthorized,
-                "child binding scope belongs to another agent",
-            ));
-        }
-        let fork_revision = seed.parent_revision.checked_add(1).ok_or_else(|| {
-            guarded_boundary(
-                custody.work(),
-                crate::wire::ErrorCode::Invalid,
-                "fork parent revision overflow",
-            )
-        })?;
-        let (fork_event, fork_event_owned) =
-            parent.read_event_at(fork_revision, custody.work()).await?;
-        custody.adopt(fork_event_owned)?;
-        if fork_event.revision != fork_revision
-            || fork_event.operation_id != seed.operation_id
-            || parent_agent.is_some_and(|agent| fork_event.scope.agent() != Some(agent))
-            || !matches!(&fork_event.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
+        let revision = crate::contract::next_revision(seed.parent_revision)?;
+        let (publication, owned) = parent.read_event_at(revision, quota.work()).await?;
+        quota.adopt(owned)?;
+        if publication.revision != revision
+            || publication.operation_id != seed.operation_id
+            || parent_agent.is_some_and(|agent| publication.scope.agent() != Some(agent))
+            || !matches!(&publication.payload, EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
         {
             return Err(guarded_boundary(
-                custody.work(),
+                quota.work(),
                 crate::wire::ErrorCode::Conflict,
                 "parent fork event does not match the child seed",
             ));
         }
-        let (bind_operation, causal_parent) = fork_child_binding_with_work(seed, custody.work())?;
-        custody.adopt(causal_parent.authority.id.capacity() as u64)?;
+        let (operation, causal) = fork_child_binding_with_work(seed, quota.work())?;
+        quota.adopt(causal.authority.id.capacity() as u64)?;
         let conversation = self.reducer.conversation().ok_or_else(|| {
             guarded_boundary(
-                custody.work(),
+                quota.work(),
                 crate::wire::ErrorCode::Invalid,
                 "fork child is not a conversation",
             )
         })?;
         if conversation.agent == Some(seed.child_agent) {
-            let (event, event_owned) = self.read_event_at(1, custody.work()).await?;
-            custody.adopt(event_owned)?;
-            if event.revision == 1
-                && event.operation_id == bind_operation
-                && event.causal_parent.as_ref() == Some(&causal_parent)
-                && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
+            let (binding, owned) = self.read_event_at(1, quota.work()).await?;
+            quota.adopt(owned)?;
+            if binding.revision != 1
+                || binding.operation_id != operation
+                || binding.causal_parent.as_ref() != Some(&causal)
+                || !matches!(binding.payload, EventPayload::ConversationBound { agent } if agent == seed.child_agent)
             {
-                #[cfg(feature = "filesystem")]
-                if let Some(owner) = owner {
-                    owner.verify(false, custody.work()).await?;
-                }
-                drop(event);
-                custody.release(event_owned)?;
-                drop(fork_event);
-                custody.release(fork_event_owned)?;
-                return Ok(());
+                return Err(guarded_boundary(
+                    quota.work(),
+                    crate::wire::ErrorCode::Conflict,
+                    "child conversation was bound outside its published fork",
+                ));
             }
-            return Err(guarded_boundary(
-                custody.work(),
-                crate::wire::ErrorCode::Conflict,
-                "child conversation was bound outside its published fork",
-            ));
+            #[cfg(feature = "filesystem")]
+            if let Some(owner) = owner {
+                owner.verify(false, quota.work()).await?;
+            }
+            return Ok(());
         }
         if self.reducer.revision() != 0 || conversation.agent.is_some() {
             return Err(guarded_boundary(
-                custody.work(),
+                quota.work(),
                 crate::wire::ErrorCode::Conflict,
                 "fork child already has a different history",
             ));
         }
-        let (key, key_slots) =
-            fork_command_key_with_work("fork-child-bind:", seed.operation_id, custody.work())?;
-        custody.adopt(key_slots)?;
+        let (key, owned) =
+            fork_command_key_with_work("fork-child-bind:", seed.operation_id, quota.work())?;
+        quota.adopt(owned)?;
         let command = Command {
-            operation_id: bind_operation,
+            operation_id: operation,
             idempotency_key: key,
             expected_revision: 0,
             scope,
-            causal_parent: Some(causal_parent),
+            causal_parent: Some(causal),
             action: Action::BindConversation {
                 agent: seed.child_agent,
             },
         };
         #[cfg(feature = "filesystem")]
-        let (result, returned_owned) = if owner.is_some() || custody.work().is_some() {
-            self.publish(
+        let (result, owned) = self
+            .publish(
                 command,
                 owner,
                 crate::distributed::JournalWrite::Fresh,
                 false,
-                custody.work(),
+                quota.work(),
             )
-            .await?
-        } else {
-            (self.execute(command, None, custody.work()).await?, 0)
-        };
+            .await?;
         #[cfg(not(feature = "filesystem"))]
-        let (result, returned_owned) = (self.execute(command, custody.work()).await?, 0);
-        custody.adopt(returned_owned)?;
+        let (result, owned) = (self.execute(command, quota.work()).await?, 0);
+        quota.adopt(owned)?;
         drop(result);
-        custody.release(returned_owned)?;
-        drop(fork_event);
-        custody.release(fork_event_owned)?;
         Ok(())
     }
 

@@ -1,4 +1,8 @@
 use super::*;
+use crate::{
+    store::guarded_boundary as boundary,
+    wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized},
+};
 
 impl<P: StreamProvider> HistoryReader<P> {
     /// Hydrates a bounded logical prefix for fork grant capture.
@@ -10,92 +14,61 @@ impl<P: StreamProvider> HistoryReader<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<crate::fork::PreparedForkHistory> {
         self.verifier.verify_audience(parent.authority(), work)?;
-        let source = parent.conversation().ok_or_else(|| {
-            crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "fork archive parent is unbound",
-            )
-        })?;
+        let source = parent
+            .conversation()
+            .ok_or_else(|| boundary(work, Invalid, "fork archive parent is unbound"))?;
         if through_sequence > source.logical_revision() {
-            return Err(crate::store::guarded_boundary(
+            return Err(boundary(
                 work,
-                crate::wire::ErrorCode::Invalid,
+                Invalid,
                 "fork archive exceeds the logical parent cut",
             ));
         }
-        let cursor_authority = match work.as_deref_mut() {
-            Some(work) => work.clone_authority(parent.authority())?,
-            None => parent.authority().clone(),
-        };
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let cursor = HistoryCursor {
-            authority: cursor_authority,
+            authority: crate::core::copy_authority(parent.authority(), &mut quota)?,
             after_revision: 0,
             through_revision: parent.revision(),
         };
-        let cursor_bytes = cursor.authority.id.capacity() as u64;
         let messages = self
-            .conversation_range(&cursor, 0, through_sequence, limits, work)
-            .await;
-        drop(cursor);
-        if let Some(work) = work.as_deref_mut() {
-            let released = work.release_owned(cursor_bytes);
-            if messages.is_ok() {
-                released?;
-            }
-        }
+            .conversation_range(&cursor, 0, through_sequence, limits, quota.work())
+            .await?;
         let (mut conversation, _) = crate::conversation::ConversationState::from_wire(
             crate::conversation::ConversationStateWire {
                 agent: None,
-                messages: messages?,
+                messages,
                 archived_prefix: None,
             },
             acyclic_stream::MAX_RECORD_BYTES as u64,
-            work,
+            quota.work(),
         )?;
         conversation.agent = source.agent;
         if through_sequence >= source.resident_after_sequence()
-            && conversation.history_prefix_digest(through_sequence, work)?
-                != source.history_prefix_digest(through_sequence, work)?
+            && conversation.history_prefix_digest(through_sequence, quota.work())?
+                != source.history_prefix_digest(through_sequence, quota.work())?
         {
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Storage,
+            return Err(boundary(
+                quota.work(),
+                Storage,
                 "fork archive differs from the authenticated parent prefix",
             ));
         }
         #[cfg(feature = "filesystem")]
-        {
-            let proof = self.verifier.fork_history_selection_proof_with_work(
-                parent.revision(),
-                through_sequence,
-                conversation.agent,
-                conversation.history_prefix_digest(through_sequence, work)?,
-                work,
-            )?;
-            let authority = match work.as_deref_mut() {
-                Some(work) => work.clone_authority(parent.authority())?,
-                None => parent.authority().clone(),
-            };
-            Ok(crate::fork::PreparedForkHistory::from_archive(
-                authority,
-                parent.revision(),
-                conversation,
-                proof,
-            ))
-        }
-        #[cfg(not(feature = "filesystem"))]
-        {
-            let authority = match work.as_deref_mut() {
-                Some(work) => work.clone_authority(parent.authority())?,
-                None => parent.authority().clone(),
-            };
-            Ok(crate::fork::PreparedForkHistory::from_archive(
-                authority,
-                parent.revision(),
-                conversation,
-            ))
-        }
+        let proof = self.verifier.fork_history_selection_proof_with_work(
+            parent.revision(),
+            through_sequence,
+            conversation.agent,
+            conversation.history_prefix_digest(through_sequence, quota.work())?,
+            quota.work(),
+        )?;
+        quota.transfer();
+        Ok(crate::fork::PreparedForkHistory::from_archive(
+            cursor.authority,
+            parent.revision(),
+            conversation,
+            #[cfg(feature = "filesystem")]
+            proof,
+        ))
     }
 
     /// Captures an admitted Summary fork through cold authenticated indexes.
@@ -156,40 +129,30 @@ impl<P: StreamProvider> HistoryReader<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if limits.maximum_events < 2 || limits.maximum_bytes == 0 {
-            return Err(crate::store::guarded_boundary(
+            return Err(boundary(
                 work,
-                crate::wire::ErrorCode::Invalid,
+                Invalid,
                 "published child verification requires two bounded canonical events",
             ));
         }
         seed.validate(work)?;
         if parent.verifier.audience() != &seed.parent || self.verifier.audience() != &seed.child {
-            return Err(crate::store::guarded_boundary(
+            return Err(boundary(
                 work,
-                crate::wire::ErrorCode::Unauthorized,
+                Unauthorized,
                 "published child differs from the original parent or child audience",
             ));
         }
-        let child_cut = self
-            .pin(
-                0,
-                work.as_mut().map(|work| &mut **work as &mut dyn HistoryIo),
-            )
-            .await?;
-        if child_cut.through_revision == 0 {
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
+        if self.committed_tail_with_work(quota.work()).await? == 0 {
+            return Err(boundary(
+                quota.work(),
+                Unauthorized,
                 "published child is not bound",
             ));
         }
-        let child_cursor_bytes = child_cut.authority.id.capacity() as u64;
-        let cut = child_cut.through_revision;
-        drop(child_cut);
-        if let Some(work) = work.as_deref_mut() {
-            work.release_owned(child_cursor_bytes)?;
-        }
-        let (operation, causal) = crate::store::fork_child_binding_with_work(seed, work)?;
+        let (operation, causal) = crate::store::fork_child_binding_with_work(seed, quota.work())?;
+        quota.adopt(causal.authority.id.capacity() as u64)?;
         let (publication, consumed) =
             crate::store::operations::bounded_operation_with_retained_quota(
                 &parent.client,
@@ -198,40 +161,36 @@ impl<P: StreamProvider> HistoryReader<P> {
                 seed.operation_id,
                 limits.maximum_bytes,
                 false,
-                work,
+                quota.work(),
             )
             .await?;
-        let (publication, publication_owned) = publication.ok_or_else(|| {
-            crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Conflict,
+        let (publication, owned) = publication.ok_or_else(|| {
+            boundary(
+                quota.work(),
+                Conflict,
                 "child has no original parent publication",
             )
         })?;
-        let publication_matches = publication.revision == causal.revision
-            && matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed);
-        drop(publication);
-        let released_publication = match work.as_deref_mut() {
-            Some(work) => work.release_owned(publication_owned),
-            None => Ok(()),
-        };
-        if !publication_matches {
-            let _ = released_publication;
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Conflict,
+        quota.adopt(owned)?;
+        if publication.revision != causal.revision
+            || !matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
+        {
+            return Err(boundary(
+                quota.work(),
+                Conflict,
                 "child differs from the original parent publication",
             ));
         }
-        released_publication?;
+        drop(publication);
+        quota.relinquish(owned)?;
         let remaining = limits
             .maximum_bytes
             .checked_sub(consumed)
             .filter(|bytes| *bytes > 0)
             .ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
+                boundary(
+                    quota.work(),
+                    Invalid,
                     "published child verification exceeds byte allowance",
                 )
             })?;
@@ -242,49 +201,29 @@ impl<P: StreamProvider> HistoryReader<P> {
             operation,
             remaining,
             false,
-            work,
+            quota.work(),
         )
         .await?;
-        let (binding, binding_owned) = binding.ok_or_else(|| {
-            crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Conflict,
+        let (binding, owned) = binding.ok_or_else(|| {
+            boundary(
+                quota.work(),
+                Conflict,
                 "child lacks its original fork binding",
             )
         })?;
-        let binding_matches = binding.revision == 1
-            && binding.revision <= cut
-            && binding.scope.agent() == Some(seed.child_agent)
-            && binding.causal_parent.as_ref() == Some(&causal)
-            && matches!(&binding.payload, crate::core::EventPayload::ConversationBound { agent } if *agent == seed.child_agent);
-        let released_owned = if work.is_some() {
-            binding_owned
-                .checked_add(causal.authority.id.capacity() as u64)
-                .ok_or_else(|| {
-                    crate::store::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Invalid,
-                        "child verification custody overflows",
-                    )
-                })?
-        } else {
-            0
-        };
-        drop(binding);
-        drop(causal);
-        let released_binding = match work.as_deref_mut() {
-            Some(work) => work.release_owned(released_owned),
-            None => Ok(()),
-        };
-        if !binding_matches {
-            let _ = released_binding;
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Conflict,
+        quota.adopt(owned)?;
+        if binding.revision != 1
+            || binding.scope.agent() != Some(seed.child_agent)
+            || binding.causal_parent.as_ref() != Some(&causal)
+            || !matches!(&binding.payload, crate::core::EventPayload::ConversationBound { agent } if *agent == seed.child_agent)
+        {
+            return Err(boundary(
+                quota.work(),
+                Conflict,
                 "child lacks its original fork binding",
             ));
         }
-        released_binding
+        Ok(())
     }
 
     /// Reads one explicit page of a child's published parent-history cut.
@@ -310,7 +249,8 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "inherited history page bounds are invalid".into(),
             ));
         }
-        crate::executor::json::json_byte_length(seed, limits.maximum_bytes, &mut None).map(|_| ())?;
+        crate::executor::json::json_byte_length(seed, limits.maximum_bytes, &mut None)
+            .map(|_| ())?;
         seed.validate(&mut None)?;
         let publication_revision = crate::contract::next_revision(seed.parent_revision)?;
         let (publication, consumed) = self

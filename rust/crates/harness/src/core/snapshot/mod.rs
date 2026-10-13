@@ -1,6 +1,7 @@
 //! Authenticated reducer checkpoints and bounded wire decoding.
 use super::*;
 mod capture;
+pub(in crate::core) use capture::admit_copy;
 mod entries;
 mod restoration;
 #[cfg(test)]

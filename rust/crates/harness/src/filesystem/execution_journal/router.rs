@@ -1,38 +1,38 @@
 use super::*;
 use crate::runtime::InteractionRouter;
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P, A, O> InteractionRouter for FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn route<'a>(
-        &'a self,
+    async fn route(
+        &self,
         operation_id: OperationId,
         interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        Box::pin(async move {
-            let task = self
-                .owner
-                .as_ref()
-                .ok_or_else(|| {
-                    canonical_boundary(
-                        None,
-                        crate::wire::ErrorCode::Unsupported,
-                        "interaction journal has no task owner",
-                    )
-                })?
-                .0
-                .task_binding()
-                .0;
-            let id = crate::durable_host::task_interaction_id(task, operation_id, &mut None)?;
-            self.open_interaction(id, &interaction, None)?.await?;
-            Ok(self
-                .interaction_outcome(id, None)?
-                .await?
-                .unwrap_or(InteractionOutcome::Indeterminate { operation_id }))
-        })
+    ) -> Result<InteractionOutcome> {
+        let task = self
+            .owner
+            .as_ref()
+            .ok_or_else(|| {
+                canonical_boundary(
+                    None,
+                    crate::wire::ErrorCode::Unsupported,
+                    "interaction journal has no task owner",
+                )
+            })?
+            .0
+            .task_binding()
+            .0;
+        let id = crate::durable_host::task_interaction_id(task, operation_id, &mut None)?;
+        self.open_interaction(id, &interaction, None)?.await?;
+        Ok(self
+            .interaction_outcome(id, None)?
+            .await?
+            .unwrap_or(InteractionOutcome::Indeterminate { operation_id }))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
