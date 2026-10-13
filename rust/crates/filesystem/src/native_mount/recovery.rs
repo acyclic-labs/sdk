@@ -222,13 +222,13 @@ impl NativeMountRecoveryOwner {
 
     /// Returns the original identity and actual recovery state.
     #[must_use]
-    pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState {
+    pub fn cleanup_state(&self) -> Result<NativeMountRecoveryCleanupState, NativeMountError> {
         self.shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .expect("an active recovery owner")
+            .ok_or(NativeMountError::ControlPending)?
             .snapshot()
     }
 
@@ -246,7 +246,7 @@ impl NativeMountRecoveryOwner {
         &mut self,
         remove_destination: bool,
     ) -> Result<bool, NativeMountError> {
-        if !self.cleanup_state().destination_fence_retained {
+        if !self.cleanup_state()?.destination_fence_retained {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
@@ -428,15 +428,15 @@ impl NativeRecoveryState {
         result
     }
 
-    fn snapshot(&self) -> NativeMountRecoveryCleanupState {
-        NativeMountRecoveryCleanupState {
-            fence_identity: self.identity.expect("an acquired fence identity"),
+    fn snapshot(&self) -> Result<NativeMountRecoveryCleanupState, NativeMountError> {
+        Ok(NativeMountRecoveryCleanupState {
+            fence_identity: self.identity.ok_or(NativeMountError::ControlPending)?,
             destination_fence_retained: self.guard.is_some(),
             controls_pending: self.control.controls_pending(),
             namespace_detach_confirmed: self.control.namespace_detach_confirmed(),
             destination_removed: self.destination_removed,
             measured_cleanup_failed: self.measured_cleanup_failed,
-        }
+        })
     }
 }
 

@@ -145,8 +145,9 @@ pub(super) fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    if let Some(_) = crate::native_host::entry_identity(&destination_parent.directory, name, work)
+    if crate::native_host::entry_identity(&destination_parent.directory, name, work)
         .map_err(MaterializeError::from)?
+        .is_some()
     {
         match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(

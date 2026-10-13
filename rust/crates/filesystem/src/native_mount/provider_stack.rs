@@ -256,7 +256,7 @@ impl ScopedFiber {
             let mut fiber = slot
                 .borrow_mut()
                 .take()
-                .expect("this callback owns the scoped fiber");
+                .ok_or(ProviderFailure::Native(E_UNEXPECTED))?;
             fiber.finish()
         })
     }
@@ -366,6 +366,7 @@ pub(super) fn run_with_meter<T>(
         let exchange = unsafe { &*exchange };
         exchange.caller.set(conversion.caller);
         exchange.job.set((&raw mut job).cast::<c_void>());
+        // SAFETY: the live provider fiber runs the borrowed job until switching back.
         unsafe { SwitchToFiber(fiber) };
         conversion.finish()?;
         Ok(outcome)

@@ -270,10 +270,13 @@ pub(super) fn insert_reader_slot(
     first_free: &mut Option<usize>,
     second_free: &mut Option<usize>,
     slot: ReadSlot,
-) -> usize {
+) -> Result<usize, MountSourceError> {
     let index = if let Some(index) = first_free.take() {
         *first_free = second_free.take();
-        state.reader_slots[index] = Some(slot);
+        *state
+            .reader_slots
+            .get_mut(index)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? = Some(slot);
         index
     } else {
         let index = state.reader_slots.len();
@@ -281,5 +284,5 @@ pub(super) fn insert_reader_slot(
         index
     };
     state.occupied_slots += 1;
-    index
+    Ok(index)
 }

@@ -365,7 +365,10 @@ pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellati
     let volume_id = source.volume_id()?;
     let destination = tempfile::tempdir()?;
     let cancellation = crate::CancellationToken::new();
-    let mut session = crate::native_mount::mount_native_measured(
+    let work = crate::NativeMaterializationWork::new(FINITE_HANDLER_POLICY, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let prepared = crate::native_mount::prepare_native_mount_start(&work)?;
+    let mut session = prepared.start(
         crate::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id,
@@ -373,18 +376,19 @@ pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellati
             writable: true,
         },
         Arc::new(source),
-        FINITE_HANDLER_POLICY,
-        &cancellation,
-    )
-    .map_err(|(cause, _)| cause)?
-    .value;
+        &work,
+        None,
+    )?;
     cancellation.cancel();
     let error = std::fs::metadata(destination.path().join("cancelled-native-lookup"))
         .expect_err("installed callback cannot replace the original cancellation root");
     assert_eq!(error.raw_os_error(), Some(libc::ECANCELED));
-    session
-        .stop_measured(FINITE_HANDLER_POLICY, &crate::CancellationToken::new())
-        .map_err(|(cause, _)| cause)?;
+    let cleanup = crate::NativeMaterializationWork::new(
+        FINITE_HANDLER_POLICY,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    session.stop_with_meter(&cleanup)?;
     Ok(())
 }
 
