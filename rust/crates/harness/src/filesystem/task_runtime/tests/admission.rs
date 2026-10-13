@@ -182,7 +182,9 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
     let prefix = work.receipt();
     assert!(matches!(
         native_step_key(u64::MAX, &work),
-        Err(Error::NativeWork { .. })
+        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
+            acyclic_fs::FsError::NativeKernel(acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. })))
     ));
     assert_eq!(
         work.receipt().allocation_operations,
