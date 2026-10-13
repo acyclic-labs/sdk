@@ -47,7 +47,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationTransferBatch> {
-        let result = (export_generation_batch_async(
+
+        (export_generation_batch_async(
             &self.inner.objects,
             manifest,
             cursor,
@@ -57,8 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation,
         ))
         .await
-        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
-        result
+        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
     }
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
@@ -71,7 +71,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<TransferCursor> {
-        let result = (import_generation_batch_async(
+
+        (import_generation_batch_async(
             &self.inner.objects,
             manifest,
             cursor,
@@ -81,8 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation,
         ))
         .await
-        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
-        result
+        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
     }
 }
 

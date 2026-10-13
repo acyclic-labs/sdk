@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
-    conversation::{ContentGrant, ConversationMessage, FileRef, VolumeOperation, VolumeRef},
+    conversation::{ConversationMessage, FileRef, VolumeOperation, VolumeRef},
     core::{Action, Authority, AuthorityVerifier, Command, Scope},
     durable_host::TaskJournalOwner,
     fork::{ForkReport, ForkRequest, ForkSeed},

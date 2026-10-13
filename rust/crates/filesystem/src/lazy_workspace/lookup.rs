@@ -208,12 +208,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
         }
         let loaded;
-        let state = match basis.state {
-            Some(state) => state,
-            None => {
-                loaded = self.state(ctx).await?;
-                &loaded
-            }
+        let state = if let Some(state) = basis.state { state } else {
+            loaded = self.state(ctx).await?;
+            &loaded
         };
         if self.tombstoned(state.overlay, path, ctx).await? {
             return Ok((None, false, ctx.claim_owned(0, 0)?));
@@ -229,18 +226,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             {
                 (source, Some(node), false)
             }
-            _ => match basis.listed {
-                Some(node) => (state.source, Some(node), false),
-                None => {
-                    if frozen.is_some() && state.source != self.source.reference() {
-                        return Err(LazyWorkspaceError::StaleSource);
-                    }
-                    (
-                        state.source,
-                        self.source_lookup(state.source, path, ctx).await?,
-                        true,
-                    )
+            _ => if let Some(node) = basis.listed { (state.source, Some(node), false) } else {
+                if frozen.is_some() && state.source != self.source.reference() {
+                    return Err(LazyWorkspaceError::StaleSource);
                 }
+                (
+                    state.source,
+                    self.source_lookup(state.source, path, ctx).await?,
+                    true,
+                )
             },
         };
         let Some(node) = node else {

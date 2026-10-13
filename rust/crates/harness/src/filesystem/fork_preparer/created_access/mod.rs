@@ -4,8 +4,8 @@ use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier};
 use crate::{
     Capabilities,
     conversation::{
-        BoundedContentFuture, ContentHold, ContentPublisher, FileRef, PrivateDirectoryPage,
-        VolumeClass, VolumeOwner,
+        ContentPublisher, FileRef,
+        VolumeClass,
     },
     core::AuthorityIssuer,
     resource_preparation::{
@@ -19,7 +19,7 @@ use acyclic_fs::{CancellationToken, WorkCounters};
 mod authentication;
 mod provenance;
 mod provider;
-use authentication::{AuthenticatedAllocation, authenticate};
+use authentication::authenticate;
 pub(in crate::filesystem) use provenance::CreatedProvenance;
 
 /// Trusted creation verifier with host-managed signing authority.

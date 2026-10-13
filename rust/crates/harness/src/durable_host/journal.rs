@@ -136,8 +136,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .suspend_workflow(
                 self.task_id(),
                 &self.fence,
-                revision,
-                Some(command),
+                (revision, Some(command)),
                 Some((execution, tail)),
                 None,
                 work,
@@ -269,24 +268,22 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     /// Verifies the current task fence for dispatch or settlement.
-    pub fn verify<'a, 'w: 'a>(
+    pub async fn verify<'a, 'w: 'a>(
         &'a self,
         settlement: bool,
         work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
-    ) -> impl std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'a {
-        async move {
-            use crate::distributed::JournalWrite;
-            self.condition(
-                if settlement {
-                    JournalWrite::Settlement
-                } else {
-                    JournalWrite::Fresh
-                },
-                work,
-            )
-            .await
-            .map(|_| ())
-        }
+    ) -> Result<()> {
+        use crate::distributed::JournalWrite;
+        self.condition(
+            if settlement {
+                JournalWrite::Settlement
+            } else {
+                JournalWrite::Fresh
+            },
+            work,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub(super) fn execution_write(

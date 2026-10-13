@@ -46,7 +46,7 @@ async fn b24_sdk_preparation_validates_proofs_duplicates_and_finite_bounds() -> 
             0 => invalid.child.resource_proofs.clear(),
             1 => {
                 invalid.child.resource_proofs[0].provider =
-                    ProviderRef::new("foreign".into(), "allocator".into(), "1".into(), &mut None)?
+                    ProviderRef::new("foreign".into(), "allocator".into(), "1".into(), &mut None)?;
             }
             2 => invalid
                 .child

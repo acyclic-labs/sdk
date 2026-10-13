@@ -65,24 +65,35 @@ pub enum ConnectError {
 pub struct Client {
     channel: Channel,
     authorization: MetadataValue<Ascii>,
+    acknowledge_deliveries: bool,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
 pub struct Service<P> {
     provider: Arc<P>,
+    #[cfg(test)]
+    test_delivery: Option<(Bytes, Arc<std::sync::atomic::AtomicUsize>)>,
 }
 
 impl<P> Service<P> {
     /// Binds the generated server to one semantic provider.
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            #[cfg(test)]
+            test_delivery: None,
+        }
     }
 }
 
 impl<P> Clone for Service<P> {
     fn clone(&self) -> Self {
-        Self::new(Arc::clone(&self.provider))
+        Self {
+            provider: Arc::clone(&self.provider),
+            #[cfg(test)]
+            test_delivery: self.test_delivery.clone(),
+        }
     }
 }
 
@@ -118,16 +129,15 @@ impl Client {
         if endpoint.uri().scheme_str() != Some("https") {
             return Err(ConnectError::InsecureEndpoint);
         }
-        let endpoint = match certificate_pem {
-            Some(pem) => endpoint
-                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?,
-            None => {
-                let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-                    rustls::crypto::ring::default_provider(),
-                ))
-                .map_err(ConnectError::PlatformVerifier)?;
-                endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
-            }
+        let endpoint = if let Some(pem) = certificate_pem {
+            endpoint
+                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?
+        } else {
+            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .map_err(ConnectError::PlatformVerifier)?;
+            endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
         };
         Ok(Self::from_channel(endpoint.connect().await?, authorization))
     }
@@ -136,6 +146,7 @@ impl Client {
         Self {
             channel,
             authorization,
+            acknowledge_deliveries: true,
         }
     }
 

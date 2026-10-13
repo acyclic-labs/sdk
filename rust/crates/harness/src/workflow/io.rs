@@ -38,16 +38,15 @@ pub(crate) fn finish_native_io<T>(
                 Ok(held) => held,
                 Err(_) => return Err(Error::NativeWork { cause, custody }),
             };
-            if let Some(mut incoming) = custody {
-                if !held.work().shares_ledger(incoming.work())
-                    || held.absorb(&mut incoming).is_err()
+            if let Some(mut incoming) = custody
+                && (!held.work().shares_ledger(incoming.work())
+                    || held.absorb(&mut incoming).is_err())
                 {
                     return Err(Error::NativeWork {
                         cause,
                         custody: Some(incoming),
                     });
                 }
-            }
             Err(Error::NativeWork {
                 cause,
                 custody: Some(held),

@@ -71,7 +71,7 @@ pub(super) fn get_selected_locked<'a>(
         ),
     };
     if (end - start) as u64 > maximum_bytes {
-        return Err(Error::from(QuotaExceeded).into());
+        return Err(Error::from(QuotaExceeded));
     }
     Ok((value, range, start, end))
 }

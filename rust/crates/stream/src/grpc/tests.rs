@@ -121,7 +121,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
             .into_iter()
             .map(|record| record.value)
             .collect::<Vec<_>>(),
-        values[2..19].to_vec()
+        values.iter().skip(2).take(17).cloned().collect::<Vec<_>>()
     );
     Ok(())
 }
@@ -315,22 +315,17 @@ async fn retry_attempts_record_independent_spans() -> TestResult {
     decode_response(response, Ok)?;
     let attempts = captured.all("acyclic.stream.grpc.call");
     assert_eq!(attempts.len(), 2);
-    assert_eq!(
-        (
-            attempts[0]["attempt"].as_str(),
-            attempts[0]["outcome"].as_str(),
-            attempts[0]["rpc.code"].as_str()
-        ),
-        ("1", "err", "14")
-    );
-    assert_eq!(
-        (
-            attempts[1]["attempt"].as_str(),
-            attempts[1]["outcome"].as_str(),
-            attempts[1]["rpc.code"].as_str()
-        ),
-        ("2", "ok", "0")
-    );
+    for (attempt, (number, outcome, code)) in
+        attempts.iter().zip([("1", "err", "14"), ("2", "ok", "0")])
+    {
+        for (field, expected) in [
+            ("attempt", number),
+            ("outcome", outcome),
+            ("rpc.code", code),
+        ] {
+            assert_eq!(attempt.get(field).map(String::as_str), Some(expected));
+        }
+    }
     Ok(())
 }
 
@@ -382,4 +377,54 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
     let _ = shutdown.send(());
     server.await??;
     result
+}
+
+#[tokio::test]
+async fn translating_client_does_not_ack_before_downstream_delivery() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("accounts/events")?,
+            records: vec![OwnedBytes::from(b"delivered".to_vec())],
+            if_tail: Some(0),
+            idempotency_key: None,
+        })
+        .await?;
+    let acknowledgements = Arc::new(AtomicUsize::new(0));
+    let mut service = Service::new(provider);
+    service.test_delivery = Some((Bytes::from(vec![9; 32]), Arc::clone(&acknowledgements)));
+    let direct = Client::from_channel(channel(service), authorization("fixture")?);
+    let translating = direct.clone().without_delivery_acknowledgements();
+    let request = ReadRequest {
+        path: StreamPath::new("accounts/events")?,
+        from: 0,
+        limit: 1,
+    };
+    let record = direct
+        .read(request.clone())
+        .await?
+        .next()
+        .await
+        .ok_or("empty read")??;
+    assert_eq!(record.value, OwnedBytes::from(b"delivered".to_vec()));
+    assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
+    let record = translating
+        .read(request)
+        .await?
+        .next()
+        .await
+        .ok_or("empty read")??;
+    assert_eq!(record.value, OwnedBytes::from(b"delivered".to_vec()));
+    assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        direct.acknowledge_delivery(Bytes::new()).await,
+        Err(StreamError::InvalidArgument)
+    );
+    assert_eq!(
+        client(MemoryStream::default())?
+            .acknowledge_delivery(Bytes::from(vec![9; 32]))
+            .await,
+        Err(StreamError::Unsupported)
+    );
+    Ok(())
 }

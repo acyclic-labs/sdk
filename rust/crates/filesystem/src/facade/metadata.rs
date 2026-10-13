@@ -25,11 +25,10 @@ impl AuthoredMetadataCache {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            if let Some((cached, object)) = entry {
-                if *cached == metadata {
+            if let Some((cached, object)) = entry
+                && *cached == metadata {
                     return Ok(Some(*object));
                 }
-            }
         }
         Ok(None)
     }

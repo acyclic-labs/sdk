@@ -120,7 +120,7 @@ impl RuntimeScope {
         limits: Limits,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        (&limits).validate(&mut Some(&mut crate::store::HistoryWork::new(
+        limits.validate(&mut Some(&mut crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(work)?,
         )))?;
         let custody = work

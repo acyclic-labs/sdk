@@ -88,13 +88,13 @@ fn encode_fields(
                         observe(EncodeWorkStep::Admit(WorkCounters {
                             bytes_copied: bytes,
                             ..WorkCounters::UNCHARGED
-                        }))?
+                        }))?;
                     }
                     EncodeAllocationStep::HeaderWritten { bytes } => {
                         observe(EncodeWorkStep::Completed(WorkCounters {
                             bytes_copied: bytes,
                             ..WorkCounters::UNCHARGED
-                        }))?
+                        }))?;
                     }
                     _ => {}
                 }

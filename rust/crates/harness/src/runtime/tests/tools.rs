@@ -41,7 +41,11 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
     {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::default(),
+            acyclic_fs::WorkBudget {
+                allocation_operations: 1,
+                peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+                ..Default::default()
+            },
             &cancellation,
         )
         .expect("native policy source ledger");

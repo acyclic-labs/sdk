@@ -14,10 +14,6 @@ macro_rules! serve_span {
     };
 }
 
-fn wire_error(error: StreamError) -> Status {
-    error_status(&error)
-}
-
 fn check_command_size<T: Message>(request: &Request<T>) -> Result<(), Status> {
     if request.get_ref().encoded_len() > crate::MAX_COMMAND_BYTES {
         Err(error_status(&StreamError::LimitExceeded))
@@ -38,13 +34,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
         unary(serve_span!("inspect_idempotency"), async {
             check_command_size(&request)?;
-            let key =
-                IdempotencyKey::new(request.into_inner().idempotency_key).map_err(wire_error)?;
+            let key = IdempotencyKey::new(request.into_inner().idempotency_key)
+                .map_err(|error| error_status(&error))?;
             let observation = self
                 .provider
                 .inspect_idempotency(key)
                 .await
-                .map_err(wire_error)?;
+                .map_err(|error| error_status(&error))?;
             Ok(wire::InspectIdempotencyResponse {
                 observation: observation.map(observation_wire),
             })
@@ -58,8 +54,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     ) -> Result<Response<wire::AppendResponse>, Status> {
         unary(serve_span!("append"), async {
             check_command_size(&request)?;
-            let request = append_from_wire(request.into_inner()).map_err(wire_error)?;
-            let outcome = self.provider.append(request).await.map_err(wire_error)?;
+            let request =
+                append_from_wire(request.into_inner()).map_err(|error| error_status(&error))?;
+            let outcome = self
+                .provider
+                .append(request)
+                .await
+                .map_err(|error| error_status(&error))?;
             Ok(append_outcome_to_wire(outcome))
         })
         .await
@@ -71,8 +72,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     ) -> Result<Response<wire::TailResponse>, Status> {
         unary(serve_span!("tail"), async {
             check_command_size(&request)?;
-            let path = path(request.into_inner().path).map_err(wire_error)?;
-            let bounds = self.provider.bounds(path).await.map_err(wire_error)?;
+            let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
+            let bounds = self
+                .provider
+                .bounds(path)
+                .await
+                .map_err(|error| error_status(&error))?;
             Ok(wire::TailResponse { tail: bounds.tail })
         })
         .await
@@ -86,12 +91,17 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let request = ForkRequest {
-                source: path(request.source).map_err(wire_error)?,
-                destination: path(request.destination).map_err(wire_error)?,
+                source: path(request.source).map_err(|error| error_status(&error))?,
+                destination: path(request.destination).map_err(|error| error_status(&error))?,
                 at_tail: request.at_tail,
-                idempotency_key: optional_key(request.idempotency_key).map_err(wire_error)?,
+                idempotency_key: optional_key(request.idempotency_key)
+                    .map_err(|error| error_status(&error))?,
             };
-            let receipt = self.provider.fork(request).await.map_err(wire_error)?;
+            let receipt = self
+                .provider
+                .fork(request)
+                .await
+                .map_err(|error| error_status(&error))?;
             Ok(fork_receipt_to_wire(&receipt))
         })
         .await
@@ -106,12 +116,30 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let request = ReadRequest {
-                path: path(request.path).map_err(wire_error)?,
+                path: path(request.path).map_err(|error| error_status(&error))?,
                 from: request.from,
                 limit: request.limit,
             };
-            let records = self.provider.read(request).await.map_err(wire_error)?;
-            Ok(observe_body(&span, records.map(record_frame)).boxed())
+            let records = self
+                .provider
+                .read(request)
+                .await
+                .map_err(|error| error_status(&error))?;
+            #[cfg(test)]
+            let records = {
+                let delivery = self.test_delivery.clone();
+                records.map(move |record| {
+                    record_frame(record).map(|mut frame| {
+                        if let Some((token, _)) = &delivery {
+                            frame.delivery_token = token.clone();
+                        }
+                        frame
+                    })
+                })
+            };
+            #[cfg(not(test))]
+            let records = records.map(record_frame);
+            Ok(observe_body(&span, records).boxed())
         })
         .await
     }
@@ -124,15 +152,33 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         streaming(span.clone(), async {
             check_command_size(&request)?;
             let request = request.into_inner();
-            let path = path(request.path).map_err(wire_error)?;
+            let path = path(request.path).map_err(|error| error_status(&error))?;
             let records = self
                 .provider
                 .follow(path, request.from)
                 .await
-                .map_err(wire_error)?;
+                .map_err(|error| error_status(&error))?;
             Ok(observe_body(&span, records.map(record_frame)).boxed())
         })
         .await
+    }
+
+    async fn acknowledge_delivery(
+        &self,
+        request: Request<wire::AcknowledgeDeliveryRequest>,
+    ) -> Result<Response<wire::AcknowledgeDeliveryResponse>, Status> {
+        if request.get_ref().delivery_token.len() != 32 {
+            return Err(error_status(&StreamError::InvalidArgument));
+        }
+        #[cfg(test)]
+        if let Some((token, acknowledgements)) = &self.test_delivery {
+            if request.get_ref().delivery_token != *token {
+                return Err(error_status(&StreamError::InvalidArgument));
+            }
+            acknowledgements.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(Response::new(wire::AcknowledgeDeliveryResponse {}));
+        }
+        Err(error_status(&StreamError::Unsupported))
     }
 
     async fn children(
@@ -144,10 +190,18 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let request = ChildrenRequest {
-                parent: request.parent.map(path).transpose().map_err(wire_error)?,
+                parent: request
+                    .parent
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
                 limit: request.limit,
             };
-            let children = self.provider.children(request).await.map_err(wire_error)?;
+            let children = self
+                .provider
+                .children(request)
+                .await
+                .map_err(|error| error_status(&error))?;
             let children = children.map(|child| {
                 child
                     .map(|child| wire::ChildrenResponse {
@@ -155,7 +209,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                             path: child.path.to_string(),
                         }),
                     })
-                    .map_err(wire_error)
+                    .map_err(|error| error_status(&error))
             });
             Ok(observe_body(&span, children).boxed())
         })
@@ -169,21 +223,29 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         unary(serve_span!("children_page"), async {
             let request = request.into_inner();
             let request = ChildrenPageRequest {
-                parent: request.parent.map(path).transpose().map_err(wire_error)?,
-                after: request.after.map(path).transpose().map_err(wire_error)?,
+                parent: request
+                    .parent
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
+                after: request
+                    .after
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
                 hierarchy_version: request
                     .hierarchy_version
                     .as_deref()
                     .map(commit_id)
                     .transpose()
-                    .map_err(wire_error)?,
+                    .map_err(|error| error_status(&error))?,
                 limit: request.limit,
             };
             let page = self
                 .provider
                 .children_page(request)
                 .await
-                .map_err(wire_error)?;
+                .map_err(|error| error_status(&error))?;
             Ok(wire::ChildrenPageResponse {
                 hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
                 children: page
@@ -207,12 +269,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let deadline = request.deadline_unix_millis;
-            let request = commit_from_wire(request).map_err(wire_error)?;
+            let request = commit_from_wire(request).map_err(|error| error_status(&error))?;
             let outcome = match deadline {
                 Some(deadline) => self.provider.commit_before(request, deadline).await,
                 None => self.provider.commit(request).await,
             }
-            .map_err(wire_error)?;
+            .map_err(|error| error_status(&error))?;
             Ok(commit_outcome_to_wire(outcome))
         })
         .await
@@ -224,12 +286,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     ) -> Result<Response<wire::CommittedEnvelope>, Status> {
         unary(serve_span!("read_commit"), async {
             check_command_size(&request)?;
-            let commit_id = commit_id(&request.into_inner().commit_id).map_err(wire_error)?;
+            let commit_id =
+                commit_id(&request.into_inner().commit_id).map_err(|error| error_status(&error))?;
             let envelope = self
                 .provider
                 .read_commit(commit_id)
                 .await
-                .map_err(wire_error)?;
+                .map_err(|error| error_status(&error))?;
             Ok(envelope_to_wire(envelope))
         })
         .await
@@ -239,7 +302,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
 fn record_frame(record: Result<Record, StreamError>) -> Result<wire::ReadResponse, Status> {
     record
         .map(|record| read_response_wire(vec![record_wire(record)]))
-        .map_err(wire_error)
+        .map_err(|error| error_status(&error))
 }
 
 async fn unary<T>(

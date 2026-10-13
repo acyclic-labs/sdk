@@ -23,7 +23,7 @@ async fn append_source(
         &mut None,
     )?;
     let length = bytes.len() as u64;
-    acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
+    acyclic_stream::Stream::new(std::sync::Arc::clone(client), COORDINATOR_PATH)?
         .append_batch(vec![OwnedBytes::from(bytes)], Some(revision - 1), None)
         .await?;
     Ok(length)

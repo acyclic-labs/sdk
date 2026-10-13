@@ -156,12 +156,11 @@ where
         let mut journal = Self::new(owner.stream(), host, &identity, volume, verifier, scope,
             maximum_payload_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            if !owner.native_shared_work_matches(work) {
+        if let Some(work) = io.and_then(PreparationIo::original_native_work)
+            && !owner.native_shared_work_matches(work) {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
                     "workflow owner belongs to another native ledger"));
             }
-        }
         let owner = Arc::new(owner);
         Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
@@ -425,7 +424,7 @@ where
             io.charge(work)?;
             Some(hold)
         } else { None };
-        Ok((acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), path).map_err(|error| Self::observation_stream_error(io, error))?, held))
+        Ok((acyclic_stream::Stream::new(std::sync::Arc::clone(stream), path).map_err(|error| Self::observation_stream_error(io, error))?, held))
     }
 
     fn observation_stream_error(io: Option<&PreparationIo>, source: StreamError) -> Error {
@@ -474,26 +473,23 @@ where
     }
 
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
-        match io {
-            Some(io) => {
-                if io.original_native_work().is_none() {
-                    reference.validate(&mut Some(&mut io.history_io()))?;
-                }
-                if reference.volume() != &self.volume {
-                    return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
-                        "workflow content belongs to another private volume"));
-                }
-                ContentGrant::authorize_volume(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
-                )?;
-                self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
+        if let Some(io) = io {
+            if io.original_native_work().is_none() {
+                reference.validate(&mut Some(&mut io.history_io()))?;
             }
-            None => {
-                let read = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None,
-                )?;
-                self.host.read_content(reference, &read, self.maximum_payload_bytes, None).await
+            if reference.volume() != &self.volume {
+                return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
+                    "workflow content belongs to another private volume"));
             }
+            ContentGrant::authorize_volume(
+                &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
+            )?;
+            self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
+        } else {
+            let read = ContentGrant::verify(
+                &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None,
+            )?;
+            self.host.read_content(reference, &read, self.maximum_payload_bytes, None).await
         }
     }
     async fn verified_history(

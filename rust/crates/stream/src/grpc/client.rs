@@ -1,6 +1,31 @@
 use super::*;
 
 impl Client {
+    /// Disables automatic ACKs for translating clients.
+    #[must_use]
+    pub fn without_delivery_acknowledgements(mut self) -> Self {
+        self.acknowledge_deliveries = false;
+        self
+    }
+
+    /// Acknowledges an opaque token at this client's authenticated endpoint.
+    pub async fn acknowledge_delivery(&self, token: Bytes) -> Result<(), StreamError> {
+        if token.len() != 32 {
+            return Err(StreamError::InvalidArgument);
+        }
+        let mut service = self.service();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            service.acknowledge_delivery(self.request(wire::AcknowledgeDeliveryRequest {
+                delivery_token: token,
+            })),
+        )
+        .await
+        .map_err(|_| StreamError::Unavailable)?
+        .map_err(|error| status(&error))?;
+        Ok(())
+    }
+
     fn records(&self, path: StreamPath, from: u64, limit: Option<u32>) -> RecordStream {
         let span = if limit.is_some() {
             tracing::info_span!(
@@ -303,10 +328,14 @@ impl RecordCursor {
             }
             match response {
                 Some(Ok(response)) => {
+                    let token = response.delivery_token.clone();
                     let records = match read_response(response, self.next, self.remaining) {
                         Ok(records) => records,
                         Err(error) => return self.invalid(error),
                     };
+                    if self.client.acknowledge_deliveries && token.len() == 32 {
+                        let _ = self.client.acknowledge_delivery(token).await;
+                    }
                     self.buffered = records;
                 }
                 Some(Err(error)) if !retryable(&error) => return self.fail(status(&error)),
@@ -349,30 +378,27 @@ impl RecordCursor {
         StreamError,
     > {
         let path = self.path.to_string();
-        let (body, completion) = match self.remaining {
-            Some(limit) => {
-                let body = wire::ReadRequest {
-                    path,
-                    from: self.next,
-                    limit,
-                };
-                self.client
-                    .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                        Box::pin(async move { service.read(request).await })
-                    })
-                    .await?
-            }
-            None => {
-                let body = wire::FollowRequest {
-                    path,
-                    from: self.next,
-                };
-                self.client
-                    .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
-                        Box::pin(async move { service.follow(request).await })
-                    })
-                    .await?
-            }
+        let (body, completion) = if let Some(limit) = self.remaining {
+            let body = wire::ReadRequest {
+                path,
+                from: self.next,
+                limit,
+            };
+            self.client
+                .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                    Box::pin(async move { service.read(request).await })
+                })
+                .await?
+        } else {
+            let body = wire::FollowRequest {
+                path,
+                from: self.next,
+            };
+            self.client
+                .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
+                    Box::pin(async move { service.follow(request).await })
+                })
+                .await?
         };
         Ok((completion.span.scope(body), completion))
     }

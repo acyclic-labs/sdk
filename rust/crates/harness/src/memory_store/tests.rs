@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use super::directory::{MemoryStoreEntry, MemoryStoreEntryKind};
 use crate::AgentId;
 use crate::conversation::{VolumeClass, VolumeOwner};
 use crate::resources::ProviderRef;

@@ -90,8 +90,7 @@ where
             .suspend_workflow(
                 task,
                 self.owner(byte).await?.task_binding().1,
-                1,
-                None,
+                (1, None),
                 None,
                 None,
                 &mut None,

@@ -219,7 +219,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             journal
                 .append(
                     input.operation_id,
-                    &"tool:0:call-1:started",
+                    "tool:0:call-1:started",
                     &ExecutionEvent::ToolStarted {
                         step: 0,
                         call_id: invocation.call_id.clone(),
@@ -828,7 +828,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
         journal
             .append(
                 operation,
-                &"started",
+                "started",
                 &ExecutionEvent::ToolStarted {
                     step: 0,
                     call_id: invocation.call_id.clone(),
@@ -840,7 +840,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
         journal
             .append(
                 operation,
-                &"completed",
+                "completed",
                 &ExecutionEvent::ToolCompleted {
                     step: 0,
                     call_id: invocation.call_id.clone(),

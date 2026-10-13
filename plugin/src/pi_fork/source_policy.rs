@@ -16,10 +16,6 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
         })
     }
 
-    fn supports_native_source(&self) -> bool {
-        true
-    }
-
     fn verify_with_native_work<'a>(
         &'a self,
         context: RootProjectSourceContext<'a>,

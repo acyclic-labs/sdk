@@ -124,14 +124,14 @@ pub type ObjectsNativeFuture<'a, T> =
 /// Admits the actual concrete native future before its physical box allocation.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn native_future<'a, T: 'a, F>(
-    meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     future: F,
 ) -> Result<ObjectsNativeFuture<'a, T>, NativeObjectsError>
 where
     F: Future<Output = Result<T, NativeObjectsError>> + Send + 'a,
 {
     meter.check()?;
-    let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, std::mem::size_of::<F>())?;
+    let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<F>())?;
     Ok(Guarded {
         value: Box::pin(future),
         _allocation: Some(allocation),

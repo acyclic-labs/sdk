@@ -114,12 +114,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut after = 0;
         let mut found = false;
         while after < tail {
-            let end = after + (tail - after).min(64);
+            let count = u32::try_from((tail - after).min(64))
+                .map_err(|_| Error::Storage("timer replay page extent overflows".into()))?;
+            let end = after + u64::from(count);
             let mut page = crate::store::operations::read_records(
                 &self.stream,
                 &path,
                 after,
-                (end - after) as u32,
+                count,
                 quota.work(),
             )
             .await?

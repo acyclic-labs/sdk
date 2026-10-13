@@ -801,8 +801,8 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         {
             let __object_args = (hashed, original, cancellation);
             let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
-            __object_result
+
+            store.put_hashed(__object_args.0, &mut __object_work).await
         }
         .map_err(super::file_read::read_store_error)?;
         return Ok(object);
@@ -863,7 +863,7 @@ fn apply_patches_linear(
     let mut examined = 0_u64;
     for extent in extents {
         examined = examined.saturating_add(1);
-        let extent_end = extent_end(&extent)?;
+        let extent_end = extent_end(extent)?;
         let mut cursor = extent.offset;
         while patches
             .get(patch_index)

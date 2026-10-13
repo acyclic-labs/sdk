@@ -8,6 +8,9 @@ impl NativeSession {
         command: WorkflowCommand,
         parent: Option<TaskId>,
     ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
+        let (receive, model) =
+            stock_turn_commands(&self.files, &self.config.owner, command).await?;
+        let input = serde_json::json!({"receive": receive, "model": model});
         let definition = self.runtime.harness().task("acyclic.stock_turn@1")?;
         match parent {
             Some(parent) => {
@@ -16,13 +19,13 @@ impl NativeSession {
                     .harness()
                     .durable_context(parent, admission.operation_id, None)
                     .await?
-                    .admit(operation, &definition, command)
+                    .admit(operation, &definition, input)
                     .await
             }
             None => {
                 self.runtime
                     .harness()
-                    .admit(operation, &definition, command, None)
+                    .admit(operation, &definition, input, None)
                     .await
             }
         }
@@ -138,6 +141,44 @@ impl NativeSession {
         }
         Ok(binding)
     }
+}
+
+pub(crate) async fn stock_turn_commands(
+    files: &Arc<Files>,
+    owner: &AuthorityBinding,
+    model: WorkflowCommand,
+) -> Result<(WorkflowCommand, WorkflowCommand)> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.graphcoder.mail-receive/v1\0");
+    hash.update(&model.operation_id.into_bytes());
+    let operation = OperationId::from_bytes(hash.finalize().as_bytes()[..16].try_into().unwrap());
+    let publisher = FilesystemContentPublisher::new(
+        files.clone(),
+        model.payload.volume(),
+        &owner.verifier()?,
+        &owner.scope,
+        MAX_FRAME_BYTES as u64,
+        None,
+    )?;
+    let payload = publisher
+        .stage_once(
+            operation,
+            &format!("{}.receive.json", model.payload.path()),
+            b"{\"after\":0}",
+            "application/json",
+            "GraphCoder mailbox receive",
+            None,
+        )?
+        .await?
+        .0;
+    Ok((
+        WorkflowCommand {
+            operation_id: operation,
+            kind: acyclic_harness::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
+            payload,
+        },
+        model,
+    ))
 }
 pub fn lease_hex(lease: &WorkLease) -> Result<String> {
     Ok(hex::encode(serde_json::to_vec(lease).map_err(invalid)?))

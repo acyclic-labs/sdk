@@ -47,7 +47,7 @@ pub struct RootProjectSourceContext<'a> {
     pub created_project_authenticated: bool,
 }
 
-/// Explicit trusted RootService policy and genuine backend snapshot verifier.
+/// Explicit trusted `RootService` policy and genuine backend snapshot verifier.
 pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
     /// Authenticates backend evidence and explicitly approves this project read.
     fn verify<'a>(
@@ -55,10 +55,6 @@ pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
         context: RootProjectSourceContext<'a>,
         snapshot: &'a ProjectSourceSnapshot,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>;
-
-    /// Advertises genuine original-ledger project verification, never ordinary verification hidden inside a funded frame.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_source(&self) -> bool { false }
 
     /// Authenticates that same exact selection on the supplied original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

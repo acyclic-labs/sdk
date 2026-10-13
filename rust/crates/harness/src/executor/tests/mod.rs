@@ -199,7 +199,7 @@ use crate::{
     AgentId, Capabilities, Outcome,
     conversation::{FileDescriptor, VolumeOwner, VolumeRef},
     resources::ProviderRef,
-    tool::{Tool, ToolDefinition, ToolExecutor},
+    tool::ToolExecutor,
 };
 
 use futures::{FutureExt as _, stream};

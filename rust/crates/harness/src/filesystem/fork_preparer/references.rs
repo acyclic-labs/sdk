@@ -22,12 +22,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         io: Option<&PreparationIo>,
     ) -> Result<Vec<ReferenceGrant>> {
         let attempt;
-        let io = match io {
-            Some(io) => Some(io),
-            None => {
-                attempt = self.preparation_io(self.task_preparation.as_ref())?;
-                attempt.as_ref()
-            }
+        let io = if let Some(io) = io { Some(io) } else {
+            attempt = self.preparation_io(self.task_preparation.as_ref())?;
+            attempt.as_ref()
         };
         self.check_request(request, io, self.task_preparation.as_deref())?;
         let mut grants = self.reference_grants(request, io).await?;

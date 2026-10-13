@@ -31,7 +31,10 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     let _entered = parent.enter();
     drop(future);
     assert_eq!(
-        captured.fields("acyclic.stream.read")["error.kind"],
+        captured
+            .fields("acyclic.stream.read")
+            .get("error.kind")
+            .ok_or("missing span field")?,
         "cancelled"
     );
     assert_eq!(captured.closed("acyclic.stream.read"), 1);
@@ -67,9 +70,15 @@ async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>>
         ("rev", "2"),
         ("outcome", "ok"),
     ] {
-        assert_eq!(append[field], value);
+        assert_eq!(append.get(field).ok_or("missing span field")?, value);
     }
-    assert_eq!(captured.fields("acyclic.stream.open")["outcome"], "ok");
+    assert_eq!(
+        captured
+            .fields("acyclic.stream.open")
+            .get("outcome")
+            .ok_or("missing span field")?,
+        "ok"
+    );
     let evidence = captured.0.lock().unwrap();
     assert!(evidence.events.iter().any(|(_, fields)| {
         fields

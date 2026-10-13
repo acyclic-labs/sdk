@@ -122,7 +122,7 @@ impl<'a> AuthorityWork<'a> {
             return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
                 &mut buffer.0,
                 &mut buffer.1,
-                self.native_meter(),
+                &self.native_meter(),
             )
             .map_err(|error| self.native_io_failure(error));
         }

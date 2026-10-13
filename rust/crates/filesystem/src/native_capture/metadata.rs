@@ -130,9 +130,9 @@ pub(super) fn host_device_identity(_: &HostStat) -> Result<(u32, u32), CaptureEr
 
 pub(super) fn capture_metadata(metadata: &HostStat) -> FileMetadata {
     let mut result = FileMetadata {
-        created_ns: system_time(metadata.created()),
-        modified_ns: system_time(metadata.modified()),
-        accessed_ns: system_time(metadata.accessed()),
+        created_ns: system_time(&metadata.created()),
+        modified_ns: system_time(&metadata.modified()),
+        accessed_ns: system_time(&metadata.accessed()),
         ..FileMetadata::default()
     };
     populate_platform_metadata(metadata, &mut result);
@@ -167,8 +167,7 @@ pub(super) fn preserve_unobserved_metadata(
     observed
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn system_time(value: std::io::Result<cap_std::time::SystemTime>) -> MetadataField<i64> {
+pub(crate) fn system_time(value: &std::io::Result<cap_std::time::SystemTime>) -> MetadataField<i64> {
     let Ok(value) = value else {
         return MetadataField::Unavailable;
     };

@@ -11,7 +11,7 @@ pub(crate) fn record(value: wire::Record) -> Result<Record, StreamError> {
 pub fn record_wire(value: Record) -> wire::Record {
     wire::Record {
         sequence: value.sequence,
-        value: bytes::Bytes::copy_from_slice(&value.value),
+        value: bytes::Bytes::from_owner(value.value),
         commit_id: bytes::Bytes::copy_from_slice(value.commit_id.as_bytes()),
         committed_at_micros: value.committed_at_micros,
     }
@@ -23,6 +23,7 @@ pub fn read_response_wire(records: Vec<wire::Record>) -> wire::ReadResponse {
     use prost::Message;
     let data = wire::RecordBatch { records }.encode_to_vec();
     wire::ReadResponse {
+        delivery_token: Bytes::new(),
         codec: wire::Codec::None as i32,
         decoded_length: data.len() as u64,
         data: data.into(),
@@ -74,6 +75,7 @@ fn zstd(mut input: &[u8], length: usize) -> Option<Vec<u8>> {
 pub(crate) fn zstd_read_response(records: Vec<wire::Record>) -> wire::ReadResponse {
     let plain = read_response_wire(records);
     wire::ReadResponse {
+        delivery_token: Bytes::new(),
         codec: wire::Codec::Zstd as i32,
         decoded_length: plain.decoded_length,
         data: ruzstd::encoding::compress_to_vec(

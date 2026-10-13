@@ -241,8 +241,7 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
     )
     .await?
     .record
-    {
-        if binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok() {
+        && binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok() {
             let allocation = accounting.claim_owned(0, 0)?;
             reverse_insert(
                 &mut matches.0.records,
@@ -255,7 +254,6 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
                 accounting,
             )?;
         }
-    }
     let allocation = accounting.claim_owned(0, 0)?;
     let mut pending = (Vec::new(), allocation);
     reverse_grow(&mut pending.0, &mut pending.1, accounting)?;

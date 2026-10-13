@@ -51,40 +51,6 @@ impl EffectRegistry {
         }
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Copies catalog metadata on the original ledger.
-    pub fn copy(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        use crate::store::history::HistoryIo as _;
-        let mut cloned = Self::new(Some(work), None)?;
-        for (source, provider) in &self.providers {
-            let mut io = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            let slot = std::mem::size_of::<(String, Arc<dyn EffectProvider>)>() as u64;
-            io.admit_owned(slot)?;
-            io.retain_owned(slot)?;
-            let mut custody;
-            let mut id = String::new();
-            io.reserve_text(&mut id, source.len())?;
-            io.admit_copy(source.len() as u64)?;
-            id.push_str(source);
-            io.copy_bytes(source.len() as u64)?;
-            custody = io.into_custody()?;
-            cloned
-                .native_metadata
-                .as_mut()
-                .expect("native catalog constructor")
-                .absorb(&mut custody)
-                .map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
-            cloned.providers.insert(id, Arc::clone(provider));
-        }
-        cloned.result_resolver = self.result_resolver.clone();
-        Ok(cloned)
-    }
-
     pub(crate) fn resolve(
         &self,
         effect: &EffectState,
@@ -207,14 +173,14 @@ impl EffectRegistry {
         let source = provider.id();
         if source.trim().is_empty() {
             return Err(crate::store::guarded_boundary(
-                &mut observed,
+                &observed,
                 crate::wire::ErrorCode::Invalid,
                 "effect provider identity is empty",
             ));
         }
         if self.providers.contains_key(source) {
             return Err(crate::store::guarded_boundary(
-                &mut observed,
+                &observed,
                 crate::wire::ErrorCode::Conflict,
                 "effect provider is already registered",
             ));

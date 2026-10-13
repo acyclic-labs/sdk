@@ -464,7 +464,7 @@ pub(super) fn validate_plan<'a>(plan: &'a MaterializationPlan, mut paths: Vec<&'
                 }
             }
             MaterializationEdit::Install { path, .. } | MaterializationEdit::Remove { path } => {
-                paths.push(path)
+                paths.push(path);
             }
             MaterializationEdit::Rename { from, to } => {
                 paths.extend([from.as_str(), to.as_str()]);
