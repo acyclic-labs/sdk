@@ -518,7 +518,7 @@ export class NativeContracts {
   }
 
   /** Compare complete admitted records without maintaining parallel field lists. */
-  canonicalEqual<Value>(left: Value, right: Value): boolean {
+  canonicalEqual(left: unknown, right: unknown): boolean {
     const encodedLeft = this.encodeCanonicalJson(left);
     const encodedRight = this.encodeCanonicalJson(right);
     return encodedLeft.byteLength === encodedRight.byteLength
