@@ -191,6 +191,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             .live_bytes()
             .checked_sub(baseline)
             .ok_or(crate::WorkError::Overflow)?;
+        work.admit(WorkCounters {
+            backend_read_operations: u64::from(!work.is_native()),
+            ..WorkCounters::UNCHARGED
+        })?;
         let result = self.authority_inspect(key, work).await;
         let mut actual = WorkCounters::UNCHARGED;
         if let Ok((Some(observation), _)) = &result
