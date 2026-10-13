@@ -294,14 +294,8 @@ impl super::native::NativeSession {
             .runtime
             .task_context_with_native_work(caller, &fence, &work)
             .await?;
-        let mut guards = Vec::new();
-        for _ in &request.view.volumes {
-            guards.push(
-                native_context
-                    .volume_callback_guard(&owner, &work)
-                    .await?,
-            );
-        }
+        native_context.verify_volume_owner(&owner, &work).await?;
+        let guards: Vec<_> = request.view.volumes.iter().map(|_| Arc::clone(&native_context)).collect();
         let volumes = request
             .view
             .volumes

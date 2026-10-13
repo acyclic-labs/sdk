@@ -50,7 +50,7 @@ impl NativeExistingLazyVolume {
         mount: &'a Arc<LazyMount<A, O, D, S>>,
         owner: &'a Arc<TaskJournalOwner<P>>,
         binding: &'a BorrowedNativeVolumeBinding<'a, A, O>,
-        guard: &'a crate::runtime::NativeVolumeCallbackGuard<P>,
+        guard: &'a Arc<crate::runtime::TaskContext>,
         metadata: &'a NativeMaterializationWork,
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, Self>>
@@ -87,7 +87,7 @@ impl NativeExistingLazyVolume {
             }
             let io = PreparationIo::from_native_work(work)?;
             let callback = guard
-                .for_volume(owner, binding.volume, binding.writable, work)?;
+                .volume_callback(owner, binding.volume, binding.writable, work)?;
             let (path, path_custody) = work.path(mount.path(), None)?;
             io.absorb_native_custody(path_custody)?;
             let mapping = NativeVolumeMapping {

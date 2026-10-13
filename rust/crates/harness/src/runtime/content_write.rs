@@ -1,4 +1,6 @@
 use super::*;
+use crate::conversation::{ContentIo, content_error};
+use crate::wire::ErrorCode;
 
 pub(super) enum ContentPublication<'a> {
     PathBound,
@@ -10,14 +12,26 @@ impl TaskContext {
     /// Stages exact bytes through the authenticated writer.
     pub async fn stage_file(
         &self,
+        volume: Option<&VolumeRef>,
         operation_id: OperationId,
         path: &str,
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
     ) -> Result<FileRef> {
+        let binding = self.content_binding(volume);
+        if let Some(volume) = volume
+            && self
+                .bound_content_writer(binding, &self.scope, None)?
+                .volume()
+                != volume
+        {
+            return Err(Error::Unauthorized(
+                "selected volume is not the bound destination".into(),
+            ));
+        }
         self.stage_bound_file(
-            self.content_binding(None),
+            binding,
             operation_id,
             path,
             bytes,
@@ -39,7 +53,7 @@ impl TaskContext {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        io: Option<&crate::executor::PreparationIo>,
+        io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
         self.stage_bound_file(
             self.content_binding(None),
@@ -55,98 +69,11 @@ impl TaskContext {
         .await
     }
 
-    /// Stages immutable bytes through the artifact writer.
-    pub async fn stage_artifact(
-        &self,
-        operation_id: OperationId,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-    ) -> Result<FileRef> {
-        self.stage_bound_file(
-            self.scope
-                .created_artifact_content()
-                .or_else(|| self.scope.created_content(None))
-                .or(self.harness.artifacts.as_ref()),
-            operation_id,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            ContentPublication::PathBound,
-            &self.scope,
-            None,
-        )
-        .await
-        .map(|(file, _)| file)
-    }
-
-    /// Replaces a pinned source under caller IO limits.
-    pub async fn stage_file_at(
-        &self,
-        operation_id: OperationId,
-        source: &FileRef,
-        bytes: &[u8],
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, u64)> {
-        self.stage_bound_file(
-            self.content_binding(Some(source.volume())),
-            operation_id,
-            source.path(),
-            bytes,
-            source.descriptor().media_type(),
-            source.display_name(),
-            ContentPublication::Replacement(source),
-            &self.scope,
-            io,
-        )
-        .await
-    }
-    /// Publishes to an explicitly selected authenticated created volume.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "exact volume, retry identity, body and file metadata stay explicit"
-    )]
-    pub async fn stage_file_in(
-        &self,
-        volume: &VolumeRef,
-        operation_id: OperationId,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-    ) -> Result<FileRef> {
-        let binding = self.content_binding(Some(volume));
-        if self
-            .bound_content_writer(binding, &self.scope, None)?
-            .volume()
-            != volume
-        {
-            return Err(Error::Unauthorized(
-                "selected volume is not the bound destination".into(),
-            ));
-        }
-        self.stage_bound_file(
-            binding,
-            operation_id,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            ContentPublication::PathBound,
-            &self.scope,
-            None,
-        )
-        .await
-        .map(|(file, _)| file)
-    }
-
     pub(super) fn bound_content_writer<'a>(
         &self,
         binding: Option<&'a ContentBindings>,
         scope: &RuntimeScope,
-        io: Option<&crate::executor::PreparationIo>,
+        io: Option<&ContentIo>,
     ) -> Result<&'a Arc<dyn ContentPublisher>> {
         let content =
             binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
@@ -194,31 +121,27 @@ impl TaskContext {
         display_name: &str,
         publication: ContentPublication<'_>,
         scope: &RuntimeScope,
-        io: Option<&crate::executor::PreparationIo>,
+        io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+        if let Some(work) = io.and_then(ContentIo::original_native_work) {
             self.require_original_native_dispatch(work)?;
         }
         if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
-            return Err(crate::conversation::content_error(
+            return Err(content_error(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "file exceeds task content limits",
             ));
         }
         let content = binding.ok_or_else(|| {
-            crate::conversation::content_error(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "content publisher is not bound",
-            )
+            content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
         })?;
         let writer = self.bound_content_writer(Some(content), scope, io)?;
         if !content.reader.supports_read(writer.volume(), io)? {
-            return Err(crate::conversation::content_error(
+            return Err(content_error(
                 io,
-                crate::wire::ErrorCode::Unsupported,
+                ErrorCode::Unsupported,
                 "original content reader has no bounded engine",
             ));
         }
@@ -228,9 +151,9 @@ impl TaskContext {
             ContentPublication::Replacement(source) => {
                 self.authorize_file_read(source, scope, io)?;
                 if source.volume() != writer.volume() || source.path() != path {
-                    return Err(crate::conversation::content_error(
+                    return Err(content_error(
                         io,
-                        crate::wire::ErrorCode::Unauthorized,
+                        ErrorCode::Unauthorized,
                         "source differs from the owner-bound destination",
                     ));
                 }
@@ -253,7 +176,7 @@ impl TaskContext {
         };
         self.scope.verify_created_write(writer.volume(), io).await?;
         let file = &output.0;
-        crate::executor::with_history_io(io, |work| scope.limits.validate_file(&file, work))?;
+        crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
         if file.volume() != writer.volume()
             || file.path() != path
             || file.display_name() != display_name
@@ -280,24 +203,10 @@ impl TaskContext {
                 io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
             }
         }
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            let hash = acyclic_fs::WorkCounters {
-                bytes_hashed: bytes.len() as u64,
-                ..Default::default()
-            };
-            io.preflight(hash)?;
-            let verified = file.descriptor().verify(bytes, &mut None);
-            io.charge(hash)?;
-            verified?;
-        } else {
-            file.descriptor().verify(bytes, &mut None)?;
-        }
-        #[cfg(not(feature = "filesystem"))]
-        file.descriptor().verify(bytes, &mut None)?;
+        crate::executor::with_history_io(io, |work| file.descriptor().verify(bytes, work))?;
         content
             .reader
-            .verify(&file, file.descriptor().byte_length(), io)?
+            .verify(file, file.descriptor().byte_length(), io)?
             .await?;
         let (file, hold) = output;
         #[cfg(feature = "filesystem")]

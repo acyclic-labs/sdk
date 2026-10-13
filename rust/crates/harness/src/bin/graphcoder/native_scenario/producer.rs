@@ -31,9 +31,8 @@ impl Producer {
             .runtime
             .task_context_with_native_work(caller.task, &fence, &work)
             .await?;
-        let guards = [context
-            .volume_callback_guard(&owner, &work)
-            .await?];
+        context.verify_volume_owner(&owner, &work).await?;
+        let guards = [Arc::clone(&context)];
         let namespace = self.root.join("native-command-view");
         let preparation = self.root.join("native-command-preparation");
         for directory in [

@@ -388,7 +388,7 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
             let context = crate::runtime::ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
             let first = tool.executor.execute_with_context(context.clone(), invocation.clone()).await?;
             let file: FileRef = serde_json::from_value(first.value["file"].clone()).map_err(|error| Error::Invalid(error.to_string()))?;
-            let user = task.stage_file(OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
+            let user = task.stage_file(None, OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
             assert_eq!(tool.executor.reconcile_with_context(context.clone(), invocation.clone()).await?, Some(first));
             assert_eq!(task.read_file(&file, None).await?.as_ref(), b"saved text".as_ref());
             assert_eq!(task.read_file(&user, None).await?.as_ref(), b"later user edit".as_ref());
@@ -398,7 +398,7 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
             }
             let ordinary = OperationId::new();
             for path in ["multi/a.txt", "multi/b.txt"] {
-                task.stage_file(ordinary, path, b"ordinary", "text/plain", "ordinary.txt").await?;
+                task.stage_file(None, ordinary, path, b"ordinary", "text/plain", "ordinary.txt").await?;
             }
             Ok(())
         }
@@ -933,6 +933,7 @@ async fn typed_tasks_stage_and_resolve_only_with_owner_bound_grants() -> Result<
         TaskDefinition::live("file_task", "1", |context, (): ()| async move {
             let file = context
                 .stage_file(
+                    None,
                     OperationId::from_bytes([92; 16]),
                     "task/result.txt",
                     b"pinned bytes",
@@ -947,6 +948,7 @@ async fn typed_tasks_stage_and_resolve_only_with_owner_bound_grants() -> Result<
             assert!(
                 narrowed
                     .stage_file(
+                    None,
                         OperationId::from_bytes([93; 16]),
                         "task/denied.txt",
                         b"denied",
