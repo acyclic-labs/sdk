@@ -390,51 +390,50 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
         return run_unix_mount_cross_process_worker();
     }
     let temporary = tempfile::tempdir()?;
-    let mount_a = temporary.path().join("mount-a");
-    let mount_b = temporary.path().join("mount-b");
-    std::fs::create_dir(&mount_a)?;
-    std::fs::create_dir(&mount_b)?;
-    let ready_a = temporary.path().join("ready-a");
-    let ready_b = temporary.path().join("ready-b");
+    let mounts = ["a", "b"].map(|id| {
+        (
+            id,
+            temporary.path().join(format!("mount-{id}")),
+            temporary.path().join(format!("ready-{id}")),
+        )
+    });
     let release = temporary.path().join("release");
     let executable = std::env::current_exe()?;
     let worker =
         "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
-    let mut child_a = acyclic_native_runtime::ProcessTree::spawn(
-        std::process::Command::new(&executable)
-            .args(["--ignored", "--exact", worker, "--test-threads=1"])
-            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
-            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_a)
-            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
-            .env("ACYCLIC_FS_UNIX_CHILD_ID", "a"),
-    )?;
-    let mut child_b = acyclic_native_runtime::ProcessTree::spawn(
-        std::process::Command::new(&executable)
-            .args(["--ignored", "--exact", worker, "--test-threads=1"])
-            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)
-            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_b)
-            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
-            .env("ACYCLIC_FS_UNIX_CHILD_ID", "b"),
-    )?;
-
+    let mut children = Vec::new();
+    for (id, mount, ready) in &mounts {
+        std::fs::create_dir(mount)?;
+        children.push(acyclic_native_runtime::ProcessTree::spawn(
+            std::process::Command::new(&executable)
+                .args(["--ignored", "--exact", worker, "--test-threads=1"])
+                .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", mount)
+                .env("ACYCLIC_FS_UNIX_CHILD_READY", ready)
+                .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
+                .env("ACYCLIC_FS_UNIX_CHILD_ID", id),
+        )?);
+    }
     let validation = (|| -> Result<(), Box<dyn std::error::Error>> {
-        wait_for_path(&ready_a, std::time::Duration::from_secs(10))?;
-        wait_for_path(&ready_b, std::time::Duration::from_secs(10))?;
-        assert_eq!(std::fs::read(mount_a.join("a.txt"))?, b"a");
-        assert_eq!(std::fs::read(mount_b.join("b.txt"))?, b"b");
-        assert!(!mount_a.join("b.txt").exists());
-        assert!(!mount_b.join("a.txt").exists());
+        for (id, mount, ready) in &mounts {
+            wait_for_path(ready, Duration::from_secs(10))?;
+            assert_eq!(
+                std::fs::read(mount.join(format!("{id}.txt")))?,
+                id.as_bytes()
+            );
+            let other = if *id == "a" { "b" } else { "a" };
+            assert!(!mount.join(format!("{other}.txt")).exists());
+        }
         Ok(())
     })();
     std::fs::write(&release, b"release")?;
-    let status_a = wait_for_child(&mut child_a, std::time::Duration::from_secs(10))?;
-    let status_b = wait_for_child(&mut child_b, std::time::Duration::from_secs(10))?;
+    let statuses = children
+        .iter_mut()
+        .map(|child| wait_for_child(child, Duration::from_secs(10)))
+        .collect::<Result<Vec<_>, _>>()?;
     validation?;
-    assert!(status_a.success(), "first mount process failed: {status_a}");
-    assert!(
-        status_b.success(),
-        "second mount process failed: {status_b}"
-    );
+    for status in statuses {
+        assert!(status.success(), "mount process failed: {status}");
+    }
     Ok(())
 }
 

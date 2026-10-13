@@ -135,7 +135,7 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
         })?;
         let source = native_source_io_control(&borrowed, &volume)?;
         let weak = Arc::downgrade(&source);
-        let lease = source.native_source_io_lease()?;
+        let lease = source.native_source_io_lease(source.clone())?;
         let last_lease = lease.clone();
         let (incoming, local_stop) = root.invocation_view()?;
         let job = incoming.with_source_io_lease(lease)?;
@@ -225,7 +225,7 @@ fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocati
     let root = capture_meter(boundary_budget(), &cancellation)?;
     let volume = root.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
     let source = native_source_io_control(&borrowed, &volume)?;
-    let lease = source.native_source_io_lease()?;
+    let lease = source.native_source_io_lease(source.clone())?;
     let foreign_root = capture_meter(boundary_budget(), &cancellation)?;
     let unrelated_volume = root.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
     for incoming in [&foreign_root, &unrelated_volume] {
@@ -260,7 +260,7 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
     })?;
     let source = native_source_io_control(&borrowed, &original)?;
     let weak_source = Arc::downgrade(&source);
-    let lease = source.native_source_io_lease()?;
+    let lease = source.native_source_io_lease(source.clone())?;
     let last_lease = lease.clone();
     assert_eq!(
         original.remaining()?.items_examined,
@@ -277,7 +277,7 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
     assert!(!source.capture_retired());
     let closing_prefix = root.receipt();
     assert!(matches!(
-        source.native_source_io_lease(),
+        source.native_source_io_lease(source.clone()),
         Err(MountSourceError::Stale)
     ));
     assert_eq!(
@@ -369,7 +369,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     let volume = root.native_volume_work(boundary_budget())?;
     let source = native_source_io_control(&borrowed, &volume)?;
     let (incoming, local_stop) = root.invocation_view()?;
-    let job = incoming.with_source_io_lease(source.native_source_io_lease()?)?;
+    let job = incoming.with_source_io_lease(source.native_source_io_lease(source.clone())?)?;
     file.write_range_with_meter(
         0,
         crate::kernel::OwnedSourceChunk::intrinsic(
@@ -434,7 +434,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     drop(job);
     drop(incoming);
     let (retry, retry_stop) = root.invocation_view()?;
-    let retry = retry.with_source_io_lease(source.native_source_io_lease()?)?;
+    let retry = retry.with_source_io_lease(source.native_source_io_lease(source.clone())?)?;
     source
         .runtime
         .block_on(
