@@ -132,7 +132,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .head(work, work.cancellation())
                 .await
                 .map_err(|error| (error, None))
-                .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+                .map_err(|(source, custody)| Error::NativeWorkspace { source: Box::new(source), custody })?
         };
         guard().await?;
         fork_preparer_io::retain(&generation, Some(&scratch)).await?;
@@ -150,7 +150,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 maximum_entries
                     .checked_add(u32::from(path.is_empty()))
                     .ok_or_else(|| Error::NativeWorkspace {
-                        source: acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow),
+                        source: Box::new(acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow)),
                         custody: None,
                     })?,
                 work,
@@ -159,7 +159,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map(|(page, allocation)| (page, allocation.expect("native directory allocation")))
             .map_err(|source| Error::NativeWorkspace {
-                source,
+                source: Box::new(source),
                 custody: None,
             })?;
         output.absorb_native_custody(page_custody)?;

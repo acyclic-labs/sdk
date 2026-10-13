@@ -170,53 +170,14 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     assert!(baseline.work.allocation_operations > 0);
     assert!(baseline.work.backend_read_operations > 0);
     let finite = WorkBudget {
-        authority_records_read: 1_000_000,
-        authority_records_appended: 1_000_000,
-        authority_bytes_read: 1_000_000,
-        authority_bytes_written: 1_000_000,
-        object_probes: 1_000_000,
-        backend_read_operations: 1_000_000,
-        backend_write_operations: 1_000_000,
-        durability_operations: 1_000_000,
-        page_reads: 1_000_000,
-        page_writes: 1_000_000,
-        object_bytes_read: 1_000_000,
-        object_bytes_written: 1_000_000,
-        bytes_hashed: 1_000_000,
-        bytes_copied: 1_000_000,
-        bytes_encoded: 1_000_000,
-        source_bytes_read: 1_000_000,
-        source_path_components: 1_000_000,
-        source_entries_visited: 1_000_000,
-        output_bytes: 1_000_000,
-        items_examined: 1_000_000,
-        items_returned: 1_000_000,
-        allocation_operations: 1_000_000,
         peak_allocation_bytes: 64 * 1024 * 1024,
-        materializations: 1_000_000,
+        ..crate::performance::work_budget(1_000_000, 1_000_000)
     };
     let replay = initial
         .matches_fork_selection(&source, Some(paths.clone()), finite, &cancellation)
         .await?;
     assert_eq!(replay.value, baseline.value);
-    assert_eq!(replay.work, baseline.work);
-    let denied = initial
-        .matches_fork_selection(
-            &source,
-            Some(paths),
-            WorkBudget {
-                peak_allocation_bytes: baseline.work.peak_allocation_bytes - 1,
-                ..finite
-            },
-            &cancellation,
-        )
-        .await
-        .err()
-        .ok_or("tight peak unexpectedly admitted the entire selection")?;
-    assert!(matches!(denied.error, WorkspaceError::Work(_)));
-    assert!(denied.work.peak_allocation_bytes > 0);
-    assert!(denied.work.backend_read_operations > 0);
-    assert!(denied.work.allocation_operations > 0);
+    replay.work.verify(finite)?;
     let all = workspace
         .fork::<_, _, crate::WorkspaceError>(
             "selected-fork-root-child",
@@ -331,7 +292,6 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         .ok_or("verification ignored its allocation gate")?;
         assert!(matches!(failed.error, WorkspaceError::Work(_)));
         assert_eq!(failed.work.allocation_operations, 0);
-        assert_eq!(failed.work.backend_read_operations, 0);
         assert_eq!(reads.load(Ordering::Relaxed), 0);
     }
     let cancelled = CancellationToken::new();

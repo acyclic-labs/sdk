@@ -117,7 +117,6 @@ impl<P> LostSessionAck<P> {
     ) -> std::result::Result<(), StreamError> {
         if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
             self.measure_received(envelope);
-
         }
 
         Ok(())
@@ -199,7 +198,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         key: acyclic_stream::IdempotencyKey,
     ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary inspection on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary inspection on native-only fixture"
+        );
         self.io
             .inspections
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -223,7 +225,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<u64, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary tail on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary tail on native-only fixture"
+        );
         self.observation_tails
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if path
@@ -239,8 +244,11 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         }
         let result = self.inner.tail(path).await;
         #[cfg(feature = "filesystem")]
-        if let Some(cancellation) = self.history_cancel_after_tail
-            .lock().map_err(|_| StreamError::Unavailable)?.take()
+        if let Some(cancellation) = self
+            .history_cancel_after_tail
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .take()
         {
             cancellation.cancel();
         }
@@ -250,7 +258,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<acyclic_stream::StreamBounds, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary bounds on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary bounds on native-only fixture"
+        );
         self.io
             .other_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -260,7 +271,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         request: acyclic_stream::AppendRequest,
     ) -> std::result::Result<AppendOutcome, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary append on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary append on native-only fixture"
+        );
         self.io
             .writes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -328,7 +342,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         request: acyclic_stream::ForkRequest,
     ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary fork on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary fork on native-only fixture"
+        );
         self.io
             .other_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -343,7 +360,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         request: acyclic_stream::ReadRequest,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary read on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary read on native-only fixture"
+        );
         self.io
             .reads
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -446,7 +466,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             }
             6 => {
                 return Ok(Box::pin(futures::stream::iter(
-                    records.into_iter().take(1).map(Ok)
+                    records
+                        .into_iter()
+                        .take(1)
+                        .map(Ok)
                         .chain(std::iter::once(Err(StreamError::Unavailable))),
                 )));
             }
@@ -459,14 +482,20 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         path: acyclic_stream::StreamPath,
         from: u64,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary follow on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary follow on native-only fixture"
+        );
         self.inner.follow(path, from).await
     }
     async fn children(
         &self,
         request: acyclic_stream::ChildrenRequest,
     ) -> std::result::Result<acyclic_stream::ChildStream, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary children on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary children on native-only fixture"
+        );
         self.io
             .other_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -476,7 +505,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         request: acyclic_stream::ChildrenPageRequest,
     ) -> std::result::Result<acyclic_stream::ChildrenPage, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary children page on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary children page on native-only fixture"
+        );
         self.io
             .other_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -486,7 +518,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         request: acyclic_stream::CommitRequest,
     ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary commit on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary commit on native-only fixture"
+        );
         self.measure_commit_request(&request);
         if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
             self.observation_writes
@@ -587,7 +622,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         id: acyclic_stream::CommitId,
     ) -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary envelope read on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary envelope read on native-only fixture"
+        );
         self.io
             .commit_reads
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -600,7 +638,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         request: acyclic_stream::CommitRequest,
         deadline_unix_millis: u64,
     ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary timed commit on native-only fixture");
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary timed commit on native-only fixture"
+        );
         self.io
             .other_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -611,13 +652,20 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_inspect_idempotency(
-        &self, key: acyclic_stream::IdempotencyKey,
+        &self,
+        key: acyclic_stream::IdempotencyKey,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> acyclic_stream::NativeProviderFuture<'_, Option<acyclic_stream::IdempotencyObservation>> {
+    ) -> acyclic_stream::NativeProviderFuture<'_, Option<acyclic_stream::IdempotencyObservation>>
+    {
         let original = meter.clone();
         acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            self.io.inspections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if self.hide_receipt.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.io
+                .inspections
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .hide_receipt
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
                 return Ok(Err(StreamError::Unavailable));
             }
             let result = self.inner.native_inspect_idempotency(key, original).await?;
@@ -626,50 +674,69 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 && let acyclic_stream::IdempotencyOutcome::Commit(
                     acyclic_stream::CommitOutcome::Committed(envelope),
                 ) = &observation.outcome
-            { self.measure_received(envelope); }
+            {
+                self.measure_received(envelope);
+            }
             Ok(result)
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_tail(
-        &self, path: acyclic_stream::StreamPath,
+        &self,
+        path: acyclic_stream::StreamPath,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, u64> {
         let original = meter.clone();
         acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            self.observation_tails.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if path.as_str().starts_with("harness/v3/projection-checkpoints/") {
-                let stale = self.stale_projection_head_tail.swap(0, std::sync::atomic::Ordering::SeqCst);
+            self.observation_tails
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if path
+                .as_str()
+                .starts_with("harness/v3/projection-checkpoints/")
+            {
+                let stale = self
+                    .stale_projection_head_tail
+                    .swap(0, std::sync::atomic::Ordering::SeqCst);
                 if stale != 0 {
                     return Ok(Ok(acyclic_stream::NativeStreamOutput::new(
-                        stale - 1, acyclic_native_runtime::ReadAllocation::empty(&original),
+                        stale - 1,
+                        acyclic_native_runtime::ReadAllocation::empty(&original),
                     )));
                 }
             }
             let result = self.inner.native_tail(path, original).await;
-            if let Some(cancellation) = self.history_cancel_after_tail.lock()
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?.take()
-            { cancellation.cancel(); }
+            if let Some(cancellation) = self
+                .history_cancel_after_tail
+                .lock()
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?
+                .take()
+            {
+                cancellation.cancel();
+            }
             result
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_bounds(
-        &self, path: acyclic_stream::StreamPath,
+        &self,
+        path: acyclic_stream::StreamPath,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::StreamBounds> {
         let original = meter.clone();
         acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            self.io.other_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.io
+                .other_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.native_bounds(path, original).await
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_read(
-        &self, request: acyclic_stream::ReadRequest,
+        &self,
+        request: acyclic_stream::ReadRequest,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::NativeRecordStream> {
         let original = meter.clone();
@@ -678,17 +745,34 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             self.io.reads.fetch_add(1, Ordering::SeqCst);
             if self.forbid_writes.load(Ordering::SeqCst) {
                 self.observation_reads.fetch_add(1, Ordering::SeqCst);
-                self.observation_maximum.fetch_max(request.limit, Ordering::SeqCst);
+                self.observation_maximum
+                    .fetch_max(request.limit, Ordering::SeqCst);
             }
-            if (request.path.as_str().starts_with("harness/v3/coordinator/intent-locations/")
+            if (request
+                .path
+                .as_str()
+                .starts_with("harness/v3/coordinator/intent-locations/")
                 && self.hide_location_read.swap(false, Ordering::SeqCst))
-                || (request.path.as_str().starts_with("harness/v2/aggregate-operations/")
+                || (request
+                    .path
+                    .as_str()
+                    .starts_with("harness/v2/aggregate-operations/")
                     && self.hide_aggregate_read.swap(false, Ordering::SeqCst))
-            { return Ok(Err(StreamError::Unavailable)); }
-            let head_race = if request.path.as_str().starts_with("harness/v2/conversation-heads/") {
-                self.message_head_race.lock()
-                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?.take()
-            } else { None };
+            {
+                return Ok(Err(StreamError::Unavailable));
+            }
+            let head_race = if request
+                .path
+                .as_str()
+                .starts_with("harness/v2/conversation-heads/")
+            {
+                self.message_head_race
+                    .lock()
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?
+                    .take()
+            } else {
+                None
+            };
             if let Some(commit) = head_race {
                 if let Err(error) = self.inner.commit(commit).await {
                     return Ok(Err(error));
@@ -700,27 +784,39 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 || (request.path.as_str().contains("/effect-transitions/")
                     && self.hide_effect_transition_position.load(Ordering::SeqCst)
                         == request.from.saturating_add(1));
-            let fault = if hidden { 3 } else { self.history_read_fault.swap(0, Ordering::SeqCst) };
+            let fault = if hidden {
+                3
+            } else {
+                self.history_read_fault.swap(0, Ordering::SeqCst)
+            };
             let source = match self.inner.native_read(request, original.clone()).await? {
                 Ok(source) => source,
                 Err(error) => return Ok(Err(error)),
             };
             let allocation = acyclic_native_runtime::ReadAllocation::new(
-                &original, std::mem::size_of::<NativeFaultRecordCursor>(),
+                &original,
+                std::mem::size_of::<NativeFaultRecordCursor>(),
             )?;
             let cursor = NativeFaultRecordCursor {
-                source, meter: original, delivered: self.observation_bytes.clone(),
-                fault, index: 0, previous: None, finished: false,
+                source,
+                meter: original,
+                delivered: self.observation_bytes.clone(),
+                fault,
+                index: 0,
+                previous: None,
+                finished: false,
             };
             Ok(Ok(acyclic_stream::NativeStreamOutput::new(
-                Box::pin(cursor) as acyclic_stream::NativeRecordStream, allocation,
+                Box::pin(cursor) as acyclic_stream::NativeRecordStream,
+                allocation,
             )))
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_append(
-        &self, request: acyclic_stream::AppendRequest,
+        &self,
+        request: acyclic_stream::AppendRequest,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, AppendOutcome> {
         let original = meter.clone();
@@ -733,22 +829,40 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 return Ok(Err(StreamError::Unavailable));
             }
             if request.path.as_str() == COORDINATOR_PATH
-                && self.location_fault.compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok()
-            { return Ok(Err(StreamError::Unavailable)); }
-            let location = request.path.as_str().starts_with("harness/v3/coordinator/intent-locations/");
-            let fault = if location { self.location_fault.swap(0, Ordering::SeqCst) } else { 0 };
-            if fault == 1 { return Ok(Err(StreamError::Unavailable)); }
+                && self
+                    .location_fault
+                    .compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                return Ok(Err(StreamError::Unavailable));
+            }
+            let location = request
+                .path
+                .as_str()
+                .starts_with("harness/v3/coordinator/intent-locations/");
+            let fault = if location {
+                self.location_fault.swap(0, Ordering::SeqCst)
+            } else {
+                0
+            };
+            if fault == 1 {
+                return Ok(Err(StreamError::Unavailable));
+            }
             let mut output = match self.inner.native_append(request, original.clone()).await? {
                 Ok(output) => output,
                 Err(error) => return Ok(Err(error)),
             };
             if fault >= 2 {
-                if fault == 3 { self.hide_location_read.store(true, Ordering::SeqCst); }
+                if fault == 3 {
+                    self.hide_location_read.store(true, Ordering::SeqCst);
+                }
                 return Ok(Err(StreamError::Unavailable));
             }
             if matches!(output.value(), AppendOutcome::Committed(_))
                 && self.lose_ack.swap(false, Ordering::SeqCst)
-            { return Ok(Err(StreamError::Unavailable)); }
+            {
+                return Ok(Err(StreamError::Unavailable));
+            }
             if let AppendOutcome::Committed(receipt) = output.value_mut() {
                 match self.append_receipt_fault.swap(0, Ordering::SeqCst) {
                     1 => receipt.start = receipt.end,
@@ -763,13 +877,13 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_commit(
-        &self, request: acyclic_stream::CommitRequest, deadline: Option<u64>,
+        &self,
+        request: acyclic_stream::CommitRequest,
+        deadline: Option<u64>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
         self.native_commit_with_deadline(request, deadline, meter)
     }
-
-
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -804,31 +918,42 @@ fn native_fixture_value(
     let reservation = acyclic_native_runtime::ReadAllocationReservation::new(meter, bytes as u64)?;
     let allocation = reservation.allocate()?;
     let mut data = Vec::new();
-    data.try_reserve_exact(bytes).map_err(|error| meter.allocation_failed(error))?;
+    data.try_reserve_exact(bytes)
+        .map_err(|error| meter.allocation_failed(error))?;
     meter.record_examination(1, copied)?;
     if let Some(source) = source {
         data.extend_from_slice(source);
     } else {
         data.resize(bytes, 0);
     }
-    OwnedBytes::from_vec_with_guard(data, allocation, meter.clone())
-        .map_err(|failure| match failure.into_error() {
+    OwnedBytes::from_vec_with_guard(data, allocation, meter.clone()).map_err(
+        |failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => error,
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => std::io::Error::new(
-                std::io::ErrorKind::InvalidData, "fixture buffer is not fully initialized"),
-        })
+                std::io::ErrorKind::InvalidData,
+                "fixture buffer is not fully initialized",
+            ),
+        },
+    )
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl futures::Stream for NativeFaultRecordCursor {
-    type Item = std::io::Result<std::result::Result<acyclic_stream::NativeStreamOutput<acyclic_stream::Record>, StreamError>>;
+    type Item = std::io::Result<
+        std::result::Result<
+            acyclic_stream::NativeStreamOutput<acyclic_stream::Record>,
+            StreamError,
+        >,
+    >;
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         use std::task::Poll;
         let this = self.get_mut();
-        if this.finished || this.fault == 3 { return Poll::Ready(None); }
+        if this.finished || this.fault == 3 {
+            return Poll::Ready(None);
+        }
         if this.fault == 6 && this.index != 0 {
             this.finished = true;
             return Poll::Ready(Some(Ok(Err(StreamError::Unavailable))));
@@ -840,10 +965,15 @@ impl futures::Stream for NativeFaultRecordCursor {
             Poll::Ready(None) => {
                 this.finished = true;
                 return Poll::Ready(if this.fault == 2 {
-                    this.previous.take().map(|record| Ok(Ok(acyclic_stream::NativeStreamOutput::new(
-                        record, acyclic_native_runtime::ReadAllocation::empty(&this.meter),
-                    ))))
-                } else { None });
+                    this.previous.take().map(|record| {
+                        Ok(Ok(acyclic_stream::NativeStreamOutput::new(
+                            record,
+                            acyclic_native_runtime::ReadAllocation::empty(&this.meter),
+                        )))
+                    })
+                } else {
+                    None
+                });
             }
         };
         if this.index == 0 {
@@ -868,7 +998,10 @@ impl futures::Stream for NativeFaultRecordCursor {
             this.previous = Some(output.value().clone());
         }
         this.index += 1;
-        this.delivered.fetch_add(output.value().value.len() as u64, std::sync::atomic::Ordering::SeqCst);
+        this.delivered.fetch_add(
+            output.value().value.len() as u64,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         Poll::Ready(Some(Ok(Ok(output))))
     }
 }
@@ -876,7 +1009,9 @@ impl futures::Stream for NativeFaultRecordCursor {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl<P: StreamProvider> LostSessionAck<P> {
     fn native_commit_with_deadline(
-        &self, request: acyclic_stream::CommitRequest, deadline: Option<u64>,
+        &self,
+        request: acyclic_stream::CommitRequest,
+        deadline: Option<u64>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
         let original = meter.clone();
@@ -888,40 +1023,73 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 return Ok(Err(StreamError::Unavailable));
             }
             if self.execution_race.swap(false, Ordering::SeqCst) {
-                let path = request.conditions.iter().find_map(|condition| match condition {
-                    acyclic_stream::CommitCondition::Absent { path }
-                        if path.as_str().starts_with("harness/v2/execution/") => Some((path.clone(), 0)),
-                    acyclic_stream::CommitCondition::Tail { path, expected }
-                        if path.as_str().starts_with("harness/v2/execution/") => Some((path.clone(), *expected)),
-                    _ => None,
-                });
+                let path = request
+                    .conditions
+                    .iter()
+                    .find_map(|condition| match condition {
+                        acyclic_stream::CommitCondition::Absent { path }
+                            if path.as_str().starts_with("harness/v2/execution/") =>
+                        {
+                            Some((path.clone(), 0))
+                        }
+                        acyclic_stream::CommitCondition::Tail { path, expected }
+                            if path.as_str().starts_with("harness/v2/execution/") =>
+                        {
+                            Some((path.clone(), *expected))
+                        }
+                        _ => None,
+                    });
                 let Some((path, tail)) = path else {
                     return Ok(Err(StreamError::Unavailable));
                 };
-                if let Err(error) = self.inner.append(acyclic_stream::AppendRequest {
-                    path, records: vec![OwnedBytes::from_static(b"dispatch won")], if_tail: Some(tail), idempotency_key: None,
-                }).await { return Ok(Err(error)); }
+                if let Err(error) = self
+                    .inner
+                    .append(acyclic_stream::AppendRequest {
+                        path,
+                        records: vec![OwnedBytes::from_static(b"dispatch won")],
+                        if_tail: Some(tail),
+                        idempotency_key: None,
+                    })
+                    .await
+                {
+                    return Ok(Err(error));
+                }
             }
-            let selected = request.conditions.iter().any(|condition| matches!(condition,
+            let selected = request.conditions.iter().any(|condition| {
+                matches!(condition,
                 acyclic_stream::CommitCondition::Tail { path, expected }
                     if path.as_str().starts_with("harness/v2/execution/")
-                        && *expected == self.execution_tail.load(Ordering::SeqCst)));
-            let fault = if selected { self.execution_fault.swap(0, Ordering::SeqCst) } else { 0 };
-            if fault != 0 { self.execution_faults.fetch_add(1, Ordering::SeqCst); }
+                        && *expected == self.execution_tail.load(Ordering::SeqCst))
+            });
+            let fault = if selected {
+                self.execution_fault.swap(0, Ordering::SeqCst)
+            } else {
+                0
+            };
+            if fault != 0 {
+                self.execution_faults.fetch_add(1, Ordering::SeqCst);
+            }
             if fault == ExecutionFaultMode::Before as u8 {
                 return Ok(Err(StreamError::Unavailable));
             }
-            let aggregate = request.mutations.iter().any(|mutation| matches!(mutation,
+            let aggregate = request.mutations.iter().any(|mutation| {
+                matches!(mutation,
                 acyclic_stream::CommitMutation::Append { path, .. }
-                    if path.as_str().starts_with("harness/v2/aggregate-operations/")));
+                    if path.as_str().starts_with("harness/v2/aggregate-operations/"))
+            });
             let aggregate_fault = if aggregate {
                 self.aggregate_commits.fetch_add(1, Ordering::SeqCst);
                 self.aggregate_commit_fault.swap(0, Ordering::SeqCst)
-            } else { 0 };
+            } else {
+                0
+            };
             if aggregate_fault == 1 {
                 return Ok(Err(StreamError::Unavailable));
             }
-            let result = self.inner.native_commit(request, deadline, original.clone()).await?;
+            let result = self
+                .inner
+                .native_commit(request, deadline, original.clone())
+                .await?;
             let mut output = match result {
                 Ok(output) => output,
                 Err(error) => return Ok(Err(error)),
@@ -929,81 +1097,32 @@ impl<P: StreamProvider> LostSessionAck<P> {
             if let Err(error) = self.measure_committed(output.value()) {
                 return Ok(Err(error));
             }
-            if aggregate_fault == 3 { self.hide_aggregate_read.store(true, Ordering::SeqCst); }
+            if aggregate_fault == 3 {
+                self.hide_aggregate_read.store(true, Ordering::SeqCst);
+            }
             if matches!(aggregate_fault, 2 | 3) {
                 return Ok(Err(StreamError::Unavailable));
             }
             corrupt_aggregate_receipt(output.value_mut(), aggregate_fault);
-            if fault == ExecutionFaultMode::AfterHidden as u8 { self.hide_receipt.store(true, Ordering::SeqCst); }
+            if fault == ExecutionFaultMode::AfterHidden as u8 {
+                self.hide_receipt.store(true, Ordering::SeqCst);
+            }
             if fault != 0
                 || self.commit_lose_ack.swap(false, Ordering::SeqCst)
                 || self.lose_ack.swap(false, Ordering::SeqCst)
-            { return Ok(Err(StreamError::Unavailable)); }
+            {
+                return Ok(Err(StreamError::Unavailable));
+            }
             Ok(Ok(output))
         })
     }
 }
 
-/// Ordinary-capable negative control: it deliberately inherits every real SDK native capability default, rather than simulating unsupported results.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Default)]
-pub struct NoNative {
-    inner: MemoryStream,
-    pub ordinary_calls: std::sync::atomic::AtomicU64,
-}
-
+#[path = "stream/no_native.rs"]
+mod no_native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[async_trait::async_trait]
-impl StreamProvider for NoNative {
-    async fn inspect_idempotency(&self, key: acyclic_stream::IdempotencyKey)
-        -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.inspect_idempotency(key).await
-    }
-    async fn tail(&self, path: acyclic_stream::StreamPath) -> std::result::Result<u64, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.tail(path).await
-    }
-    async fn bounds(&self, path: acyclic_stream::StreamPath)
-        -> std::result::Result<acyclic_stream::StreamBounds, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.bounds(path).await
-    }
-    async fn append(&self, request: acyclic_stream::AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.append(request).await
-    }
-    async fn fork(&self, request: acyclic_stream::ForkRequest)
-        -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.fork(request).await
-    }
-    async fn read(&self, request: acyclic_stream::ReadRequest)
-        -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.read(request).await
-    }
-    async fn follow(&self, path: acyclic_stream::StreamPath, from: u64)
-        -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.follow(path, from).await
-    }
-    async fn children(&self, request: acyclic_stream::ChildrenRequest)
-        -> std::result::Result<acyclic_stream::ChildStream, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.children(request).await
-    }
-    async fn commit(&self, request: acyclic_stream::CommitRequest)
-        -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.commit(request).await
-    }
-    async fn read_commit(&self, id: acyclic_stream::CommitId)
-        -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
-        self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.read_commit(id).await
-    }
-}
+pub use no_native::NoNative;
 
 fn corrupt_aggregate_receipt(outcome: &mut acyclic_stream::CommitOutcome, aggregate_fault: u8) {
     if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
@@ -1028,4 +1147,3 @@ fn corrupt_aggregate_receipt(outcome: &mut acyclic_stream::CommitOutcome, aggreg
         }
     }
 }
-

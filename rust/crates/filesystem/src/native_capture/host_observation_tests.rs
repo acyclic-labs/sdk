@@ -14,9 +14,9 @@ fn only_absent_paths_may_become_deletions() -> Result<(), Box<dyn std::error::Er
     ] {
         assert!(matches!(
             classify_host_observation(Err(DemandError::Io(kind.into()))),
-            Err(CaptureError::Kernel(crate::FsError::NativeKernel(
+            Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::NativeKernel(
                 crate::NativeTreeMaterializationError::Io(_)
-            )))
+            ))
         ));
     }
     let directory = tempfile::tempdir()?;
@@ -30,7 +30,7 @@ fn only_absent_paths_may_become_deletions() -> Result<(), Box<dyn std::error::Er
     assert!(
         observe_host_path(
             &source_root,
-            &test_host_path(Path::new("file/child")),
+            &test_host_path(&Path::new("file").join("child")),
             &scope.native
         )?
         .is_none()

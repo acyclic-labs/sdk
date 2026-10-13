@@ -70,45 +70,42 @@ pub(crate) fn control_response_for(
         result: payload.as_ref(),
         error: failure.as_ref().map(ErrorMessage),
     };
-    let encoded = match original_native_work {
-        Some(work) => {
-            // This is the original query span, not an execution-payload guard's
-            // possibly different ledger. Failed admission sends no new frame.
-            match service_process::encode_native_control_value(&response, work) {
-                Ok((bytes, allocation)) => (bytes, Some(allocation)),
-                Err(encoding_error) => {
-                    // Close without an unfunded frame, but never replace an
-                    // execution failure with a later reporting failure.
-                    drop(payload);
-                    drop(source_allocation);
-                    return Err(failure.unwrap_or(encoding_error));
-                }
+    let encoded = if let Some(work) = original_native_work {
+        // This is the original query span, not an execution-payload guard's
+        // possibly different ledger. Failed admission sends no new frame.
+        match service_process::encode_native_control_value(&response, work) {
+            Ok((bytes, allocation)) => (bytes, Some(allocation)),
+            Err(encoding_error) => {
+                // Close without an unfunded frame, but never replace an
+                // execution failure with a later reporting failure.
+                drop(payload);
+                drop(source_allocation);
+                return Err(failure.unwrap_or(encoding_error));
             }
         }
-        None => {
-            if source_allocation.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Storage,
-                    reason: "native response has no original control-query work",
-                });
-            }
-            if failure.as_ref().is_some_and(|error| {
-                !matches!(
-                    error,
-                    Error::NotFound(_)
-                        | Error::Conflict(_)
-                        | Error::Unsupported(_)
-                        | Error::Invalid(_)
-                        | Error::Unauthorized(_)
-                        | Error::Storage(_)
-                        | Error::InteractionRejected(_)
-                        | Error::Indeterminate(_)
-                )
-            }) {
-                return Err(failure.expect("native failure is present"));
-            }
-            (encode_control_response(&response, Some(request_id)), None)
+    } else {
+        if source_allocation.is_some() {
+            return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Storage,
+                reason: "native response has no original control-query work",
+            });
         }
+        if failure.as_ref().is_some_and(|error| {
+            !matches!(
+                error,
+                Error::NotFound(_)
+                    | Error::Conflict(_)
+                    | Error::Unsupported(_)
+                    | Error::Invalid(_)
+                    | Error::Unauthorized(_)
+                    | Error::Storage(_)
+                    | Error::InteractionRejected(_)
+                    | Error::Indeterminate(_)
+            )
+        }) {
+            return Err(failure.expect("native failure is present"));
+        }
+        (encode_control_response(&response, Some(request_id)), None)
     };
     drop(payload);
     drop(source_allocation);

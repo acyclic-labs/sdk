@@ -39,7 +39,7 @@ pub(crate) fn native_workspace_error(
     ),
 ) -> Error {
     Error::NativeWorkspacePublication {
-        source: acyclic_fs::NativeWorkspacePublicationError::Workspace(source),
+        source: Box::new(acyclic_fs::NativeWorkspacePublicationError::Workspace(source)),
         custody,
     }
 }

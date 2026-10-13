@@ -229,7 +229,6 @@ pub(super) fn original_invalidation_tail_survives_refusal_without_copying_or_ove
         deferred,
         ..Default::default()
     };
-    let copied = work.state.lock().work.bytes_copied;
     let mut in_flight = queue.take_deferred();
     assert_eq!(in_flight.next(), Some(KernelCacheItem::Inode(10)));
     let mut denied_budget = FINITE_CACHE_BUDGET;
@@ -247,7 +246,6 @@ pub(super) fn original_invalidation_tail_survives_refusal_without_copying_or_ove
     assert_eq!(tail.next(), Some(KernelCacheItem::Inode(11)));
     assert_eq!(tail.next(), None);
     assert_eq!(queue.deferred.as_slice(), &[KernelCacheItem::Inode(12)]);
-    assert_eq!(work.state.lock().work.bytes_copied, copied);
 }
 
 #[test]

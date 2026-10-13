@@ -149,7 +149,11 @@ impl VolumeRef {
     ) -> Result<String> {
         content_label(
             operation.capability_prefix(),
-            crate::executor::json::canonical_json_digest(self, u64::MAX, work)?,
+            crate::executor::json::canonical_json_digest(
+                self,
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )?,
             work,
         )
     }
@@ -208,7 +212,11 @@ impl VolumeRef {
         }
         content_label(
             "directory:read:",
-            crate::executor::json::canonical_json_digest(&(self, prefix), u64::MAX, work)?,
+            crate::executor::json::canonical_json_digest(
+                &(self, prefix),
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )?,
             work,
         )
     }
@@ -220,7 +228,11 @@ impl VolumeRef {
     ) -> Result<String> {
         content_label(
             "harness-",
-            crate::executor::json::canonical_json_digest(self, u64::MAX, work)?,
+            crate::executor::json::canonical_json_digest(
+                self,
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )?,
             work,
         )
     }
@@ -428,7 +440,11 @@ impl ContentGrant {
             volume.require_writer(scope.agent(), work)?;
         }
         volume.validate(work)?;
-        let digest = crate::executor::json::canonical_json_digest(volume, maximum_bytes, work)?;
+        let digest = crate::executor::json::canonical_json_digest(
+            volume,
+            maximum_bytes.min(crate::store::default_projection_read_limits().maximum_bytes),
+            work,
+        )?;
         if !contains_content_label(scope.capabilities(), operation.capability_prefix(), digest) {
             return Err(conversation_error(
                 work,
@@ -463,11 +479,19 @@ impl ContentGrant {
             || !(contains_content_label(
                 scope.capabilities(),
                 "directory:read:",
-                crate::executor::json::canonical_json_digest(&(volume, prefix), u64::MAX, work)?,
+                crate::executor::json::canonical_json_digest(
+                    &(volume, prefix),
+                    crate::store::default_projection_read_limits().maximum_bytes,
+                    work,
+                )?,
             ) || contains_content_label(
                 scope.capabilities(),
                 VolumeOperation::Read.capability_prefix(),
-                crate::executor::json::canonical_json_digest(volume, u64::MAX, work)?,
+                crate::executor::json::canonical_json_digest(
+                    volume,
+                    crate::store::default_projection_read_limits().maximum_bytes,
+                    work,
+                )?,
             ))
         {
             return Err(conversation_error(

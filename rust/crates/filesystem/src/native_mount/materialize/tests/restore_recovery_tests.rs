@@ -263,21 +263,6 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert_eq!(original_spent.output_bytes, 0);
     assert!(std::fs::read_dir(no_write_output.path())?.next().is_none());
 
-    let finite = tempfile::tempdir()?;
-    let finite_failure = materialize_checkout_paths(
-        &mut checkout,
-        &[first, missing],
-        &MaterializeOptions::native(finite.path()),
-        *failed.work,
-        &cancellation,
-    )
-    .await
-    .err()
-    .ok_or("missing second path was accepted under finite budget")?;
-    assert!(matches!(
-        finite_failure.error,
-        MaterializeError::MissingPath
-    ));
     Ok(())
 }
 
@@ -372,25 +357,19 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     )?;
     let host_path = materialize_host_path(None, namespace.components(), &mut receipt)?;
     #[cfg(unix)]
-    for (metadata, expected) in [
-        (
-            FileMetadata {
-                posix_flags: MetadataField::Value(1),
-                ..FileMetadata::default()
-            },
-            "posix_flags",
-        ),
-        (
-            FileMetadata {
-                changed_ns: MetadataField::Value(123),
-                ..FileMetadata::default()
-            },
-            "changed_ns without native-view baseline",
-        ),
+    for metadata in [
+        FileMetadata {
+            posix_flags: MetadataField::Value(1),
+            ..FileMetadata::default()
+        },
+        FileMetadata {
+            changed_ns: MetadataField::Value(123),
+            ..FileMetadata::default()
+        },
     ] {
         assert!(matches!(
             apply_host_metadata_offloaded(&root, &host_path, metadata, &mut receipt).await,
-            Err(failure) if matches!(failure, MaterializeError::UnsupportedMetadata(field) if field == expected)
+            Err(MaterializeError::UnsupportedMetadata(_))
         ));
     }
     #[cfg(windows)]

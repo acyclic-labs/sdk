@@ -334,7 +334,6 @@ pub(crate) fn doctor_report(
             },
             native
                 .unavailable_reason
-                .as_deref()
                 .map(|reason| format!(" reason={reason}"))
                 .unwrap_or_default()
         ),

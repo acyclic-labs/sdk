@@ -14,6 +14,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let mut mutations = Some(Owned::allocate(2, ctx)?);
         let result = async {
             let namespace = self.namespace_path(path, ctx)?;
+            if node.kind == SourceNodeKind::RegularFile {
+                if node.logical_bytes.ok_or(LazyWorkspaceError::NotRegularFile)? > maximum {
+                    namespace.retire(ctx)?;
+                    return Err(LazyWorkspaceError::TooLarge);
+                }
+                let id = match self.source_file_id(&node.file_identity, ctx) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        namespace.retire(ctx)?;
+                        return Err(error);
+                    }
+                };
+                match accounted!(ctx, |work, cancel| transaction.checkout.read_file_record_by_id(id, work, cancel)) {
+                    Ok(record) => {
+                        let mut links = Owned::allocate(1, ctx)?;
+                        crate::Transaction::<A, O>::push_mutation(
+                            &mut links,
+                            Owned::new(
+                                crate::kernel::Mutation::Restore { path: namespace.value, record },
+                                namespace.allocation,
+                                namespace.bytes,
+                            ),
+                            ctx,
+                        )?;
+                        transaction.checkout.apply_mutations(links, ctx, cancellation(ctx)).await?;
+                        return Ok(());
+                    }
+                    Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {}
+                    Err(error) => {
+                        namespace.retire(ctx)?;
+                        return Err(error);
+                    }
+                }
+            }
             let metadata = source_file_metadata(node.metadata);
             let mutation = async {
                 Ok::<_, LazyWorkspaceError>(match node.kind {

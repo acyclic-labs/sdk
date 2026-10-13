@@ -135,7 +135,10 @@ async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispa
             acyclic_fs::WorkBudget::default(),
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
         let (lease, custody) = fixture
             .native_lease_command(&runtime, kind, Value::Null, &work)
             .await?;
@@ -181,7 +184,10 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         acyclic_fs::WorkBudget::default(),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction {
+        cause,
+        work: Box::new(work),
+    })?;
     let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());

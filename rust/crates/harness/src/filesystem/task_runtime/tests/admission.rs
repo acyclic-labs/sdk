@@ -15,7 +15,10 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
         },
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction {
+        cause,
+        work: Box::new(work),
+    })?;
     let commands = NativeAdmissionFailure {
         clock: fixture.clock.clone(),
         work,
@@ -112,7 +115,10 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
         },
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction {
+        cause,
+        work: Box::new(work),
+    })?;
     let custody = work
         .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(Error::from)?;
@@ -169,7 +175,10 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
         },
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction {
+        cause,
+        work: Box::new(work),
+    })?;
     let prefix = work.receipt();
     assert!(matches!(
         native_step_key(u64::MAX, &work),
@@ -196,8 +205,12 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
             allocation_operations: 4096,
             ..Default::default()
         };
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
+            |(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            },
+        )?;
         let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
         let original = lease.clone();
         let recovered_bytes = recovery_custody.bytes();

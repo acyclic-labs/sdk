@@ -515,7 +515,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             drop(request);
             drop(observed);
             work.release_request()?;
-            work.release(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
             return work.finish(());
         }
         drop(observed);

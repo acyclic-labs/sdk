@@ -58,9 +58,8 @@ impl PiSession {
             };
             let preparation_value = preparation_outcome
                 .as_ref()
-                .map(|entry| &entry.0)
-                .unwrap_or(&None);
-            let outcome_value = outcome.as_ref().map(|entry| &entry.0).unwrap_or(&None);
+                .map_or(&None, |entry| &entry.0);
+            let outcome_value = outcome.as_ref().map_or(&None, |entry| &entry.0);
             let native_effect = acyclic_harness::effect_host::task_effect_id(
                 commit.child.task_id,
                 operations.native,

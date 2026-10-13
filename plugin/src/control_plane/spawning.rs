@@ -35,7 +35,6 @@ impl ControlPlane {
                     "cannot isolate the requested subagent: {}",
                     capabilities
                         .unavailable_reason
-                        .as_deref()
                         .unwrap_or("the native writable mount backend is unavailable")
                 ));
             }

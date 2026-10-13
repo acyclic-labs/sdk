@@ -6,6 +6,11 @@
     reason = "the CLI entry points dispatch every subcommand in one place"
 )]
 
+#![allow(
+    clippy::manual_async_fn,
+    reason = "explicit Send future bounds avoid higher-ranked lifetime errors in native commands"
+)]
+
 mod adapter_state;
 mod cli_output;
 mod codex_hook_mcp;
@@ -128,7 +133,7 @@ enum CliFailure {
     Native(acyclic_harness::Error),
     NativeControl(ControlRequestError),
     Ordinary(Box<dyn std::error::Error + Send + Sync>),
-    ClosedFailed(service::SessionCloseState),
+    ClosedFailed,
 }
 
 impl std::fmt::Display for CliFailure {
@@ -137,7 +142,7 @@ impl std::fmt::Display for CliFailure {
             Self::Native(error) => std::fmt::Display::fmt(error, formatter),
             Self::NativeControl(error) => std::fmt::Display::fmt(error, formatter),
             Self::Ordinary(error) => std::fmt::Display::fmt(error, formatter),
-            Self::ClosedFailed(_) => formatter.write_str("service shutdown state is failed"),
+            Self::ClosedFailed => formatter.write_str("service shutdown state is failed"),
         }
     }
 }
@@ -273,13 +278,12 @@ fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
         .into());
     };
     let (cwd, mut input) = read_native_hook_call()?;
-    if !input.is_object() {
-        return Err(acyclic_harness::Error::NativeBoundary {
+    let object = input
+        .as_object_mut()
+        .ok_or(acyclic_harness::Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi control must be an object",
-        }
-        .into());
-    }
+        })?;
     if let Some(environment) = env::var_os(pi_caller::CALLER_ENVIRONMENT) {
         let text = environment
             .to_str()
@@ -287,10 +291,7 @@ fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
         if text.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
             return Err("Pi caller scope exceeds the 4 MiB bound".to_owned().into());
         }
-        input
-            .as_object_mut()
-            .expect("object checked above")
-            .insert("caller".to_owned(), serde_json::from_str(text)?);
+        object.insert("caller".to_owned(), serde_json::from_str(text)?);
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -763,7 +764,7 @@ async fn run() -> Result<(), CliFailure> {
     {
         return match run_service(default_data_directory()).await? {
             service::SessionCloseState::Closed => Ok(()),
-            failed @ service::SessionCloseState::Failed => Err(CliFailure::ClosedFailed(failed)),
+            service::SessionCloseState::Failed => Err(CliFailure::ClosedFailed),
         };
     }
     let commandless = arguments

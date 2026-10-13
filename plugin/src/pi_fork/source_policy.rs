@@ -16,10 +16,6 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
         })
     }
 
-    fn supports_native_source(&self) -> bool {
-        true
-    }
-
     fn verify_with_native_work<'a>(
         &'a self,
         context: RootProjectSourceContext<'a>,
@@ -147,7 +143,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                     .await?;
                 crate::pi_root_provider::prove_root_project_source_with_native_work(
                     coordinator.owner.clone(),
-                    &coordinator.resources,
+                    coordinator.resources,
                     coordinator.filesystem.clone(),
                     coordinator.stream.clone(),
                     &original.0.binding,

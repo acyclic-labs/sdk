@@ -138,8 +138,11 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         reader
             .read_resolved_ranges(&mixed, 2, result.work, &cancel)
             .await?
-            .value,
-        result.value
+            .value
+            .iter()
+            .map(|read| read.bytes.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"ab".as_slice(), b"XY"]
     );
     assert_eq!(
         reader

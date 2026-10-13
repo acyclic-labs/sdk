@@ -45,7 +45,7 @@ impl<'a> PiForkCoordinator<'a> {
         };
         {
             let work = &self.work;
-            plan.commit.launch.validate(work)?
+            plan.commit.launch.validate(work)?;
         }
         let mut projects =
             request

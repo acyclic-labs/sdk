@@ -85,7 +85,7 @@ fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
         .unwrap()
         .issuer
         .issue(
-            &caller.0.id(),
+            caller.0.id(),
             &Capabilities::new([CALLER_CAPABILITY, "operation:declare"]),
             Some(binding.agent_id),
             None,

@@ -21,10 +21,6 @@ export declare class NativeStreamCancellation {
 
 /** Native Stream client and its authenticated gRPC transport. */
 export declare class NativeStreamClient {
-  /** Returns a translating client that does not automatically report receipts. */
-  withoutDeliveryAcknowledgements(): NativeStreamClient
-  /** Reports one hosted receipt to this client's sole issuing endpoint. */
-  acknowledgeDeliveryResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamOperationResult>
   /** Connects using the canonical Rust native gRPC transport. */
   static connect(endpoint: string, token: string, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamClient>
   /** Connects and returns a structured success/error envelope. */

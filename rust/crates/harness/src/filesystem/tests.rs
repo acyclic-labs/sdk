@@ -38,7 +38,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
         acyclic_fs::WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     let verifier = FilesystemForkVerifier::new(
         Arc::clone(&host),
         4096,
@@ -53,7 +53,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
         acyclic_fs::WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
     assert!(matches!(
         verifier
             .native_binding
@@ -297,7 +297,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         let native = FilesystemForkVerifier::new(
             Arc::clone(&host),
             16,

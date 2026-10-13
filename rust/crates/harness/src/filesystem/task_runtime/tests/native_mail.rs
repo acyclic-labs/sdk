@@ -15,7 +15,7 @@ type MailRuntime = FilesystemTaskRuntime<
 const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024);
 fn work(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
     NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })
 }
 
 struct MailFixture {

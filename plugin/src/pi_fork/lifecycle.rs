@@ -56,6 +56,7 @@ impl<'a> PiForkCoordinator<'a> {
         self.authenticate(context, owner, fence).await?;
         self.validate_plan(plan, owner.task_id())?;
         self.require_original_plan(plan).await?;
+        let host = self.runtime.runtime.task_host();
         (owner)
             .verify(
                 false,
@@ -68,7 +69,6 @@ impl<'a> PiForkCoordinator<'a> {
         })?;
         self.authenticate_launch(context, plan).await?;
         let preparer = self.native_preparer(shared, owner, plan, source).await?;
-        let host = self.runtime.runtime.task_host();
         (owner)
             .verify(
                 false,
@@ -213,7 +213,6 @@ impl<'a> PiForkCoordinator<'a> {
         else {
             return Ok(None);
         };
-        let host = self.runtime.runtime.task_host();
         (owner)
             .verify(
                 false,
@@ -251,7 +250,7 @@ impl<'a> PiForkCoordinator<'a> {
                 report.0,
                 admission.0,
                 source,
-                &cancel,
+                cancel,
                 report.1,
                 admission.1,
             )
@@ -468,7 +467,7 @@ impl<'a> PiForkCoordinator<'a> {
             ._metadata_custody
             .absorb(&mut admission_allocation)?;
         prepared._metadata_custody.absorb(&mut binding.1)?;
-        return Ok(prepared);
+        Ok(prepared)
     }
 
     pub(super) async fn publish(
@@ -644,6 +643,6 @@ impl<'a> PiForkCoordinator<'a> {
             bound?;
             released?;
         }
-        return Ok(());
+        Ok(())
     }
 }

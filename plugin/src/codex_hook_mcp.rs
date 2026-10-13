@@ -290,7 +290,7 @@ async fn call_result(params: &Value) -> Result<Value, String> {
                 Ok(Some(answer)) => answer,
                 Ok(None) => forward_native_hook(HOST, event, cwd, input, ServiceStart::Forbidden)
                     .await
-                    .unwrap_or_else(|error| failure.answer(&error.to_string())),
+                    .unwrap_or_else(|error| failure.answer(&error)),
                 Err(error) => failure.answer(&error),
             }
         }

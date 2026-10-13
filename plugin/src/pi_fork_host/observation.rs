@@ -20,11 +20,11 @@ impl crate::pi_host::PiControlHost<'_> {
             self.protected.policy().root_task,
             input.caller,
             &input.sdk_operation,
-            &work,
+            work,
         )?;
         if owner.task_id() != self.protected.policy().root_task
             || input.sdk_operation.is_empty()
-            || command.operation_id != derived(original, "observe-root-source", &work)?
+            || command.operation_id != derived(original, "observe-root-source", work)?
         {
             return Err(denied(
                 "Pi Root observer changed its actual owner or original SDK operation",
@@ -87,7 +87,7 @@ impl crate::pi_host::PiControlHost<'_> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut &PreparationIo::from_native_work(&work)?),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             let observed = ObservedSource {
@@ -102,13 +102,13 @@ impl crate::pi_host::PiControlHost<'_> {
                 command.operation_id,
                 "root-source-observation",
                 &observed,
-                &work,
+                work,
             )
             .await?;
             owner
                 .verify(
                     false,
-                    &mut Some(&mut &PreparationIo::from_native_work(&work)?),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             (observed, frozen.1)
@@ -118,7 +118,7 @@ impl crate::pi_host::PiControlHost<'_> {
                 snapshot: observed.0.snapshot,
                 root_key: &observed.0.root_key,
             },
-            &work,
+            work,
         )
     }
 }

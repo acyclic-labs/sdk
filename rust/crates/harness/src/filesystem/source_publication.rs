@@ -44,7 +44,7 @@ impl SourcePublicationFailureSlot {
         Error::NativeSourcePublicationUncertain {
             generation,
             source: slot,
-            retention_failure,
+            retention_failure: retention_failure.map(Box::new),
             custody,
         }
     }

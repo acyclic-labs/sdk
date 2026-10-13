@@ -13,7 +13,10 @@ async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_
             acyclic_fs::WorkBudget::default(),
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
         let (mut lease, custody) = fixture.native_lease(&runtime, &work).await?;
         if stale {
             lease.reservation.id.replace_range(0..1, "x");

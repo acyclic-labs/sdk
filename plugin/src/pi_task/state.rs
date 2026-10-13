@@ -93,7 +93,7 @@ pub(super) fn initial_state(
 
 pub(super) enum TransitionInput {
     Null,
-    Control(PiControlInput),
+    Control(Box<PiControlInput>),
     Controls(ControlResults),
     Results(CommandResults),
     Other,
@@ -109,6 +109,7 @@ pub(super) fn advance(
             (PiTaskState::Hosting { allocation, reply }, None)
         }
         (PiTaskState::Hosting { allocation, reply }, TransitionInput::Control(input)) => {
+            let input = *input;
             validate_control_command(&input.command).map_err(|error| {
                 native_validation(error, "Pi control command has no installed scoped adapter")
             })?;

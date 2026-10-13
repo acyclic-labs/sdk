@@ -185,16 +185,14 @@ pub(super) fn typed_payload_source() -> Context {
         messages: vec![
             ModelMessage {
                 role: ModelRole::System,
-                content: ModelContent::Text(
-                    "instruction-secret-ÃƒÆ’Ã‚Â©ÃƒÂ°Ã…Â¸Ã‚Â¦Ã¢â€šÂ¬".repeat(3_500),
-                ),
+                content: ModelContent::Text("instruction-secret-é🦀".repeat(3_500)),
             },
             ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall {
                     call_id: "previous-call".into(),
                     name: "echo".into(),
-                    arguments: serde_json::json!({"value":"ÃƒÆ’Ã‚Â©ÃƒÂ°Ã…Â¸Ã‚Â¦Ã¢â€šÂ¬"}),
+                    arguments: serde_json::json!({"value":"é🦀"}),
                 }),
             },
             ModelMessage {
@@ -203,7 +201,7 @@ pub(super) fn typed_payload_source() -> Context {
                     call_id: "previous-call".into(),
                     name: "echo".into(),
                     content: acyclic_harness::model::ToolResultContent::Json {
-                        value: serde_json::json!({"value":"ÃƒÆ’Ã‚Â©ÃƒÂ°Ã…Â¸Ã‚Â¦Ã¢â€šÂ¬"}),
+                        value: serde_json::json!({"value":"é🦀"}),
                     },
                 }),
             },

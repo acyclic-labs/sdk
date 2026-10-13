@@ -111,6 +111,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         };
         let completed = work.record_completed(WorkCounters {
             object_bytes_read: observed,
+            source_bytes_read: observed,
             ..WorkCounters::UNCHARGED
         });
         let value = result?;
@@ -189,6 +190,18 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         let mut quota = total.min(remaining.object_bytes_read);
         if !native {
             quota = quota.min(remaining.peak_allocation_bytes);
+        }
+        if total > quota {
+            drop(incoming);
+            release(work, custody, request_bytes)?;
+            for request in requests {
+                let (read, allocation) = self
+                    .fetch(request.object_id, request.maximum_bytes, work)
+                    .await?;
+                drop(allocation);
+                values.push(read);
+            }
+            return Ok((values, output));
         }
         let body = if native {
             KernelOwnedAllocation::Standalone
@@ -317,6 +330,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         }
         let completed = work.record_completed(WorkCounters {
             object_bytes_read: observed,
+            source_bytes_read: observed,
             ..WorkCounters::UNCHARGED
         });
         if !count_valid {
