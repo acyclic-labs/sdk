@@ -25,15 +25,7 @@ pub(super) fn copy_generation(
         return Ok(source.clone());
     }
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let source = source.as_resource();
-    let provider = crate::core::copy_provider(source.provider(), &mut quota)?;
-    let key = crate::core::copy_copy_vector(source.key(), &mut quota)?;
-    let version = source
-        .version()
-        .map(|value| crate::core::copy_text(value, &mut quota))
-        .transpose()?;
-    let reference =
-        crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())?;
+    let reference = crate::core::copy_resource(source.as_resource(), &mut quota)?;
     let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
     quota.transfer();
     Ok(generation)
