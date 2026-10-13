@@ -75,7 +75,7 @@ impl StockTurnMachine {
         self.registered_definition()
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(feature = "browser", target_arch = "wasm32"))]
     pub(crate) fn wire_definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, Value>> {
         self.registered_definition()
     }
