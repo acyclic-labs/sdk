@@ -216,7 +216,7 @@ impl super::native::NativeSession {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner_with_native_work(caller, &fence, &work)
+            .journal_owner(caller, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
             .await?
             .into_native_shared(&work)?;
         let reader = FilesystemContentVerifier::new(

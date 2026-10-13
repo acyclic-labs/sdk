@@ -550,3 +550,33 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn expired_deadline_rejects_fresh_execution_publication() -> Result<()> {
+    let f = fixture::fixture().await?;
+    let mut admission = f.admission(1, json!(0));
+    admission.run_limits.deadline_epoch_ms = Some(1);
+    f.host.admit(admission).await?;
+    f.claim(1, "expired").await?;
+    let operation = OperationId::from_bytes([2; 16]);
+    let journal = f.execution(f.owner(1).await?, operation)?;
+    assert!(matches!(
+        journal
+            .append(
+                operation,
+                "started",
+                &ExecutionEvent::Started {
+                    request_digest: [9; 32]
+                },
+                None
+            )?
+            .await,
+        Err(Error::Indeterminate(_))
+    ));
+    assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
+    assert!(!matches!(
+        f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+        crate::distributed::WorkPull::Idle
+    ));
+    Ok(())
+}

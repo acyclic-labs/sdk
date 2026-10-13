@@ -248,7 +248,7 @@ where
             let owner = self
                 .runtime(io)?
                 .task_host()
-                .journal_owner_with_native_work(task, fence, work)
+                .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                 .await?
                 .with_invocation_cancellation(cancellation);
             owner.require_mail_scope_with_native_work(context.scope(), work)?;
@@ -260,7 +260,7 @@ where
         Ok(Arc::new(
             self.runtime(io)?
                 .task_host()
-                .journal_owner(task, context.owned_task_fence()?)
+                .journal_owner(task, &(context.owned_task_fence()?), None)
                 .await?
                 .with_invocation_cancellation(cancellation),
         ))

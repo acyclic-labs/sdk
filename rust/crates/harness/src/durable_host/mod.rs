@@ -53,14 +53,6 @@ struct TimerEvent {
     deadline_unix_ms: u64,
 }
 
-#[cfg(feature = "filesystem")]
-pub(crate) struct WorkflowWaitPage {
-    pub(crate) next_revision: u64,
-    pub(crate) through_revision: u64,
-    pub(crate) events_read: u32,
-    pub(crate) tasks: Vec<TaskId>,
-}
-
 #[derive(Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BatchCancellation {
@@ -68,7 +60,16 @@ struct BatchCancellation {
     group_id: crate::GroupId,
 }
 
-pub(crate) fn task_interaction_id(task_id: TaskId, operation_id: OperationId) -> InteractionId {
+/// Derives the stable task interaction identity on the supplied IO context.
+pub fn task_interaction_id(
+    task_id: TaskId,
+    operation_id: OperationId,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
+) -> Result<InteractionId> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+        io.hashed_bytes((b"harness/v2/task-interaction\0".len() + 32) as u64)?;
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness/v2/task-interaction\0");
     hasher.update(&task_id.into_bytes());
@@ -76,7 +77,7 @@ pub(crate) fn task_interaction_id(task_id: TaskId, operation_id: OperationId) ->
     let digest = hasher.finalize();
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
-    InteractionId::from_bytes(bytes)
+    Ok(InteractionId::from_bytes(bytes))
 }
 
 fn worker_key(
@@ -84,16 +85,20 @@ fn worker_key(
     operation: OperationId,
     fence: &crate::scheduler::LeaseFence,
     revision: u64,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
 ) -> Result<IdempotencyKey> {
     let digest = crate::contract::canonical_json_digest(
         fence,
         acyclic_stream::MAX_RECORD_BYTES as u64,
-        &mut None,
+        work,
     )?;
-    IdempotencyKey::new(format!(
-        "task-worker:{kind}:{operation}:{}:{revision}",
-        blake3::Hash::from_bytes(digest).to_hex()
-    ))
+    IdempotencyKey::new(crate::contract::preparation_format(
+        format_args!(
+            "task-worker:{kind}:{operation}:{}:{revision}",
+            blake3::Hash::from_bytes(digest).to_hex()
+        ),
+        work,
+    )?)
 }
 
 /// Stream-backed admission and observation for one durable owner. More
@@ -124,17 +129,39 @@ pub struct TaskJournalOwner<P> {
     fence: crate::scheduler::LeaseFence,
     workflow: crate::workflow::WorkflowAdmission,
     admission: Arc<TaskAdmissionRecord>,
+    input_agent: Option<crate::AgentId>,
+    invocation_cancellation: Option<acyclic_fs::CancellationToken>,
+    root_binding: std::sync::OnceLock<
+        Arc<(
+            crate::store::VerifiedRootBinding,
+            Option<crate::runtime::NativeCustody>,
+        )>,
+    >,
+    root_choice: std::sync::OnceLock<(OperationId, [u8; 32], [u8; 32])>,
+    root_gate: Mutex<()>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 mod admission;
+#[cfg(feature = "filesystem")]
+mod authorization;
 mod batch;
 mod dispatch;
 mod host;
 mod journal;
 mod lifecycle;
 mod mail;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod readonly;
+#[cfg(feature = "filesystem")]
+mod release;
 mod timer;
+mod volumes;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use readonly::TaskAdmissionReadonlyWitness;
 mod workflow;
+pub use volumes::TaskVolumeSnapshot;
 
 #[cfg(test)]
 pub(crate) mod tests;

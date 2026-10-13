@@ -26,7 +26,7 @@ where
                 .0
                 .task_binding()
                 .0;
-            let id = crate::durable_host::task_interaction_id(task, operation_id);
+            let id = crate::durable_host::task_interaction_id(task, operation_id, &mut None)?;
             self.open_interaction(id, interaction).await?;
             Ok(self
                 .interaction_outcome(id)
@@ -77,11 +77,7 @@ where
                 .0
                 .task_binding()
                 .0;
-            let id = crate::durable_host::task_interaction_id_with_native_work(
-                task,
-                operation_id,
-                work,
-            )?;
+            let id = crate::durable_host::task_interaction_id(task, operation_id, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?;
             self.open_interaction_with_native_work(id, &paid.0, work)?
                 .await?;
             let (outcome, custody) = self.interaction_outcome_with_native_work(id, work)?.await?;

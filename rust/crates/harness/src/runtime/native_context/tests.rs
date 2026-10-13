@@ -257,7 +257,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     drop(tool);
     let owner = fixture
         .host
-        .journal_owner_with_native_work(task, &fence, &original)
+        .journal_owner(task, &fence, Some(&crate::executor::PreparationIo::from_native_work(&original)?))
         .await?
         .into_native_shared(&original)?;
     let reader = crate::runtime::content_residency_verifier(
@@ -300,7 +300,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     let root_fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
     let root_owner = fixture
         .host
-        .journal_owner_with_native_work(fixture.root, &root_fence, &original)
+        .journal_owner(fixture.root, &root_fence, Some(&crate::executor::PreparationIo::from_native_work(&original)?))
         .await?
         .into_native_shared(&original)?;
     let before = original.receipt();
@@ -320,7 +320,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     ));
     assert_eq!(original.receipt(), before);
 
-    let unmeasured = Arc::new(fixture.host.journal_owner(task, fence.clone()).await?);
+    let unmeasured = Arc::new(fixture.host.journal_owner(task, &(fence.clone()), None).await?);
     let before = original.receipt();
     let rejected = crate::runtime::content_residency_verifier(
         Arc::clone(&shared),

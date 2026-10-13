@@ -747,7 +747,7 @@ where
         if let Some(owner) = &self.owner {
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            return owner.append_workflow_with_work(admission, revision, &key, bytes, &mut work).await;
+            return owner.append_workflow(admission, revision, &key, bytes, &mut work).await;
         }
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, path, io)?;

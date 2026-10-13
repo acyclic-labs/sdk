@@ -295,7 +295,7 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner_with_native_work(task, &fence, work)
+                .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
                 .await?;
             journal_owner
                 .verify(false, &mut Some(&mut native_work_io(work)?))
@@ -364,7 +364,7 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner_with_native_work(task, &fence, work)
+                .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
                 .await?;
             journal_owner
                 .verify(false, &mut Some(&mut native_work_io(work)?))

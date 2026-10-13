@@ -101,7 +101,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(task, &fence, meter)
+            .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(meter)?))
             .await?;
         match self
             .observe_preparation_journal(task, &owner, meter)
@@ -170,7 +170,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
             .await?
             .into_native_shared(work)?;
         owner
@@ -221,7 +221,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(owner.task_id(), &context.owned_task_fence()?, work)
+            .journal_owner(owner.task_id(), &context.owned_task_fence()?, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
             .await?;
         Journal::for_task_with_native_work(
             journal_owner,
@@ -390,7 +390,7 @@ impl PiNativeCommandHost {
             owner.clone(),
             command,
             &plan.0,
-            task_interaction_id(input.binding.task_id, command),
+            task_interaction_id(input.binding.task_id, command, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
             authority,
             work,
         )

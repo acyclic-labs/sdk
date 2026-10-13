@@ -180,7 +180,7 @@ impl StockExecution<'_> {
                                     None,
                                 )?;
                             let approval =
-                                crate::durable_host::task_interaction_id(task, approval_operation);
+                                crate::durable_host::task_interaction_id(task, approval_operation, &mut None)?;
                             journal.open_interaction(approval, request).await?;
                             let Some(outcome) = journal.interaction_outcome(approval).await? else {
                                 if started.is_some() {
