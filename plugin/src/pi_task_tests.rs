@@ -512,7 +512,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .task_context_with_native_work(task, &fence, &work)
         .await
         .unwrap();
-    let acyclic_harness::effect_host::EffectStatus::Succeeded { result: allocation } =
+    let acyclic_harness::core::EffectStatus::Succeeded { result: allocation } =
         fixture.execute().await.unwrap().0
     else {
         panic!("original root allocation");

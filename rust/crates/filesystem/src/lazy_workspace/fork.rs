@@ -21,7 +21,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         };
         self.fork_snapshot(destination, cut, key, ctx).await
     }
-    pub(super) async fn fork_snapshot(
+    /// Forks the authenticated immutable cut under its original creation operation.
+    pub async fn fork_snapshot(
         &self,
         destination: &str,
         cut: LazySnapshotRef,
@@ -36,12 +37,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             id: cut.authored_generation,
             publication_closure: None,
         };
-        let options = ForkOptions::from_generation(generation, key);
         let child = accounted!(ctx, |work, cancel| self
             .workspace
             .fork::<_, _, WorkspaceError>(
                 destination,
-                options,
+                ForkOptions::from_generation(generation, key),
                 crate::PublicationPermit::Unrestricted,
                 work,
                 cancel,
@@ -59,9 +59,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 cancel
             ))?
         .ok_or(LazyWorkspaceError::Concurrent)?;
-        let id = original.id();
-        drop(original);
-        self.bind_prepared_fork(cut, child, id, key.operation_id(), ctx)
+        self.bind_prepared_fork(cut, child, original.id(), key.operation_id(), ctx)
             .await
     }
     /// Authenticates the creator's original generation before opening the child.

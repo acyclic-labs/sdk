@@ -26,7 +26,7 @@ impl Fixture {
             paths: BTreeMap::new(),
         })
         .await;
-        let acyclic_harness::effect_host::EffectStatus::Succeeded { result } =
+        let acyclic_harness::core::EffectStatus::Succeeded { result } =
             root.execute().await.unwrap().0
         else {
             panic!("original root allocation");
