@@ -42,6 +42,16 @@ out.push(...table(["Step", "Wall time"], [
   ...(steps.length ? [["**Total**", `**${seconds(steps.reduce((sum, step) => sum + step.time, 0))}**`]] : []),
 ]));
 
+// Concurrent checks have explicit completion times; their durations overlap.
+const browsers = readdirSync(directory).filter(name => /^browser-[a-z]+\.tsv$/.test(name)).sort().map(name => {
+  const [start, end, status, command] = read(name).replace(/\0$/, "").split("\t");
+  if (start === undefined || end === undefined || status === undefined || command === undefined)
+    throw new Error("incomplete browser timing: " + name);
+  return { command, time: Number(end.replace(",", ".")) - Number(start.replace(",", ".")), status: Number(status) };
+});
+if (browsers.length) out.push("### Parallel browser checks", "", ...table(["Check", "Wall time", "Result"],
+  browsers.map(item => ["`" + cell(item.command) + "`", seconds(item.time), item.status === 0 ? "passed" : "exit " + item.status])));
+
 // Contract freshness is Cargo's decision, not a claim that rustc ran (sccache
 // may satisfy a rebuilt artifact). Build wall time includes Cargo lock waits.
 const contracts = read("generated-contracts.json");

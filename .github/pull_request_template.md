@@ -12,3 +12,4 @@ List exact commands and results.
 - [ ] Generated descriptors contain only public namespaces.
 - [ ] No private source, protocol, credential, or operational evidence is included.
 - [ ] Commit includes a DCO sign-off.
+- [ ] README text written by a human, not generated (only if a README changed).

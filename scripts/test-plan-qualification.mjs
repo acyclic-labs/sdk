@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import test from "node:test";
 import { posix } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -183,8 +184,11 @@ test("Windows native audits are independent required lanes without moving public
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   assert.doesNotMatch(script, /Start-Background|Complete-Background/);
   for (const command of ["cargo test --workspace --all-features --locked", "cargo test -p acyclic-plugin --all-features --locked --test fork_join",
-    "bun test --parallel=4 --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "bun run check"])
+    "bun test --isolate --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "bun run check"])
     assert.ok(script.includes(command), command);
+  const packages = script.slice(script.indexOf("& .\\scripts\\test-qualify-ci-windows.ps1")).replaceAll("\r\n", "\n");
+  assert.ok(packages.includes('--reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages'));
+  assert.doesNotMatch(packages, /--parallel/);
   assert.match(script, /test-qualify-ci-windows\.ps1/);
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   assert.match(workflow, /max-parallel: 18/);
@@ -302,4 +306,95 @@ test("Linux package qualification uses sixteen workers without changing publicat
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
   assert.ok(workflow.includes("MAKEFLAGS: -j${{ matrix.workers }}"));
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
+});
+
+test("web browser commands overlap, finish before shell exit and retain named timings", () => {
+  const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  const start = source.indexOf("    browser_qualification() {");
+  const end = source.indexOf("    ;;", start);
+  assert.ok(start > source.indexOf("bun run --filter '@acyclic-labs/harness' build"));
+  assert.ok(end > start);
+  const commands = source.slice(start, end);
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/web-browsers-").replaceAll("\\", "/");
+  assert.match(root, /^\.tools\/web-browsers-[A-Za-z0-9]+$/);
+  const bash = process.platform === "win32"
+    ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  try {
+    for (const scenario of [
+      { failure: "none", earlyExit: false }, { failure: "fs", earlyExit: false },
+      { failure: "mcp", earlyExit: false }, { failure: "client", earlyExit: false },
+      { failure: "fs", earlyExit: true },
+    ]) {
+      const { failure, earlyExit } = scenario;
+      const fixture = `${root}/${failure}-${earlyExit}`;
+      mkdirSync(fixture);
+      const body = earlyExit ? commands.replace(
+        'if wait "$browser_pid"; then :; else browser_status=1; fi', 'wait "$browser_pid" || exit 1') : commands;
+      const controlledBody = body.replace("    browser_status=0", '    touch "$fixture/all-launched"\n    browser_status=0');
+      assert.notEqual(controlledBody, body);
+      const result = spawnSync(bash, ["-c", `set -euo pipefail
+fixture='${fixture}'
+observability="$fixture"
+fail_id='${failure}'
+mutated='${earlyExit ? 1 : 0}'
+parent_pid="$BASHPID"
+on_exit() {
+  if [[ "$BASHPID" != "$parent_pid" ]]; then return; fi
+  for child in fs mcp client; do
+    if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
+  done
+  touch "$fixture/all-launched" "$fixture/release-cleanup"
+}
+trap on_exit EXIT
+bun() {
+  case "$*" in
+    *"@acyclic-labs/fs"*) id=fs ;;
+    *"test:browser:mcp"*) id=mcp ;;
+    *"test:client:browser"*) id=client ;;
+    *) return 98 ;;
+  esac
+  printf 'started:%s\\n' "$id"
+  touch "$fixture/$id"
+  while [[ ! -f "$fixture/all-launched" ]]; do sleep 0.01; done
+  if [[ "$mutated" == 1 && "$id" != "$fail_id" ]]; then
+    while [[ ! -f "$fixture/release-cleanup" ]]; do sleep 0.01; done
+  fi
+  touch "$fixture/$id.done"
+  printf 'completed:%s\\n' "$id"
+  [[ "$id" != "$fail_id" ]]
+}
+${controlledBody}
+printf 'joined\\n'
+`], { encoding: "utf8", timeout: 10000 });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, failure === "none" ? 0 : 1, result.stderr);
+      const events = result.stdout.trim().split("\n");
+      assert.deepEqual(events.filter(event => event.startsWith("started:")).sort(),
+        ["started:client", "started:fs", "started:mcp"]);
+      assert.deepEqual(events.filter(event => event.startsWith("completed:")).sort(),
+        ["completed:client", "completed:fs", "completed:mcp"]);
+      assert.equal(events.includes("joined"), failure === "none");
+      if (earlyExit) {
+        assert.match(result.stdout, /unfinished-at-exit:/, "mutation must expose unfinished cleanup");
+      } else {
+        assert.doesNotMatch(result.stdout, /unfinished-at-exit:/);
+        const summary = spawnSync(process.execPath, ["scripts/ci-summary.mjs", fixture], {
+          encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: "" },
+        });
+        assert.equal(summary.status, 0, summary.stderr);
+        assert.ok(summary.stdout.includes("### Parallel browser checks"));
+        for (const browser of [{ id: "fs", command: "bun run --filter @acyclic-labs/fs test:browser" },
+          { id: "mcp", command: "bun run --filter @acyclic-labs/harness test:browser:mcp" },
+          { id: "client", command: "bun run --filter @acyclic-labs/harness test:client:browser" }]) {
+          const row = summary.stdout.split("\n").find(line => line.includes(browser.command)) ?? assert.fail("missing browser timing");
+          assert.match(row, /\| \d+(?:\.\d+)?s \|/);
+          assert.ok(row.includes(browser.id === failure ? "exit 1" : "passed"));
+        }
+      }
+    }
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
 });

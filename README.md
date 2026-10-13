@@ -1,5 +1,9 @@
 # Acyclic SDK
 
+**Rapid agent swarms. Make any agentic workflow exponentially faster.**
+
+Acyclic Labs builds rapid agent swarms. Hand a task to a swarm and it fans the work out across many agents, each in its own sandbox, then merges what they produce, so long agentic workflows finish exponentially faster. The harness is open source and works without managed hosting; for managed swarms, see [acyclic.dev](https://acyclic.dev/agents).
+
 The Acyclic SDK is the open contract and composition layer for building recursive,
 fork-join agent systems. It contains the Rust harness, public service interfaces,
 customer-machine implementations, conformance suites, and TypeScript packages.

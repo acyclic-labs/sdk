@@ -41,7 +41,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "type": "commonjs",
   "patchedDependencies": {
     "@napi-rs/cli@3.10.5": "patches/napi-rs-cli-3.10.5.patch"
