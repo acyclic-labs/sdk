@@ -65,24 +65,35 @@ pub enum ConnectError {
 pub struct Client {
     channel: Channel,
     authorization: MetadataValue<Ascii>,
+    acknowledge_deliveries: bool,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
 pub struct Service<P> {
     provider: Arc<P>,
+    #[cfg(test)]
+    test_delivery: Option<(Bytes, Arc<std::sync::atomic::AtomicUsize>)>,
 }
 
 impl<P> Service<P> {
     /// Binds the generated server to one semantic provider.
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            #[cfg(test)]
+            test_delivery: None,
+        }
     }
 }
 
 impl<P> Clone for Service<P> {
     fn clone(&self) -> Self {
-        Self::new(Arc::clone(&self.provider))
+        Self {
+            provider: Arc::clone(&self.provider),
+            #[cfg(test)]
+            test_delivery: self.test_delivery.clone(),
+        }
     }
 }
 
@@ -136,6 +147,7 @@ impl Client {
         Self {
             channel,
             authorization,
+            acknowledge_deliveries: true,
         }
     }
 

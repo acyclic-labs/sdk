@@ -495,3 +495,91 @@ async fn cancelled_work_does_not_starve_the_pull_queue() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn stable_pull_recovers_lost_responses_without_reusing_other_admissions() -> Result<()> {
+    let client = Arc::new(MemoryStream::default());
+    let mut coordinator = open(&client).await?;
+    let worker = Worker {
+        id: "stable-worker".into(),
+        available: ResourceRequest(BTreeMap::from([("cpu".into(), 2)])),
+        labels: BTreeMap::new(),
+    };
+    assert!(
+        coordinator
+            .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+            .await?
+            .is_none()
+    );
+    for index in [71, 72] {
+        declare(
+            &mut coordinator,
+            spec(OperationId::from_bytes([index; 16]), 1)?,
+            &format!("stable-declare-{index}"),
+        )
+        .await?;
+    }
+    let first = coordinator
+        .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+        .await?
+        .ok_or_else(|| Error::NotFound("first stable lease".into()))?;
+    let mut reopened = open(&client).await?;
+    assert_eq!(
+        reopened
+            .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+            .await?,
+        Some(first.clone())
+    );
+    let second = reopened
+        .pull_with_identity(&worker, IdempotencyKey::new("stable-second")?)
+        .await?
+        .ok_or_else(|| Error::NotFound("second stable lease".into()))?;
+    assert_ne!(first.operation.operation_id, second.operation.operation_id);
+    assert_ne!(first.reservation, second.reservation);
+    for changed in [
+        Worker {
+            id: "another-worker".into(),
+            ..worker.clone()
+        },
+        Worker {
+            available: ResourceRequest::default(),
+            ..worker.clone()
+        },
+        Worker {
+            labels: BTreeMap::from([("region".into(), "changed".into())]),
+            ..worker.clone()
+        },
+    ] {
+        assert!(matches!(
+            reopened
+                .pull_with_identity(&changed, IdempotencyKey::new("stable-first")?)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+    }
+    publish(
+        &mut reopened,
+        "stable-release",
+        SchedulerEvent::LeaseReleased {
+            operation_id: first.operation.operation_id,
+            fence: LeaseFence::from(&first.reservation),
+        },
+    )
+    .await?;
+    assert!(
+        reopened
+            .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+            .await?
+            .is_none()
+    );
+    let replacement = reopened
+        .pull_with_identity(&worker, IdempotencyKey::new("stable-replacement")?)
+        .await?
+        .ok_or_else(|| Error::NotFound("replacement lease".into()))?;
+    assert_ne!(replacement.reservation, first.reservation);
+    assert_eq!(
+        replacement.operation.operation_id,
+        first.operation.operation_id
+    );
+    Ok(())
+}
