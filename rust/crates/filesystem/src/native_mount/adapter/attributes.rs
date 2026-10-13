@@ -68,7 +68,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
+                cancellation,
+            )?;
             let value = checkout
                 .read_named_attribute(&path, &name, work, cancellation)
                 .await?;
@@ -103,7 +106,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
+                cancellation,
+            )?;
             let mut accounting =
                 crate::kernel::allocation::KernelAccounting::native(work, cancellation);
             let listing = checkout
@@ -128,7 +134,12 @@ where
             inputs
                 .carrier
                 .check(cancellation, Some(&self.cancellation))?;
-            Ok((page, inputs.retain().expect("native attribute page")))
+            Ok((
+                page,
+                inputs.retain().ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?,
+            ))
         })
     }
 }

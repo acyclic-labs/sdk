@@ -247,15 +247,15 @@ impl MountDestinationGuard {
         // registry or fence creation can mutate the destination namespace.
         let (cleanup_name, birth_cleanup) = {
             let mut terminated = [0u8; NATIVE_FENCE_NAME_BYTES + 1];
-            let copied = native.reserve_work(crate::WorkCounters {
-                bytes_copied: NATIVE_FENCE_NAME_BYTES as u64,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
+            let copied = native.reserve_work(
+                crate::materializer::NativeResourceCredit::Copy
+                    .delta(NATIVE_FENCE_NAME_BYTES as u64),
+            )?;
             terminated[..NATIVE_FENCE_NAME_BYTES].copy_from_slice(&name);
-            copied.record_completed(crate::WorkCounters {
-                bytes_copied: NATIVE_FENCE_NAME_BYTES as u64,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
+            copied.record_completed(
+                crate::materializer::NativeResourceCredit::Copy
+                    .delta(NATIVE_FENCE_NAME_BYTES as u64),
+            )?;
             let prepared = crate::native_host::prepare_ascii_leaf(terminated, native)?;
             let credit = native.reserve_work(crate::WorkCounters {
                 backend_write_operations: 2,
@@ -329,10 +329,7 @@ impl MountDestinationGuard {
             .and_then(|guard| guard.registry_file.as_ref())
             .expect("the admitted fence retains its actual registry owner");
         work.attempt_io(
-            crate::WorkCounters {
-                backend_write_operations: 1,
-                ..crate::WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
             || fs2::FileExt::unlock(registry),
         )?;
         Ok(())
@@ -416,10 +413,9 @@ impl MountDestinationGuard {
         original: &mut crate::NativeWorkReservation,
     ) {
         if self.file.is_some() {
-            original.started_drop_io(crate::WorkCounters {
-                backend_write_operations: 1,
-                ..crate::WorkCounters::UNCHARGED
-            });
+            original.started_drop_io(
+                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+            );
             drop(self.file.take());
         }
     }
@@ -515,10 +511,7 @@ where
     NativeMountError: From<W::Error>,
 {
     loop {
-        let delta = crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        };
+        let delta = crate::materializer::NativeResourceCredit::WriteOperations.delta(1);
         let result = work.attempt_io(delta, || match fs2::FileExt::try_lock_exclusive(file) {
             Ok(()) => Ok(true),
             Err(error) if lock_is_contended(&error) => Ok(false),

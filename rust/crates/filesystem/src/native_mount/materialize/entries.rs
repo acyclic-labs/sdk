@@ -61,10 +61,7 @@ where
         receipt
             .custody
             .work()
-            .charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })
+            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
             .map_err(MaterializeError::from)?;
         if *identity == file_id {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
@@ -95,10 +92,7 @@ where
                                     work,
                                     |destination, work| loop {
                                         let linked = work.attempt_io(
-                                            WorkCounters {
-                                                backend_write_operations: 1,
-                                                ..WorkCounters::UNCHARGED
-                                            },
+                                            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
                                             || {
                                                 #[allow(
                                                     unsafe_code,
@@ -237,10 +231,7 @@ where
                 receipt
                     .custody
                     .work()
-                    .charge(WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    })
+                    .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                     .map_err(MaterializeError::from)?;
                 if *key == (logical_bytes, extents, _metadata_id) {
                     payload_known = true;
@@ -379,7 +370,7 @@ where
             if !reader.validate_native_work(receipt.custody.work()).is_ok() {
                 receipt
                     .custody
-                    .release((target_bytes as usize) as u64)
+                    .release(target_bytes)
                     .map_err(MaterializeError::from)?;
             }
             receipt.value.symbolic_links = receipt

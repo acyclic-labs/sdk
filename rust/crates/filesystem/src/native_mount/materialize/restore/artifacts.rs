@@ -5,7 +5,6 @@ pub(in crate::native_mount::materialize) fn restore_artifact_name(
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<PathBuf, MaterializeError> {
-    use std::fmt::Write as _;
     let mut hasher = blake3::Hasher::new();
     #[cfg(unix)]
     {
@@ -40,7 +39,8 @@ pub(in crate::native_mount::materialize) fn restore_artifact_name(
     work.claim_allocation(bytes as u64, u64::from(bytes != 0), WorkCounters::UNCHARGED)
         .map_err(MaterializeError::from)?;
     let mut name = String::with_capacity(bytes);
-    write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
+    name.push_str(prefix);
+    name.push_str(hasher.finalize().to_hex().as_str());
     if let Err(error) = work.record(delta) {
         drop(name);
         work.release(bytes as u64).map_err(MaterializeError::from)?;
@@ -81,11 +81,8 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
         )
         .map_err(MaterializeError::from)?;
         loop {
-            work.started_io(WorkCounters {
-                backend_write_operations: 1,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(MaterializeError::from)?;
+            work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+                .map_err(MaterializeError::from)?;
             match fs2::FileExt::try_lock_exclusive(&file) {
                 Ok(()) => return Ok(file),
                 Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -124,11 +121,8 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(MaterializeError::from)?;
-        work.started_io(WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })
-        .map_err(MaterializeError::from)?;
+        work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+            .map_err(MaterializeError::from)?;
         match file.write(remaining) {
             Ok(0) => {
                 return Err(std::io::Error::new(
@@ -138,22 +132,18 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
                 .into());
             }
             Ok(written) => {
-                work.record(WorkCounters {
-                    output_bytes: written as u64,
-                    ..WorkCounters::UNCHARGED
-                })
+                work.record(
+                    crate::materializer::NativeResourceCredit::WriteBytes.delta(written as u64),
+                )
                 .map_err(MaterializeError::from)?;
-                remaining = &remaining[written..];
+                remaining = remaining.get(written..).ok_or(WorkError::Overflow)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error.into()),
         }
     }
-    work.started_io(WorkCounters {
-        durability_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })
-    .map_err(MaterializeError::from)?;
+    work.started_io(crate::materializer::NativeResourceCredit::DurabilityOperations.delta(1))
+        .map_err(MaterializeError::from)?;
     file.sync_all()?;
     crate::native_host::sync_directory_held(&parent.directory, work).map_err(MaterializeError::from)
 }
@@ -193,18 +183,14 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(MaterializeError::from)?;
-        work.started_io(WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })
-        .map_err(MaterializeError::from)?;
-        match file.read(&mut contents[read..bound]) {
+        work.started_io(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))
+            .map_err(MaterializeError::from)?;
+        match file.read(contents.get_mut(read..bound).ok_or(WorkError::Overflow)?) {
             Ok(0) => break,
             Ok(bytes) => {
-                work.record(WorkCounters {
-                    source_bytes_read: bytes as u64,
-                    ..WorkCounters::UNCHARGED
-                })
+                work.record(
+                    crate::materializer::NativeResourceCredit::ReadBytes.delta(bytes as u64),
+                )
                 .map_err(MaterializeError::from)?;
                 read += bytes;
             }
@@ -212,7 +198,7 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
             Err(error) => return Err(error.into()),
         }
     }
-    if &contents[..read] == expected {
+    if contents.get(..read).ok_or(WorkError::Overflow)? == expected {
         Ok(true)
     } else {
         Err(std::io::Error::new(
