@@ -205,17 +205,15 @@ pub(super) fn publish_restore(
                 #[cfg(windows)]
                 {
                     crate::native_host::with_wide_path(name, work, |name, work| {
-                        crate::native_host::with_wide_path(name, work, |target, work| {
-                            crate::native_host::rename_held(
-                                &(stage_parent).directory,
-                                name,
-                                &(destination_parent).directory,
-                                target,
-                                acyclic_native_runtime::RenameMode::Replace,
-                                None,
-                                work,
-                            )
-                        })
+                        crate::native_host::rename_held(
+                            &stage_parent.directory,
+                            name,
+                            &destination_parent.directory,
+                            name,
+                            acyclic_native_runtime::RenameMode::Replace,
+                            None,
+                            work,
+                        )
                     })
                 }
             }
