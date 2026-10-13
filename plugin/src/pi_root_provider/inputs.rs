@@ -69,7 +69,7 @@ pub(crate) fn stage_pi_input<'a, T: Serialize + Sync>(
     }
 }
 
-pub(crate) async fn stage_pi_operator_input<T: Serialize>(
+pub(crate) async fn stage_pi_operator_input<T: Serialize + Sync>(
     owner: &PiOwnerConfig,
     filesystem: &Host,
     operation: OperationId,
@@ -113,31 +113,34 @@ pub(crate) async fn observe_pi_input(
     clippy::too_many_arguments,
     reason = "fixed trusted namespace shares the original publisher engine"
 )]
-async fn stage_pi_input_namespace_with_native_work<T: Serialize>(
-    owner: &PiOwnerConfig,
-    filesystem: &Host,
+fn stage_pi_input_namespace_with_native_work<'a, T: Serialize + Sync>(
+    owner: &'a PiOwnerConfig,
+    filesystem: &'a Host,
     operation: OperationId,
     label: &str,
-    value: &T,
-    work: &NativeMaterializationWork,
+    value: &'a T,
+    work: &'a NativeMaterializationWork,
     directory: &'static str,
     purpose: &'static str,
-) -> Result<(FileRef, NativeAllocation)> {
+) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a + use<'a, T> {
     let coordinates =
-        pi_input_coordinates_with_native_work(owner, operation, label, directory, purpose, work)?;
-    publish_pi_input_with_native_coordinates(
-        owner,
-        filesystem,
-        value,
-        "application/json",
-        coordinates,
-        work,
-    )
-    .await
+        pi_input_coordinates_with_native_work(owner, operation, label, directory, purpose, work);
+    async move {
+        let coordinates = coordinates?;
+        publish_pi_input_with_native_coordinates(
+            owner,
+            filesystem,
+            value,
+            "application/json",
+            coordinates,
+            work,
+        )
+        .await
+    }
 }
 
 /// Fixed original root artifact coordinates, including the original schema media type; this is not an operation/label input alias or a new upload key.
-pub(crate) async fn stage_pi_root_input_with_native_work<T: Serialize>(
+pub(crate) async fn stage_pi_root_input_with_native_work<T: Serialize + Sync>(
     owner: &PiOwnerConfig,
     filesystem: &Host,
     name: &str,
@@ -255,76 +258,78 @@ pub(super) async fn observe_pi_input_at(
     }
 }
 
-pub(super) async fn publish_pi_input_with_native_coordinates<T: Serialize>(
-    owner: &PiOwnerConfig,
-    filesystem: &Host,
-    value: &T,
-    media_type: &str,
+pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
+    owner: &'a PiOwnerConfig,
+    filesystem: &'a Host,
+    value: &'a T,
+    media_type: &'a str,
     coordinates: NativeInputCoordinates,
-    work: &NativeMaterializationWork,
-) -> Result<(FileRef, NativeAllocation)> {
-    let grant = pi_input_write_grant_with_native_work(owner, work)?;
-    let maximum = owner
-        .policy()
-        .maximum_payload_bytes
-        .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
-    let (bytes, bytes_custody) = guarded_pi_bytes(value, maximum, work)?;
-    let encoded = (bytes, bytes_custody);
-    let length = encoded.0.len() as u64;
-    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-    let result = filesystem
-        .put_content(
-            &owner.policy().journal,
-            &grant.0,
-            &coordinates.path.0,
-            &encoded.0,
-            media_type,
-            &coordinates.display_name.0,
-            maximum,
-            &coordinates.key.0,
-            None,
-            Some(&io),
-        )
-        .await
-        .and_then(|reference| {
-            Ok((
-                reference,
-                acyclic_harness::store::HistoryWork::new(io).into_custody()?,
-            ))
-        });
-    drop(encoded);
-    let result = match result {
-        Ok((reference, custody)) => {
-            let validation = validate_pi_input_media(
-                owner,
-                &reference,
+    work: &'a NativeMaterializationWork,
+) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a {
+    async move {
+        let grant = pi_input_write_grant_with_native_work(owner, work)?;
+        let maximum = owner
+            .policy()
+            .maximum_payload_bytes
+            .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
+        let (bytes, bytes_custody) = guarded_pi_bytes(value, maximum, work)?;
+        let encoded = (bytes, bytes_custody);
+        let length = encoded.0.len() as u64;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let result = filesystem
+            .put_content(
+                &owner.policy().journal,
+                &grant.0,
                 &coordinates.path.0,
-                &coordinates.display_name.0,
+                &encoded.0,
                 media_type,
+                &coordinates.display_name.0,
+                maximum,
+                &coordinates.key.0,
+                None,
+                Some(&io),
             )
-            .and_then(|()| {
-                if reference.descriptor().byte_length() == length {
-                    Ok(())
-                } else {
-                    Err(Error::NativeBoundary {
-                        code: ErrorCode::Storage,
-                        reason: "Pi input original body length differs",
-                    })
-                }
+            .await
+            .and_then(|reference| {
+                Ok((
+                    reference,
+                    acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+                ))
             });
-            match validation {
-                Ok(()) => Ok((reference, custody)),
-                Err(error) => {
-                    drop(reference);
-                    drop(custody);
-                    Err(error)
+        drop(encoded);
+        let result = match result {
+            Ok((reference, custody)) => {
+                let validation = validate_pi_input_media(
+                    owner,
+                    &reference,
+                    &coordinates.path.0,
+                    &coordinates.display_name.0,
+                    media_type,
+                )
+                .and_then(|()| {
+                    if reference.descriptor().byte_length() == length {
+                        Ok(())
+                    } else {
+                        Err(Error::NativeBoundary {
+                            code: ErrorCode::Storage,
+                            reason: "Pi input original body length differs",
+                        })
+                    }
+                });
+                match validation {
+                    Ok(()) => Ok((reference, custody)),
+                    Err(error) => {
+                        drop(reference);
+                        drop(custody);
+                        Err(error)
+                    }
                 }
             }
-        }
-        result => result,
-    };
-    drop(coordinates);
-    result
+            result => result,
+        };
+        drop(coordinates);
+        result
+    }
 }
 
 pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Serialize>(
