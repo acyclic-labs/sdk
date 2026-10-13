@@ -88,7 +88,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
                 path: stock_string_copy(path, io)?,
                 bytes,
             }],
-            key,
+            IdempotencyKey(stock_string_copy(key.as_str(), io)?),
             io,
             preparation.map(Arc::as_ref),
         )

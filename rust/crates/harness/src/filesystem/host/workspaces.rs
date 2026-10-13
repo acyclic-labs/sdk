@@ -111,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
         let generation = self
-            .apply_generation(workspace, expected_generation, mutations, idempotency_key, None, None)
+            .apply_generation(workspace, expected_generation, mutations, idempotency_key.clone(), None, None)
             .await?;
         self.generation_ref_id(generation.id(), None)
     }
@@ -214,10 +214,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     pub(in crate::filesystem) async fn apply_generation(
         &self, reference: &WorkspaceRef, expected: Option<&GenerationRef>, mutations: &[WorkspaceMutation],
-        key: &IdempotencyKey, io: Option<&PreparationIo>, preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
+        key: IdempotencyKey, io: Option<&PreparationIo>, preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     ) -> Result<Generation<A,O>> {
         let Some(io) = io else {
-            return self.apply_generation_guarded(reference, expected, mutations, key, &mut || std::future::ready(Ok(()))).await;
+            return self.apply_generation_guarded(reference, expected, mutations, &key, &mut || std::future::ready(Ok(()))).await;
         };
         #[cfg(not(target_arch="wasm32"))]
         let mut native_before = {
@@ -245,7 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
             None => io.sdk(workspace.head(io, io.cancellation()).await)?,
         };
-        let operation = fork_preparer_io::operation_key(key, Some(io))?;
+        let operation = fork_preparer_io::operation_key(&key, Some(io))?;
         let mut transaction = io.sdk(workspace.begin_pinned_transaction(&pinned, operation, io, io.cancellation()).await)?;
         for mutation in mutations {
             #[cfg(not(target_arch="wasm32"))]

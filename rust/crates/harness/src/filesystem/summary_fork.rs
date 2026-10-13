@@ -237,7 +237,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<GenerationRef> {
-    let generation = (controller.host).apply_generation(workspace, Some(expected), mutations, key, io, preparation.map(Arc::as_ref))
+    let generation = (controller.host).apply_generation(workspace, Some(expected), mutations, IdempotencyKey(crate::executor::stock_string_copy(key.as_str(), io)?), io, preparation.map(Arc::as_ref))
     .await?;
     fsio::retain(&generation, io).await?;
     fsio::generation_ref(&controller.host.provider, generation.id(), io)
