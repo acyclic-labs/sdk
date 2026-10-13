@@ -28,3 +28,6 @@ mod release;
 
 #[cfg(feature = "filesystem")]
 mod preparation;
+
+#[cfg(feature = "filesystem")]
+pub(crate) mod created_fixture;
