@@ -266,7 +266,8 @@ impl ProjFsSession {
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
             capture_failure: self.capture_failure.take(),
             cleanup_failure,
-            _state: state,
+            qualification: self.qualification,
+            state,
             callbacks: Arc::clone(&runtime.post_operation_failure),
         });
         self.runtime = None;

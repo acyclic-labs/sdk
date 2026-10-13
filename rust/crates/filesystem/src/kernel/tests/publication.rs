@@ -20,6 +20,28 @@ use crate::model::{Lifecycle, VolumeConfig};
 use crate::storage::{FenceOutcome, ObjectKind, ObjectStoreError, object_digest};
 use sha2::{Digest as _, Sha256};
 
+fn publication_fingerprint(
+    request: PublishGenerationRequest,
+    operation_context: Option<Digest>,
+    payload: &[u8],
+) -> Digest {
+    let mut input = Vec::with_capacity(fingerprint_input_length(operation_context));
+    write_fingerprint_input(&mut input, &request, operation_context, payload);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(fingerprint_domain(operation_context));
+    hasher.update(&input);
+    Digest::from_bytes(*hasher.finalize().as_bytes())
+}
+
+fn encode_publication_payload(
+    volume_id: VolumeId,
+    generation_root: ObjectId,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(publication_payload_length());
+    write_publication_payload(&mut bytes, volume_id, generation_root, None);
+    bytes
+}
+
 fn metadata() -> FileMetadata {
     FileMetadata {
         posix_mode: MetadataField::Unavailable,

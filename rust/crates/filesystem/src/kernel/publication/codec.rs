@@ -209,19 +209,6 @@ pub(super) fn permit_context(context: Option<Digest>, permit: PublicationPermit)
     }
 }
 
-pub(super) fn publication_fingerprint(
-    request: PublishGenerationRequest,
-    operation_context: Option<Digest>,
-    payload: &[u8],
-) -> Digest {
-    let mut input = Vec::with_capacity(fingerprint_input_length(operation_context));
-    write_fingerprint_input(&mut input, &request, operation_context, payload);
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(fingerprint_domain(operation_context));
-    hasher.update(&input);
-    Digest::from_bytes(*hasher.finalize().as_bytes())
-}
-
 pub(super) const fn publication_payload_length() -> usize {
     PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32
 }
@@ -260,15 +247,6 @@ pub(super) const fn fingerprint_input_length(operation_context: Option<Digest>) 
         + 32
         + publication_payload_length()
         + if operation_context.is_some() { 32 } else { 0 }
-}
-
-pub(crate) fn encode_publication_payload(
-    volume_id: VolumeId,
-    generation_root: ObjectId,
-) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(publication_payload_length());
-    write_publication_payload(&mut bytes, volume_id, generation_root, None);
-    bytes
 }
 
 pub(super) fn write_publication_payload(

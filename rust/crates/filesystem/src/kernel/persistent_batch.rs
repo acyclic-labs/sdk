@@ -225,7 +225,7 @@ impl<'a, F: Format> Machine<'a, F> {
         allocation: KernelOwnedAllocation, accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         let mut page = match decoded.into_owned_with_accounting(allocation, accounting) {
-            Ok(page) => page,
+            Ok(((page, bytes), allocation)) => Owned::new(page, allocation, bytes),
             Err(error) => { Self::retire_request(request, accounting)?; return Err(error); }
         };
         let accepted = match &mut page.value {

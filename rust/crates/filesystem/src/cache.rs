@@ -1156,14 +1156,12 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                     let __object_args = (&requests.value, native, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result = self
-                        .inner
+                    self.inner
                         .read_many(__object_args.0, &mut __object_work)
                         .await
-                        .map(|(values, allocation)| {
-                            (values, allocation.expect("native batch allocation"))
-                        });
-                    __object_result
+                        .and_then(|(values, allocation)| {
+                            Ok((values, allocation.ok_or(ObjectStoreError::Corrupt)?))
+                        })
                 }
                 .map_err(|error| ObjectFailure::new(error, prepared.work))?;
                 let (values, allocation) = batch;

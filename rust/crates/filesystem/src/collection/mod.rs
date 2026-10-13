@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::kernel::GenerationRoot;
 use crate::kernel::allocation::{
-    AllocationError, AllocationLedger, KernelAccounting, KernelOwnedAllocation,
+    AllocationError, KernelAccounting, KernelOwnedAllocation,
 };
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{ObjectId, ObjectStoreError};

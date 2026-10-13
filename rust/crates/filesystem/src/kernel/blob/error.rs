@@ -126,13 +126,13 @@ pub(super) fn build_failed(error: BlobBuildError, work: WorkCounters) -> BlobBui
 pub(super) fn blob_error(error: FsError) -> BlobReadError {
     match error {
         FsError::BlobRead(error) => error,
-        FsError::Work(error) => error.into(),
+        FsError::Work(error)
+        | FsError::FileRead(crate::kernel::FileRangeReadError::Work(error)) => error.into(),
         FsError::Cancelled(_) => BlobReadError::Cancelled,
         FsError::Object(error) => BlobReadError::Storage(error),
         FsError::FileRead(crate::kernel::FileRangeReadError::AllocationFailed) => {
             BlobReadError::AllocationFailed
         }
-        FsError::FileRead(crate::kernel::FileRangeReadError::Work(error)) => error.into(),
         error => BlobReadError::Context(Box::new(error)),
     }
 }

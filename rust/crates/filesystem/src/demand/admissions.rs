@@ -218,7 +218,7 @@ impl DemandWork {
     ) -> Result<Cancelled<'static>, CancellationWaitError> {
         self.reconcile_cancellation_registry()?;
         if token.is_cancelled() {
-            return token.prepare_cancelled(
+            return token.prepare_cancelled_measured(
                 &mut self.allocations,
                 &mut self.work,
                 self.budget,
@@ -247,7 +247,7 @@ impl DemandWork {
                 _ => CancellationWaitError::AllocationFailed,
             })?,
         };
-        token.prepare_cancelled(
+        token.prepare_cancelled_measured(
             &mut self.allocations,
             &mut self.work,
             self.budget,

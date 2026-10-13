@@ -41,7 +41,7 @@ where
             |(error, completed)| {
                 let failure: crate::demand::DemandResult<()> = Err(crate::OperationFailure::new(
                     demand_error(MountSourceError::NativeWork(error)),
-                    completed,
+                    *completed,
                 ));
                 crate::demand::accept_source_result(failure, accounting).unwrap_err()
             },

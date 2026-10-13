@@ -360,7 +360,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::WorkCounters::UNCHARGED,
             )
             .map_err(MountSourceError::NativeWork)?;
-        let file = checkout.detached_from_record(record, work, work.cancellation())?;
+        let file = checkout.detached_from_record(record, &work, work.cancellation())?;
         NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
         Ok(Arc::new(CheckoutDetachedFile {
             _native_allocation: allocation,

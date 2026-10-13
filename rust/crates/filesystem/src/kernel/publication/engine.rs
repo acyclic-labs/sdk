@@ -60,7 +60,7 @@ where
         _ => {
             let (_, work, budget, _) = accounting
                 .standalone_parts()
-                .expect("ordinary publication has a standalone ledger");
+                .ok_or_else(|| E::from(crate::FsError::Work(WorkError::Overflow)))?;
             if request.generation_root.kind != ObjectKind::GenerationRoot {
                 *work = WorkCounters::UNCHARGED;
                 return Err(E::from(crate::FsError::Closure(

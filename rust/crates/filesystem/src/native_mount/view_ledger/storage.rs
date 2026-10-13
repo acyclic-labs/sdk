@@ -163,6 +163,18 @@ pub(super) fn release_backing(
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(in crate::native_mount) fn same_work(
+    left: &crate::NativeMaterializationWork,
+    right: &crate::NativeMaterializationWork,
+) -> bool {
+    left.shares_allocation_context(right)
+        && left.capture_origin.as_ref().map(Weak::as_ptr)
+            == right.capture_origin.as_ref().map(Weak::as_ptr)
+        && left.invocation.as_ref().map(Arc::as_ptr) == right.invocation.as_ref().map(Arc::as_ptr)
+        && left.execution.as_ref().map(Arc::as_ptr) == right.execution.as_ref().map(Arc::as_ptr)
+}
+
 pub(in crate::native_mount) fn copy_work(bytes: u64) -> crate::WorkCounters {
     crate::WorkCounters {
         bytes_copied: bytes,

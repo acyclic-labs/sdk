@@ -67,8 +67,7 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
             MaterializeError::InvalidOptions,
         ));
     }
-    let receipt = GenerationReceipt::new(budget, cancellation)
-        .map_err(|(error, work)| OperationFailure::new(error, work))?;
+    let receipt = GenerationReceipt::new(budget, cancellation)?;
     materialize_heap_future_on_receipt(
         move |receipt| {
             materialize_source(
@@ -615,7 +614,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         ));
     }
     let native_work = crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, work)| OperationFailure::new(MaterializeError::from(error), work))?;
+        .map_err(|(error, work)| OperationFailure::new(MaterializeError::from(error), *work))?;
     let result = async {
         validate_bounds(options)?;
         let mut receipt = GenerationReceipt::from_work(&native_work)?;

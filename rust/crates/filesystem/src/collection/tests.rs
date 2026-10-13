@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::allocation::AllocationLedger;
 use crate::storage::{ObjectId, ObjectKind};
 
 fn object(byte: u8) -> ObjectId {
