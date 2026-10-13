@@ -246,7 +246,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> Te
         )
         .await,
         Err(OperationFailure {
-            error: FsError::Mutation(GenerationMutationError::MissingSource),
+            error: FsError::NotFound,
             ..
         })
     ));

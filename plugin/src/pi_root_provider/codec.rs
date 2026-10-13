@@ -63,8 +63,8 @@ fn encode_pi<T>(
                         WorkError::Overflow,
                     ))
                 })?;
-                if let Some(maximum) = maximum_owned_bytes {
-                    if observed > maximum {
+                if let Some(maximum) = maximum_owned_bytes
+                    && observed > maximum {
                         return Err(acyclic_harness::Error::from(
                             NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
                                 counter: "pi_value_owned_bytes",
@@ -73,7 +73,6 @@ fn encode_pi<T>(
                             }),
                         ));
                     }
-                }
                 if let Some(mut quota) = parser_quota.take() {
                     custody.absorb(&mut quota)?;
                 }

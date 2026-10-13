@@ -250,7 +250,7 @@ impl VolumeRef {
 
     /// Exact capability for one operation on this volume.
     pub fn capability(&self, operation: VolumeOperation, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label(operation.capability_prefix(), crate::executor::json::canonical_json_digest(self, u64::MAX, work)?, work)
+        content_label(operation.capability_prefix(), crate::executor::json::canonical_json_digest(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
     }
 
     /// Copies identity fields under the optional work observer.
@@ -287,12 +287,12 @@ impl VolumeRef {
         if is_internal_path(prefix) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated"));
         }
-        content_label("directory:read:", crate::executor::json::canonical_json_digest(&(self, prefix), u64::MAX, work)?, work)
+        content_label("directory:read:", crate::executor::json::canonical_json_digest(&(self, prefix), crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
     }
 
     /// Collision-resistant physical namespace for Filesystem adapters.
     pub fn storage_name(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label("harness-", crate::executor::json::canonical_json_digest(self, u64::MAX, work)?, work)
+        content_label("harness-", crate::executor::json::canonical_json_digest(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
     }
 
 }
@@ -419,7 +419,7 @@ impl ContentGrant {
         verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write { volume.require_writer(scope.agent(), work)?; }
         volume.validate(work)?;
-        let digest = crate::executor::json::canonical_json_digest(volume, maximum_bytes, work)?;
+        let digest = crate::executor::json::canonical_json_digest(volume, maximum_bytes.min(crate::store::default_projection_read_limits().maximum_bytes), work)?;
         if !contains_content_label(scope.capabilities(), operation.capability_prefix(), digest) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "volume operation is not granted"));
@@ -435,8 +435,8 @@ impl ContentGrant {
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
         if scope.agent().is_none()
-            || !(contains_content_label(scope.capabilities(), "directory:read:", crate::executor::json::canonical_json_digest(&(volume, prefix), u64::MAX, work)?)
-                || contains_content_label(scope.capabilities(), VolumeOperation::Read.capability_prefix(), crate::executor::json::canonical_json_digest(volume, u64::MAX, work)?)) {
+            || !(contains_content_label(scope.capabilities(), "directory:read:", crate::executor::json::canonical_json_digest(&(volume, prefix), crate::store::default_projection_read_limits().maximum_bytes, work)?)
+                || contains_content_label(scope.capabilities(), VolumeOperation::Read.capability_prefix(), crate::executor::json::canonical_json_digest(volume, crate::store::default_projection_read_limits().maximum_bytes, work)?)) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "private directory read is not granted"));
         }

@@ -353,9 +353,9 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
             WorkBudget::UNBOUNDED
         ),
         Err(AuthorityFailure {
-            error: AuthorityStoreError::Rejected(_),
+            error: AuthorityStoreError::ReplayCursorAhead { after, head },
             ..
-        })
+        }) if after == Sequence::new(2) && head == current.sequence
     ));
     Ok(())
 }

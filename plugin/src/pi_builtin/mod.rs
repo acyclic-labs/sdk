@@ -173,13 +173,12 @@ fn is_absent(error: &Error) -> bool {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(source),
             ..
         } => source.kind() == std::io::ErrorKind::NotFound,
-        Error::NativeView {
-            cause:
-                acyclic_fs::native_mount::MountLifecycleError::Materialization(
-                    acyclic_fs::NativeTreeMaterializationError::Io(source),
-                ),
-            ..
-        } => source.kind() == std::io::ErrorKind::NotFound,
+        Error::NativeView { cause, .. } => matches!(
+            cause.as_ref(),
+            acyclic_fs::native_mount::MountLifecycleError::Materialization(
+                acyclic_fs::NativeTreeMaterializationError::Io(source)
+            ) if source.kind() == std::io::ErrorKind::NotFound
+        ),
         _ => false,
     }
 }

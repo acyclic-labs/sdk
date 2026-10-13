@@ -1,6 +1,5 @@
 //! Passive selected filesystem pages; execution and source authority are never adopted.
 
-use acyclic_fs::demand::DemandSource as _;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;

@@ -146,7 +146,6 @@ impl PiSession {
             },
             &work,
         )?;
-        let cancellation = work.cancellation();
         let mut root_cut_custody = None;
         let mut root_cut = None;
         if source == owner.policy().root_task && caller != source {
@@ -269,12 +268,11 @@ impl PiSession {
             drop(value);
             return Err(acyclic_harness::Error::from(cause));
         }
-        if let Some(mut source_custody) = root_cut_custody {
-            if let Err(cause) = custody.absorb(&mut source_custody) {
+        if let Some(mut source_custody) = root_cut_custody
+            && let Err(cause) = custody.absorb(&mut source_custody) {
                 drop(value);
                 return Err(acyclic_harness::Error::from(cause));
             }
-        }
         Ok((value, custody))
     }
 }

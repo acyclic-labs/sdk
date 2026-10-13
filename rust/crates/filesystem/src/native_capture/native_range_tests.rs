@@ -53,7 +53,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
     cancellation.cancel();
     assert!(matches!(
         native_positional_file(file, &scope.native),
-        Err(CaptureError::Kernel(crate::FsError::Cancelled(_)))
+        Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::Cancelled(_))
     ));
     assert_eq!(
         unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
@@ -70,10 +70,11 @@ async fn captured_source_stale_and_drop_retire_only_terminal_custody()
     let path = temporary.path().join("captured-stale");
     std::fs::write(&path, b"abcdefgh")?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(budget(), &cancellation)
+    let setup = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut scope = CaptureWorkScope::new(&original)?;
+    let mut scope = CaptureWorkScope::new(&setup)?;
     let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
+    let original = setup.native_volume_work(budget())?;
     let reader =
         acyclic_native_runtime::AsyncRangeReader::new(std::sync::Arc::clone(&native), 0, 8);
     let mut source = reader;
@@ -106,11 +107,12 @@ async fn original_native_byte_and_copy_refusals_precede_io()
         } else {
             limit.bytes_copied = 2;
         }
-        let original = crate::NativeMaterializationWork::new(limit, &cancellation)
-            .expect("fund original accounting state");
-        let scope = CaptureWorkScope::new(&original)?;
+        let setup = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let scope = CaptureWorkScope::new(&setup)?;
         let native =
             std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
+        let original = setup.native_volume_work(limit)?;
         let mut source = acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3);
         let mut destination = [0xa5; 8];
         let error = source

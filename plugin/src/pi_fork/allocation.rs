@@ -287,7 +287,7 @@ impl<'a> PiForkCoordinator<'a> {
                     &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
                 )
                 .await?;
-            return Ok(());
+            Ok(())
         }
     }
 

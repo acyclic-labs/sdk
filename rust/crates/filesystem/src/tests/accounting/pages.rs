@@ -85,13 +85,16 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
     workspace.delete(deletion).await?;
     for (anchor, facts) in consumed {
         assert_eq!(
-            page(&authority, &objects, id, anchor, facts.len() as u32)
+            authority
+                .accounting_page(&objects, id, anchor, facts.len() as u32, BUDGET, &cancel)
                 .await?
                 .facts,
             facts
         );
     }
-    let terminal = page(&authority, &objects, id, position, 2).await?;
+    let terminal = authority
+        .accounting_page(&objects, id, position, 2, BUDGET, &cancel)
+        .await?;
     assert!(terminal.complete);
     assert_eq!(terminal.facts.len(), 2);
     assert_eq!(
@@ -122,7 +125,9 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
             .all(|fact| fact.operation_class == AccountingOperationClass::CustomerMutation)
     );
     assert_eq!(terminal.next.digest, terminal.facts[1].commit_digest);
-    let empty = page(&authority, &objects, id, terminal.next, 2).await?;
+    let empty = authority
+        .accounting_page(&objects, id, terminal.next, 2, BUDGET, &cancel)
+        .await?;
     assert!(empty.complete && empty.facts.is_empty());
     assert_eq!(empty.next, terminal.next);
     assert!(matches!(

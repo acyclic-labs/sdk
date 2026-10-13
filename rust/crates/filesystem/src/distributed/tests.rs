@@ -293,8 +293,10 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
             });
         }
         if let Some(gate) = gate {
+            let path = stream_path(id, "/publication-gate")?;
+            request.conditions.push(CommitCondition::Absent { path: path.clone() });
             request.mutations.push(CommitMutation::Append {
-                path: stream_path(id, "/publication-gate")?,
+                path,
                 records: vec![
                     acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
                     acyclic_stream::OwnedBytes::copy_from_slice(gate),
