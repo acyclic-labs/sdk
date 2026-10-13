@@ -37,8 +37,6 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
-/// Diff bound for recording an installed candidate exactly; a larger effect
-/// is recorded as unenumerated.
 const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
 const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 
@@ -63,7 +61,6 @@ pub struct CheckoutMountSource<A, O> {
     root: NamespacePath,
     limits: VolumeLimits,
     profile: FilesystemProfile,
-    /// Whether the volume resolves every case of a name to one entry.
     folds_names: bool,
     cancellation: CancellationToken,
     capture_gate: Arc<StdMutex<CaptureSourceGate>>,
@@ -82,7 +79,6 @@ pub struct CheckoutMountSource<A, O> {
     _source_allocation: Option<crate::NativeAllocation>,
 }
 
-/// The current instant as a content-change time, in signed Unix-epoch nanoseconds.
 fn content_change_time() -> Result<i64, MountSourceError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -91,7 +87,6 @@ fn content_change_time() -> Result<i64, MountSourceError> {
         .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".into()))
 }
 
-/// The content change one native range allocation requests.
 fn range_allocation<F>(range: ByteRange, operation: MountRangeAllocation) -> ContentChange<F> {
     match operation {
         MountRangeAllocation::PunchHole => ContentChange::ZeroRange {

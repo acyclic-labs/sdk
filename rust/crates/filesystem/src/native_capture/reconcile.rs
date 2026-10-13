@@ -10,7 +10,7 @@ pub(super) async fn capture_observed_paths_from_root<
     source_root: &HostRoot,
     cancellation: &CancellationToken,
     baseline: Option<&NativeViewBaseline>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states = lookup_capture_states(checkout, observed, usize::MAX, meter).await?;
     let mut host_links = Vec::new();
@@ -44,13 +44,13 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
     source_root: &HostRoot,
     cancellation: &CancellationToken,
     baseline: Option<&NativeViewBaseline>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
     cancellation.check()?;
-    meter.native.clone().check().map_err(capture_demand_error)?;
+    meter.clone().check().map_err(capture_demand_error)?;
     let mut receipt = CaptureReceipt::default();
-    let cancellation = meter.native.cancellation().clone();
+    let cancellation = meter.cancellation().clone();
     let mut mutations = Vec::new();
     for (observation, path, current) in states {
         prepare_final_path(
@@ -73,7 +73,6 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
     }
     {
         meter
-            .native
             .clone()
             .release(states_bytes)
             .map_err(capture_demand_error)?;
@@ -81,9 +80,8 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
     apply_capture_transaction(checkout, mutations, meter).await?;
     {
         meter
-            .native
             .receipt()
-            .verify(meter.native.with_original_leaf(|work| work.budget))
+            .verify(meter.with_original_leaf(|work| work.budget))
             .map_err(CaptureError::from)?;
     }
     Ok(receipt)
@@ -95,7 +93,7 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
     checkout: &mut Checkout<A, O>,
     (observations, paths): (Vec<Option<HostStat>>, Vec<NamespacePath>),
     page_size: usize,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Vec<CapturePathState>, CaptureError> {
     let input_bytes = observations.capacity() as u64
         * std::mem::size_of::<Option<HostStat>>() as u64
@@ -103,12 +101,12 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
     let mut states = capture_vec(paths.len(), meter)?;
     let mut paths = paths.into_iter();
     let mut observations = observations.into_iter();
-    let cancellation = meter.native.cancellation().clone();
+    let cancellation = meter.cancellation().clone();
     while paths.len() != 0 {
         let count = paths.len().min(page_size);
         let page = &paths.as_slice()[..count];
         let lookup = checkout
-            .lookup_batch_no_follow(page, &meter.native, &cancellation)
+            .lookup_batch_no_follow(page, meter, &cancellation)
             .await?;
         for ((path, observation), entry) in paths
             .by_ref()
@@ -116,7 +114,7 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
             .zip(observations.by_ref())
             .zip(lookup.0.entries)
         {
-            meter.native.clone().check().map_err(capture_demand_error)?;
+            meter.clone().check().map_err(capture_demand_error)?;
             states.push((observation, path, entry.record));
         }
         drop(lookup.1);
@@ -124,7 +122,6 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
     drop(paths);
     drop(observations);
     meter
-        .native
         .clone()
         .release(input_bytes)
         .map_err(capture_demand_error)?;
@@ -134,7 +131,7 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
 
 pub(super) fn sort_capture_states(
     states: &mut [CapturePathState],
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     capture_sort_by(
         states,
@@ -191,7 +188,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
     receipt: &mut CaptureReceipt,
     maximum_extent_spans: u32,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     cancellation.check()?;
     let host_path = namespace_to_host_path_measured(&path, meter)?;
@@ -283,11 +280,10 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                     && record.kind == host_kind
                     && (host_kind != FileKind::SymbolicLink || cfg!(windows))
             }) {
-                let lookup_cancellation = meter
-                    .native
-                    .with_original_leaf(|work| work.cancellation().clone());
+                let lookup_cancellation =
+                    meter.with_original_leaf(|work| work.cancellation().clone());
                 let prior = checkout
-                    .read_metadata(record.file_id, &meter.native, &lookup_cancellation)
+                    .read_metadata(record.file_id, meter, &lookup_cancellation)
                     .await?;
                 prior_metadata = Some(prior);
                 canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior);

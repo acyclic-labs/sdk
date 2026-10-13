@@ -151,7 +151,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
             KernelOwnedAllocation::Standalone => Ok((reads, None)),
             #[cfg(not(target_arch = "wasm32"))]
             KernelOwnedAllocation::NativeOriginal(allocation) => {
-                crate::async_storage::native_read_batch(reads, allocation)
+                Ok::<_, crate::ObjectStoreError>((reads, allocation))
                     .map(|(reads, allocation)| (reads, Some(allocation)))
             }
         }

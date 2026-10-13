@@ -40,28 +40,18 @@ struct PendingTool {
     native: AtomicBool,
 }
 impl ToolExecutor for PendingTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async { Err(Error::Unauthorized("task context required".into())) })
-    }
-    fn execute_with_context<'a>(
-        &'a self,
-        _: ToolContext,
-        _: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+
+    fn execute<'a>(&'a self, _: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task context required".into())) }); }
         Box::pin(async move {
             self.executed.fetch_add(1, Ordering::SeqCst);
             self.clock.0.store(20, Ordering::SeqCst);
             futures::future::pending().await
         })
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Err(Error::Unauthorized("task context required".into())) })
-    }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        _: ToolContext,
-        _: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+
+    fn reconcile<'a>(&'a self, _: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task context required".into())) }); }
         Box::pin(async move {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             assert_eq!(self.executed.load(Ordering::SeqCst), 1);
@@ -826,7 +816,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         let runtime = fixture.runtime().await?;
         let lease = fixture.admit(&runtime).await?;
         let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-        runtime.task_host().start_task(&lease).await?;
+        runtime.task_host().start_task(&lease, &mut None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let turn = OperationId::from_bytes([106; 16]);
         let model = Model::new(
@@ -1000,7 +990,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, &mut None).await?;
     let mut session = runtime.open_task(task, fence).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -1648,7 +1638,7 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
-    runtime.task_host().start_task(&lease, Some(&work)).await?;
+    runtime.task_host().start_task(&lease, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(&work)?.history_io())).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     let shared = runtime

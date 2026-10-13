@@ -90,10 +90,21 @@ where
                 .map(|(ticket, resolution)| {
                     CodecQuota::produce(work, |quota| {
                         Ok((
-                            crate::core::copy_ticket(ticket, quota)?,
+                            crate::core::copy(ticket, quota, |value: &crate::interaction::InteractionTicket, work| {
+        value.request.validate(work)?;
+        crate::core::owned_bytes(value)
+    })?,
                             resolution
                                 .as_ref()
-                                .map(|resolution| crate::core::copy_resolution(resolution, quota))
+                                .map(|resolution| crate::core::copy(resolution, quota, |value: &crate::interaction::InteractionResolution, work| {
+        if let crate::interaction::InteractionOutcome::Answered { answer } = &value.outcome {
+            answer.validate(work)?;
+        }
+        if let Some(file) = &value.detail {
+            file.validate(work)?;
+        }
+        crate::core::owned_bytes(value)
+    }))
                                 .transpose()?,
                         ))
                     })
@@ -117,7 +128,12 @@ where
                 .and_then(|(_, resolution)| resolution.as_ref())
                 .map(|resolution| {
                     CodecQuota::produce(work, |quota| {
-                        crate::core::copy_interaction_outcome(&resolution.outcome, quota)
+                        crate::core::copy(&resolution.outcome, quota, |value: &crate::interaction::InteractionOutcome, work| {
+        if let crate::interaction::InteractionOutcome::Answered { answer } = value {
+            answer.validate(work)?;
+        }
+        crate::core::owned_bytes(value)
+    })
                     })
                     .map(|(value, _)| value)
                 })

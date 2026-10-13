@@ -371,7 +371,7 @@ exit {exit}
 struct Echo;
 
 impl ToolExecutor for Echo {
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
         async move {
             if invocation.arguments["fail"].as_bool() == Some(true) {
                 return Err(Error::Invalid("echo was asked to fail".into()));
@@ -383,7 +383,7 @@ impl ToolExecutor for Echo {
         .boxed()
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         async { Ok(None) }.boxed()
     }
 }

@@ -153,30 +153,8 @@ where
                     "only regular files can own detached handles".into(),
                 ));
             }
-            let allocation = work
-                .claim(
-                    std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64,
-                    1,
-                    crate::WorkCounters::UNCHARGED,
-                )
-                .map_err(MountSourceError::NativeWork)?;
-            let file = checkout.detached_from_record(lookup.record, work, work.cancellation())?;
-            inputs
-                .carrier
-                .check(work.cancellation(), Some(&self.cancellation))?;
-            let file: Arc<dyn MountOpenFile> = Arc::new(CheckoutDetachedFile {
-                state: tokio::sync::Mutex::new(DetachedMountState {
-                    file,
-                    metadata: lookup.metadata,
-                    mutation_epoch: 0,
-                }),
-                ledger: Arc::clone(&self.checkout.ledger),
-                runtime: self.runtime.clone(),
-                cancellation: self.cancellation.clone(),
-                profile: self.profile,
-                limits: self.limits,
-                _native_allocation: allocation,
-            });
+            let file: Arc<dyn MountOpenFile> =
+                self.detached_from_checkout(&checkout, lookup.record, lookup.metadata, work)?;
             Ok((file, 0))
         })
     }

@@ -182,7 +182,9 @@ impl SchemaRegistry {
                     "extension dependency cycle",
                 )
             })?;
-            order.push(copying::copy_dependency(next, &mut owned)?);
+            order.push(copy(next, &mut owned, |value: &ExtensionDependency, _| {
+                Ok(value.name.capacity() as u64)
+            })?);
         }
         let graph_bytes = (chosen.len() as u64)
             .checked_mul(std::mem::size_of::<(&str, &ExtensionDependency)>() as u64)
@@ -272,7 +274,9 @@ impl SchemaRegistry {
             .configuration_schema_digest
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
         let record = ExtensionConfiguration {
-            extension: copying::copy_dependency(extension, quota)?,
+            extension: copy(extension, quota, |value: &ExtensionDependency, _| {
+                Ok(value.name.capacity() as u64)
+            })?,
             schema_digest,
             content: content.clone_in_quota(quota)?,
         };

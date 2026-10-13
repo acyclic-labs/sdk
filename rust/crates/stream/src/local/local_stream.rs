@@ -38,7 +38,7 @@ impl LocalStream {
         clock: Arc<dyn UnixMillisClock>,
         ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalStreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.open",
             outcome = Empty,
             error.kind = Empty
@@ -66,7 +66,7 @@ impl LocalStream {
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         #[cfg(test)]
         let submitted_root = root.clone();
-        let span = obs::OwnedSpan::new(tracing::debug_span!(
+        let span = obs::OperationSpan::new(tracing::debug_span!(
             "acyclic.stream.recover",
             frames = Empty,
             bytes = Empty
@@ -180,7 +180,7 @@ impl LocalStream {
 
     /// Flushes every frame written without waiting for the storage device
     pub fn flush(&self) -> Result<(), StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.flush",
             batch_len = Empty,
             outcome = Empty,
@@ -195,7 +195,7 @@ impl LocalStream {
             if journal.synced >= journal.appended {
                 return Ok(());
             }
-            obs::record(span, "batch_len", journal.appended - journal.synced);
+            span.record("batch_len", journal.appended - journal.synced);
             (
                 journal.appended,
                 Arc::clone(&journal.sync),
@@ -245,7 +245,7 @@ impl LocalStream {
         let state = self.inner.provider.encode_state().await;
         let inner = Arc::clone(&self.inner);
         let work = self.work.clone();
-        let span = obs::OwnedSpan::new(tracing::debug_span!(
+        let span = obs::OperationSpan::new(tracing::debug_span!(
             "acyclic.stream.compact",
             bytes = state.len()
         ));
@@ -320,7 +320,7 @@ impl LocalStream {
     /// Runs one mutation under exclusive visibility on its own task, so a
     async fn exclusive<T, F>(
         &self,
-        span: &obs::OwnedSpan,
+        span: &obs::OperationSpan,
         mutation: impl FnOnce(Self) -> F + Send + 'static,
     ) -> Result<T, StreamError>
     where

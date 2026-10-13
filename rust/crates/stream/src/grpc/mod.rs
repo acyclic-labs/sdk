@@ -18,9 +18,9 @@ use crate::obs;
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
     commit_id, commit_outcome_from_wire, commit_outcome_to_wire, commit_to_wire,
-    envelope_from_wire, envelope_to_wire, fork_receipt_to_wire,
-    observation_from_wire, observation_wire, optional_key, path, read_response_records,
-    read_response_wire, record, record_wire,
+    envelope_from_wire, envelope_to_wire, fork_receipt_to_wire, observation_from_wire,
+    observation_wire, optional_key, path, read_response_records, read_response_wire, record,
+    record_wire,
 };
 use crate::{
     AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
@@ -314,14 +314,14 @@ fn status(error: &Status) -> StreamError {
 
 /// Records one operation's terminal result exactly once; dropping it unfinished records `cancelled`.
 struct Completion {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     finished: bool,
 }
 
 impl Completion {
     fn new(span: tracing::Span) -> Self {
         Self {
-            span: obs::OwnedSpan::new(span),
+            span: obs::OperationSpan::new(span),
             finished: false,
         }
     }

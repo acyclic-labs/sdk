@@ -143,8 +143,7 @@ fn direct_checkout_view_lease_excludes_concurrent_mutation()
     );
     drop(lease);
     receive.recv_timeout(Duration::from_secs(5))??;
-    task.join()
-        .map_err(|_| std::io::Error::other("mutation thread panicked"))?;
+    task.join().map_err(|_| "mutation thread panicked")?;
     Ok(())
 }
 
@@ -166,10 +165,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
             .checkout
             .observe(
                 owner,
-                &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                    boundary_budget(),
-                    &source.cancellation,
-                )),
+                &mut NativeDemandCarrier::Native(&work),
                 &source.cancellation,
                 None,
             )
@@ -186,8 +182,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
     })??;
     assert_eq!(read.as_ref(), b"shared");
     drop(held);
-    task.join()
-        .map_err(|_| std::io::Error::other("read thread panicked"))?;
+    task.join().map_err(|_| "read thread panicked")?;
     Ok(())
 }
 
@@ -202,10 +197,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     )?;
     let source = Arc::new(source);
     let work = capture_meter(boundary_budget(), source.cancellation())?;
-    let pair = [
-        native_test_path("first.bin"),
-        native_test_path("second.bin"),
-    ];
+    let pair = ["first.bin", "second.bin"].map(native_test_path);
     for path in &pair {
         source.create_file(path, metadata(), None, &work)?;
         source.write_range(path, 0, Bytes::from_static(&[0]))?;
@@ -217,55 +209,43 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
             let source = Arc::clone(&source);
             let pair = pair.clone();
             let done = Arc::clone(&done);
-            std::thread::spawn(move || -> Result<u32, MountSourceError> {
+            std::thread::spawn(move || -> Result<(), MountSourceError> {
                 let owner = ViewGate::callback_owner();
-                let mut observed = 0;
                 loop {
                     let finished = done.load(Ordering::Acquire);
                     let [first, second] = source.runtime.wait(|| async {
+                        let work = capture_meter(boundary_budget(), &source.cancellation)?;
                         let observation = source
                             .checkout
                             .observe(
                                 owner,
-                                &mut NativeDemandCarrier::Borrowed(
-                                    &mut crate::demand::DemandWork::new(
-                                        boundary_budget(),
-                                        &source.cancellation,
-                                    ),
-                                ),
-                                &source.cancellation,
+                                &mut NativeDemandCarrier::Native(&work),
+                                work.cancellation(),
                                 None,
                             )
                             .await?;
-                        let mut checkout = observation
-                            .observer(boundary_budget(), &source.cancellation)
-                            .map_err(facade_error)?
-                            .value;
+                        let mut checkout = observation.observer(&work, work.cancellation())?;
                         let mut values = [0; 2];
                         for (value, path) in values.iter_mut().zip(&pair) {
-                            let range = ByteRange {
-                                offset: 0,
-                                length: 1,
-                            };
                             *value = checkout
                                 .read_file_range(
                                     path,
-                                    range,
-                                    boundary_budget(),
-                                    &source.cancellation,
+                                    ByteRange {
+                                        offset: 0,
+                                        length: 1,
+                                    },
+                                    &work,
+                                    work.cancellation(),
                                 )
-                                .await
-                                .map_err(engine_error)?
-                                .value
+                                .await?
                                 .bytes[0];
                             tokio::task::yield_now().await;
                         }
                         Ok(values)
                     })?;
                     assert_eq!(first, second, "an observation crossed a mutation");
-                    observed += 1;
                     if finished {
-                        return Ok(observed);
+                        return Ok(());
                     }
                 }
             })
@@ -297,10 +277,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     }
     done.store(true, Ordering::Release);
     for reader in readers {
-        let observed = reader
-            .join()
-            .map_err(|_| std::io::Error::other("observation thread panicked"))??;
-        assert!(observed > 0);
+        reader.join().map_err(|_| "observation thread panicked")??;
     }
     Ok(())
 }
@@ -391,18 +368,15 @@ fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn st
         ])
     };
 
-    // Recapturing a changed file invalidates it alone.
     let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
     std::fs::write(host.path().join("captured").join("a"), b"changed")?;
     source.capture_host_paths(host.path(), std::slice::from_ref(&a))?;
     assert_eq!(current(stamp)?, [false, true, true, true]);
 
-    // A first capture binds a new name in its directory.
     let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
     source.capture_host_paths(host.path(), std::slice::from_ref(&b))?;
     assert_eq!(current(stamp)?, [true, false, true, true]);
 
-    // A subtree capture invalidates beneath its root only.
     let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
     std::fs::write(host.path().join("captured").join("b"), b"changed")?;
     source.capture_host_subtree(host.path(), &native_test_path("captured"))?;

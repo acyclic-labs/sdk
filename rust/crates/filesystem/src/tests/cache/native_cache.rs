@@ -76,13 +76,10 @@ impl AsyncObjectStore for OwnedNativeStore {
             .freeze(source.bytes.len())
             .map_err(|_| ObjectStoreError::Corrupt)?;
         let logical_bytes = bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
-        let read = crate::async_storage::owned_read(
-            ObjectRead {
-                bytes,
-                retention: ObjectReadRetention::Owned { logical_bytes },
-            },
-            original,
-        )?;
+        let read = ObjectRead {
+            bytes,
+            retention: ObjectReadRetention::Owned { logical_bytes },
+        };
         match self.finish {
             Finish::Return => Ok(read),
             Finish::Error => Err(ObjectStoreError::Native(

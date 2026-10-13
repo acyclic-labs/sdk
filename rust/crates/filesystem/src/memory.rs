@@ -1452,7 +1452,7 @@ impl crate::async_storage::AsyncObjectStore for MemoryObjectStore {
             drop(reads);
             return Err(ObjectStoreError::Corrupt);
         };
-        crate::async_storage::native_read_batch(reads, custody)
+        Ok::<_, crate::ObjectStoreError>((reads, custody))
     }
             .await
             .map(|(values, allocation)| (values, Some(allocation)));

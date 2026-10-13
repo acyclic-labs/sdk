@@ -5,7 +5,7 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
 -> Result<(), Box<dyn std::error::Error>> {
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = obs::tests::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -84,7 +84,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = obs::tests::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -803,7 +803,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
 #[tokio::test]
 async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = obs::tests::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let subscriber = tracing_subscriber::Registry::default()
         .with(captured.clone())
         .with(tracing_subscriber::filter::filter_fn(|metadata| {
@@ -877,11 +877,11 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 idempotency_key: None,
             })
             .await?;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::tests::Capture::default();
         let mut records = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
-                let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(async { provider.follow(path, 1).await })
             },
         )
@@ -892,7 +892,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 .contains_key("outcome")
         );
         assert_eq!(captured.closed("acyclic.stream.follow"), 0);
-        let other = obs::tests::Capture::default();
+        let other = acyclic_grpc_observability::tests::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
