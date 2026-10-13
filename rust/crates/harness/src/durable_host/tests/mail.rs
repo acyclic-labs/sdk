@@ -1,5 +1,4 @@
 use super::*;
-use crate::conversation::ContentPublisher;
 
 #[tokio::test]
 async fn b08_one_intent_keeps_recipient_and_payload() -> Result<()> {
