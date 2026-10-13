@@ -62,7 +62,15 @@ switch ($Lane) {
         $rustcWrapper = $env:RUSTC_WRAPPER
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
         try {
-            cargo test --workspace --all-features --locked
+            try {
+                cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"
+            } finally {
+                $junit = Join-Path $CargoTargetDir 'nextest/ci/junit.xml'
+                if (Test-Path -LiteralPath $junit) {
+                    Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"
+                }
+            }
+            cargo test --workspace --all-features --locked --doc
         } finally {
             if ($null -eq $rustcWrapper) {
                 Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
