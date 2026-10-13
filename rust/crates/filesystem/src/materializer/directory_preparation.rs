@@ -1,195 +1,100 @@
 use super::*;
 use crate::native_host::HostRoot;
 
-async fn persist_preparation<S: MaterializationJournalStore>(
-    store: &S,
+async fn persist_preparation(
+    store: &crate::LocalCoreStateStore,
     mut journal: MaterializationJournal,
-    work: &NativeMaterializationWork,
-) -> Result<MaterializationJournal, MaterializationError<S::Error, NativeTreeMaterializationError>>
-{
-    journal.work = work.journal_work()?;
+) -> Result<MaterializationJournal, NativeWorkspacePublicationError> {
     let expected = next_revision(&mut journal.revision);
     let (stored, journal) = store
         .compare_and_swap(journal.plan.operation_id, expected, journal)
-        .await
-        .map_err(MaterializationError::Store)?;
+        .await?;
     if !stored {
-        return Err(MaterializationError::Contended);
+        return Err(NativeWorkspacePublicationError::MismatchedJournal);
     }
     Ok(journal)
 }
 
 impl NativeTreeMaterializationBackend {
-    pub(super) async fn prepare_allocations<S, F, Fut, E>(
-        store: &S,
+    pub(super) async fn prepare_allocations<F, Fut>(
+        store: &crate::LocalCoreStateStore,
         mut journal: MaterializationJournal,
         root: &Path,
         operation: &Path,
         work: &NativeMaterializationWork,
         before_effect: &mut F,
-    ) -> Result<MaterializationJournal, E>
+    ) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
     where
-        S: MaterializationJournalStore,
-        E: From<MaterializationError<S::Error, NativeTreeMaterializationError>>,
         F: FnMut() -> Fut + Send,
-        Fut: Future<Output = Result<(), E>> + Send,
+        Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
     {
-        let backend = MaterializationError::<S::Error, NativeTreeMaterializationError>::Backend;
-        let invalid =
-            MaterializationError::<S::Error, NativeTreeMaterializationError>::IncompatibleJournal;
-        if !journal.is_valid_for(journal.plan.operation_id) {
-            return Err(invalid.into());
+        let progress = journal
+            .preparation_progress
+            .as_mut()
+            .expect("validated preparation");
+        if progress.pending {
+            return Err(NativeTreeMaterializationError::IndeterminatePreparation.into());
         }
-        check_native_plan(&journal.plan, work).map_err(backend)?;
-        let expected_root = crate::NativeRootIdentity::from_bytes(journal.root_identity.ok_or(
-            MaterializationError::<S::Error, NativeTreeMaterializationError>::IncompatibleJournal,
-        )?);
-        let mut progress = journal.preparation_progress.ok_or(
-            MaterializationError::<S::Error, NativeTreeMaterializationError>::IncompatibleJournal,
+        before_effect().await?;
+        progress.pending = true;
+        let parent_identity = progress.parent;
+        journal = persist_preparation(store, journal).await?;
+        let expected_root = crate::NativeRootIdentity::from_bytes(
+            journal.root_identity.expect("validated checkout identity"),
+        );
+        let completion = store.prepare_action(journal).await?;
+        let actual = work.root_identity(root)?;
+        if actual != expected_root {
+            return Err(NativeTreeMaterializationError::AllocationChanged {
+                expected: expected_root,
+                actual,
+            }
+            .into());
+        }
+        let parent = HostRoot::open(
+            operation
+                .parent()
+                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+            &mut &*work,
         )?;
-        if progress.pending.is_some() {
-            return Err(backend(NativeTreeMaterializationError::IndeterminatePreparation).into());
+        let expected = crate::NativeRootIdentity::from_bytes(parent_identity);
+        if parent.identity() != expected {
+            return Err(NativeTreeMaterializationError::AllocationChanged {
+                expected,
+                actual: parent.identity(),
+            }
+            .into());
         }
-        use MaterializationPreparationAllocation::{Backup, Operation, Target};
-        for step in [Operation, Target, Backup] {
-            let known = match step {
-                Operation => progress.operation,
-                Target => progress.target,
-                Backup => progress.backup,
-            };
-            if known.is_some() {
-                continue;
-            }
-            before_effect().await?;
-            preparation_parent(root, expected_root, operation, progress, work).map_err(backend)?;
-            if store
-                .load(journal.plan.operation_id)
-                .await
-                .map_err(MaterializationError::<S::Error, NativeTreeMaterializationError>::Store)?
-                .as_ref()
-                != Some(&journal)
-            {
-                return Err(
-                    MaterializationError::<S::Error, NativeTreeMaterializationError>::PlanConflict
-                        .into(),
-                );
-            }
-            progress.pending = Some(step);
-            journal.preparation_progress = Some(progress);
-            journal = persist_preparation(store, journal, work).await?;
-            if store
-                .load(journal.plan.operation_id)
-                .await
-                .map_err(MaterializationError::<S::Error, NativeTreeMaterializationError>::Store)?
-                .as_ref()
-                != Some(&journal)
-            {
-                return Err(
-                    MaterializationError::<S::Error, NativeTreeMaterializationError>::PlanConflict
-                        .into(),
-                );
-            }
-            let parent = preparation_parent(root, expected_root, operation, progress, work)
-                .map_err(backend)?;
-            let leaf = match step {
-                Operation => Path::new(
-                    operation
-                        .file_name()
-                        .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-                ),
-                Target => Path::new("target"),
-                Backup => Path::new("backup"),
-            };
-            work.with_original_leaf(|state| {
-                host_path(leaf, state, |path, work| parent.create_dir(path, work))
-            })
-            .map_err(native_materialization_work_error)
-            .map_err(backend)?;
-            crate::native_host::sync_directory_held(&parent.directory, &mut &*work)
-                .map_err(backend)?;
-            let identity = held_child(&parent, leaf, work)
-                .map_err(backend)?
-                .identity()
-                .to_bytes();
-            match step {
-                Operation => progress.operation = Some(identity),
-                Target => progress.target = Some(identity),
-                Backup => progress.backup = Some(identity),
-            }
-            progress.pending = None;
-            journal.preparation_progress = Some(progress);
-            journal = persist_preparation(store, journal, work).await?;
-            before_effect().await?;
-            preparation_parent(root, expected_root, operation, progress, work).map_err(backend)?;
-        }
-        journal.preparation_identity = Some(MaterializationPreparationIdentity {
-            operation: progress
-                .operation
-                .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-            target: progress
-                .target
-                .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-            backup: progress
-                .backup
-                .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
-        });
-        journal.preparation_progress = None;
-        persist_preparation(store, journal, work)
-            .await
-            .map_err(Into::into)
-    }
-}
-
-fn preparation_parent(
-    root: &Path,
-    expected_root: crate::NativeRootIdentity,
-    operation: &Path,
-    progress: MaterializationPreparationProgress,
-    work: &NativeMaterializationWork,
-) -> Result<HostRoot, NativeTreeMaterializationError> {
-    let actual = work.root_identity(root)?;
-    if actual != expected_root {
-        return Err(NativeTreeMaterializationError::AllocationChanged {
-            expected: expected_root,
-            actual,
-        });
-    }
-    let parent = HostRoot::open(
-        operation
-            .parent()
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        &mut &*work,
-    )?;
-    require_identity(&parent, progress.parent)?;
-    let Some(identity) = progress.operation else {
-        return Ok(parent);
-    };
-    let operation = held_child(
-        &parent,
-        Path::new(
+        let leaf = Path::new(
             operation
                 .file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        ),
-        work,
-    )?;
-    require_identity(&operation, identity)?;
-    for (name, identity) in [("target", progress.target), ("backup", progress.backup)] {
-        if let Some(identity) = identity {
-            require_identity(&held_child(&operation, Path::new(name), work)?, identity)?;
+        );
+        let mut identities = [[0; 16]; 3];
+        let mut parent = parent;
+        for (index, leaf) in [leaf, Path::new("target"), Path::new("backup")]
+            .into_iter()
+            .enumerate()
+        {
+            before_effect().await?;
+            work.with_original_leaf(|state| {
+                host_path(leaf, state, |path, work| parent.create_dir(path, work))
+            })
+            .map_err(native_materialization_work_error)?;
+            crate::native_host::sync_directory_held(&parent.directory, &mut &*work)?;
+            let child = held_child(&parent, leaf, work)?;
+            identities[index] = child.identity().to_bytes();
+            if index == 0 {
+                parent = child;
+            }
         }
+        journal = completion.await?;
+        journal.preparation_identity = Some(MaterializationPreparationIdentity {
+            operation: identities[0],
+            target: identities[1],
+            backup: identities[2],
+        });
+        journal.preparation_progress = None;
+        persist_preparation(store, journal).await
     }
-    Ok(operation)
-}
-
-fn require_identity(
-    root: &HostRoot,
-    identity: [u8; 16],
-) -> Result<(), NativeTreeMaterializationError> {
-    let expected = crate::NativeRootIdentity::from_bytes(identity);
-    let actual = root.identity();
-    if expected != actual {
-        return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual });
-    }
-    Ok(())
 }
