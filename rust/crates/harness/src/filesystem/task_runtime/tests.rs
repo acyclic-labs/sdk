@@ -40,28 +40,18 @@ struct PendingTool {
     native: AtomicBool,
 }
 impl ToolExecutor for PendingTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async { Err(Error::Unauthorized("task context required".into())) })
-    }
-    fn execute_with_context<'a>(
-        &'a self,
-        _: ToolContext,
-        _: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+
+    fn execute<'a>(&'a self, _: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task context required".into())) }); }
         Box::pin(async move {
             self.executed.fetch_add(1, Ordering::SeqCst);
             self.clock.0.store(20, Ordering::SeqCst);
             futures::future::pending().await
         })
     }
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Err(Error::Unauthorized("task context required".into())) })
-    }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        _: ToolContext,
-        _: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+
+    fn reconcile<'a>(&'a self, _: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task context required".into())) }); }
         Box::pin(async move {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             assert_eq!(self.executed.load(Ordering::SeqCst), 1);

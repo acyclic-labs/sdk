@@ -22,7 +22,14 @@ impl DurableToolRunner {
                     "scope lacks tool call grant",
                 ));
             }
-            crate::executor::with_history_io(io, |work| crate::executor::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", work))?;
+            crate::executor::with_history_io(io, |work| {
+                crate::executor::validate_json_schema_value(
+                    &definition.input_schema,
+                    &invocation.arguments,
+                    "tool input",
+                    work,
+                )
+            })?;
             tool.executor
                 .authorize_with_native_context(context, invocation, work)?;
             drop(grant);
@@ -36,7 +43,12 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        crate::executor::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", &mut None)?;
+        crate::executor::validate_json_schema_value(
+            &definition.input_schema,
+            &invocation.arguments,
+            "tool input",
+            &mut None,
+        )?;
         tool.executor.authorize_with_context(context, invocation)?;
         match context
             .task()
@@ -152,7 +164,9 @@ impl DurableToolRunner {
         event: &ExecutionEvent,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<bool> {
-        self.journal.append_if_tail(operation_id, tail, key, event, io)?.await
+        self.journal
+            .append_if_tail(operation_id, tail, key, event, io)?
+            .await
     }
 
     pub(super) async fn invoke(
@@ -172,7 +186,7 @@ impl DurableToolRunner {
         }
         Ok((
             tool.executor
-                .execute_with_context(context.clone(), invocation.clone())
+                .execute(invocation.clone(), Some(context.clone()))
                 .await?,
             None,
         ))
@@ -195,7 +209,7 @@ impl DurableToolRunner {
         }
         Ok(tool
             .executor
-            .reconcile_with_context(context.clone(), invocation.clone())
+            .reconcile(invocation.clone(), Some(context.clone()))
             .await?
             .map(|result| (result, None)))
     }

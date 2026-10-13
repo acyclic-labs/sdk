@@ -110,19 +110,16 @@ struct InterruptedTool {
 }
 
 impl ToolExecutor for InterruptedTool {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+let Some(context) = context else { return {
         if self.model_call {
             self.executed.fetch_add(1, Ordering::SeqCst);
             return Box::pin(async { Err(Error::Storage("lost model tool result".into())) });
         }
         Box::pin(async { Err(Error::Unsupported("scoped tool context required".into())) })
-    }
-
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+    }; };
         Box::pin(async move {
             let file = serde_json::from_value(
                 invocation
@@ -138,7 +135,10 @@ impl ToolExecutor for InterruptedTool {
         })
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+let Some(context) = context else { return {
         if self.model_call {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             return Box::pin(async {
@@ -148,13 +148,7 @@ impl ToolExecutor for InterruptedTool {
             });
         }
         Box::pin(async { Err(Error::Unsupported("scoped reconciliation required".into())) })
-    }
-
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    }; };
         Box::pin(async move {
             let file = serde_json::from_value(
                 invocation

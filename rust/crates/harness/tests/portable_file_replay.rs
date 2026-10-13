@@ -80,36 +80,16 @@ impl ToolExecutor for FileExecutorSpy {
     ) -> Result<()> {
         self.inner.authorize_with_context(context, invocation)
     }
-    fn execute<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute(invocation)
-    }
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute_with_context(context, invocation)
-    }
-    fn reconcile<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        self.inner.reconcile(invocation)
-    }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        self.inner.reconcile_with_context(context, invocation)
-    }
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
+ self.executions.fetch_add(1, Ordering::SeqCst);
+ self.inner.execute(invocation, context)
+}
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+ self.reconciliations.fetch_add(1, Ordering::SeqCst);
+ self.inner.reconcile(invocation, context)
+}
 }
 
 struct JournalSpy {

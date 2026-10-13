@@ -354,18 +354,13 @@ where
         })
     }
 
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async {
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
+let Some(context) = context else { return Box::pin(async {
             Err(Error::Unauthorized(
                 "recursive tools require original durable task context".into(),
             ))
-        })
-    }
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        }); };
         let operation = invocation.operation_id;
         let cancellation = CancellationToken::new();
         let guard = InvocationCancellation(cancellation.clone());
@@ -376,21 +371,13 @@ where
                 .ok_or(Error::Indeterminate(operation))
         })
     }
-    fn reconcile<'a>(
-        &'a self,
-        _: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async {
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+let Some(context) = context else { return Box::pin(async {
             Err(Error::Unauthorized(
                 "recursive reconciliation requires original durable task context".into(),
             ))
-        })
-    }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        }); };
         let cancellation = CancellationToken::new();
         let guard = InvocationCancellation(cancellation.clone());
         Box::pin(async move {

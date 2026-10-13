@@ -484,7 +484,7 @@ impl NativeExtension for FixtureExtension {
 }
 struct NativeProjector(Vec<(FileRef, NativeMediaPolicy)>);
 impl ToolExecutor for NativeProjector {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture projection does not execute a tool".into(),
@@ -493,8 +493,7 @@ impl ToolExecutor for NativeProjector {
     }
     fn reconcile<'a>(
         &'a self,
-        _: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture projection does not reconcile a tool".into(),
