@@ -8,6 +8,79 @@ pub(crate) struct SelectedImportEffects {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
+    /// Publishes a funded selected import without attaching a native mount.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn import_selected<F, Fut, E>(
+        &self,
+        destination: LazySnapshotRef,
+        input: (SelectedImportPlan, crate::NativeAllocation),
+        operation: crate::OperationId,
+        permit: crate::PublicationPermit,
+        work: &crate::NativeMaterializationWork,
+        mut before_publication: F,
+    ) -> Result<LazySnapshotRef, E>
+    where
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
+    {
+        work.remaining().map_err(LazyWorkspaceError::from)?;
+        if !input.1.work().shares_ledger(work)
+            || !input.1.work().shares_resource_allowance(work)
+            || input.1.bytes() < input.0.logical_owned_bytes()
+        {
+            return Err(LazyWorkspaceError::NativeLedgerMismatch.into());
+        }
+        before_publication(work).await?;
+        self.publish_selected_import(destination, &input.0, operation, permit, work, before_publication).await
+    }
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    async fn publish_selected_import<F, Fut, E>(
+        &self,
+        destination: LazySnapshotRef,
+        plan: &SelectedImportPlan,
+        operation: crate::OperationId,
+        permit: crate::PublicationPermit,
+        work: &crate::NativeMaterializationWork,
+        mut before_publication: F,
+    ) -> Result<LazySnapshotRef, E>
+    where
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
+    {
+        let key = IdempotencyKey::from_bytes(operation.into_bytes());
+        let mut ctx = KernelAccounting::NativeOriginal { work, cancellation: work.cancellation() };
+        let input = plan.input_digest(destination, &mut ctx)?;
+        if let Some(generation) = self.operation_generation(key, &mut ctx).await? {
+            return self.finish_selected_import(operation, generation, destination, plan.source,
+                plan.source_config, input, &mut ctx).await.map_err(E::from);
+        }
+        self.recover_pending_remove(&mut ctx).await?;
+        let mut checkout = self.workspace.checkout_accounted(
+            crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(),
+            &mut ctx, work.cancellation(),
+        ).await?;
+        let effects = self.prepare_selected_import_into_checkout(
+            destination, plan, &mut checkout, operation, &mut ctx,
+        ).await?;
+        self.prepare_mount_removals(&[], &effects.paths, &effects.records, key, &mut ctx).await?;
+        let cut = self.publication_cut(Some(operation), &mut ctx).await?;
+        let (context, evidence) = publication_evidence(
+            NativeSnapshotContext::Selected { cut, input }, operation, permit, &mut ctx,
+        )?;
+        let mut transaction = crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
+        let committed = transaction.commit_with_native_work(
+            Some((context, evidence, permit)), permit, work, work.cancellation(), &mut before_publication,
+        ).await?;
+        let generation = match committed {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => return Err(LazyWorkspaceError::Concurrent.into()),
+        };
+        before_publication(work).await?;
+        self.finish_selected_import(operation, generation.id(), destination, plan.source,
+            plan.source_config, input, &mut ctx).await.map_err(E::from)
+    }
     #[cfg(feature = "native-mount")]
     pub(crate) async fn prepare_selected_import_into_checkout(
         &self,

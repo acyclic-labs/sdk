@@ -96,20 +96,8 @@ where
             )
             .await
     } else {
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
-        workspace
-            .import_selected(
-                checkpoint,
-                plan.0,
-                custody,
-                operation,
-                permit,
-                &mut accounting,
-                before_publication,
-            )
-            .await
+        workspace.import_selected(
+            checkpoint, (plan.0, custody), operation, permit, work, before_publication,
+        ).await
     }
 }
