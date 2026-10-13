@@ -154,14 +154,10 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
         if maximum == 0 {
             return Ok(0);
         }
-        original.admit(WorkCounters {
-            source_bytes_read: maximum as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let copy = original.reserve_work(WorkCounters {
-            bytes_copied: maximum as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
+        original
+            .admit(crate::materializer::NativeResourceCredit::ReadBytes.delta(maximum as u64))?;
+        let copy = original
+            .reserve_work(crate::materializer::NativeResourceCredit::Copy.delta(maximum as u64))?;
         let runtime = original.runtime_meter();
         let result = reader.read(maximum, runtime, true).await.map_err(|error| {
             original
@@ -184,11 +180,13 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
         if result.0.len() != maximum {
             return Err(crate::FsError::SourceSnapshotStale);
         }
-        destination[..maximum].copy_from_slice(&result.0);
-        copy.record_completed(WorkCounters {
-            bytes_copied: maximum as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
+        destination
+            .get_mut(..maximum)
+            .ok_or(WorkError::Overflow)?
+            .copy_from_slice(&result.0);
+        copy.record_completed(
+            crate::materializer::NativeResourceCredit::Copy.delta(maximum as u64),
+        )?;
         // The packet retains its buffer until the copy and late checks finish.
         drop(result);
         cancellation.check()?;

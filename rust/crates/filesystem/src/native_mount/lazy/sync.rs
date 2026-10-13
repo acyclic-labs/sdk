@@ -240,10 +240,8 @@ where
                 let mut paths = input.vec(state.paths.len())?;
                 for (path, (id, _)) in &state.paths {
                     input.items(1)?;
-                    let copied = crate::WorkCounters {
-                        bytes_copied: path.len() as u64,
-                        ..crate::WorkCounters::UNCHARGED
-                    };
+                    let copied =
+                        crate::materializer::NativeResourceCredit::Copy.delta(path.len() as u64);
                     input.admit(copied)?;
                     let mut bytes = input.vec(path.len())?;
                     bytes.extend_from_slice(path.as_bytes());

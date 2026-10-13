@@ -115,9 +115,7 @@ impl LogicalName {
             bytes_copied: self.bytes.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        let result = self.try_clone(maximum_bytes, &mut |step| {
-            owned.observe(step)
-        });
+        let result = self.try_clone(maximum_bytes, &mut |step| owned.observe(step));
         finish_owned(owned, result)
     }
 
@@ -234,81 +232,68 @@ impl LogicalName {
         let mut accounting = work.accounting(cancellation);
         let result = (|| {
             let mut owned = OriginalReadAccounting::new(&mut accounting)?;
-            let result = self.project_unicode(cancellation, &mut |step| observe_path(&mut owned, step));
+            let result = (|| {
+                let check = || {
+                    cancellation
+                        .check()
+                        .map_err(|_| crate::FsError::from(NamespacePathError::Cancelled))
+                };
+                check()?;
+                owned.observe(ReadAllocationStep::BeforeItem)?;
+                owned.observe(ReadAllocationStep::Item)?;
+                let borrowed = match self.encoding {
+                    NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+                        Some(std::str::from_utf8(&self.bytes).map_err(|_| {
+                            crate::FsError::from(NamespacePathError::NonUnicodeProjection)
+                        })?)
+                    }
+                    NameEncoding::WindowsUtf16Le => None,
+                };
+                let length = match borrowed {
+                    Some(value) => value.len(),
+                    None => self.unicode_utf8_bytes().ok_or_else(|| {
+                        crate::FsError::from(NamespacePathError::NonUnicodeProjection)
+                    })?,
+                };
+                let delta = match borrowed {
+                    Some(_) => WorkCounters {
+                        bytes_copied: length as u64,
+                        output_bytes: length as u64,
+                        ..WorkCounters::UNCHARGED
+                    },
+                    None => WorkCounters {
+                        bytes_encoded: length as u64,
+                        output_bytes: length as u64,
+                        ..WorkCounters::UNCHARGED
+                    },
+                };
+                owned.admit(delta)?;
+                check()?;
+                owned.observe(ReadAllocationStep::Allocate {
+                    bytes: length as u64,
+                    operations: u64::from(length != 0),
+                })?;
+                let mut text = String::new();
+                if let Err(error) = text.try_reserve_exact(length) {
+                    owned.observe(ReadAllocationStep::ReserveFailed(error))?;
+                    return Err(crate::FsError::from(NamespacePathError::AllocationFailed));
+                }
+                owned.observe(ReadAllocationStep::Capacity {
+                    admitted_bytes: length as u64,
+                    actual_bytes: text.capacity() as u64,
+                })?;
+                if let Some(value) = borrowed {
+                    text.push_str(value);
+                } else {
+                    self.append_unicode(&mut text)
+                        .map_err(|error| crate::FsError::from(NamespacePathError::Name(error)))?;
+                }
+                owned.record_completed(delta)?;
+                Ok(text)
+            })();
             finish_owned(owned, result)
         })();
         work.finish_owned(result, &accounting)
-    }
-
-    fn project_unicode(
-        &self,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), crate::FsError>,
-    ) -> Result<String, crate::FsError> {
-        let check = || {
-            cancellation
-                .check()
-                .map_err(|_| crate::FsError::from(NamespacePathError::Cancelled))
-        };
-        check()?;
-        steps(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        }))?;
-        let borrowed = match self.encoding {
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => Some(
-                std::str::from_utf8(&self.bytes)
-                    .map_err(|_| crate::FsError::from(NamespacePathError::NonUnicodeProjection))?,
-            ),
-            NameEncoding::WindowsUtf16Le => None,
-        };
-        let length = match borrowed {
-            Some(value) => value.len(),
-            None => self
-                .unicode_utf8_bytes()
-                .ok_or_else(|| crate::FsError::from(NamespacePathError::NonUnicodeProjection))?,
-        };
-        let delta = match borrowed {
-            Some(_) => WorkCounters {
-                bytes_copied: length as u64,
-                output_bytes: length as u64,
-                ..WorkCounters::UNCHARGED
-            },
-            None => WorkCounters {
-                bytes_encoded: length as u64,
-                output_bytes: length as u64,
-                ..WorkCounters::UNCHARGED
-            },
-        };
-        steps(NamespacePathStep::Admit(&delta))?;
-        check()?;
-        steps(NamespacePathStep::Allocation(
-            ReadAllocationStep::Allocate {
-                bytes: length as u64,
-                operations: u64::from(length != 0),
-            },
-        ))?;
-        let mut text = String::new();
-        if let Err(error) = text.try_reserve_exact(length) {
-            steps(NamespacePathStep::Allocation(
-                ReadAllocationStep::ReserveFailed(error),
-            ))?;
-            return Err(crate::FsError::from(NamespacePathError::AllocationFailed));
-        }
-        steps(NamespacePathStep::Allocation(
-            ReadAllocationStep::Capacity {
-                admitted_bytes: length as u64,
-                actual_bytes: text.capacity() as u64,
-            },
-        ))?;
-        if let Some(value) = borrowed {
-            text.push_str(value);
-        } else {
-            self.append_unicode(&mut text)
-                .map_err(|error| crate::FsError::from(NamespacePathError::Name(error)))?;
-        }
-        steps(NamespacePathStep::Performed(&delta))?;
-        Ok(text)
     }
 
     pub(crate) fn retained_bytes(&self) -> usize {

@@ -191,42 +191,6 @@ impl ViewGate {
         )
     }
 
-    pub(super) async fn read_for_callback_with_work(
-        self: &Arc<Self>,
-        owner: CallbackOwner,
-        expected: Option<u64>,
-        work: &mut crate::demand::DemandWork,
-        cancellation: &crate::CancellationToken,
-        lifetime: Option<&crate::CancellationToken>,
-    ) -> Result<ViewReadLease, MountSourceError> {
-        self.read_for_callback_with_carrier(
-            owner,
-            expected,
-            &mut super::adapter::NativeDemandCarrier::Borrowed(work),
-            cancellation,
-            lifetime,
-        )
-        .await
-    }
-
-    pub(super) async fn read_for_callback_with_meter(
-        self: &Arc<Self>,
-        owner: CallbackOwner,
-        expected: Option<u64>,
-        meter: &Arc<crate::demand::NativeDemandReadMeter>,
-        cancellation: &crate::CancellationToken,
-        lifetime: Option<&crate::CancellationToken>,
-    ) -> Result<ViewReadLease, MountSourceError> {
-        self.read_for_callback_with_carrier(
-            owner,
-            expected,
-            &mut super::adapter::NativeDemandCarrier::Shared(meter),
-            cancellation,
-            lifetime,
-        )
-        .await
-    }
-
     pub(super) async fn read_for_callback_with_carrier(
         self: &Arc<Self>,
         owner: CallbackOwner,

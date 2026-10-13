@@ -77,8 +77,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         {
             return Ok(None);
         }
-        let original = carrier.original_native_work().expect("native SDK callback");
-        let prepared = state.checkout.prepare_candidate_adoption(&candidate.base, &candidate.checkout, &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation))?;
+        let original = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
+        let prepared = state.checkout.prepare_candidate_adoption(
+            &candidate.base,
+            &candidate.checkout,
+            &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
+        )?;
         let Some(prepared) = prepared else {
             return Ok(None);
         };

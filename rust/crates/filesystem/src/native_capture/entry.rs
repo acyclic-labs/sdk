@@ -208,7 +208,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
             .capture_origin
             .as_ref()
             .and_then(std::sync::Weak::upgrade)
-            .expect("capture scope is live");
+            .ok_or(crate::NativeTreeMaterializationError::OriginalWorkPoisoned)?;
         let task_meter = meter.runtime_meter();
         let task = acyclic_native_runtime::run_blocking_io(
             move || {

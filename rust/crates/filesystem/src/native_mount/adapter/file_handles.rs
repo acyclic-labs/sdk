@@ -38,7 +38,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
             let file_id = checkout
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -104,7 +107,11 @@ where
         let cancellation = carrier.cancellation();
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let bytes = std::mem::size_of::<CheckoutAttachedFile<A, O>>() as u64;
-        let work = carrier.original_native_work().expect("native SDK callback");
+        let work = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
         let allocation = work
             .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
@@ -143,7 +150,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, work, work.cancellation())
                 .await?
