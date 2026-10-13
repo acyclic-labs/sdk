@@ -15,8 +15,8 @@ impl PiControlHost<'_> {
         let owner = &caller.0;
         let scratch = &caller.1.binding.scratch.volume;
         let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
-        if context.output_volume() != Some(scratch)
-            || !context
+        let context = context.with_output_volume(scratch).await?;
+        if !context
                 .scope()
                 .grants()
                 .contains(&scratch.capability(VolumeOperation::Write, &mut Some(&mut io))?)

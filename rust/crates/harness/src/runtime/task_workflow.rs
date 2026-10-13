@@ -27,7 +27,11 @@ pub(super) fn task_original_work(
             });
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
+    if io.is_some() {
+        return Err(Error::Unsupported(
+            "native workflow requires original work".into(),
+        ));
+    }
     Ok(None)
 }
 
@@ -44,135 +48,73 @@ pub(super) fn task_machine_identity<'a>(
     Ok(machine.identity())
 }
 
-pub(super) fn inspect_task_metadata(
-    io: Option<&crate::executor::PreparationIo>,
-    items: u64,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        observer.check_cancellation()?;
-        crate::store::history::HistoryIo::codec_charge(
-            &mut observer,
-            crate::executor::json::JsonCodecCharge::Inspect { items },
-        )?;
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = (io, items);
-    Ok(())
-}
-
-pub(super) fn task_workflow_error(
-    work: Option<&NativeWork>,
-    code: crate::wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() {
-        return Error::NativeBoundary { code, reason };
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = work;
-    match code {
-        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
-        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
-        _ => Error::Conflict(reason.into()),
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn native_task_open_value<T>(
-    value: T,
-    custody: acyclic_fs::NativeAllocation,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(T, Option<NativeCustody>)> {
-    if !custody.work().shares_allocation_context(work) {
-        drop(value);
-        return Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-            custody: Some(custody),
-        });
-    }
-    Ok((value, Some(custody)))
-}
-
-pub(super) async fn verify_task_execution_owner(
-    host: &dyn DurableTaskHost,
-    task: TaskId,
-    fence: &crate::scheduler::LeaseFence,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(not(feature = "filesystem"))]
-    let io = { let _ = io; None };
-    host.verify_execution_owner(task, fence, io)?.await
-}
-
 pub(super) async fn observe_task_open_admission(
     host: &dyn DurableTaskHost,
     task: TaskId,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(TaskAdmissionRecord, Option<NativeCustody>)> {
+) -> Result<TaskAdmissionRecord> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         let (value, custody) = host.observe_admission_with_native_work(task, work)?.await?;
-        return native_task_open_value(value, custody, work);
+        return retain_task_value((value, Some(custody)), io);
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok((host.observe_admission(task).await?, None))
+    Ok(host.observe_admission(task).await?)
 }
 
 pub(super) fn initialize_task_machine(
     machine: &dyn ResumableMachine,
     input: &Value,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(Value, Option<NativeCustody>)> {
+) -> Result<Value> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         let (value, custody) = machine.initialize_with_native_work(input, work)?;
-        return native_task_open_value(value, custody, work);
+        return retain_task_value((value, Some(custody)), io);
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok((machine.initialize(input)?, None))
+    Ok(machine.initialize(input)?)
 }
 
-pub(super) async fn observe_workflow_open_admission(
-    journal: &dyn WorkflowJournal,
+pub(super) fn retain_task_value<T>(
+    value: (T, crate::NativeCustody),
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(Option<WorkflowAdmission>, Option<NativeCustody>)> {
+) -> Result<T> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
-        let (value, custody) = journal.admission(io)?.await?;
-        let Some(custody) = custody else {
-            drop(value);
+        if value
+            .1
+            .as_ref()
+            .is_none_or(|held| !held.work().shares_allocation_context(work))
+        {
+            drop(value.0);
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                custody: None,
+                custody: value.1,
             });
-        };
-        return native_task_open_value(value, custody, work);
+        }
+        io.expect("original workflow IO")
+            .absorb_native_custody(value.1.expect("checked custody"))?;
+        return Ok(value.0);
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
-    Ok((journal.admission(None)?.await?.0, None))
+    Ok(value.0)
 }
 
 pub(super) async fn admit_workflow_open(
     journal: &dyn WorkflowJournal,
     admission: WorkflowAdmission,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(WorkflowAdmission, Option<NativeCustody>)> {
+) -> Result<WorkflowAdmission> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         let (value, custody) = journal.admit_with_native_work(admission, work)?.await?;
-        return native_task_open_value(value, custody, work);
+        return retain_task_value((value, Some(custody)), io);
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok((journal.admit(admission).await?, None))
+    Ok(journal.admit(admission).await?)
 }
 
 pub(super) async fn validate_latest_task_transition(
@@ -184,7 +126,7 @@ pub(super) async fn validate_latest_task_transition(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(work) => {
             let (value, custody) = workflow.latest_transition_with_native_work(work).await?;
-            native_task_open_value(value, custody, work)?
+            (retain_task_value((value, Some(custody)), io)?, None)
         }
         _ => (workflow.latest_transition().await?, None::<NativeCustody>),
     };
@@ -202,14 +144,11 @@ pub struct ResumableTaskSession {
     pub(super) workflow: DurableWorkflowHost,
     pub(super) definition: Arc<dyn RegisteredTaskDefinition>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_context: Option<Arc<TaskContext>>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_metadata_custody: Option<acyclic_fs::NativeAllocation>,
+    pub(super) native_metadata_custody: crate::NativeCustody,
 }
 
 impl ResumableTaskSession {
     /// Returns the owner-retained task identity.
-    #[must_use]
     pub const fn task_id(&self) -> TaskId {
         self.task_id
     }
@@ -220,36 +159,32 @@ impl ResumableTaskSession {
         self.workflow.checkpoint()
     }
 
-    /// Reads the committed transition without advancing.
-    pub async fn latest_transition(&self) -> Result<Option<MachineTransition>> {
-        self.workflow.latest_transition().await
+    /// Reads the committed transition under the caller's original IO.
+    pub async fn latest_transition(
+        &self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<MachineTransition>, crate::NativeCustody)> {
+        match task_original_work(io)? {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Some(work) => {
+                self.require_native_session(work)?;
+                let (value, custody) = self
+                    .workflow
+                    .latest_transition_with_native_work(work)
+                    .await?;
+                Ok((value, Some(custody)))
+            }
+            _ => Ok((self.workflow.latest_transition().await?, None)),
+        }
     }
 
-    /// Reads the transition with its original retained allocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn latest_transition_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<MachineTransition>, acyclic_fs::NativeAllocation)> {
-        self.require_native_session(work)?;
-        self.workflow.latest_transition_with_native_work(work).await
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn require_native_session(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    fn require_native_session(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         self.workflow.require_native_work()?;
-        let context = self.native_context.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task session was not opened with native custody",
-        })?;
-        if !context.native_metadata_matches(work)
-            || self
-                .native_metadata_custody
-                .as_ref()
-                .is_none_or(|held| !held.work().shares_allocation_context(work))
+        if self
+            .native_metadata_custody
+            .as_ref()
+            .is_none_or(|held| !held.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -259,67 +194,42 @@ impl ResumableTaskSession {
         Ok(())
     }
 
-    /// Commits one owner-checked deterministic transition and its outbox.
+    /// Commits one owner-checked transition and its outbox using the caller's IO.
     pub async fn step(
         &mut self,
-        operation_id: OperationId,
-        idempotency_key: crate::IdempotencyKey,
+        operation: OperationId,
+        key: crate::IdempotencyKey,
         input: Value,
-    ) -> Result<MachineTransition> {
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(MachineTransition, crate::NativeCustody)> {
+        let native = task_original_work(io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = native {
+            self.require_native_session(work)?;
+        }
         self.host
-            .verify_dispatch_owner(self.task_id, &self.fence, None)?
+            .verify_dispatch_owner(self.task_id, &self.fence, io)?
             .await?;
         let schema = self.definition.output_schema();
-        let transition = self
-            .workflow
-            .step(operation_id, idempotency_key, input, |transition| {
-                validate_task_transition(schema, transition, None)
-            })
-            .await?;
+        let check =
+            |transition: &MachineTransition| validate_task_transition(schema, transition, io);
+        let transition = match native {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Some(work) => {
+                let (value, custody) = self
+                    .workflow
+                    .step_checked_with_native_work(operation, key, input, work, check)
+                    .await?;
+                (value, Some(custody))
+            }
+            _ => (
+                self.workflow.step(operation, key, input, check).await?,
+                None,
+            ),
+        };
         self.host
-            .verify_dispatch_owner(self.task_id, &self.fence, None)?
+            .verify_dispatch_owner(self.task_id, &self.fence, io)?
             .await?;
         Ok(transition)
-    }
-
-    /// Retains the original response allocation through state publication.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn step_with_native_work(
-        &mut self,
-        operation_id: OperationId,
-        idempotency_key: crate::IdempotencyKey,
-        input: Value,
-        custody: acyclic_fs::NativeAllocation,
-    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        self.require_native_session(custody.work())?;
-        let io = crate::filesystem::PreparationIo::from_native_work(custody.work())?;
-        io.absorb_native_custody(custody)?;
-        let result = async {
-            let work = io
-                .original_native_work()
-                .expect("original response allocation");
-            self.host
-                .verify_dispatch_owner(self.task_id, &self.fence, Some(&io))?
-                .await?;
-            let schema = self.definition.output_schema();
-            let (transition, allocation) = self
-                .workflow
-                .step_checked_with_native_work(
-                    operation_id,
-                    idempotency_key,
-                    input,
-                    work,
-                    |transition| validate_task_transition(schema, transition, Some(&io)),
-                )
-                .await?;
-            io.absorb_native_custody(allocation)?;
-            self.host
-                .verify_dispatch_owner(self.task_id, &self.fence, Some(&io))?
-                .await?;
-            Ok(transition)
-        }
-        .await;
-        let retained = if result.is_ok() { io.owned_bytes()? } else { 0 };
-        crate::workflow::finish_native_io(result, io, retained)
     }
 }

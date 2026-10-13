@@ -28,7 +28,7 @@ mod original_namespace_controls {
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let (paid_path, paid_guard) = NamespacePath::parse_in_profile_with_accounting(
+        let (paid_path, paid_guard) = NamespacePath::parse_in_profile(
             "/paid", FilesystemProfile::Portable, VolumeLimits::default(),
             &mut accounting, &cancellation,
         )?;
@@ -38,7 +38,7 @@ mod original_namespace_controls {
         assert_eq!(original.live_allocation_bytes(), baseline);
         let before = original.receipt();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let error = NamespacePath::parse_in_profile_with_accounting(
+        let error = NamespacePath::parse_in_profile(
             "/a/b", FilesystemProfile::Portable, VolumeLimits::default(),
             &mut accounting, &cancellation,
         ).err().ok_or("exhausted original allocated a path")?;
@@ -67,7 +67,7 @@ mod original_namespace_controls {
         cancellation.cancel();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         for result in [
-            NamespacePath::parse_in_profile_with_accounting(
+            NamespacePath::parse_in_profile(
                 "/valid", FilesystemProfile::Portable, VolumeLimits::default(),
                 &mut accounting, &cancellation,
             ),

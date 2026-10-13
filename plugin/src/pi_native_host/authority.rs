@@ -77,7 +77,10 @@ impl PiNativeCommandHost {
             || context.scope().grants() != &admission.grants
             || context.scope().limits() != admission.limits
             || context.scope().run_limits() != admission.run_limits
-            || context.owned_task_fence()? != *fence
+            || context
+                .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
+                .1
+                != fence
         {
             return Err(unauthorized(
                 "Pi native command, scope or fence differs from its original admission",
@@ -172,7 +175,9 @@ impl PiNativeCommandHost {
             .task_host()
             .journal_owner(
                 owner.task_id(),
-                &context.owned_task_fence()?,
+                context
+                    .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
+                    .1,
                 Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
             )
             .await?;

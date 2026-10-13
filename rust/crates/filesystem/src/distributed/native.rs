@@ -35,29 +35,9 @@ impl<'a> AuthorityWork<'a> {
         if self.is_native() {
             return self.check();
         }
-        self.admit(WorkCounters {
-            peak_allocation_bytes: self
-                .allocations
-                .live_bytes()
-                .checked_add(bytes)
-                .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::UNCHARGED
-        })?;
-        self.opaque_live_upper_bytes = self
-            .opaque_live_upper_bytes
-            .checked_add(bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        Ok(())
-    }
-
-    pub(super) fn release_opaque(&mut self, bytes: u64) -> Result<(), AuthorityStoreError> {
-        if self.is_native() {
-            return Ok(());
-        }
-        self.opaque_live_upper_bytes = self
-            .opaque_live_upper_bytes
-            .checked_sub(bytes)
-            .ok_or(crate::WorkError::Overflow)?;
+        self.accounting()
+            .claim_owned(bytes, 0)
+            .map_err(authority_error)?;
         Ok(())
     }
 
@@ -65,17 +45,16 @@ impl<'a> AuthorityWork<'a> {
         let (value, allocation) = self.vec_owned(capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(mut allocation) = allocation {
-            if let Some(request) = &mut self.request_allocation {
-                if let Err(error) = request.absorb(&mut allocation) {
-                    drop(value);
-                    return Err(error.into());
+            match &mut self.request_allocation {
+                Some(request) => {
+                    if let Err(error) = request.absorb(&mut allocation) {
+                        drop(value);
+                        return Err(error.into());
+                    }
                 }
-            } else {
-                self.request_allocation = Some(allocation);
+                request => *request = Some(allocation),
             }
         }
-        #[cfg(target_arch = "wasm32")]
-        let _ = allocation;
         Ok(value)
     }
 
@@ -188,11 +167,7 @@ impl<'a> AuthorityWork<'a> {
             .and_then(|n| n.checked_add(if generation.is_some() { 64 } else { 0 }))
             .filter(|n| *n <= acyclic_stream::MAX_PATH_BYTES)
             .ok_or_else(|| AuthorityStoreError::RejectedStatic("fork path is too long"))?;
-        let writes = WorkCounters {
-            bytes_encoded: length as u64,
-            bytes_copied: (PREFIX.len() + suffix.len()) as u64,
-            ..WorkCounters::default()
-        };
+        let writes = codec_work(length as u64, (PREFIX.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
         let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
         text[..PREFIX.len()].copy_from_slice(PREFIX);
@@ -213,40 +188,20 @@ impl<'a> AuthorityWork<'a> {
         self.own_path(text)
     }
 
-    pub(super) fn own_path(
-        &mut self,
-        text: &str,
-    ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-        let length = text.len();
+    pub(super) fn own_path(&mut self, text: &str) -> Result<StreamPath, AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.is_native() {
-            let result = acyclic_stream::StreamPath::new_native(text, &self.native_meter());
-            return result
+            return StreamPath::new_native(text, &self.native_meter())
                 .map_err(|error| self.native_io_failure(error))?
                 .map_err(AuthorityStoreError::NativeStream);
         }
-        self.admit(WorkCounters {
-            allocation_operations: 1,
-            peak_allocation_bytes: self
-                .allocations
-                .live_bytes()
-                .checked_add(length as u64)
-                .ok_or(crate::WorkError::Overflow)?,
-            bytes_copied: length as u64,
-            ..WorkCounters::default()
-        })?;
-        let path = acyclic_stream::StreamPath::new(text).map_err(map_stream_error)?;
-        self.allocations
-            .claim_bytes(length as u64, 1, &mut self.work, WorkBudget::UNBOUNDED)
-            .map_err(|error| {
-                error.into_work_or(AuthorityStoreError::Rejected(
-                    "fork allocation failed".to_owned(),
-                ))
-            })?;
-        self.charge(WorkCounters {
-            bytes_copied: length as u64,
-            ..WorkCounters::default()
-        })?;
+        let copying = codec_work(0, text.len() as u64, 0);
+        self.admit(copying)?;
+        self.accounting()
+            .claim_owned(text.len() as u64, 1)
+            .map_err(authority_error)?;
+        let path = StreamPath::new(text).map_err(map_stream_error)?;
+        self.charge(copying)?;
         Ok(path)
     }
 
@@ -263,11 +218,7 @@ impl<'a> AuthorityWork<'a> {
             expiry,
             &mut text,
             Some(&mut |completed, encoded, copied| {
-                let work = WorkCounters {
-                    bytes_encoded: encoded,
-                    bytes_copied: copied,
-                    ..WorkCounters::UNCHARGED
-                };
+                let work = codec_work(encoded, copied, 0);
                 if completed {
                     self.charge(work)
                 } else {
@@ -356,49 +307,24 @@ impl<'a> AuthorityWork<'a> {
             .map_err(|_| authority_corrupt("zero Stream epoch", self))
     }
 
-    pub(super) fn observe_record(
-        &mut self,
-        step: crate::kernel::ReadAllocationStep,
-        invalid: &'static str,
-    ) -> Result<(), AuthorityStoreError> {
-        use crate::kernel::ReadAllocationStep::{BeforeCopy, BeforeHash, Copied, Hashed};
-        let delta = match step {
-            BeforeCopy(bytes) | Copied(bytes) => WorkCounters {
-                bytes_copied: bytes,
-                ..WorkCounters::UNCHARGED
-            },
-            BeforeHash(bytes) | Hashed(bytes) => WorkCounters {
-                bytes_hashed: bytes,
-                ..WorkCounters::UNCHARGED
-            },
-            _ => return Err(authority_corrupt(invalid, self)),
-        };
-        match step {
-            BeforeCopy(_) | BeforeHash(_) => self.admit(delta),
-            Copied(_) | Hashed(_) => {
-                self.charge(delta)?;
-                self.check()
-            }
-            _ => unreachable!("validated decoder step"),
-        }
-    }
-
     pub(super) fn decode_durable<'record>(
         &mut self,
         bytes: &'record [u8],
     ) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'record>, AuthorityStoreError>
     {
-        let result =
-            StreamsDurableRecord::decode_borrowed_with(bytes, STREAM_RECORD_LIMIT, |step| {
-                self.observe_record(step, "durable envelope emitted an allocating decoder step")
-            })?;
-        result.map_err(|error| {
-            if self.is_native() {
-                AuthorityStoreError::DurableCodec(error)
-            } else {
-                AuthorityStoreError::Corrupt(error.to_string())
-            }
+        let native = self.is_native();
+        crate::kernel::decode_owned(&mut self.accounting(), |observe| {
+            StreamsDurableRecord::decode_borrowed_with(bytes, STREAM_RECORD_LIMIT, observe)?
+                .map_err(|error| {
+                    crate::FsError::Authority(if native {
+                        AuthorityStoreError::DurableCodec(error)
+                    } else {
+                        AuthorityStoreError::Corrupt(error.to_string())
+                    })
+                })
         })
+        .map(|(record, _)| record)
+        .map_err(authority_error)
     }
 
     pub(super) fn durable_digest(
@@ -406,12 +332,13 @@ impl<'a> AuthorityWork<'a> {
         authority: AuthorityId,
         record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
     ) -> Result<Digest, AuthorityStoreError> {
-        let hashing = WorkCounters {
-            bytes_hashed: crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
+        let hashing = codec_work(
+            0,
+            0,
+            crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
                 .checked_add(record.payload.len() as u64)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::UNCHARGED
-        };
+        );
         self.admit(hashing)?;
         let digest = authority_commit_digest(
             authority,
@@ -441,10 +368,7 @@ impl<'a> AuthorityWork<'a> {
         &mut self,
         bytes: &[u8; N],
     ) -> Result<[u8; N], AuthorityStoreError> {
-        let copied = WorkCounters {
-            bytes_copied: N as u64,
-            ..WorkCounters::UNCHARGED
-        };
+        let copied = codec_work(0, N as u64, 0);
         self.admit(copied)?;
         let bytes = *bytes;
         self.charge(copied)?;
@@ -485,18 +409,6 @@ impl AsRef<[u8]> for ForkBytes {
     }
 }
 
-pub(super) fn authority_error(error: crate::FsError) -> AuthorityStoreError {
-    match error {
-        crate::FsError::Authority(error) => error,
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => AuthorityStoreError::NativeOriginal(error),
-        crate::FsError::Work(error) => error.into(),
-        crate::FsError::Cancelled(_) => AuthorityStoreError::Cancelled,
-        crate::FsError::WorkspaceDeleted => AuthorityStoreError::Retired,
-        other => AuthorityStoreError::Corrupt(other.to_string()),
-    }
-}
-
 /// Provider failures do not expose whether a lost acknowledgement made records durable.
 pub(super) fn commit_work(
     submitted: WorkCounters,
@@ -509,5 +421,14 @@ pub(super) fn commit_work(
             backend_write_operations: 1,
             ..WorkCounters::default()
         }
+    }
+}
+
+pub(super) fn codec_work(encoded: u64, copied: u64, hashed: u64) -> WorkCounters {
+    WorkCounters {
+        bytes_encoded: encoded,
+        bytes_copied: copied,
+        bytes_hashed: hashed,
+        ..WorkCounters::UNCHARGED
     }
 }

@@ -145,21 +145,20 @@ pub(super) fn generation_from_payload(
     if !created && !published {
         return Ok(None);
     }
-    let mut observe = |step| {
-        meter
-            .observe_record(
-                step,
-                "fixed authority facts emitted an allocating decoder step",
-            )
-            .map_err(crate::FsError::from)
-    };
-    let fact = if created {
-        crate::kernel::decode_volume_created(payload, STREAM_RECORD_LIMIT, &mut observe)
+    let fact = crate::kernel::decode_owned(&mut meter.accounting(), |observe| {
+        if created {
+            crate::kernel::decode_volume_created(payload, STREAM_RECORD_LIMIT, &mut |step| {
+                observe(step)
+            })
             .map(|created| (created.volume_id, created.initial_generation_root.digest))
-    } else {
-        crate::kernel::decode_published_generation(payload, STREAM_RECORD_LIMIT, &mut observe)
+        } else {
+            crate::kernel::decode_published_generation(payload, STREAM_RECORD_LIMIT, &mut |step| {
+                observe(step)
+            })
             .map(|published| (published.volume_id, published.generation_root.digest))
-    };
+        }
+    })
+    .map(|(fact, _)| fact);
     let (volume, digest) = match fact {
         Ok(fact) => fact,
         Err(failure)

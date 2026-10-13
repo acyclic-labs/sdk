@@ -18,10 +18,16 @@ where
     ) -> Result<ApplyResult> {
         loop {
             let (copied, retained) = with_history_io(io, |work| {
-                CodecQuota::produce(work, |quota| crate::core::copy(ticket, quota, |value: &crate::interaction::InteractionTicket, work| {
-        value.request.validate(work)?;
-        crate::core::owned_bytes(value)
-    }))
+                CodecQuota::produce(work, |quota| {
+                    crate::core::copy(
+                        ticket,
+                        quota,
+                        |value: &crate::interaction::InteractionTicket, work| {
+                            value.request.validate(work)?;
+                            crate::core::owned_bytes(value)
+                        },
+                    )
+                })
             })?;
             let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
             let result = self
@@ -52,7 +58,7 @@ where
         }
     }
 
-    pub(super) async fn execute(
+    pub(in crate::filesystem) async fn execute(
         &self,
         operation_id: OperationId,
         scope: &Scope,

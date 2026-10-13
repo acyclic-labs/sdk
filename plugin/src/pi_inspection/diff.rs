@@ -33,8 +33,8 @@ pub(crate) async fn diff_native(
     let owner = &after.owner;
     let cancellation = work.cancellation();
     owner.verify(false, &mut Some(&mut io)).await?;
-    let _before_path = before.path(directory, work)?;
-    let _after_path = after.path(directory, work)?;
+    let _before_path = before.path(directory, work).await?;
+    let _after_path = after.path(directory, work).await?;
     if cursor.is_some_and(|c| c.before != before.snapshot || c.after != after.snapshot) {
         return Err(selected_invalid("diff cursor names another selection"));
     }
@@ -114,12 +114,11 @@ pub(crate) async fn diff_native(
                 let mut changed = false;
                 for source in [before, after] {
                     let bytes = match new_stat.kind {
-                        SourceNodeKind::RegularFile => {
+                        SourceNodeKind::RegularFile | SourceNodeKind::SymbolicLink => {
                             source
                                 .read(&path.0, source.context.scope().limits().file_bytes, work)
                                 .await?
                         }
-                        SourceNodeKind::SymbolicLink => source.read_link(&path.0, work).await?,
                         _ => break,
                     };
                     if let Some(previous) = &previous {

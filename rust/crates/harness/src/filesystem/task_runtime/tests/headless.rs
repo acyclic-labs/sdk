@@ -248,14 +248,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     let parent = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     for id in [121, 122, 123] {
-        let child = runtime.harness().registered_child_admission(
-            OperationId::from_bytes([id; 16]),
-            "test.deadline",
-            "1",
-            json!({}),
-            parent,
-            &fixture.scope,
-        )?;
+        let child = runtime.harness().registered_admission(OperationId::from_bytes([id; 16]), "test.deadline", "1", json!({}), Some((parent, &fixture.scope)), None, None)?.0;
         assert!(matches!(
             runtime
                 .task_host()
@@ -282,14 +275,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
             .is_err()
     );
     assert!(runtime.children(parent, None, None, 0).await.is_err());
-    let child = runtime.harness().registered_child_admission(
-        OperationId::from_bytes([124; 16]),
-        "test.deadline",
-        "1",
-        json!({}),
-        parent,
-        &fixture.scope,
-    )?;
+    let child = runtime.harness().registered_admission(OperationId::from_bytes([124; 16]), "test.deadline", "1", json!({}), Some((parent, &fixture.scope)), None, None)?.0;
     assert!(matches!(
         runtime.task_host().admit_owned(child, fence).await?,
         Admission::Accepted(_)
@@ -757,10 +743,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     ));
     let selected_generation = fixture
         .filesystem
-        .resolve(&crate::filesystem::workspace_ref(
-            project.provider().clone(),
-            &project.storage_name(&mut None)?,
-        )?)
+        .resolve(
+            &crate::filesystem::workspace_ref(
+                project.provider().clone(),
+                &project.storage_name(&mut None)?,
+            )?,
+            None,
+        )
         .await?
         .generation;
     let inspection = runtime.inspect_source(task, task).await?;
@@ -855,10 +844,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                     volume: fixture.volume.clone(),
                     generation: fixture
                         .filesystem
-                        .resolve(&crate::filesystem::workspace_ref(
-                            project.provider().clone(),
-                            &fixture.volume.storage_name(&mut None)?,
-                        )?)
+                        .resolve(
+                            &crate::filesystem::workspace_ref(
+                                project.provider().clone(),
+                                &fixture.volume.storage_name(&mut None)?,
+                            )?,
+                            None,
+                        )
                         .await?
                         .generation,
                     paths: Vec::new(),
@@ -930,7 +922,8 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                 )?,
                 None,
                 "/src/a.txt",
-                128
+                128,
+                None
             )
             .await?
             .as_ref(),

@@ -46,7 +46,6 @@ where
             "fork caller/source authority differs".into(),
         ));
     }
-    verifier.verify(&signed, &mut None)?;
     let agent = parent
         .reducer()
         .conversation()
@@ -65,7 +64,7 @@ where
                 "caller lacks selected source read authority".into(),
             ));
         }
-        ContentGrant::verify(
+        ContentGrant::authorize_volume(
             &verifier,
             &signed,
             volume,

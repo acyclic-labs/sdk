@@ -1,7 +1,7 @@
+use super::content_write::bound_content_writer;
 use super::{
     InteractionRouter, IssuedContextPurpose, Limits, RuntimeScope, TaskContext, ToolContext,
 };
-use crate::store::history::HistoryIo as _;
 use crate::{Error, Result};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::sync::Arc;
@@ -88,28 +88,6 @@ impl TaskContext {
         self.require_original_native_work(work)?;
         validate_scope_attenuation(&self.scope, requested, limits, work)
     }
-
-    pub(crate) fn into_shared(mut self) -> Result<Arc<TaskContext>> {
-        if let Some(mut custody) = self.native_custody.take() {
-            let mut slot = match custody.work().claim(
-                (2 * std::mem::size_of::<usize>()) as u64,
-                1,
-                WorkCounters::UNCHARGED,
-            ) {
-                Ok(slot) => slot,
-                Err(cause) => {
-                    drop(self);
-                    return Err(Error::NativeWork {
-                        cause,
-                        custody: Some(custody),
-                    });
-                }
-            };
-            custody.absorb(&mut slot)?;
-            self.native_custody = Some(custody);
-        }
-        Ok(Arc::new(self))
-    }
 }
 
 impl TaskContext {
@@ -138,7 +116,7 @@ impl TaskContext {
                     "output volume has no authenticated created writer",
                 )
             })?;
-        self.bound_content_writer(
+        bound_content_writer(
             Some(binding),
             &self.scope,
             Some(&crate::executor::PreparationIo::from_native_work(work)?),
@@ -172,30 +150,16 @@ impl TaskContext {
             }
             IssuedContextPurpose::Read => unreachable!("readonly projection rejected"),
         }
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        );
-        io.retain_owned(
+        let mut custody = work.claim(
             (std::mem::size_of::<TaskContext>() - std::mem::size_of::<RuntimeScope>()) as u64,
+            0,
+            WorkCounters::default(),
         )?;
-        let (scope, scope_custody) = self.scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(scope_custody)?;
-        let mut context = TaskContext {
-            harness: Arc::clone(&self.harness),
-            task_id: self.task_id,
-            durable_task: self.durable_task,
-            descendants: self.descendants.clone(),
-            scope,
-            policy_overrides: Vec::new(),
-            owned_interactions: self.owned_interactions.clone(),
-            owned_mailbox: self.owned_mailbox.clone(),
-            output_content: Some(binding.clone()),
-            model_steps: Arc::clone(&self.model_steps),
-            native_purpose: Some(purpose),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
-        };
-        let custody = io.into_custody()?;
+        let (scope, mut scope_custody) = self.scope.clone_with_native_work(work)?;
+        custody.absorb(&mut scope_custody)?;
+        let mut context = self.copy_with_scope(scope);
+        context.output_content = Some(binding.clone());
+        context.native_purpose = Some(purpose);
         context.native_custody = Some(custody);
         context.into_shared()
     }

@@ -44,7 +44,7 @@ pub(super) async fn accepted_builtin_io(
     let decoded = decoded_tool_request(context, invocation, work)?;
     let _request_custody = decoded.1;
     let request = decoded.0;
-    let admission = context.original_admission_with_native_work(work)?.await?;
+    let admission = context.admission(work).await?;
     let encoded = crate::pi_root_provider::guarded_pi_bytes(
         &admission.0.input,
         crate::MAXIMUM_ADAPTER_STATE_BYTES,

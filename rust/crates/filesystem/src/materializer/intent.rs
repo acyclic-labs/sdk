@@ -43,22 +43,6 @@ pub struct MaterializationPreparationIdentity {
 pub struct MaterializationPreparationProgress {
     /// Existing parent allocation.
     pub parent: [u8; 16],
-    /// Acknowledged operation directory.
-    pub operation: Option<[u8; 16]>,
-    /// Acknowledged target directory.
-    pub target: Option<[u8; 16]>,
-    /// Acknowledged backup directory.
-    pub backup: Option<[u8; 16]>,
     /// Creation awaiting acknowledgement.
-    pub pending: Option<MaterializationPreparationAllocation>,
-}
-/// Directory at the next preparation boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum MaterializationPreparationAllocation {
-    /// Operation directory.
-    Operation,
-    /// Target directory.
-    Target,
-    /// Backup directory.
-    Backup,
+    pub pending: bool,
 }

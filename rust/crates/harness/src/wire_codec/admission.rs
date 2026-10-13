@@ -1,77 +1,37 @@
-//! Logical custody for the closed EventEnvelope schema, never allocator RSS.
-
-use crate::{
-    Error, Result,
-    core::{Authority, Event},
-    store::history::HistoryIo,
-    wire,
-};
+//! Admission for the closed event-envelope schema.
+use super::*;
 use prost::encoding::{DecodeContext, WireType, decode_key, skip_field};
 use std::mem::size_of;
 
-fn boundary(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
+fn diagnostic(work: &mut Option<&mut dyn HistoryIo>) -> Result<NativeCustody> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .is_some_and(|io| io.original_native_work().is_some())
+    if let Some(io) = work
+        .as_deref_mut()
+        .filter(|io| io.original_native_work().is_some())
     {
-        return Error::NativeBoundary {
-            code: wire::ErrorCode::Storage,
-            reason,
-        };
+        // Closed message nesting has at most four diagnostic location slots.
+        let bytes = (size_of::<(u64, String, String)>()
+            + size_of::<Vec<(&'static str, &'static str)>>()
+            + 4 * size_of::<(&'static str, &'static str)>()) as u64;
+        io.admit_owned(bytes)?;
+        io.retain_owned(bytes)?;
+        return Ok(Some(io.take_native_custody(bytes)?));
     }
     let _ = work;
-    Error::Storage(reason.into())
+    Ok(None)
 }
-
-/// Preclaimed custody for the closed EventEnvelope prost diagnostic.
-pub(super) struct ProstDiagnostic {
+pub(super) fn prost_error(custody: NativeCustody, source: prost::DecodeError) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-pub(super) fn prost_diagnostic_preclaim(
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<ProstDiagnostic> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        let custody = if let Some(io) = work
-            .as_deref_mut()
-            .filter(|io| io.original_native_work().is_some())
-        {
-            // Envelope -> Reference -> Authority needs at most four location slots.
-            let bytes = (size_of::<(u64, String, String)>()
-                + size_of::<Vec<(&'static str, &'static str)>>()
-                + 4 * size_of::<(&'static str, &'static str)>()) as u64;
-            io.admit_owned(bytes)?;
-            io.retain_owned(bytes)?;
-            Some(io.take_native_custody(bytes)?)
-        } else {
-            None
+    if custody.is_some() {
+        return Error::NativeProstDecode {
+            code: Storage,
+            source,
+            custody,
         };
-        return Ok(ProstDiagnostic { custody });
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = work;
-        Ok(ProstDiagnostic {})
-    }
+    let _ = custody;
+    Error::Storage(source.to_string())
 }
-
-impl ProstDiagnostic {
-    pub(super) fn forward(mut self, source: prost::DecodeError) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = self.custody.take() {
-            return Error::NativeProstDecode {
-                code: wire::ErrorCode::Storage,
-                source,
-                custody: Some(custody),
-            };
-        }
-        Error::Storage(source.to_string())
-    }
-}
-
 #[derive(Clone, Copy)]
 enum Carrier {
     Envelope,
@@ -80,70 +40,25 @@ enum Carrier {
     Scope,
     Reference,
 }
-
-#[derive(Default)]
-struct Fields {
-    bytes: u64,
-    buffers: u64,
-    capabilities: u64,
-}
-
-impl Fields {
-    fn buffer(&mut self, bytes: usize, work: &Option<&mut dyn HistoryIo>) -> Result<()> {
-        self.bytes = self
-            .bytes
-            .checked_add(bytes as u64)
-            .ok_or_else(|| boundary(work, "event carrier byte count overflows"))?;
-        self.buffers = self
-            .buffers
-            .checked_add(1)
-            .ok_or_else(|| boundary(work, "event carrier buffer count overflows"))?;
-        Ok(())
-    }
-
-    fn quota(&self, work: &Option<&mut dyn HistoryIo>) -> Result<u64> {
-        let buffers = self.bytes.checked_mul(2).and_then(|bytes| {
-            self.buffers
-                .checked_mul(8)
-                .and_then(|minimum| bytes.checked_add(minimum))
-        });
-        let slots = if self.capabilities == 0 {
-            0
-        } else {
-            self.capabilities
-                .checked_mul(2)
-                .ok_or_else(|| boundary(work, "event capability count overflows"))?
-                .max(4)
-        };
-        buffers
-            .and_then(|bytes| {
-                slots
-                    .checked_mul(size_of::<String>() as u64)
-                    .and_then(|slots| bytes.checked_add(slots))
-            })
-            .and_then(|bytes| bytes.checked_add(size_of::<wire::EventEnvelope>() as u64))
-            .ok_or_else(|| boundary(work, "event carrier quota overflows"))
-    }
-}
-
 fn scan(
     mut input: &[u8],
     carrier: Carrier,
-    fields: &mut Fields,
     work: &mut Option<&mut dyn HistoryIo>,
-    diagnostic: &mut Option<ProstDiagnostic>,
-) -> Result<()> {
+    guard: &mut NativeCustody,
+) -> Result<(u64, u64)> {
+    use crate::executor::json::JsonCodecCharge::Work;
+    let (mut buffers, mut capabilities) = (0, 0);
+    // The SDK record bound and closed nesting bound all counters below.
     while !input.is_empty() {
-        if let Some(work) = work.as_deref_mut() {
-            work.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        if let Some(io) = work.as_deref_mut() {
+            io.codec_charge(Work { bytes: 0, items: 1 })?;
         }
         let before = input.len();
-        let (tag, kind) = decode_key(&mut input).map_err(|source| {
-            diagnostic
-                .take()
-                .expect("preclaimed prost diagnostic")
-                .forward(source)
-        })?;
+        let (tag, kind) =
+            decode_key(&mut input).map_err(|source| prost_error(guard.take(), source))?;
+        let framed = input;
+        skip_field(kind, tag, &mut input, DecodeContext::default())
+            .map_err(|source| prost_error(guard.take(), source))?;
         let nested = match (carrier, tag) {
             (Carrier::Envelope, 1) => Some(Carrier::Protocol),
             (Carrier::Envelope, 2) | (Carrier::Reference, 1) => Some(Carrier::Authority),
@@ -158,113 +73,76 @@ fn scan(
                 | (Carrier::Authority, 2)
                 | (Carrier::Scope, 1 | 2 | 3 | 4)
         );
+        let mut charged = before - input.len();
         if kind == WireType::LengthDelimited && (nested.is_some() || owned) {
-            let framed = input;
-            // Prost validates the frame before it is borrowed.
-            skip_field(kind, tag, &mut input, DecodeContext::default()).map_err(|source| {
-                diagnostic
-                    .take()
-                    .expect("preclaimed prost diagnostic")
-                    .forward(source)
-            })?;
             let header = framed
                 .iter()
                 .position(|byte| byte & 0x80 == 0)
-                .expect("prost accepted length varint")
+                .expect("validated length varint")
                 + 1;
-            let bytes = framed.len() - input.len() - header;
-            let value = &framed[header..header + bytes];
+            let length = framed.len() - input.len() - header;
             if let Some(nested) = nested {
-                // Charge framing here and child bytes in the nested scan.
+                charged -= length;
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                        bytes: (before - input.len() - bytes) as u64,
+                    io.codec_charge(Work {
+                        bytes: charged as u64,
                         items: 0,
                     })?;
                 }
-                scan(value, nested, fields, work, diagnostic)?;
+                let (bytes, caps) = scan(&framed[header..header + length], nested, work, guard)?;
+                buffers += bytes;
+                capabilities += caps;
                 continue;
-            } else {
-                fields.buffer(bytes, work)?;
-                if matches!(carrier, Carrier::Scope) && tag == 2 {
-                    fields.capabilities = fields
-                        .capabilities
-                        .checked_add(1)
-                        .ok_or_else(|| boundary(work, "event capability count overflows"))?;
-                }
             }
-        } else {
-            // Prost validates unknown fields and group framing.
-            skip_field(kind, tag, &mut input, DecodeContext::default()).map_err(|source| {
-                diagnostic
-                    .take()
-                    .expect("preclaimed prost diagnostic")
-                    .forward(source)
-            })?;
+            buffers += 2 * length as u64 + 8;
+            capabilities += u64::from(matches!(carrier, Carrier::Scope) && tag == 2);
         }
         if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                bytes: (before - input.len()) as u64,
+            io.codec_charge(Work {
+                bytes: charged as u64,
                 items: 0,
             })?;
         }
     }
-    Ok(())
+    Ok((buffers, capabilities))
 }
-
-pub(super) fn decode_quota(input: &[u8], work: &mut Option<&mut dyn HistoryIo>) -> Result<u64> {
+fn carrier_quota(buffers: u64, capabilities: u64) -> Result<u64> {
+    let slots = if capabilities == 0 {
+        Some(0)
+    } else {
+        capabilities.checked_mul(2).map(|n| n.max(4))
+    };
+    slots
+        .and_then(|n| n.checked_mul(size_of::<String>() as u64))
+        .and_then(|n| buffers.checked_add(n))
+        .and_then(|n| n.checked_add(size_of::<wire::EventEnvelope>() as u64))
+        .ok_or_else(|| Error::Storage("event custody overflow".into()))
+}
+pub(super) fn decode_quota(
+    input: &[u8],
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(u64, NativeCustody)> {
     if input.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(boundary(work, "event exceeds SDK record boundary"));
+        return Err(boundary(work, Storage, "event exceeds SDK record boundary"));
     }
-    // Claim diagnostic custody before decode_key can allocate a DecodeError.
-    let mut diagnostic = Some(prost_diagnostic_preclaim(work)?);
-    let mut fields = Fields::default();
-    scan(input, Carrier::Envelope, &mut fields, work, &mut diagnostic)?;
-    fields.quota(work)
+    let mut guard = diagnostic(work)?;
+    let (buffers, capabilities) = scan(input, Carrier::Envelope, work, &mut guard)?;
+    Ok((carrier_quota(buffers, capabilities)?, guard))
 }
-
-pub(super) fn encode_metadata_quota(authority: &Authority, event: &Event) -> Result<u64> {
+pub(super) fn metadata_quota(authority: &Authority, event: &Event) -> Result<(u64, u64)> {
     let (issuer, agent) = event.scope.wire_parts();
-    let mut fields = Fields::default();
-    for bytes in [
-        super::EVENT_WIRE_VERSION.len(),
-        64,
-        authority.id.len(),
-        36,
-        32,
-        event.scope.id().len(),
-        issuer.len(),
-        event.payload.tag().len(),
-        32,
-    ] {
-        fields.buffer(bytes, &None)?;
-    }
-    if agent.is_some() {
-        fields.buffer(36, &None)?;
-    }
-    for capability in event.scope.capabilities().iter() {
-        fields.buffer(capability.len(), &None)?;
-        fields.capabilities = fields
-            .capabilities
-            .checked_add(1)
-            .ok_or_else(|| boundary(&None, "event capability count overflows"))?;
-    }
-    if let Some(parent) = &event.causal_parent {
-        fields.buffer(parent.authority.id.len(), &None)?;
-    }
-    // Keep diagnostic custody independent of the canonical meter.
-    fields
-        .quota(&None)?
-        .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
-        .ok_or_else(|| boundary(&None, "event encoding diagnostic quota overflows"))
-}
-
-/// Copied producer bytes, excluding computed UUID and descriptor strings.
-pub(super) fn encode_metadata_copy_bytes(authority: &Authority, event: &Event) -> Result<u64> {
-    let (issuer, _) = event.scope.wire_parts();
-    let mut bytes = 0u64;
+    let buffer = |n: u64| n.checked_mul(2).and_then(|n| n.checked_add(8));
+    let overflow = || Error::Storage("event metadata overflow".into());
+    let mut buffers = buffer(64).unwrap()
+        + buffer(36).unwrap()
+        + if agent.is_some() {
+            buffer(36).unwrap()
+        } else {
+            0
+        };
+    let mut copied = 0_u64;
     for length in [
-        super::EVENT_WIRE_VERSION.len(),
+        EVENT_WIRE_VERSION.len(),
         authority.id.len(),
         event.scope.id().len(),
         issuer.len(),
@@ -273,35 +151,36 @@ pub(super) fn encode_metadata_copy_bytes(authority: &Authority, event: &Event) -
         32,
     ]
     .into_iter()
-    .chain(event.scope.capabilities().iter().map(|value| value.len()))
+    .chain(event.scope.capabilities().iter().map(str::len))
     .chain(
         event
             .causal_parent
             .iter()
             .map(|parent| parent.authority.id.len()),
     ) {
-        bytes = bytes
-            .checked_add(length as u64)
-            .ok_or_else(|| boundary(&None, "event metadata copy bytes overflow"))?;
+        copied = copied.checked_add(length as u64).ok_or_else(overflow)?;
+        buffers = buffers
+            .checked_add(buffer(length as u64).ok_or_else(overflow)?)
+            .ok_or_else(overflow)?;
     }
-    Ok(bytes)
+    let owned = carrier_quota(buffers, event.scope.capabilities().iter().count() as u64)?
+        .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
+        .ok_or_else(overflow)?;
+    Ok((owned, copied))
 }
-
-/// Producer custody released on drop or transferred to the output owner.
+/// Custody released on drop or transferred to the output owner.
 pub(crate) struct Quota<'a, 'b> {
     work: &'a mut Option<&'b mut dyn HistoryIo>,
     bytes: u64,
 }
-
 impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn new(work: &'a mut Option<&'b mut dyn HistoryIo>, bytes: u64) -> Result<Self> {
-        if let Some(work) = work.as_deref_mut() {
-            work.admit_owned(bytes)?;
-            work.retain_owned(bytes)?;
+        if let Some(io) = work.as_deref_mut() {
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
         }
         Ok(Self { work, bytes })
     }
-    /// Takes responsibility for already-paid custody on this observer.
     pub(crate) fn from_retained(work: &'a mut Option<&'b mut dyn HistoryIo>, bytes: u64) -> Self {
         Self { work, bytes }
     }
@@ -309,14 +188,13 @@ impl<'a, 'b> Quota<'a, 'b> {
         self.work
     }
     pub(crate) fn replace(&mut self, bytes: u64) -> Result<()> {
-        if bytes <= self.bytes {
-            if let Some(work) = self.work.as_deref_mut() {
+        if let Some(work) = self.work.as_deref_mut() {
+            if bytes <= self.bytes {
                 work.release_owned(self.bytes - bytes)?;
+            } else {
+                work.admit_owned(bytes - self.bytes)?;
+                work.retain_owned(bytes - self.bytes)?;
             }
-        } else if let Some(work) = self.work.as_deref_mut() {
-            let extra = bytes - self.bytes;
-            work.admit_owned(extra)?;
-            work.retain_owned(extra)?;
         }
         self.bytes = bytes;
         Ok(())
@@ -325,26 +203,37 @@ impl<'a, 'b> Quota<'a, 'b> {
         self.bytes = self
             .bytes
             .checked_add(bytes)
-            .ok_or_else(|| boundary(self.work, "event quota custody overflows"))?;
+            .ok_or_else(|| boundary(self.work, Storage, "custody overflow"))?;
         Ok(())
     }
-    /// Releases an allowance whose protected stage has ended, before its successor.
     pub(crate) fn relinquish(&mut self, bytes: u64) -> Result<()> {
         let remaining = self
             .bytes
             .checked_sub(bytes)
-            .ok_or_else(|| boundary(self.work, "codec release exceeds custody"))?;
-        if let Some(work) = self.work.as_deref_mut() {
-            work.release_owned(bytes)?;
-        }
-        self.bytes = remaining;
-        Ok(())
+            .ok_or_else(|| boundary(self.work, Storage, "release exceeds custody"))?;
+        self.replace(remaining)
     }
     pub(crate) fn retained(&self) -> u64 {
         self.bytes
     }
     pub(crate) fn transfer(&mut self) {
         self.bytes = 0;
+    }
+    pub(super) fn json_error(&mut self, mut error: Error) -> Error {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Error::NativeJson { custody, .. } = &mut error
+            && custody.is_none()
+        {
+            *custody = Some(
+                self.work
+                    .as_deref_mut()
+                    .expect("native codec observer")
+                    .take_native_custody(self.bytes)
+                    .expect("preclaimed diagnostic custody"),
+            );
+            self.transfer();
+        }
+        error
     }
 }
 impl Drop for Quota<'_, '_> {
@@ -354,38 +243,32 @@ impl Drop for Quota<'_, '_> {
         }
     }
 }
-
 pub(super) fn envelope_owned(envelope: &wire::EventEnvelope) -> u64 {
-    let protocol = envelope.protocol.as_ref().map_or(0, |value| {
-        (value.version.capacity() + value.descriptor_digest.capacity()) as u64
-    });
-    let authority = envelope
-        .authority
-        .as_ref()
-        .map_or(0, |value| value.id.capacity() as u64);
-    let scope = envelope.scope.as_ref().map_or(0, |value| {
-        (value.id.capacity()
-            + value.issuer.capacity()
-            + value.agent_id.capacity()
-            + value.capabilities.capacity() * size_of::<String>()) as u64
-            + value
+    let scope = envelope.scope.as_ref().map_or(0, |scope| {
+        scope.id.capacity()
+            + scope.issuer.capacity()
+            + scope.agent_id.capacity()
+            + scope.capabilities.capacity() * size_of::<String>()
+            + scope
                 .capabilities
                 .iter()
-                .map(|value| value.capacity() as u64)
-                .sum::<u64>()
+                .map(String::capacity)
+                .sum::<usize>()
     });
-    let parent = envelope
-        .causal_parent
-        .as_ref()
-        .and_then(|value| value.authority.as_ref())
-        .map_or(0, |value| value.id.capacity() as u64);
-    protocol
-        + authority
-        + scope
-        + parent
-        + (envelope.operation_id.capacity()
-            + envelope.intent_digest.capacity()
-            + envelope.event_type.capacity()
-            + envelope.canonical_payload_json.capacity()
-            + envelope.attestation.capacity()) as u64
+    (scope
+        + envelope
+            .protocol
+            .as_ref()
+            .map_or(0, |p| p.version.capacity() + p.descriptor_digest.capacity())
+        + envelope.authority.as_ref().map_or(0, |a| a.id.capacity())
+        + envelope
+            .causal_parent
+            .as_ref()
+            .and_then(|p| p.authority.as_ref())
+            .map_or(0, |a| a.id.capacity())
+        + envelope.operation_id.capacity()
+        + envelope.intent_digest.capacity()
+        + envelope.event_type.capacity()
+        + envelope.canonical_payload_json.capacity()
+        + envelope.attestation.capacity()) as u64
 }

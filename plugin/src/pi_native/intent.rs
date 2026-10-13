@@ -324,9 +324,11 @@ pub(crate) async fn approve_command(
         ));
     }
     let request = invocation.request_with_work(runtime, binding, manifest, work)?;
-    let digest = request
-        .0
-        .approval_digest_with_native_work(owner.task_id(), command, work)?;
+    let digest = request.0.approval_digest(
+        owner.task_id(),
+        command,
+        Some(&PreparationIo::from_native_work(work)?),
+    )?;
     let approval = task_interaction_id(
         owner.task_id(),
         command,
@@ -347,7 +349,11 @@ pub(crate) async fn approve_command(
         title.1,
     );
     journal
-        .open_interaction_with_native_work(approval, &interaction.0, work)?
+        .open_interaction(
+            approval,
+            &interaction.0,
+            Some(&PreparationIo::from_native_work(work)?),
+        )?
         .await?;
     owner
         .verify(
@@ -382,15 +388,14 @@ pub(crate) async fn approve_command(
         work,
     )?;
     journal
-        .resolve_interaction_with_native_work(
+        .resolve_interaction(
             approval,
-            &InteractionResponse::Approval {
+            InteractionResponse::Approval {
                 approved: true,
                 reason: None,
             },
             &responder.0.2,
-            work,
-        )?
+        )
         .await?;
     owner
         .verify(

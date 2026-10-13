@@ -39,9 +39,12 @@ impl PreparationIo {
             .map(|_| self.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes()))
             .transpose()?;
         let result = if canonical {
-            crate::executor::json::canonical_json_bytes_bounded(value, bounds, code, &mut |charge| {
-                self.codec_charge(charge, true)
-            })
+            crate::executor::json::canonical_json_bytes_bounded(
+                value,
+                bounds,
+                code,
+                &mut |charge| self.codec_charge(charge, true),
+            )
         } else {
             crate::executor::json::json_bytes_bounded(value, bounds, code, &mut |charge| {
                 self.codec_charge(charge, true)
@@ -58,6 +61,43 @@ impl PreparationIo {
         })
     }
 
+    fn decode_guarded<T>(
+        &self,
+        labels: Option<u64>,
+        code: Option<crate::wire::ErrorCode>,
+        mut allowance: impl FnMut(crate::executor::json::JsonValueShape, u64) -> Result<u64>,
+        decode: impl FnOnce(&mut dyn FnMut(Charge) -> Result<()>) -> Result<T>,
+    ) -> Result<(T, DecodeReservation<'_>)> {
+        let mut admission = None;
+        let result = decode(&mut |charge| {
+            if let Charge::Admission {
+                maximum_owned_bytes,
+                value_shape,
+            } = charge
+            {
+                let owned = allowance(value_shape, maximum_owned_bytes)?;
+                let diagnostics = labels
+                    .map(|labels| {
+                        crate::executor::json::json_typed_diagnostic_owned_bytes(
+                            value_shape,
+                            labels,
+                            code,
+                        )
+                    })
+                    .transpose()?
+                    .unwrap_or(0);
+                let bytes = owned.checked_add(diagnostics).ok_or_else(|| {
+                    decode_allowance_error("typed diagnostic reservation overflow", code)
+                })?;
+                admission = Some((self.reserve_decode(bytes)?, diagnostics));
+                Ok(())
+            } else {
+                self.codec_charge(charge, false)
+            }
+        });
+        finish_decode(self, result, admission)
+    }
+
     pub(crate) fn decode_json<T: UploadRecord>(&self, bytes: &[u8]) -> Result<T> {
         let code = self
             .original_native_work()
@@ -68,53 +108,39 @@ impl PreparationIo {
             .and_then(|bytes| bytes.checked_add(size_of::<T>() as u64))
             .ok_or_else(|| decode_allowance_error("upload decode ownership overflow", code))?;
         let bounds = self.bounds(bytes.len() as u64, 256)?;
-        let mut admission = None;
-        let result: Result<T> = crate::executor::json::json_from_slice_bounded(
-            std::marker::PhantomData::<T>,
-            bytes,
-            bounds,
-            base,
+        let schema = T::json_value_schema();
+        let mut decoded: (T, _) = self.decode_guarded(
+            Some(T::diagnostic_label_bytes()),
             code,
-            Some(T::json_value_schema()),
-            &mut |charge| {
-                if let Charge::Admission {
-                    maximum_owned_bytes,
-                    value_shape,
-                } = charge
-                {
-                    let owned = if T::json_value_schema() == Schema::None {
-                        maximum_owned_bytes
-                            .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
-                            .ok_or_else(|| {
-                                decode_allowance_error("upload codec base overflow", code)
-                            })?
-                    } else {
-                        let scratch = maximum_owned_bytes.checked_sub(base).ok_or_else(|| {
-                            decode_allowance_error("upload decode scratch bound underflow", code)
-                        })?;
-                        base.checked_add(
-                            scratch.max(
-                                crate::executor::json::json_value_decode_owned_bytes(value_shape)
-                                    .map_err(|error| decode_allowance_with_code(error, code))?,
-                            ),
-                        )
-                        .ok_or_else(|| {
-                            decode_allowance_error("upload decode ownership overflow", code)
-                        })?
-                    };
-                    let diagnostics = crate::executor::json::json_typed_diagnostic_owned_bytes(
-                        value_shape,
-                        T::diagnostic_label_bytes(),
-                        code,
-                    )?;
-                    admission = Some((self.reserve_typed(owned, diagnostics, code)?, diagnostics));
-                    Ok(())
-                } else {
-                    self.codec_charge(charge, false)
+            |shape, maximum| {
+                if schema == Schema::None {
+                    return maximum
+                        .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
+                        .ok_or_else(|| decode_allowance_error("upload codec base overflow", code));
                 }
+                let scratch = maximum.checked_sub(base).ok_or_else(|| {
+                    decode_allowance_error("upload decode scratch bound underflow", code)
+                })?;
+                base.checked_add(
+                    scratch.max(
+                        crate::executor::json::json_value_decode_owned_bytes(shape)
+                            .map_err(|error| decode_allowance_with_code(error, code))?,
+                    ),
+                )
+                .ok_or_else(|| decode_allowance_error("upload decode ownership overflow", code))
             },
-        );
-        let mut decoded = finish_decode(self, result, admission)?;
+            |observe| {
+                crate::executor::json::json_from_slice_bounded(
+                    std::marker::PhantomData::<T>,
+                    bytes,
+                    bounds,
+                    base,
+                    code,
+                    Some(schema),
+                    &mut |charge| observe(charge),
+                )
+            },
+        )?;
         decoded.1.substitute(decoded.0.logical_owned_bytes()?)?;
         Ok(retain_decoded(decoded))
     }
@@ -128,43 +154,22 @@ impl PreparationIo {
         let bounds = self.bounds(bytes.len() as u64, 128)?;
         let schema = T::json_value_schema();
         let code = self.original_native_work().is_some().then_some(code);
-        let mut admission = None;
-        let result = crate::executor::json::json_from_slice_bounded(
-            seed,
-            bytes,
-            bounds,
-            0,
+        self.decode_guarded(
+            (schema != Schema::Root).then(T::diagnostic_label_bytes),
             code,
-            Some(schema),
-            &mut |charge| {
-                if let Charge::Admission {
-                    maximum_owned_bytes,
-                    value_shape,
-                } = charge
-                {
-                    let owned = T::decode_owned_allowance(
-                        value_shape,
-                        maximum_owned_bytes,
-                        bytes.len() as u64,
-                        code,
-                    )?;
-                    let diagnostics = if schema == Schema::Root {
-                        0
-                    } else {
-                        crate::executor::json::json_typed_diagnostic_owned_bytes(
-                            value_shape,
-                            T::diagnostic_label_bytes(),
-                            code,
-                        )?
-                    };
-                    admission = Some((self.reserve_typed(owned, diagnostics, code)?, diagnostics));
-                    Ok(())
-                } else {
-                    self.codec_charge(charge, false)
-                }
+            |shape, scratch| T::decode_owned_allowance(shape, scratch, bytes.len() as u64, code),
+            |observe| {
+                crate::executor::json::json_from_slice_bounded(
+                    seed,
+                    bytes,
+                    bounds,
+                    0,
+                    code,
+                    Some(schema),
+                    &mut |charge| observe(charge),
+                )
             },
-        );
-        finish_decode(self, result, admission)
+        )
     }
 
     pub(crate) fn value_json<T: Serialize>(
@@ -213,7 +218,8 @@ impl PreparationIo {
             bounds,
             Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| self.codec_charge(charge, false),
-        ).map(|_| ())
+        )
+        .map(|_| ())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -282,36 +288,21 @@ impl PreparationIo {
             return Err(self.invalid("native Value decoding requires original work"));
         }
         let bounds = self.bounds(u64::MAX, 128)?;
-        let mut admission = None;
-        let result = crate::executor::json::json_from_value_bounded(
-            std::borrow::Cow::Borrowed(value),
-            bounds,
-            0,
+        self.decode_guarded(
+            (schema != Schema::Root).then_some(labels),
             Some(code),
-            schema,
-            &mut |charge| {
-                if let Charge::Admission { value_shape, .. } = charge {
-                    let allowance = owned(value_shape)?;
-                    let diagnostics = if schema == Schema::Root {
-                        0
-                    } else {
-                        crate::executor::json::json_typed_diagnostic_owned_bytes(
-                            value_shape,
-                            labels,
-                            Some(code),
-                        )?
-                    };
-                    admission = Some((
-                        self.reserve_typed(allowance, diagnostics, Some(code))?,
-                        diagnostics,
-                    ));
-                    Ok(())
-                } else {
-                    self.codec_charge(charge, false)
-                }
+            |shape, _| owned(shape),
+            |observe| {
+                crate::executor::json::json_from_value_bounded(
+                    std::borrow::Cow::Borrowed(value),
+                    bounds,
+                    0,
+                    Some(code),
+                    schema,
+                    &mut |charge| observe(charge),
+                )
             },
-        );
-        finish_decode(self, result, admission)
+        )
     }
 
     pub(crate) fn codec_charge(&self, charge: Charge, encode: bool) -> Result<()> {

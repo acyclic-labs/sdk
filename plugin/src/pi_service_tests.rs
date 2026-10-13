@@ -14,10 +14,10 @@ use std::fs;
 use std::{collections::BTreeMap, path::PathBuf};
 
 async fn resources(data: &Path) -> (crate::service_process::ServiceLock, ServiceResources) {
-    let (lock, configured, work) = crate::tests::configured_test_service_bootstrap(data)
+    let (lock, configured, private, work) = crate::tests::configured_test_service_bootstrap(data)
         .await
         .unwrap();
-    let (resources, _) = ServiceResources::open(data.to_path_buf(), configured, &work)
+    let (resources, _) = ServiceResources::open(data.to_path_buf(), configured, private, &work)
         .await
         .unwrap();
     (lock, resources)
@@ -47,7 +47,7 @@ async fn prepare(
     );
     let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
         stream,
-        Arc::new(filesystem),
+        filesystem,
         &owner.policy.journal,
         owner.authority(&work).unwrap(),
         &work,
@@ -135,7 +135,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
             runtime
                 .runtime
                 .task_host()
-                .start_task(&lease, None)
+                .start_task(&lease, &mut None)
                 .await
                 .unwrap();
         }
@@ -182,7 +182,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
             serde_json::to_value(&state).unwrap()
         );
         let configured = ServiceResources::configure(&data).await.unwrap();
-        let reopened = ConcurrentServiceControl::open(data, configured, &work())
+        let reopened = ConcurrentServiceControl::open(data.clone(), configured, data, &work())
             .await
             .unwrap();
         assert_eq!(
@@ -234,7 +234,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
     runtime
         .runtime
         .task_host()
-        .start_task(&lease, None)
+        .start_task(&lease, &mut None)
         .await
         .unwrap();
     drop(runtime);
@@ -254,7 +254,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
     assert!(!load_saved_state(&session).unwrap().active);
     let configured = ServiceResources::configure(directory.path()).await.unwrap();
     let (resources, sessions) =
-        ServiceResources::open(directory.path().into(), configured, &work())
+        ServiceResources::open(directory.path().into(), configured, directory.path().into(), &work())
             .await
             .unwrap();
     assert!(sessions.is_empty());
@@ -321,7 +321,7 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
     runtime
         .runtime
         .task_host()
-        .start_task(&lease, None)
+        .start_task(&lease, &mut None)
         .await
         .unwrap();
     drop(runtime);

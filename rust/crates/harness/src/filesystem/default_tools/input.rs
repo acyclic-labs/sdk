@@ -342,31 +342,14 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                     let input_io = PreparationIo::from_native_work(work)?;
                     let input = encode(&request, Some(&input_io))?;
-                    let input = (
-                        input,
-                        input_io.take_native_custody(input_io.owned_bytes()?)?,
-                    );
-                    let (admission, custody) = runtime.harness().registered_admission(
-                        operation,
-                        "acyclic.fork_preparation",
-                        "1",
-                        input,
-                        Some((caller, context.scope())),
-                        None,
-                        work,
+                    let (admission, retained) = runtime.harness().registered_admission(
+                        operation, "acyclic.fork_preparation", "1", input,
+                        Some((caller, context.scope())), None, Some(&input_io),
                     )?;
-                    io.expect("native admission")
-                        .absorb_native_custody(custody)?;
+                    io.expect("native admission").absorb_native_custody(input_io.take_native_custody(retained)?)?;
                     break 'admission admission;
                 }
-                runtime.harness().registered_child_admission(
-                    operation,
-                    "acyclic.fork_preparation",
-                    "1",
-                    encode(&request, io)?,
-                    caller,
-                    context.scope(),
-                )?
+                runtime.harness().registered_admission(operation, "acyclic.fork_preparation", "1", encode(&request, io)?, Some((caller, context.scope())), None, None)?.0
             };
             Plan::Fork(recursive_box(
                 RecursiveForkToolPlan {

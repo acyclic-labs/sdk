@@ -284,7 +284,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                             .resolve(&workspace_ref(
                                 provider.clone(),
                                 &private.storage_name(&mut None)?,
-                            )?)
+                            )?, None)
                             .await?
                             .generation,
                         paths: Vec::new(),
@@ -333,7 +333,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .resolve(&workspace_ref(
                 provider.clone(),
                 &child_project.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?;
         host.apply(
             &child_head.workspace,
@@ -379,7 +379,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                     .resolve(&workspace_ref(
                         provider.clone(),
                         &(child_project).storage_name(&mut None)?,
-                    )?)
+                    )?, None)
                     .await?
                     .generation,
             )
@@ -640,7 +640,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .is_err()
     );
     assert_eq!(
-        host.resolve(&workspace_ref(provider, &project.storage_name(&mut None)?)?)
+        host.resolve(&workspace_ref(provider, &project.storage_name(&mut None)?)?, None)
             .await?
             .generation,
         merged_generation

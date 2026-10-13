@@ -28,7 +28,7 @@ pub(crate) fn task_definition_digest(
     let mut invalid = machine_digest == Some([0; 32]);
     if !invalid {
         for value in requirements {
-            inspect_task_metadata(io, 1)?;
+            crate::model::charge_items(io, 1)?;
             if value.is_empty() || value.chars().any(char::is_whitespace) {
                 invalid = true;
                 break;
@@ -36,8 +36,8 @@ pub(crate) fn task_definition_digest(
         }
     }
     if invalid {
-        return Err(task_workflow_error(
-            task_original_work(io)?,
+        return Err(crate::executor::stock_boundary(
+            io,
             crate::wire::ErrorCode::Invalid,
             "task dependency or machine digest is invalid",
         ));
@@ -151,7 +151,7 @@ pub(super) fn validate_identity(
 ) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.is_some() {
-        inspect_task_metadata(io, 2)?;
+        crate::model::charge_items(io, 2)?;
         if !crate::contract::is_valid_component_label(name)
             || !crate::contract::is_valid_component_label(version)
         {
@@ -170,8 +170,8 @@ pub(super) fn validate_identity(
         validate_component_label(version, "task version")?;
     }
     if name.contains('@') || version.contains('@') {
-        return Err(task_workflow_error(
-            task_original_work(io)?,
+        return Err(crate::executor::stock_boundary(
+            io,
             crate::wire::ErrorCode::Invalid,
             "task name and version cannot contain the version separator",
         ));
@@ -212,9 +212,11 @@ pub(super) fn task_copy_value(
     source: &Value,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
-    task_copy_with_io(io, |quota| crate::core::copy(source, quota, |value: &serde_json::Value, _| {
-    crate::executor::json::json_value_logical_owned_bytes(value)
-}))
+    task_copy_with_io(io, |quota| {
+        crate::core::copy(source, quota, |value: &serde_json::Value, _| {
+            crate::executor::json::json_value_logical_owned_bytes(value)
+        })
+    })
 }
 
 pub(super) fn task_copy_component(

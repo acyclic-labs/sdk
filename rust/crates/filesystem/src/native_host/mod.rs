@@ -7,7 +7,7 @@ use crate::materializer::{
     NativeTreeMaterializationError, NativeWorkReservation,
 };
 use crate::performance::{WorkBudget, WorkCounters};
-use cap_std::fs::{Dir, OpenOptions};
+use cap_std::fs::Dir;
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
 use std::{
@@ -27,6 +27,18 @@ use windows::{
 mod windows_journal;
 #[cfg(windows)]
 pub(crate) use windows_journal::*;
+#[cfg(unix)]
+pub(crate) type NativeUnit = u8;
+#[cfg(windows)]
+pub(crate) type NativeUnit = u16;
+#[cfg(unix)]
+type NativePath = Path;
+#[cfg(windows)]
+type NativePath = [u16];
+#[cfg(unix)]
+type NativeLeaf = std::ffi::CStr;
+#[cfg(windows)]
+type NativeLeaf = [u16];
 mod record;
 pub(crate) use record::*;
 mod work;
@@ -70,10 +82,6 @@ pub(crate) use identity::*;
 mod windows_metadata;
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) use windows_metadata::*;
-#[cfg(windows)]
-mod copy;
-#[cfg(windows)]
-use copy::*;
 mod sparse;
 mod tree;
 pub(crate) use sparse::*;

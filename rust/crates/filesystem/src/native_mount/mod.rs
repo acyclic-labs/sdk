@@ -149,11 +149,7 @@ fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "used as a map_err adapter, which hands over the error by value"
-)]
-fn errno(error: MountSourceError) -> i32 {
+fn errno(error: &MountSourceError) -> i32 {
     match error.semantic_error() {
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,

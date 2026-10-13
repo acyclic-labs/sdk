@@ -168,8 +168,10 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 })?
         };
         let reference = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
-        let workspace = bounded_io::open(host, &reference, io).await?;
-        let prepared = bounded_io::generation(host, &workspace, prepared_generation, io).await?;
+        let workspace = (host).open(&reference, Some(io)).await?;
+        let prepared = (host)
+            .generation(&workspace, prepared_generation, Some(io))
+            .await?;
         let suffix = if volume == &fork.preparation.child_private_volume {
             "scratch"
         } else if Some(volume) == fork.preparation.child_result_volume.as_ref() {

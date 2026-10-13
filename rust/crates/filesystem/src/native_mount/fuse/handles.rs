@@ -56,7 +56,7 @@ pub(super) fn fuse_open_file(
             std::mem::size_of::<FuseOwned<Arc<dyn MountOpenFile>>>() as u64,
             work,
         )
-        .map_err(MountSourceError::NativeWork)?;
+        .map_err(MountSourceError::from)?;
     Ok(Arc::new(owner))
 }
 

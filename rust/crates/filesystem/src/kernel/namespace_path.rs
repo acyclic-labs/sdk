@@ -207,7 +207,8 @@ impl NamespacePath {
         result
     }
 
-    pub(crate) fn parse_in_profile_with_accounting(
+    /// Parses a namespace path on the supplied accounting ledger.
+    pub fn parse_in_profile(
         path: &str,
         profile: FilesystemProfile,
         limits: VolumeLimits,

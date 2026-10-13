@@ -277,7 +277,7 @@ where
         private.provider().clone(),
         &private.storage_name(&mut None)?,
     )?;
-    let before = host.resolve(&private_workspace).await?;
+    let before = host.resolve(&private_workspace, None).await?;
     assert!(
         controller
             .stage_completed_model_prefix(
@@ -294,7 +294,7 @@ where
     );
     assert_eq!(
         before.generation,
-        host.resolve(&private_workspace).await?.generation
+        host.resolve(&private_workspace, None).await?.generation
     );
     executor
         .execute(input.clone(), &journal)

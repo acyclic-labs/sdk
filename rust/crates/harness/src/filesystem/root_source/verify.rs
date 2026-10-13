@@ -23,12 +23,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if io.is_some() {
             check()?;
         }
-        if context.owner != &self.owner || context.graph_root != self.graph_root {
+        if context.owner != &self.owner || context.graph_root != self.graph_root || !context.created_project_authenticated {
             return Err(denied("project source belongs to another service graph"));
         }
-        if self.native_source(&snapshot.project).is_some() && snapshot.native_snapshot.is_none() {
+        if snapshot.native_snapshot.is_some() {
             return Err(denied(
-                "bound lazy project requires its original native snapshot",
+                "native source has no original provider binding",
             ));
         }
         if io.is_none() {
@@ -59,33 +59,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
         };
         io.check_cancellation()?;
-        if !context.created_project_authenticated {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let proof = self.bootstrap.as_ref().ok_or_else(|| {
-                    denied("project source lacks this graph's authenticated creator")
-                })?;
-                if context.source.task_id() != self.graph_root
-                    || proof.request().volume != snapshot.project
-                    || proof.request().generation != snapshot.generation
-                    || with_history_io(Some(io), |work| {
-                        context.source.canonical_digest_with_work(work)
-                    })? != proof.admission_digest
-                    || io
-                        .original_native_work()
-                        .is_some_and(|work| !proof.matches_native_work(work))
-                {
-                    return Err(denied(
-                        "project source differs from its protected original Root",
-                    ));
-                }
-                proof.reauthenticate_with_io(io).await?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            return Err(denied(
-                "project source lacks this graph's authenticated creator",
-            ));
-        }
         if !io.contains_capability(&context.source.grants, &snapshot.project, "volume:read:")? {
             return Err(denied(
                 "selected source admission lacks original project read authority",
@@ -94,37 +67,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let reference =
             fork_preparer_io::content_workspace(&self.host.provider, &snapshot.project, Some(io))?;
         let _reference = io.guard_owned(reference.logical_owned_bytes()?)?;
-        let opened = fork_preparer_io::open(&self.host, &reference, io).await?;
+        let opened = self.host.open(&reference, Some(io)).await?;
         if io.original_native_work().is_none() {
             io.retain_owned(opened.name().as_str().len() as u64)?;
         }
         let selected =
-            fork_preparer_io::generation(&self.host, &opened, &snapshot.generation, io).await?;
-        let generation = selected.id();
+            (&self.host).generation(&opened, &snapshot.generation, Some(io)).await?;
         drop(selected);
-        if let Some(value) = &snapshot.native_snapshot {
-            let lazy = self
-                .native_source(&snapshot.project)
-                .ok_or_else(|| denied("native source has no original provider binding"))?;
-            if lazy.backing.workspace_id() != opened.id() {
-                return Err(denied("native source names another original workspace"));
-            }
-            let (frozen, _frozen) = source_snapshot(
-                value,
-                JsonBounds {
-                    maximum_bytes: context.maximum_bytes,
-                    maximum_items: context.maximum_work,
-                    maximum_depth: 32,
-                },
-                io,
-            )?;
-            if frozen.workspace_id != opened.id() || frozen.authored_generation != generation {
-                return Err(denied(
-                    "native capture does not match the selected generation",
-                ));
-            }
-            lazy.backing.validate(frozen, io)?.await?;
-        }
         check()?;
         io.remaining()?;
         Ok(())
@@ -181,6 +130,11 @@ pub(super) fn source_snapshot<'a>(
         crate::executor::json::JsonValueSchema::None,
         &mut |charge| io.codec_charge(charge, false),
     )?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.original_native_work().is_some() {
+        io.check_json_byte_bound(value, bounds.maximum_bytes)?;
+        return io.value_decode_preparation(value, ErrorCode::Invalid);
+    }
     let bytes = io.encode(value, bounds.maximum_bytes, true)?;
     let _bytes = io.guard_bytes(&bytes)?;
     io.decode(std::marker::PhantomData, &bytes, ErrorCode::Invalid)

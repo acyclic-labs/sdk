@@ -20,7 +20,6 @@ use crate::{
     store::StreamAggregate,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::StreamProvider;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -36,71 +35,6 @@ pub struct FilesystemInteractionHost<P, A, O> {
     maximum_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    async fn inspect(
-        &self,
-        scope: Scope,
-        id: InteractionId,
-    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
-        self.verifier.verify(&scope, &mut None)?;
-        let result = self.read(id, None).await?;
-        if let Some((ticket, _)) = &result
-            && !scope.capabilities().contains(&ticket.viewer_grant())
-            && !scope.capabilities().contains(&ticket.responder_grant())
-        {
-            return Err(Error::Unauthorized(
-                "scope lacks interaction view grant".into(),
-            ));
-        }
-        Ok(result)
-    }
-
-    async fn resolve_answer(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        id: InteractionId,
-        expected_version: u64,
-        response: InteractionResponse,
-    ) -> Result<ResolutionReceipt> {
-        FilesystemInteractionHost::resolve_answer(
-            self,
-            operation_id,
-            scope,
-            id,
-            expected_version,
-            response,
-        ).await
-    }
-
-    async fn resolve_approval(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        id: InteractionId,
-        expected_version: u64,
-        approved: bool,
-        reason: Option<String>,
-    ) -> Result<ResolutionReceipt> {
-        FilesystemInteractionHost::resolve_approval(
-            self,
-            operation_id,
-            scope,
-            id,
-            expected_version,
-            approved,
-            reason,
-        ).await
-    }
 }
 
 mod content;

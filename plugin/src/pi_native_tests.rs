@@ -196,8 +196,7 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
         "actual-created-child-caller".into(),
     )]);
     let child = host.bind_invocation(&intent, &caller, &work).unwrap();
-    assert_eq!(child.0.executable, host.executable);
-    assert_eq!(child.0.provider_extension, host.provider_extension);
+    assert_eq!(child.0.runtime_digest, intent.invocation.runtime_digest);
     assert_eq!(
         child
             .0
@@ -228,7 +227,7 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
     for mutation in 0..5 {
         let mut changed = intent.clone();
         match mutation {
-            0 => changed.invocation.executable = root.join("foreign-node"),
+            0 => changed.invocation.runtime_digest[0] ^= 1,
             1 => {
                 changed
                     .invocation

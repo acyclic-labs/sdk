@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
@@ -20,33 +21,21 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         &'a self,
         receive_operation: OperationId,
         item: &'a InboxItem,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_received_with_native_work<'a>(
-        &'a self,
-        _receive_operation: OperationId,
-        _item: &'a InboxItem,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "owned mailbox has no original native-ledger received parcel reader",
-        })
-    }
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
 }
 
 /// Capability-scoped context passed to live task code.
 pub struct TaskContext {
-    pub(super) harness: Arc<AgentHarness>,
+    pub(crate) harness: Arc<AgentHarness>,
     pub(super) task_id: OperationId,
     pub(super) durable_task: Option<TaskId>,
     pub(super) descendants: TaskGroup,
     pub(super) scope: RuntimeScope,
     pub(super) policy_overrides: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
-    pub(super) owned_interactions: Option<Arc<dyn InteractionRouter>>,
+    pub(crate) owned_interactions: Option<Arc<dyn InteractionRouter>>,
     pub(super) model_steps: Arc<(AtomicUsize, Option<NativeCustody>)>,
-    pub(super) owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
+    pub(crate) owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
     pub(super) output_content: Option<ContentBindings>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_purpose: Option<IssuedContextPurpose>,
@@ -56,12 +45,18 @@ pub struct TaskContext {
 
 impl Clone for TaskContext {
     fn clone(&self) -> Self {
+        self.copy_with_scope(self.scope.clone())
+    }
+}
+
+impl TaskContext {
+    pub(super) fn copy_with_scope(&self, scope: RuntimeScope) -> Self {
         Self {
             harness: Arc::clone(&self.harness),
             task_id: self.task_id,
             durable_task: self.durable_task,
             descendants: self.descendants.clone(),
-            scope: self.scope.clone(),
+            scope,
             policy_overrides: self.policy_overrides.clone(),
             owned_interactions: self.owned_interactions.clone(),
             owned_mailbox: self.owned_mailbox.clone(),
@@ -73,9 +68,30 @@ impl Clone for TaskContext {
             native_custody: None,
         }
     }
-}
 
-impl TaskContext {
+    pub(crate) fn into_shared(mut self) -> Result<Arc<TaskContext>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(mut custody) = self.native_custody.take() {
+            let mut slot = match custody.work().claim(
+                (2 * std::mem::size_of::<usize>()) as u64,
+                1,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            ) {
+                Ok(slot) => slot,
+                Err(cause) => {
+                    drop(self);
+                    return Err(Error::NativeWork {
+                        cause,
+                        custody: Some(custody),
+                    });
+                }
+            };
+            custody.absorb(&mut slot)?;
+            self.native_custody = Some(custody);
+        }
+        Ok(Arc::new(self))
+    }
+
     /// Selects an authenticated created destination without widening task authority.
     pub async fn with_output_volume(self: &Arc<Self>, volume: &VolumeRef) -> Result<Arc<Self>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -90,32 +106,10 @@ impl TaskContext {
         let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
             Error::Unauthorized("output volume has no admitted creation binding".into())
         })?;
-        self.bound_content_writer(Some(binding), &self.scope, None)?;
+        bound_content_writer(Some(binding), &self.scope, None)?;
         let mut context = self.as_ref().clone();
         context.output_content = Some(binding.clone());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        return context.into_shared();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        Ok(Arc::new(context))
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn with_owned_mailbox(
-        mut self,
-        task: TaskId,
-        mailbox: Arc<dyn OwnedTaskMailbox>,
-    ) -> Result<Self> {
-        if self.durable_task != Some(task) {
-            return Err(Error::Unauthorized(
-                "mailbox owner differs from task context".into(),
-            ));
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            self.native_purpose = None;
-        }
-        self.owned_mailbox = Some(mailbox);
-        Ok(self)
+        context.into_shared()
     }
 
     /// Borrows the task and fence from this context's original owner.
@@ -128,23 +122,19 @@ impl TaskContext {
         if let Some(work) = io.and_then(|io| io.original_native_work()) {
             self.require_original_native_work(work)?;
         }
-        let owner = self.owned_mailbox.as_ref().ok_or_else(|| {
-            crate::conversation::content_error(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "task context has no original owner",
-            )
-        })?;
+        let owner = self
+            .owned_mailbox
+            .as_ref()
+            .filter(|owner| self.durable_task == Some(owner.task_binding().0))
+            .ok_or_else(|| {
+                crate::conversation::content_error(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "task context has no matching original owner",
+                )
+            })?;
         owner.validate_scope(&self.scope, io)?;
-        let (task, fence) = owner.task_binding();
-        if self.durable_task != Some(task) {
-            return Err(crate::conversation::content_error(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "task context differs from original owner",
-            ));
-        }
-        Ok((task, fence))
+        Ok(owner.task_binding())
     }
 
     #[cfg(feature = "filesystem")]
@@ -160,25 +150,6 @@ impl TaskContext {
                 .is_some_and(|owner| owner.task_binding() == (task, fence))
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn with_owned_interactions(
-        mut self,
-        task: TaskId,
-        router: Arc<dyn InteractionRouter>,
-    ) -> Result<Self> {
-        if self.durable_task != Some(task) {
-            return Err(Error::Unauthorized(
-                "interaction owner differs from task context".into(),
-            ));
-        }
-        self.owned_interactions = Some(router);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            self.native_purpose = None;
-        }
-        Ok(self)
-    }
-
     /// Returns this invocation's stable local operation identity.
     #[must_use]
     pub const fn id(&self) -> OperationId {
@@ -191,15 +162,6 @@ impl TaskContext {
         self.durable_task
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn original_host_binding_matches(
-        &self,
-        host: &dyn DurableTaskHost,
-        policy: Option<&dyn ToolPolicy>,
-    ) -> bool {
-        self.harness.original_host_binding_matches(host, policy)
-    }
-
     /// Returns the exact effective authority and bounds.
     #[must_use]
     pub const fn scope(&self) -> &RuntimeScope {
@@ -210,35 +172,6 @@ impl TaskContext {
     pub fn scoped(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
         let mut child = self.clone();
         child.scope = self.scope.narrow(grants, limits)?;
-        Ok(child)
-    }
-
-    /// Attenuates task execution bounds for this context and its descendants.
-    pub fn scoped_run_limits(&self, limits: TaskRunLimits) -> Result<Self> {
-        let mut child = self.clone();
-        child.scope = self.scope.clone().with_run_limits(limits, &mut None)?;
-        child.descendants = self.descendants.child(
-            child.scope.concurrency_bound(self.harness.concurrency),
-            None,
-        )?;
-        Ok(child)
-    }
-
-    /// Overrides only this live task's model binding for itself and local descendants.
-    pub fn scoped_model(
-        &self,
-        grants: Capabilities,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-    ) -> Result<Self> {
-        if self.durable_task.is_some() {
-            return Err(Error::Unsupported(
-                "durable model override requires a recorded effect".into(),
-            ));
-        }
-        let mut child = self.scoped(grants, limits)?;
-        child.harness = child.harness.bind_model(model, provider)?;
         Ok(child)
     }
 
@@ -385,16 +318,11 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
     )?;
-    let digest = blake3::Hash::from(digest).to_hex();
-    let mut capability = [0; "directory:read:".len() + 64];
-    let end = prefix.len() + digest.len();
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-        io.copy_bytes(end as u64)?;
+        io.copy_bytes((prefix.len() + 64) as u64)?;
     }
-    capability[..prefix.len()].copy_from_slice(prefix.as_bytes());
-    capability[prefix.len()..end].copy_from_slice(digest.as_bytes());
-    let capability = std::str::from_utf8(&capability[..end])
-        .expect("canonical capability prefixes and hash are ASCII");
-    Ok(grants.contains(capability))
+    Ok(crate::conversation::contains_content_label(
+        grants, prefix, digest,
+    ))
 }

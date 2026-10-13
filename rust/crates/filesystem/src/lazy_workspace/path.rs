@@ -35,7 +35,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<NamespacePath>, LazyWorkspaceError> {
-        let (value, guard) = NamespacePath::parse_in_profile_with_accounting(
+        let (value, guard) = NamespacePath::parse_in_profile(
             path,
             self.workspace.profile(),
             self.workspace.limits(),

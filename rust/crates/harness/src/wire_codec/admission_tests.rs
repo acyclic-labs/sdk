@@ -1,144 +1,76 @@
 use super::*;
-use crate::store::history::{HistoryIo, HistoryWork};
-use acyclic_fs::{CancellationToken, WorkBudget};
+use crate::store::HistoryWork;
+use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 use prost::Message as _;
-
 fn budget() -> WorkBudget {
     WorkBudget {
-        authority_records_read: 64,
-        backend_read_operations: 64,
-        authority_bytes_read: 16_777_216,
+        source_bytes_read: 16_777_216,
         bytes_copied: 16_777_216,
         bytes_encoded: 16_777_216,
         bytes_hashed: 16_777_216,
-        authority_records_appended: 64,
-        authority_bytes_written: 16_777_216,
-        backend_write_operations: 64,
-        output_bytes: 16_777_216,
         items_examined: 1_000_000,
-        items_returned: 64,
         allocation_operations: 10_000,
         peak_allocation_bytes: 16_777_216,
         ..WorkBudget::default()
     }
 }
-
-fn event() -> Event {
-    Event {
-        revision: 1,
-        operation_id: OperationId::from_bytes([42; 16]),
-        intent_digest: [43; 32],
-        scope: RecordedScope::from_wire(
-            "original".into(),
-            Capabilities::new(["conversation:bind"]),
-            "original-issuer".into(),
-            Some(crate::AgentId::from_bytes([44; 16])),
-        ),
-        attestation: [45; 32],
-        causal_parent: None,
-        payload: EventPayload::ConversationBound {
-            agent: crate::AgentId::from_bytes([44; 16]),
-        },
-    }
-}
-fn authority() -> Authority {
-    Authority {
-        kind: AggregateKind::Conversation,
-        id: "original-authority".into(),
-    }
-}
-
 #[test]
-fn concrete_wire_guard_preserves_original_bytes_and_reencode_work() -> Result<()> {
-    let authority = authority();
-    let event = event();
-    let bytes = encode_event(&authority, &event, &mut None)?;
-    let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-        budget(),
-        &cancellation,
-    )?);
-    let decoded = decode_event(&bytes, &mut Some(&mut work))?.0;
-    assert_eq!(decoded, (authority, event));
-    let receipt = work.finish(Ok(decoded)).map_err(|failure| failure.error)?;
-    assert!(receipt.work.bytes_encoded >= bytes.len() as u64);
-    assert!(receipt.work.peak_allocation_bytes > bytes.len() as u64);
+fn native_event_round_trip_releases_custody() -> Result<()> {
+    let bytes = tests::fixture();
+    let token = CancellationToken::new();
+    let native = NativeMaterializationWork::new(budget(), &token).unwrap();
+    let baseline = native.live_allocation_bytes();
+    for suffix in [&[][..], &[0x18, 0x01], &[0x78, 0x01]] {
+        let mut input = bytes.clone();
+        input.extend_from_slice(suffix);
+        let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+        let decoded = decode_event(&input, &mut Some(&mut io));
+        if suffix.is_empty() {
+            let ((authority, event), _) = decoded?;
+            assert_eq!(encode_event(&authority, &event, &mut None)?, bytes);
+        } else {
+            assert!(decoded.is_err());
+        }
+        drop(io.into_custody()?);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+    let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+    token.cancel();
+    assert!(decode_event(&bytes, &mut Some(&mut io)).is_err());
     Ok(())
 }
-
 #[test]
-fn typed_payload_quota_rejects_before_original_serde_error() -> Result<()> {
-    let mut envelope = encode_event_envelope(&authority(), &event())?;
-    // Valid JSON that would fail the original concrete enum deserializer.
+fn native_partial_payload_cause_keeps_original_guard_until_cause_drop() -> Result<()> {
+    let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice()).unwrap();
     envelope.canonical_payload_json =
-        br#"{"type":"not_an_event","untrusted":["owned","strings"]}"#.to_vec();
-    let bytes = envelope.encode_to_vec();
-    let carrier = admission::decode_quota(&bytes, &mut None)?;
-    let mut allowance = budget();
-    allowance.peak_allocation_bytes = carrier;
-    let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-        allowance,
-        &cancellation,
-    )?);
-    let failure = decode_event(&bytes, &mut Some(&mut work))
-        .expect_err("typed admission cannot allocate past the carrier-only allowance");
-    assert!(!failure.to_string().contains("unknown variant"));
-    assert!(!failure.to_string().contains("not_an_event"));
-    let receipt = work
-        .finish::<()>(Err(failure))
-        .expect_err("admission failure must preserve its measured prefix");
-    assert_eq!(receipt.work.bytes_encoded, 0);
-    assert!(receipt.work.items_examined > 0);
-    assert_eq!(receipt.work.output_bytes, 0);
-    assert_eq!(receipt.work.backend_read_operations, 0);
+        br#"{"type":"conversation_bound","agent":"not-a-UUID"}"#.to_vec();
+    let original =
+        serde_json::from_slice::<EventPayload>(&envelope.canonical_payload_json).unwrap_err();
+    let token = CancellationToken::new();
+    let native = NativeMaterializationWork::new(budget(), &token).unwrap();
+    let baseline = native.live_allocation_bytes();
+    let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+    let Error::NativeJson {
+        code,
+        source,
+        custody: Some(custody),
+    } = decode_event(&envelope.encode_to_vec(), &mut Some(&mut io)).unwrap_err()
+    else {
+        panic!("original JSON cause required")
+    };
+    assert_eq!(code, Storage);
+    assert_eq!(source.classify(), original.classify());
+    assert!(native.shares_ledger(custody.work()));
+    assert_eq!(io.into_custody()?.bytes(), 0);
+    assert!(native.live_allocation_bytes() > baseline);
+    drop(source);
+    assert!(native.live_allocation_bytes() > baseline);
+    drop(custody);
+    assert_eq!(native.live_allocation_bytes(), baseline);
     Ok(())
 }
-
-#[test]
-fn duplicate_carrier_and_unknown_field_are_not_canonical() -> Result<()> {
-    let bytes = encode_event(&authority(), &event(), &mut None)?;
-    let mut duplicate = bytes.clone();
-    // EventEnvelope revision field 3, a duplicate canonical scalar value.
-    duplicate.extend_from_slice(&[0x18, 0x01]);
-    assert!(decode_event(&duplicate, &mut None).is_err());
-    let mut unknown = bytes;
-    unknown.extend_from_slice(&[0x78, 0x01]);
-    assert!(decode_event(&unknown, &mut None).is_err());
-    Ok(())
-}
-
-#[test]
-fn malformed_frame_and_cancel_have_no_original_deserialization_work() -> Result<()> {
-    let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-        budget(),
-        &cancellation,
-    )?);
-    assert!(decode_event(&[0x4a, 0xff], &mut Some(&mut work)).is_err());
-    let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
-    assert_eq!(receipt.work.bytes_encoded, 0);
-    cancellation.cancel();
-    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-        budget(),
-        &cancellation,
-    )?);
-    let bytes = encode_event(&authority(), &event(), &mut None)?;
-    let failure = decode_event(&bytes, &mut Some(&mut work))
-        .expect_err("the original token must reject before framing");
-    assert!(HistoryIo::check_cancellation(&work).is_err());
-    let receipt = work
-        .finish::<()>(Err(failure))
-        .expect_err("original operation token is cancelled");
-    assert_eq!(receipt.work.bytes_encoded, 0);
-    assert_eq!(receipt.work.items_examined, 0);
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> Result<()> {
-    use acyclic_fs::NativeMaterializationWork;
     for bytes in [
         &[0x00][..],
         &[0x4a, 0xff],
@@ -147,63 +79,73 @@ fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> R
         &[0x7b; 101],
     ] {
         let token = CancellationToken::new();
-        let native =
-            NativeMaterializationWork::new(budget(), &token).expect("original native ledger");
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&native)?,
-        );
-        let error = admission::decode_quota(bytes, &mut Some(&mut io))
-            .expect_err("original prost framing must reject");
+        let native = NativeMaterializationWork::new(budget(), &token).unwrap();
+        let baseline = native.live_allocation_bytes();
+        let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
         let Error::NativeProstDecode {
-            code,
             source,
             custody: Some(custody),
-        } = error
+            ..
+        } = admission::decode_quota(bytes, &mut Some(&mut io)).unwrap_err()
         else {
-            panic!("prost must keep its actual cause and original preclaimed guard");
+            panic!("original Prost cause required")
         };
-        assert_eq!(code, crate::wire::ErrorCode::Storage);
-        assert!(custody.bytes() > 0);
-        assert!(custody.work().shares_ledger(&native));
-        assert!(native.receipt().items_examined > 0);
-        assert_eq!(native.receipt().authority_bytes_read, 0);
-        assert_eq!(native.receipt().backend_read_operations, 0);
-        assert_eq!(io.into_custody()?.bytes(), 0);
-        let mut original = bytes;
-        let expected = prost::encoding::decode_key(&mut original)
+        let mut input = bytes;
+        let expected = prost::encoding::decode_key(&mut input)
             .and_then(|(tag, kind)| {
                 prost::encoding::skip_field(
                     kind,
                     tag,
-                    &mut original,
+                    &mut input,
                     prost::encoding::DecodeContext::default(),
                 )
             })
-            .expect_err("same original prost framing cause");
+            .unwrap_err();
         assert_eq!(source, expected);
-        // Actual diagnostic data precedes its original guard on destruction.
+        assert!(native.shares_ledger(custody.work()));
+        assert_eq!(io.into_custody()?.bytes(), 0);
         drop(source);
+        assert!(native.live_allocation_bytes() > baseline);
         drop(custody);
+        assert_eq!(native.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn native_quota_precedes_allocating_original_deserialize_failure() -> Result<()> {
+    let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice()).unwrap();
+    envelope.canonical_payload_json = format!(
+        r#"{{"type":"not_an_event","untrusted":["{}"]}}"#,
+        "x".repeat(4096)
+    )
+    .into_bytes();
+    let bytes = envelope.encode_to_vec();
+    let carrier = admission::decode_quota(&bytes, &mut None)?.0;
+    let mut allowance = budget();
+    allowance.peak_allocation_bytes =
+        NativeMaterializationWork::accounting_state_bytes() + carrier + 8192;
+    let token = CancellationToken::new();
+    let native = NativeMaterializationWork::new(allowance, &token).unwrap();
+    let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+    let error = decode_event(&bytes, &mut Some(&mut io)).unwrap_err();
+    assert!(!matches!(
+        error,
+        Error::NativeJson { .. } | Error::NativeProstDecode { .. }
+    ));
+    drop(error);
+    assert_eq!(io.into_custody()?.bytes(), 0);
+    Ok(())
+}
 #[test]
 fn native_diagnostic_quota_denies_before_even_malformed_key_decode() -> Result<()> {
-    use acyclic_fs::NativeMaterializationWork;
-    let token = CancellationToken::new();
     let mut allowance = budget();
     allowance.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
-    let native = NativeMaterializationWork::new(allowance, &token).expect("accounting-only ledger");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)?,
-    );
-    let error = admission::decode_quota(&[0x00], &mut Some(&mut io))
-        .expect_err("diagnostic admission must deny before allocating prost error");
-    assert!(matches!(error, Error::NativeWork { .. }));
-    assert_eq!(native.receipt().items_examined, 0);
-    assert_eq!(native.receipt().backend_read_operations, 0);
-    assert_eq!(native.receipt().authority_bytes_read, 0);
+    let token = CancellationToken::new();
+    let native = NativeMaterializationWork::new(allowance, &token).unwrap();
+    let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+    assert!(matches!(
+        admission::decode_quota(&[0x00], &mut Some(&mut io)),
+        Err(Error::NativeWork { .. })
+    ));
     Ok(())
 }

@@ -283,6 +283,7 @@ pub(super) async fn prepare_case(
             Some(&imported_ref),
             "/sentinel.txt",
             PAYLOAD_BYTES,
+            None,
         )
         .await?;
     let imported_file = FileRef::new(

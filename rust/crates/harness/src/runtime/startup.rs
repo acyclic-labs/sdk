@@ -9,15 +9,6 @@ impl AgentHarness {
         Ok(Arc::new(child))
     }
 
-    /// Narrows the effective task execution bounds for newly admitted work.
-    pub fn scoped_run_limits(self: &Arc<Self>, limits: TaskRunLimits) -> Result<Arc<Self>> {
-        let mut child = self.as_ref().clone();
-        child.scope = self.scope.clone().with_run_limits(limits, &mut None)?;
-        child.live = TaskGroup::new(child.scope.concurrency_bound(self.concurrency), None)?;
-        child.fork_preparer = None;
-        Ok(Arc::new(child))
-    }
-
     /// Submits one signed decision for the ticket's exact approved intent.
     pub async fn resolve_approval(
         &self,

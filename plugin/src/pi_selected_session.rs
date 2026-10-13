@@ -223,7 +223,13 @@ impl PiSession {
                     "selected caller has no current native owner".to_owned(),
                 )
             })?;
-            let fence = live.context.owned_task_fence()?;
+            let fence = live
+                .context
+                .owned_task_binding(Some(
+                    &acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                ))?
+                .1
+                .clone();
             let (input, mut input_custody) = pi_root_provider::guarded_pi_value(
                 &payload,
                 owner.policy().maximum_payload_bytes,

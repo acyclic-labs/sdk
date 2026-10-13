@@ -193,24 +193,24 @@ impl TaskContext {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
-            return self
-                .native_mailbox(original)?
-                .read_received_with_native_work(receive_operation, item, original)?
-                .await;
-        }
-        if work.is_some() {
-            return Err(crate::scheduler::diagnostic(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "parcel read requires an original native observer",
-            ));
+        let original = work.as_deref().and_then(|io| io.original_native_work())
+            .map(crate::executor::PreparationIo::from_native_work).transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let original = None::<crate::conversation::ContentIo>;
+        let io = original.as_ref();
+        if work.is_some() && io.is_none() {
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unsupported,
+                "parcel read requires an original native observer"));
         }
         let mailbox = self.owned_mailbox.as_ref().ok_or_else(|| {
-            Error::Unauthorized("parcel read requires a retained mailbox owner".into())
+            crate::conversation::content_error(io, crate::wire::ErrorCode::Unauthorized,
+                "parcel read requires a retained mailbox owner")
         })?;
-        mailbox.validate_scope(&self.scope, None)?;
-        mailbox.read_received(receive_operation, item).await
+        #[cfg(feature = "filesystem")]
+        self.owned_task_binding(io)?;
+        #[cfg(not(feature = "filesystem"))]
+        mailbox.validate_scope(&self.scope, io)?;
+        mailbox.read_received(receive_operation, item, io)?.await
     }
 
     /// Reads a bounded durable inbox page after the last observed sequence.
@@ -225,15 +225,5 @@ impl TaskContext {
         mailbox.inbox(after, limit).await
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn native_mailbox(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<&Arc<dyn OwnedTaskMailbox>> {
-        self.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-        self.owned_mailbox.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "mail requires an original native task mailbox owner",
-        })
-    }
+
 }

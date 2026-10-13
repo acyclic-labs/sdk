@@ -4,88 +4,59 @@ use prost::Message as _;
 pub(crate) fn encode_event(
     authority: &Authority,
     event: &Event,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
-    let native = native_event_work(work);
-    let mut metadata =
-        admission::Quota::new(work, admission::encode_metadata_quota(authority, event)?)?;
-    let encoded = crate::store::history::canonical_bytes_with_work(
-        &event.payload,
-        acyclic_stream::MAX_RECORD_BYTES as u64,
-        metadata.work(),
-    );
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let encoded = encoded.map_err(|mut error| {
-        if let Error::NativeJson { custody, .. } = &mut error
-            && custody.is_none()
-            && native
-        {
-            let retained = metadata.retained();
-            *custody = Some(
-                metadata
-                    .work()
-                    .as_deref_mut()
-                    .expect("native event observer")
-                    .take_native_custody(retained)
-                    .expect("preclaimed event encoder diagnostic custody"),
-            );
-            metadata.transfer();
-        }
-        error
-    });
-    let payload = encoded?;
-    metadata.adopt(payload.capacity() as u64)?;
-    if let Some(work) = metadata.work().as_deref_mut() {
-        work.hashed_bytes(crate::FILE_DESCRIPTOR_SET.len() as u64)?;
-    }
-    let copied = admission::encode_metadata_copy_bytes(authority, event)?;
-    if let Some(work) = metadata.work().as_deref_mut() {
-        work.admit_copy(copied)?;
-    }
-    let envelope = event_envelope(authority, event, payload);
-    if let Some(work) = metadata.work().as_deref_mut() {
-        work.copy_bytes(copied)?;
-    }
-    metadata.replace(admission::envelope_owned(&envelope))?;
+    let mut quota = CodecQuota::new(work, 0)?;
+    let envelope = encode_event_envelope(authority, event, quota.work())?;
+    quota.adopt(admission::envelope_owned(&envelope))?;
     let length = envelope.encoded_len();
-    let mut output = Vec::new();
-    if let Some(work) = metadata.work().as_deref_mut() {
-        work.admit_encoding(length as u64)?;
-        crate::store::history::reserve(&mut output, length, work)?;
+    let mut bytes = Vec::new();
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.admit_encoding(length as u64)?;
+        crate::store::history::reserve(&mut bytes, length, io)?;
     } else {
-        output.reserve_exact(length);
+        bytes.reserve_exact(length);
     }
-    metadata.adopt(output.capacity() as u64)?;
-    let result = if native {
-        envelope.encode_raw(&mut output);
-        Ok(())
-    } else {
-        envelope
-            .encode(&mut output)
-            .map_err(|error| Error::Storage(error.to_string()))
-    };
-    if let Some(work) = metadata.work().as_deref_mut() {
-        work.encoded_bytes(output.len() as u64)?;
+    quota.adopt(bytes.capacity() as u64)?;
+    envelope.encode_raw(&mut bytes);
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.encoded_bytes(bytes.len() as u64)?;
     }
     drop(envelope);
-    result?;
-    metadata.replace(output.capacity() as u64)?;
-    metadata.transfer();
-    Ok(output)
+    quota.replace(bytes.capacity() as u64)?;
+    quota.transfer();
+    Ok(bytes)
 }
-
-/// Constructs the exact canonical event envelope without encoding it twice.
-pub fn encode_event_envelope(authority: &Authority, event: &Event) -> Result<wire::EventEnvelope> {
-    Ok(event_envelope(
-        authority,
-        event,
-        canonical_json_bytes(&event.payload)?,
-    ))
-}
-
-fn event_envelope(authority: &Authority, event: &Event, payload: Vec<u8>) -> wire::EventEnvelope {
+/// Constructs a canonical envelope, retaining its buffers on the supplied observer.
+pub fn encode_event_envelope(
+    authority: &Authority,
+    event: &Event,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<wire::EventEnvelope> {
+    let (owned, copied) = admission::metadata_quota(authority, event)?;
+    let mut quota = CodecQuota::new(work, owned)?;
+    let code = quota
+        .work()
+        .as_deref()
+        .is_some_and(crate::store::operations::original_native_decode_mode)
+        .then_some(Invalid);
+    let result = crate::executor::json::canonical_json_bytes_bounded(
+        &event.payload,
+        PAYLOAD_BOUNDS,
+        code,
+        &mut |charge| match quota.work().as_deref_mut() {
+            Some(io) => io.codec_charge(charge),
+            None => Ok(()),
+        },
+    );
+    let payload = result.map_err(|error| quota.json_error(error))?;
+    quota.adopt(payload.capacity() as u64)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.hashed_bytes(crate::FILE_DESCRIPTOR_SET.len() as u64)?;
+        io.admit_copy(copied)?;
+    }
     let (issuer, agent) = event.scope.wire_parts();
-    wire::EventEnvelope {
+    let envelope = wire::EventEnvelope {
         protocol: Some(protocol_identity()),
         authority: Some(encode_authority(authority)),
         revision: event.revision,
@@ -106,182 +77,63 @@ fn event_envelope(authority: &Authority, event: &Event, payload: Vec<u8>) -> wir
         event_type: event.payload.tag().into(),
         canonical_payload_json: payload,
         attestation: event.attestation.to_vec(),
+    };
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.copy_bytes(copied)?;
     }
+    quota.replace(admission::envelope_owned(&envelope))?;
+    quota.transfer();
+    Ok(envelope)
 }
-
-/// Returns the event's original retained claim, excluding the authority header.
 pub(crate) fn decode_event(
     bytes: &[u8],
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<((Authority, Event), u64)> {
-    let native = native_event_work(work);
-    if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(event_boundary(
-            native,
-            wire::ErrorCode::Storage,
-            "event exceeds SDK record boundary",
-        ));
+    let (owned, guard) = admission::decode_quota(bytes, work)?;
+    // The carrier must drop before its reservation.
+    let mut quota = CodecQuota::new(work, owned)?;
+    let mut envelope = wire::EventEnvelope::decode(bytes)
+        .map_err(|source| admission::prost_error(guard, source))?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.hashed_bytes(crate::FILE_DESCRIPTOR_SET.len() as u64)?;
     }
-    let admitted = admission::decode_quota(bytes, work)?;
-    // Carrier fields and buffers must drop before this reservation.
-    let mut payload_quota = admission::Quota::new(work, admitted)?;
-    let diagnostic = admission::prost_diagnostic_preclaim(payload_quota.work())?;
-    let mut envelope =
-        wire::EventEnvelope::decode(bytes).map_err(|source| diagnostic.forward(source))?;
-    if let Some(work) = payload_quota.work().as_deref_mut() {
-        work.hashed_bytes(crate::FILE_DESCRIPTOR_SET.len() as u64)?;
-    }
-    validate_event_protocol(envelope.protocol.as_ref(), native)?;
-    let authority = decode_event_authority(
-        envelope.authority.take().ok_or_else(|| {
-            event_boundary(
-                native,
-                wire::ErrorCode::Storage,
-                "event authority is missing",
-            )
-        })?,
-        native,
+    validate_protocol(
+        envelope.protocol.as_ref(),
+        (
+            EVENT_WIRE_VERSION,
+            blake3::hash(crate::FILE_DESCRIPTOR_SET).to_hex().as_str(),
+        ),
+        Storage,
+        quota.work(),
     )?;
-    let operation_id = if native {
-        let id = uuid::Uuid::parse_str(&envelope.operation_id).map_err(|_| {
-            event_boundary(
-                native,
-                wire::ErrorCode::Invalid,
-                "operation UUID is invalid",
-            )
-        })?;
-        OperationId::from_bytes(*id.as_bytes())
-    } else {
-        OperationId::parse(&envelope.operation_id)?
-    };
-    let intent_digest: [u8; 32] = envelope.intent_digest.as_slice().try_into().map_err(|_| {
-        event_boundary(
-            native,
-            wire::ErrorCode::Storage,
-            "event intent digest must be 32 bytes",
-        )
-    })?;
-    let scope = envelope.scope.take().ok_or_else(|| {
-        event_boundary(native, wire::ErrorCode::Storage, "event scope is missing")
-    })?;
-    let bounds = crate::executor::json::JsonBounds {
-        maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-        maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
-        maximum_depth: 256,
-    };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let payload: EventPayload = if native {
-        let decoded = crate::executor::json::json_from_slice_bounded(
-            std::marker::PhantomData,
-            &envelope.canonical_payload_json,
-            bounds,
-            0,
-            Some(wire::ErrorCode::Storage),
-            Some(crate::executor::json::JsonValueSchema::EventPayload),
-            &mut |charge| match charge {
-                crate::executor::json::JsonCodecCharge::Admission { value_shape, .. } => {
-                    let witness = crate::executor::json::json_decode_owned_bytes(
-                        value_shape,
-                        false,
-                        Some(wire::ErrorCode::Storage),
-                    )?;
-                    let retained = admitted.checked_add(witness.0).ok_or_else(|| {
-                        event_boundary(
-                            native,
-                            wire::ErrorCode::Storage,
-                            "event payload custody overflows",
-                        )
-                    })?;
-                    payload_quota.replace(retained)
-                }
-                charge => payload_quota
-                    .work()
-                    .as_deref_mut()
-                    .expect("native event observer")
-                    .codec_charge(charge),
-            },
-        );
-        decoded.map_err(|mut error| {
-            if let Error::NativeJson { custody, .. } = &mut error
-                && custody.is_none()
-            {
-                // Only split the already admitted original claim: a new quota check must never replace the actual foreign Serde cause.
-                let retained = payload_quota.retained();
-                *custody = Some(
-                    payload_quota
-                        .work()
-                        .as_deref_mut()
-                        .expect("native event observer")
-                        .take_native_custody(retained)
-                        .expect("preclaimed event decoder custody"),
-                );
-                payload_quota.transfer();
-            }
-            error
-        })?
-    } else {
-        decode_portable_event_payload(
-            &envelope.canonical_payload_json,
-            bounds,
-            admitted,
-            &mut payload_quota,
-        )?
-    };
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let payload: EventPayload = decode_portable_event_payload(
-        &envelope.canonical_payload_json,
-        bounds,
-        admitted,
-        &mut payload_quota,
+    let authority = decode_authority(
+        envelope
+            .authority
+            .take()
+            .ok_or_else(|| boundary(quota.work(), Storage, "missing event authority"))?,
+        Storage,
+        quota.work(),
     )?;
-    if envelope.event_type != payload.tag() {
-        return Err(event_boundary(
-            native,
-            wire::ErrorCode::Storage,
-            "event type disagrees with its payload",
-        ));
-    }
-    let attestation = envelope.attestation.as_slice().try_into().map_err(|_| {
-        event_boundary(
-            native,
-            wire::ErrorCode::Storage,
-            "event attestation must be 32 bytes",
-        )
-    })?;
-    let scope_agent = if native && !scope.agent_id.is_empty() {
-        let id = uuid::Uuid::parse_str(&scope.agent_id).map_err(|_| {
-            event_boundary(
-                native,
-                wire::ErrorCode::Invalid,
-                "scope agent UUID is invalid",
-            )
-        })?;
-        Some(AgentId::from_bytes(*id.as_bytes()))
-    } else {
-        parse_scope_agent(&scope.agent_id)?
-    };
-    let causal_parent = envelope
-        .causal_parent
+    let operation_id = OperationId::from_bytes(
+        *uuid::Uuid::parse_str(&envelope.operation_id)
+            .map_err(|_| boundary(quota.work(), Invalid, "invalid operation UUID"))?
+            .as_bytes(),
+    );
+    let intent_digest = envelope
+        .intent_digest
+        .as_slice()
+        .try_into()
+        .map_err(|_| boundary(quota.work(), Storage, "invalid event intent digest"))?;
+    let scope = envelope
+        .scope
         .take()
-        .map(|reference| {
-            if !native {
-                return decode_reference(reference, Error::Storage);
-            }
-            Ok(EventReference {
-                authority: decode_event_authority(
-                    reference.authority.ok_or_else(|| {
-                        event_boundary(
-                            native,
-                            wire::ErrorCode::Storage,
-                            "causal authority is missing",
-                        )
-                    })?,
-                    native,
-                )?,
-                revision: reference.revision,
-            })
-        })
-        .transpose()?;
+        .ok_or_else(|| boundary(quota.work(), Storage, "missing event scope"))?;
+    let (payload, claim) = decode_event_payload(
+        &envelope.event_type,
+        &envelope.canonical_payload_json,
+        quota.work(),
+    )?;
+    quota.adopt(claim)?;
     let event = Event {
         revision: envelope.revision,
         operation_id,
@@ -290,158 +142,87 @@ pub(crate) fn decode_event(
             scope.id,
             Capabilities::new(scope.capabilities),
             scope.issuer,
-            scope_agent,
+            parse_scope_agent(&scope.agent_id, quota.work())?,
         ),
-        attestation,
-        causal_parent,
+        attestation: envelope
+            .attestation
+            .as_slice()
+            .try_into()
+            .map_err(|_| boundary(quota.work(), Storage, "invalid event attestation"))?,
+        causal_parent: envelope
+            .causal_parent
+            .take()
+            .map(|parent| decode_reference(parent, Storage, quota.work()))
+            .transpose()?,
         payload,
     };
-    let canonical = encode_event(&authority, &event, payload_quota.work())?;
+    let canonical = encode_event(&authority, &event, quota.work())?;
     let matches = canonical.as_slice() == bytes;
     let capacity = canonical.capacity() as u64;
     drop(canonical);
-    if let Some(work) = payload_quota.work().as_deref_mut() {
-        work.release_owned(capacity)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.release_owned(capacity)?;
     }
     if !matches {
-        return Err(event_boundary(
-            native,
-            wire::ErrorCode::Storage,
-            "event envelope is not canonical v2 encoding",
+        return Err(boundary(
+            quota.work(),
+            Storage,
+            "noncanonical event envelope",
         ));
     }
-    // Retire all carrier-only fields before shrinking the original reservation.
     drop(envelope);
     drop(scope.agent_id);
     let retained = crate::core::event_owned_bytes(&event)?;
     let total = retained
         .checked_add(authority.id.capacity() as u64)
-        .ok_or_else(|| {
-            event_boundary(native, wire::ErrorCode::Storage, "event custody overflows")
-        })?;
-    payload_quota.replace(total)?;
-    payload_quota.transfer();
+        .ok_or_else(|| boundary(quota.work(), Storage, "event custody overflow"))?;
+    quota.replace(total)?;
+    quota.transfer();
     Ok(((authority, event), retained))
 }
-
-fn decode_portable_event_payload(
+/// Decodes a bounded payload and returns its retained claim on the supplied observer.
+pub fn decode_event_payload(
+    tag: &str,
     bytes: &[u8],
-    bounds: crate::executor::json::JsonBounds,
-    carrier: u64,
-    quota: &mut admission::Quota<'_, '_>,
-) -> Result<EventPayload> {
-    crate::executor::json::event_payload_json_admission(bytes, bounds, &mut |charge| match charge {
-        crate::executor::json::JsonCodecCharge::Admission {
-            maximum_owned_bytes,
-            ..
-        } => {
-            let retained = carrier
-                .checked_add(maximum_owned_bytes)
-                .ok_or_else(|| Error::Storage("event payload custody overflows".into()))?;
-            quota.replace(retained)
-        }
-        charge => match quota.work().as_deref_mut() {
-            Some(work) => work.codec_charge(charge),
-            None => Ok(()),
-        },
-    })?;
-    crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
-}
-
-fn native_event_work(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        work.as_deref()
-            .is_some_and(|work| work.original_native_work().is_some())
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = work;
-        false
-    }
-}
-
-fn event_boundary(native: bool, code: wire::ErrorCode, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if native {
-        return Error::NativeBoundary { code, reason };
-    }
-    let _ = native;
-    match code {
-        wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
-        wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        _ => Error::Storage(reason.into()),
-    }
-}
-
-fn validate_event_protocol(protocol: Option<&wire::ProtocolIdentity>, native: bool) -> Result<()> {
-    if !native {
-        return validate_protocol(protocol, &protocol_identity(), Error::Storage);
-    }
-    let actual = protocol.ok_or_else(|| {
-        event_boundary(
-            native,
-            wire::ErrorCode::Storage,
-            "protocol identity is missing",
-        )
-    })?;
-    let digest = blake3::hash(crate::FILE_DESCRIPTOR_SET).to_hex();
-    if actual.version != EVENT_WIRE_VERSION || actual.descriptor_digest != digest.as_str() {
-        return Err(event_boundary(
-            native,
-            wire::ErrorCode::Unsupported,
-            "protocol identity mismatch",
-        ));
-    }
-    Ok(())
-}
-
-fn decode_event_authority(authority: wire::Authority, native: bool) -> Result<Authority> {
-    if !native {
-        return decode_authority(authority, Error::Storage);
-    }
-    let kind = match wire::AggregateKind::try_from(authority.kind) {
-        Ok(wire::AggregateKind::Agent) => AggregateKind::Agent,
-        Ok(wire::AggregateKind::Conversation) => AggregateKind::Conversation,
-        Ok(wire::AggregateKind::Session) => AggregateKind::Session,
-        Ok(wire::AggregateKind::Turn) => AggregateKind::Turn,
-        Ok(wire::AggregateKind::Task) => AggregateKind::Task,
-        Ok(wire::AggregateKind::Unspecified) => {
-            return Err(event_boundary(
-                native,
-                wire::ErrorCode::Storage,
-                "aggregate kind is unspecified",
-            ));
-        }
-        Err(_) => {
-            return Err(event_boundary(
-                native,
-                wire::ErrorCode::Storage,
-                "aggregate kind is invalid",
-            ));
-        }
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(EventPayload, u64)> {
+    use crate::executor::json::{
+        JsonCodecCharge, JsonValueSchema, json_decode_owned_bytes, json_from_slice_bounded,
     };
-    if authority.id.is_empty() {
-        return Err(event_boundary(
-            native,
-            wire::ErrorCode::Storage,
-            "authority identity is empty",
+    let code = work
+        .as_deref()
+        .is_some_and(crate::store::operations::original_native_decode_mode)
+        .then_some(Storage);
+    let mut quota = CodecQuota::new(work, 0)?;
+    let result = json_from_slice_bounded(
+        std::marker::PhantomData::<EventPayload>,
+        bytes,
+        PAYLOAD_BOUNDS,
+        0,
+        code,
+        Some(JsonValueSchema::EventPayload),
+        &mut |charge| match charge {
+            JsonCodecCharge::Admission { value_shape, .. } => {
+                quota.replace(json_decode_owned_bytes(value_shape, false, code)?.0)
+            }
+            charge => match quota.work().as_deref_mut() {
+                Some(io) => io.codec_charge(charge),
+                None => Ok(()),
+            },
+        },
+    );
+    let payload = result.map_err(|error| match quota.json_error(error) {
+        Error::Invalid(reason) => Error::Storage(reason),
+        error => error,
+    })?;
+    if tag != payload.tag() {
+        return Err(boundary(
+            quota.work(),
+            Storage,
+            "event type disagrees with payload",
         ));
     }
-    Ok(Authority {
-        kind,
-        id: authority.id,
-    })
-}
-
-/// Decodes one canonical event payload and checks its generated discriminator.
-pub fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
-    let payload: EventPayload = crate::contract::json_from_slice(bytes)
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    if event_type_name != payload.tag() {
-        return Err(Error::Storage(
-            "event type disagrees with its payload".into(),
-        ));
-    }
-    Ok(payload)
+    let retained = quota.retained();
+    quota.transfer();
+    Ok((payload, retained))
 }

@@ -60,7 +60,9 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         let scope = query.scope();
         if !self.custody.work().shares_allocation_context(work)
             || !query.native_metadata_matches(work)
-            || !query.original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
+            || !query
+                .harness
+                .original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
             || query.durable_task_id() != Some(self.task())
             || query.id() != self.admission_operation()
             || scope.grants() != &self.admission.grants
@@ -165,7 +167,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<crate::NativeFutureBundle<'a, TaskAdmissionReadonlyWitness<P>>> {
         query.require_original_native_work(work)?;
         if !query.native_metadata_matches(work)
-            || !query.original_host_binding_matches(self.as_ref(), self.policy.as_deref())
+            || !query
+                .harness
+                .original_host_binding_matches(self.as_ref(), self.policy.as_deref())
         {
             return Err(denied());
         }

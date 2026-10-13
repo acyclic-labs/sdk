@@ -263,7 +263,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 patched.file.volume().provider().clone(),
                 &patched.file.volume().storage_name(&mut None)?,
             )?;
-            let before_failed_writes = host.resolve(&workspace).await?.generation;
+            let before_failed_writes = host.resolve(&workspace, None).await?.generation;
             assert!(matches!(
                 context
                     .call::<_, FileResult>(
@@ -278,7 +278,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 Err(Error::Conflict(_))
             ));
             assert_eq!(
-                host.resolve(&workspace).await?.generation,
+                host.resolve(&workspace, None).await?.generation,
                 before_failed_writes
             );
             let read_only = context.scoped(
@@ -307,7 +307,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 "beta\r\n🦀 done\r\n".as_bytes()
             );
             assert_eq!(
-                host.resolve(&workspace).await?.generation,
+                host.resolve(&workspace, None).await?.generation,
                 before_failed_writes
             );
             let restricted = context.scoped(

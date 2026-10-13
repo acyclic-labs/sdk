@@ -110,15 +110,16 @@ where
                     None,
                 ),
             };
-            host.resolve(
+            host.execute(
                 operation,
                 responder,
-                InteractionResolution {
+                crate::core::Action::ResolveInteraction { resolution: InteractionResolution {
                     id: ticket.id,
                     expected_version,
                     outcome,
                     detail,
-                },
+                } },
+                None,
                 None,
             )
             .await?;

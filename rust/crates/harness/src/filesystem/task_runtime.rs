@@ -37,8 +37,6 @@ mod inspection;
 mod reconciliation;
 pub use inspection::TaskSourceInspection;
 mod command_input;
-#[cfg(not(target_arch = "wasm32"))]
-mod native_mailbox;
 pub(super) mod observed;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -294,15 +292,6 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_received_with_native_work<'a>(
-        &'a self,
-        receive_operation: OperationId,
-        item: &'a crate::scheduler::InboxItem,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        native_mailbox::read_received(self, receive_operation, item, work)
-    }
     fn send<'a>(
         &'a self,
         recipient: TaskId,
@@ -333,13 +322,25 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self,
         receive_operation: OperationId,
         item: &'a crate::scheduler::InboxItem,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.host
-                .read_received_mail_owned(self.owner.as_ref(), receive_operation, item, None)
-                .await
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(|io| io.original_native_work()) {
+            work.charge(acyclic_fs::WorkCounters::default())?;
+            if !self.native_custody.as_ref().is_some_and(|guard| guard.work().shares_allocation_context(work))
+                || !self.owner.native_shared_work_matches(work)
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "mailbox differs from its original SDK metadata and owner ledger",
+                });
+            }
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.host.read_received_mail_owned(self.owner.as_ref(), receive_operation, item, io).await
         })
     }
+
 }
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
@@ -1116,12 +1117,18 @@ where
 
     pub(super) fn bind_context_interactions(
         &self,
-        context: TaskContext,
+        mut context: TaskContext,
         task: TaskId,
         journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     ) -> Result<TaskContext> {
         if self.interaction_owner.is_some() {
-            context.with_owned_interactions(task, journal)
+            if context.durable_task_id() != Some(task) {
+                return Err(Error::Unauthorized(
+                    "interaction owner differs from task context".into(),
+                ));
+            }
+            context.owned_interactions = Some(journal);
+            Ok(context)
         } else {
             Ok(context)
         }
@@ -1221,16 +1228,14 @@ where
             .harness
             .durable_context(task, OperationId::from_bytes(task.into_bytes()), None)
             .await?;
-        let context = Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
-        context.with_owned_mailbox(
-            task,
-            Arc::new(TaskJournalMailbox {
-                host: Arc::clone(&self.host),
-                owner: Arc::new(owner),
-                #[cfg(not(target_arch = "wasm32"))]
-                native_custody: None,
-            }),
-        )
+        let mut context = Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
+        context.owned_mailbox = Some(Arc::new(TaskJournalMailbox {
+            host: Arc::clone(&self.host),
+            owner: Arc::new(owner),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        }));
+        Ok(context)
     }
 
     /// Issues the stock runtime's genuine current-owner native task context.
@@ -1357,17 +1362,14 @@ where
         };
         let operation = OperationId::from_bytes(task.into_bytes());
         let purpose = if allow_settlement {
-            crate::runtime::NativeContextPurpose::Reconciliation { fence, mailbox }
+            crate::runtime::IssuedContextPurpose::Reconciliation
         } else {
-            crate::runtime::NativeContextPurpose::Dispatch { fence, mailbox }
+            crate::runtime::IssuedContextPurpose::Dispatch
         };
+        let io = super::PreparationIo::from_native_work(work)?;
         let context = self
             .harness
-            .open_durable_context(
-                task,
-                operation,
-                crate::runtime::ContextSource::Native { work, purpose },
-            )
+            .open_durable_context(task, operation, Some(&io), purpose, Some(mailbox))
             .await?;
         Ok(context)
     }
@@ -2276,15 +2278,15 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "native transition requires original observer",
                     })?;
-                    let (value, custody) = session.latest_transition_with_native_work(work).await?;
-                    _transition_custody = Some(custody);
+                    let (value, custody) = session.latest_transition(Some(io)).await?;
+                    _transition_custody = custody;
                     value
                 } else {
                     _transition_custody = None;
-                    session.latest_transition().await?
+                    session.latest_transition(None).await?.0
                 };
                 #[cfg(target_arch = "wasm32")]
-                let mut transition = session.latest_transition().await?;
+                let mut transition = session.latest_transition(None).await?.0;
                 if advanced == maximum_transitions
                     && transition.as_ref().is_none_or(|value| {
                         matches!(value.status, MachineStatus::Suspended)
@@ -2447,7 +2449,7 @@ where
                         reason: "native input has no original command custody",
                     })?;
                     session
-                        .step_with_native_work(OperationId::from_bytes(bytes), key, input, custody)
+                        .step(OperationId::from_bytes(bytes), key, input, Some(&crate::filesystem::PreparationIo::from_native_custody(custody)))
                         .await?;
                 } else if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
@@ -2477,24 +2479,16 @@ where
                         }
                     };
                     session
-                        .step_with_native_work(OperationId::from_bytes(bytes), key, input, custody)
+                        .step(OperationId::from_bytes(bytes), key, input, Some(&crate::filesystem::PreparationIo::from_native_custody(custody)))
                         .await?;
                 } else {
                     session
-                        .step(
-                            OperationId::from_bytes(bytes),
-                            IdempotencyKey::new(format!("task-step:{revision}"))?,
-                            input,
-                        )
+                        .step(OperationId::from_bytes(bytes), IdempotencyKey::new(format!("task-step:{revision}"))?, input, None)
                         .await?;
                 }
                 #[cfg(target_arch = "wasm32")]
                 session
-                    .step(
-                        OperationId::from_bytes(bytes),
-                        IdempotencyKey::new(format!("task-step:{revision}"))?,
-                        input,
-                    )
+                    .step(OperationId::from_bytes(bytes), IdempotencyKey::new(format!("task-step:{revision}"))?, input, None)
                     .await?;
                 advanced += 1;
             }

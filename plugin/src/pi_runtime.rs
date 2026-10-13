@@ -306,18 +306,23 @@ impl PiTaskRuntime {
             authority.maximum_payload_bytes,
             work,
         )?;
-        let record = self.runtime.harness().registered_admission(
-            operation,
-            &self.definition.identity().name,
-            &self.definition.identity().version,
-            value,
-            None,
-            Some(self.definition.identity().digest),
-            work,
-        )?;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        acyclic_harness::store::HistoryIo::absorb_native_custody(&mut &io, value.1)?;
+        let (record, retained) = self
+            .runtime
+            .harness()
+            .registered_admission(
+                operation,
+                &self.definition.identity().name,
+                &self.definition.identity().version,
+                value.0,
+                None,
+                Some(self.definition.identity().digest),
+                Some(&io),
+            )?;
         self.runtime
             .task_host()
-            .admit_with_native_work(record, work)?
+            .admit_with_native_work((record, io.take_native_custody(retained)?), work)?
             .await
     }
 }

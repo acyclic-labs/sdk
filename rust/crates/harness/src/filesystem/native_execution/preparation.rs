@@ -98,18 +98,9 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     binding.volume,
                     Some(&volume_io),
                 )?;
-                let workspace = super::super::fork_preparer::bounded_io::open(
-                    binding.host,
-                    &reference,
-                    &volume_io,
-                )
+                let workspace = (binding.host).open(&reference, Some(&volume_io))
                 .await?;
-                let generation = super::super::fork_preparer::bounded_io::generation(
-                    binding.host,
-                    &workspace,
-                    binding.generation,
-                    &volume_io,
-                )
+                let generation = (binding.host).generation(&workspace, binding.generation, Some(&volume_io))
                 .await?;
                 if binding.writable
                     && workspace

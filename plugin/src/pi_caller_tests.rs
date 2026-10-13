@@ -4,7 +4,6 @@ use acyclic_harness::{
     Capabilities, TaskId,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     runtime::TaskRunLimits,
-    scheduler::SessionLimits,
 };
 
 fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
@@ -27,7 +26,7 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
             grants: Capabilities::new(["operation:declare", "operation:observe"]),
             limits: Limits::default(),
             run_limits: TaskRunLimits::default(),
-            session_limits: SessionLimits::default(),
+            session_limits: crate::pi_fork::tests::policy().session_limits,
             concurrency: 1,
             maximum_payload_bytes: 4096,
         },
@@ -82,7 +81,7 @@ fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
     drop(decoded);
     drop(environment);
     let expanded = owner
-        .authority()
+        .authority(&work)
         .unwrap()
         .issuer
         .issue(

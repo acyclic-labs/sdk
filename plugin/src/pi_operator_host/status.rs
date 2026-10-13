@@ -103,13 +103,12 @@ pub(super) async fn observe_writeback(
         .as_ref()
         .is_some_and(|journal| journal.phase == MaterializationPhase::Applied)
     {
-        ToolApprovalVerifier::verify_with_native_work(
+        ToolApprovalVerifier::verify(
             &journal,
             id,
             descriptor.operation,
             pi_operator::parse_digest(&descriptor.approval_digest)?,
-            work,
-        )?
+        )
         .await?;
         "published"
     } else {

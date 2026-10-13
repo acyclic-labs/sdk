@@ -777,7 +777,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
          None, None)
         .await?;
     let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
-    let before = host.resolve(&workspace).await?.generation;
+    let before = host.resolve(&workspace, None).await?.generation;
     let mut client = Client::new(
         HarnessViews { recovery: None },
         901,
@@ -810,7 +810,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         client.view(&1, &[branch]).unwrap().provenance,
         Provenance::Hypothesis { .. }
     ));
-    assert_eq!(host.resolve(&workspace).await?.generation, before);
+    assert_eq!(host.resolve(&workspace, None).await?.generation, before);
     assert_eq!(
         host.read_content(&source, &read, 64, None).await?.as_ref(),
         b"one two"
@@ -878,14 +878,14 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             &IdempotencyKey::new("user")?,
          None, None)
         .await?;
-    let head = host.resolve(&workspace).await?.generation;
+    let head = host.resolve(&workspace, None).await?.generation;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     assert_eq!(
         host.edit_text(&source, &read, &write, &replacement, 64, &key)
             .await?,
         edited
     );
-    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    assert_eq!(host.resolve(&workspace, None).await?.generation, head);
     let stale_edit = ExactTextReplacement {
         old_text: "three".into(),
         new_text: "four".into(),
@@ -926,7 +926,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         *client.view(&1, &[stale]).unwrap().value,
         projection(user.clone())
     );
-    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    assert_eq!(host.resolve(&workspace, None).await?.generation, head);
     assert_eq!(
         host.read_content(&user, &read, 64, None).await?.as_ref(),
         b"user edit"

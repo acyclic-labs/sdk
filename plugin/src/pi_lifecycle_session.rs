@@ -459,7 +459,7 @@ impl PiSession {
                     self.runtime
                         .runtime
                         .task_host()
-                        .cancel(root, Some(&work))
+                        .cancel(root)
                         .await
                         .map(|_| ()),
                 );
@@ -718,9 +718,7 @@ async fn original_native_first_dispatch_pending(
     if host
         .cancellation_requested(
             task,
-            Some(&acyclic_harness::executor::PreparationIo::from_native_work(
-                work,
-            )?),
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         )
         .await?
         || outcome.0.is_some()

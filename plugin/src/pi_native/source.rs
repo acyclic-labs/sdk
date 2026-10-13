@@ -140,7 +140,7 @@ impl PiNativeSourceCut {
             previous = Some(id);
             ids.0.push(id);
         }
-        native_sort_entry_ids(&mut ids.0, work)?;
+        ids.0.sort_unstable();
         if ids.0.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(invalid("Pi native source repeats an entry identity"));
         }
@@ -201,52 +201,4 @@ impl PiNativeSourceCut {
         }
         Ok(())
     }
-}
-
-fn native_sort_entry_ids(ids: &mut [&str], work: &NativeMaterializationWork) -> Result<()> {
-    fn sift(
-        ids: &mut [&str],
-        mut root: usize,
-        end: usize,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        loop {
-            let mut child = root
-                .checked_mul(2)
-                .and_then(|value| value.checked_add(1))
-                .ok_or_else(|| {
-                    acyclic_harness::Error::from(acyclic_fs::WorkError::Overflow.into())
-                })?;
-            if child >= end {
-                return Ok(());
-            }
-            if child + 1 < end {
-                work.charge(WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })?;
-                if ids[child] < ids[child + 1] {
-                    child += 1;
-                }
-            }
-            work.charge(WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if ids[root] >= ids[child] {
-                return Ok(());
-            }
-            ids.swap(root, child);
-            root = child;
-        }
-    }
-    let length = ids.len();
-    for root in (0..length / 2).rev() {
-        sift(ids, root, length, work)?;
-    }
-    for end in (1..length).rev() {
-        ids.swap(0, end);
-        sift(ids, 0, end, work)?;
-    }
-    Ok(())
 }

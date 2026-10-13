@@ -1,4 +1,3 @@
-use super::fork_preparer::FilesystemRootBootstrapAllocation;
 use super::{FilesystemHost, PreparationIo, UploadRecord};
 use crate::executor::stock_boundary;
 use crate::{
@@ -18,6 +17,7 @@ pub struct FilesystemContentPublisher<A, O> {
     volume: VolumeRef,
     grant: ContentGrant,
     maximum_bytes: u64,
+    pub(in crate::filesystem) creation: Option<Arc<super::fork_preparer::CreatedProvenance>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -74,6 +74,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
             volume,
             grant,
             maximum_bytes,
+            creation: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata,
         }))
@@ -100,6 +101,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             ));
         }
         BoundedContentFuture::new(io, || async move {
+            self.verify_creation(io).await?;
             let hashing = acyclic_fs::WorkCounters {
                 bytes_hashed: idempotency_key.len() as u64,
                 items_examined: 1,
@@ -181,7 +183,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
             let file = self
-                .publish(operation, None, path, bytes, media, display, io, None, None)
+                .publish(operation, None, path, bytes, media, display, io)
                 .await?;
             let hold = io
                 .map(|io| io.guard_owned(file.logical_owned_bytes()?))
@@ -207,8 +209,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     source.descriptor().media_type(),
                     source.display_name(),
                     io,
-                    None,
-                    None,
                 )
                 .await?;
             let hold = io
@@ -246,6 +246,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
+            self.verify_creation(io).await?;
             let hashing = acyclic_fs::WorkCounters {
                 bytes_hashed: path.len() as u64,
                 ..Default::default()
@@ -294,12 +295,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemContentPublisher<A, O>
 {
+    async fn verify_creation(&self, io: Option<&PreparationIo>) -> Result<()> {
+        if let Some(creation) = &self.creation {
+            #[cfg(not(target_arch = "wasm32"))]
+            let scratch = io.and_then(PreparationIo::original_native_work)
+                .map(PreparationIo::from_native_work).transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let scratch = None::<PreparationIo>;
+            creation.verify(&self.host, creation.owner(), &self.volume, None, scratch.as_ref().or(io))?.await?;
+        }
+        Ok(())
+    }
     pub(super) async fn observe_publication(
         &self,
         operation: OperationId,
         maximum: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
+        self.verify_creation(io).await?;
         let retry = once_key(operation, io)?;
         let hold = io
             .map(|io| io.guard_owned(retry.as_str().len() as u64))
@@ -329,9 +342,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         media: &str,
         display: &str,
         io: Option<&PreparationIo>,
-        lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
-        root: Option<&FilesystemRootBootstrapAllocation<A, O>>,
     ) -> Result<FileRef> {
+        self.verify_creation(io).await?;
         if let Some(source) = source {
             crate::executor::with_history_io(io, |work| source.validate(work))?;
             if source.volume() != &self.volume {
@@ -356,25 +368,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 ));
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let root_generation = root
-            .map(|root| root.source_generation(source, io))
-            .transpose()?
-            .flatten();
-        #[cfg(target_arch = "wasm32")]
-        let root_generation = {
-            let _ = root;
-            None
-        };
         let owned_generation = source
-            .filter(|_| root_generation.is_none())
             .map(|source| self.host.file_generation(source, io))
             .transpose()?;
         let generation_hold = owned_generation
             .as_ref()
             .and_then(|generation| io.map(|io| io.guard_owned(generation.logical_owned_bytes()?)))
             .transpose()?;
-        let generation = root_generation.or(owned_generation.as_ref());
+        let generation = owned_generation.as_ref();
         let (path, media, display) = source.map_or((path, media, display), |source| {
             (
                 source.path(),
@@ -403,8 +404,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 None,
                 generation,
                 io,
-                lease,
-                root.filter(|_| root_generation.is_some()),
             )
             .await?;
         drop(retry);

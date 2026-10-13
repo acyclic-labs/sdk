@@ -306,13 +306,12 @@ pub(super) async fn stock_restart_with_publication_fault(
             );
         }
         assert!(
-            harness
-                .open_task(
-                    task,
-                    &definition,
-                    fence.clone(),
+            definition
+                .open(
+                    harness.durable_context(task, operation, None).await?,
+                    &fence,
                     Arc::new(MemoryWorkflowJournal::default())
-                )
+                )?
                 .await
                 .is_err()
         );
@@ -577,11 +576,11 @@ pub(super) async fn stock_restart_with_publication_fault(
             assert_eq!(session.checkpoint().revision, 1);
             assert_eq!(session.checkpoint().state, json!(1));
             assert_eq!(
-                session.latest_transition().await?.map(|value| value.status),
+                session.latest_transition(None)?.await?.0.map(|value| value.status),
                 Some(MachineStatus::Suspended)
             );
         } else {
-            assert!(session.latest_transition().await?.is_none());
+            assert!(session.latest_transition(None)?.await?.0.is_none());
             let invalid_input = json!("bad");
             let prior = session.checkpoint().clone();
             let (_, transition, _, _) =
@@ -605,7 +604,8 @@ pub(super) async fn stock_restart_with_publication_fault(
                     .step(
                         OperationId::from_bytes([5; 16]),
                         IdempotencyKey::new("invalid-output")?,
-                        json!("bad")
+                        json!("bad"),
+                        None
                     )
                     .await
                     .is_err()
@@ -614,16 +614,16 @@ pub(super) async fn stock_restart_with_publication_fault(
         }
         assert_eq!(
             session
-                .step(step, IdempotencyKey::new("suspend")?, Value::Null)
+                .step(step, IdempotencyKey::new("suspend")?, Value::Null, None)
                 .await?
-                .status,
+                .0.status,
             MachineStatus::Suspended
         );
         assert_eq!(session.checkpoint().revision, 1);
         assert_eq!(journal.replay(0, 64, None)?.await?.0.len(), 1);
         assert!(
             session
-                .step(step, IdempotencyKey::new("suspend")?, json!(9))
+                .step(step, IdempotencyKey::new("suspend")?, json!(9), None)
                 .await
                 .is_err()
         );
@@ -631,9 +631,9 @@ pub(super) async fn stock_restart_with_publication_fault(
             let completed_step = OperationId::from_bytes([6; 16]);
             assert_eq!(
                 session
-                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7))
+                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7), None)
                     .await?
-                    .status,
+                    .0.status,
                 MachineStatus::Completed { value: json!(7) }
             );
             assert_eq!(session.checkpoint().revision, 2);
@@ -651,7 +651,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                 .await?;
             assert!(
                 session
-                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7))
+                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7), None)
                     .await
                     .is_err()
             );
@@ -668,14 +668,14 @@ pub(super) async fn stock_restart_with_publication_fault(
                 .await?;
             assert_eq!(
                 recovered
-                    .latest_transition()
-                    .await?
+                    .latest_transition(None)?
+                    .await?.0
                     .map(|value| value.status),
                 Some(MachineStatus::Completed { value: json!(7) })
             );
             assert!(
                 recovered
-                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7))
+                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7), None)
                     .await
                     .is_err()
             );

@@ -53,27 +53,6 @@ async fn bind(
     work.finish(result)
 }
 
-fn publication_budget() -> WorkBudget {
-    WorkBudget {
-        authority_records_read: 32,
-        authority_bytes_read: 1_048_576,
-        backend_read_operations: 32,
-        source_bytes_read: 1_048_576,
-        bytes_copied: 1_048_576,
-        bytes_encoded: 1_048_576,
-        bytes_hashed: 1_048_576,
-        authority_records_appended: 32,
-        authority_bytes_written: 1_048_576,
-        backend_write_operations: 32,
-        output_bytes: 1_048_576,
-        items_examined: 32,
-        items_returned: 32,
-        allocation_operations: 128,
-        peak_allocation_bytes: 1_048_576,
-        ..WorkBudget::default()
-    }
-}
-
 #[cfg(feature = "filesystem")]
 struct GuardedForkFixture {
     fixture: crate::durable_host::tests::created_fixture::CreationFixture,

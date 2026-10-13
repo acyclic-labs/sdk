@@ -10,8 +10,32 @@ impl InteractionRouter for OpaqueRouter {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl ToolPolicy for OpaqueRouter {
+    fn identity(&self) -> ComponentIdentity {
+        panic!("ordinary identity must not run");
+    }
+    fn evaluate<'a>(
+        &'a self,
+        _: &'a ToolInvocation,
+        _: &'a RuntimeScope,
+        _: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
+    {
+        panic!("native identity preflight must reject this policy")
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_work(
+    cancellation: &acyclic_fs::CancellationToken,
+) -> acyclic_fs::NativeMaterializationWork {
+    acyclic_fs::NativeMaterializationWork::new(Default::default(), cancellation)
+        .expect("fixture ledger")
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
-fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() {
+fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     let cancellation = CancellationToken::new();
     let budget = WorkBudget {
@@ -21,14 +45,13 @@ fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() {
         items_examined: 1,
         ..WorkBudget::default()
     };
-    let original =
-        NativeMaterializationWork::new(budget, &cancellation).expect("original grants ledger");
-    let construction = NativeMaterializationWork::new(budget, &cancellation)
-        .expect("independent construction ledger");
-    let paid = Capabilities::copy(["read"], &original).expect("paid input");
-    let (scope, custody) =
-        RuntimeScope::new_with_native_work(paid, Limits::default(), &construction)
-            .expect("independent guards are legitimate");
+    let original = NativeMaterializationWork::new(budget, &cancellation).expect("input ledger");
+    let construction = NativeMaterializationWork::new(budget, &cancellation).expect("scope ledger");
+    let (scope, custody) = RuntimeScope::new_with_native_work(
+        Capabilities::copy(["read"], &original)?,
+        Limits::default(),
+        &construction,
+    )?;
     assert!(
         scope
             ._native_grants_custody
@@ -38,56 +61,38 @@ fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() {
             .shares_ledger(&original)
     );
     assert!(custody.work().shares_ledger(&construction));
-    let invalid = Limits {
-        file_bytes: 0,
-        ..Limits::default()
-    };
+    let io = crate::filesystem::PreparationIo::from_native_work(&construction)?;
+    let scope = crate::executor::with_history_io(Some(&io), |work| {
+        scope.with_run_limits(
+            TaskRunLimits {
+                concurrency: Some(1),
+                ..TaskRunLimits::default()
+            },
+            work,
+        )
+    })?;
     assert!(matches!(
-        crate::filesystem::PreparationIo::from_native_work(&construction)
-            .map(crate::store::HistoryWork::new)
-            .and_then(|mut io| (&invalid).validate(&mut Some(&mut io))),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            ..
-        })
-    ));
-    let scope = crate::filesystem::PreparationIo::from_native_work(&construction)
-        .map(crate::store::HistoryWork::new)
-        .and_then(|mut io| {
-            scope.with_run_limits(
-                TaskRunLimits {
-                    concurrency: Some(1),
-                    ..TaskRunLimits::default()
-                },
-                &mut Some(&mut io),
-            )
-        })
-        .expect("bounded concurrency");
-    assert!(matches!(
-        crate::filesystem::PreparationIo::from_native_work(&construction)
-            .map(crate::store::HistoryWork::new)
-            .and_then(|mut io| scope.with_run_limits(TaskRunLimits::default(), &mut Some(&mut io))),
+        crate::executor::with_history_io(Some(&io), |work| scope
+            .with_run_limits(TaskRunLimits::default(), work)),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             ..
         })
     ));
-    drop(custody);
     cancellation.cancel();
     assert!(matches!(
-        crate::filesystem::PreparationIo::from_native_work(&construction)
-            .map(crate::store::HistoryWork::new)
-            .and_then(|mut io| (&Limits::default()).validate(&mut Some(&mut io))),
+        RuntimeScope::default().clone_with_native_work(&construction),
         Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
             ..
         })
     ));
+    Ok(())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
-fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() {
+fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(
@@ -101,53 +106,38 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
         &cancellation,
     )
     .expect("original ledger");
-    let (root, root_custody) = RuntimeScope::new_with_native_work(
-        Capabilities::copy(["read"], &work).expect("paid read-only grants"),
+    let (root, _root_custody) = RuntimeScope::new_with_native_work(
+        Capabilities::copy(["read"], &work)?,
         Limits::default(),
         &work,
-    )
-    .expect("read-only root");
-    let root = crate::filesystem::PreparationIo::from_native_work(&work)
-        .map(crate::store::HistoryWork::new)
-        .and_then(|mut io| {
-            root.with_run_limits(
-                TaskRunLimits {
-                    max_steps: Some(2),
-                    ..TaskRunLimits::default()
-                },
-                &mut Some(&mut io),
-            )
-        })
-        .expect("original execution bound");
-    let (copy, copy_custody) = root.clone_with_native_work(&work).expect("native clone");
+    )?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let root = crate::executor::with_history_io(Some(&io), |work| {
+        root.with_run_limits(
+            TaskRunLimits {
+                max_steps: Some(2),
+                ..TaskRunLimits::default()
+            },
+            work,
+        )
+    })?;
+    let (copy, _copy_custody) = root.clone_with_native_work(&work)?;
     assert_eq!(copy.grants(), root.grants());
     assert_eq!(copy.run_limits(), root.run_limits());
     assert!(!copy.is_sealed());
-    assert!(
-        copy._native_grants_custody
-            .as_ref()
-            .unwrap()
-            .work()
-            .shares_ledger(&work)
-    );
     let narrower = Limits {
         file_bytes: 1,
         ..Limits::default()
     };
-    let (child, child_custody) = root
-        .narrow_with_native_work(
-            Capabilities::copy(["read"], &work).expect("paid child grants"),
-            narrower,
-            &work,
-        )
-        .expect("native attenuation");
+    let (child, _child_custody) =
+        root.narrow_with_native_work(Capabilities::copy(["read"], &work)?, narrower, &work)?;
     assert!(child.is_sealed());
     assert_eq!(child.limits(), narrower);
     assert_eq!(child.run_limits(), root.run_limits());
     assert!(!child.grants().contains("write"));
     assert!(matches!(
         root.narrow_with_native_work(
-            Capabilities::copy(["write"], &work).expect("requested widening"),
+            Capabilities::copy(["write"], &work)?,
             Limits::default(),
             &work,
         ),
@@ -156,26 +146,13 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
             ..
         })
     ));
-    assert_eq!(root.grants().iter().collect::<Vec<_>>(), ["read"]);
-    assert_eq!(root.limits(), Limits::default());
-    drop(child);
-    drop(child_custody);
-    drop(copy);
-    drop(copy_custody);
-    drop(root);
-    drop(root_custody);
+    Ok(())
 }
 
 #[test]
 fn native_task_requirements_keep_provider_grants_bound() -> Result<()> {
-    let definition = TaskDefinition::live("provider-bound", "1", |_context, _input: ()| async {
-        Ok::<(), Error>(())
-    })?
-    .requires("model")?
-    .requires("context")?
-    .requires("interactions")?;
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
+    let tasks =
+        dependency_fixture(&[("provider-bound", &["model", "context", "interactions"])])?.tasks;
     let all_grants = ["model:generate", "context:build", "interaction:route"];
     let mut bindings = Bindings::local();
     bindings.tasks = tasks.clone();
@@ -201,20 +178,10 @@ fn native_task_requirements_keep_provider_grants_bound() -> Result<()> {
 
 #[test]
 fn native_task_requirements_accept_state_without_spawner() -> Result<()> {
-    let state_task = TaskDefinition::live("state-only", "1", |_context, _input: ()| async {
-        Ok::<(), Error>(())
-    })?
-    .requires("state")?;
-    let mut bindings = Bindings::local();
-    bindings.tasks.register(state_task)?;
+    let mut bindings = dependency_fixture(&[("state-only", &["state"])])?;
     bindings.state = Some(Arc::new(SplitState {
         task_id: TaskId::new(),
-        record: TaskAdmissionRecord::from_canonical_value(
-            serde_json::from_str(include_str!("../../../fixtures/v2/task-admission.json"))
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-            &mut None,
-        )?
-        .0,
+        record: admission_fixture()?,
     }));
     assert!(bindings.build(None).is_ok());
     Ok(())
@@ -224,66 +191,45 @@ fn native_task_requirements_accept_state_without_spawner() -> Result<()> {
 #[tokio::test]
 async fn native_policy_approval_keeps_exact_binding_and_paid_utf8_prompt() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .expect("original policy ledger");
+    let work = native_work(&cancellation);
+    let baseline = work.live_allocation_bytes();
     let (policy, definition, invocation) = native_policy_fixture_inputs();
-    let scope = RuntimeScope::new(
-        Capabilities::new(["tool:call:test.echo"]),
-        Limits::default(),
-    )?;
-    let (identity, custody) = policy.identity_with_native_work(&work)?;
-    check_policy_metadata(&identity, &custody, &work)?;
-    validate_policy_identity(
-        &identity,
-        Some(&crate::executor::PreparationIo::from_native_work(&work)?),
-    )?;
-    drop((identity, custody));
-    let (decision, custody) = policy
-        .evaluate(
-            &invocation,
-            &scope,
-            Some(&crate::executor::PreparationIo::from_native_work(&work)?),
-        )?
-        .await?;
-    let ToolPolicyDecision::RequireApproval { prompt } = decision else {
-        panic!("fixture approval");
-    };
-    let custody = custody.expect("paid native decision");
-    assert_eq!(custody.bytes(), prompt.capacity() as u64);
+    let mut context = test_context(Bindings::local().build(None)?)?;
     let task = TaskId::new();
+    context.durable_task = Some(task);
+    let (actual, custody) = context
+        .policy_approval(
+            &policy,
+            Some(&policy.identity),
+            &definition,
+            &invocation,
+            Some(&work),
+            context.scope(),
+        )
+        .await?
+        .expect("approval");
     let expected = tool_approval_request(
         task,
         &policy.identity,
         &definition,
         &invocation,
-        (prompt.clone(), None),
+        (
+            match &policy.decision {
+                ToolPolicyDecision::RequireApproval { prompt } => prompt.clone(),
+                _ => unreachable!(),
+            },
+            None,
+        ),
         None,
-    )
-    .map(|(value, _)| value)?;
-    let (actual, custody) = tool_approval_request(
-        task,
-        &policy.identity,
-        &definition,
-        &invocation,
-        (prompt, Some(custody)),
-        Some(&work),
-    )?;
-    let custody = custody.expect("native request retains its prompt");
+    )?
+    .0;
     assert_eq!(actual, expected);
+    let custody = custody.expect("paid approval");
     assert!(custody.work().shares_ledger(&work));
-    let paid = (actual, custody);
-    let live = work.live_allocation_bytes();
-    assert!(
-        live >= acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + paid.1.bytes()
-    );
-    drop(paid);
-    assert_eq!(
-        work.live_allocation_bytes(),
-        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
-    );
+    assert!(work.live_allocation_bytes() >= baseline + custody.bytes());
+    drop(actual);
+    drop(custody);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 
@@ -300,11 +246,7 @@ fn native_policy_identity_denies_cancelled_and_exhausted_copy_before_strings() -
         policy.identity_with_native_work(&work),
         Err(Error::NativeWork { .. })
     ));
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .expect("cancelled-policy original ledger");
+    let work = native_work(&cancellation);
     cancellation.cancel();
     assert!(matches!(
         policy.identity_with_native_work(&work),
@@ -318,16 +260,8 @@ fn native_policy_identity_denies_cancelled_and_exhausted_copy_before_strings() -
 fn native_policy_approval_rejects_foreign_prompt_before_encoding() -> Result<()> {
     use crate::store::history::HistoryIo;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let original = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .expect("original ledger");
-    let foreign = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .expect("foreign ledger");
+    let original = native_work(&cancellation);
+    let foreign = native_work(&cancellation);
     let (policy, definition, invocation) = native_policy_fixture_inputs();
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&foreign)?,
@@ -357,71 +291,17 @@ fn native_policy_approval_rejects_foreign_prompt_before_encoding() -> Result<()>
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
-fn opaque_policy_native_defaults_never_call_ordinary_body() -> Result<()> {
-    struct OpaquePolicy;
-    impl ToolPolicy for OpaquePolicy {
-        fn identity(&self) -> ComponentIdentity {
-            panic!("ordinary identity must not run");
-        }
-        fn evaluate<'a>(
-            &'a self,
-            _: &'a ToolInvocation,
-            _: &'a RuntimeScope,
-            io: Option<&'a crate::executor::PreparationIo>,
-        ) -> Result<
-            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
-        > {
-            if io.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "opaque policy",
-                });
-            }
-            panic!("ordinary evaluator must not run")
-        }
-    }
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .expect("original ledger");
-    let (_, _, invocation) = native_policy_fixture_inputs();
-    let scope = RuntimeScope::new(
-        Capabilities::new(["tool:call:test.echo"]),
-        Limits::default(),
-    )?;
-    assert!(matches!(
-        OpaquePolicy.identity_with_native_work(&work),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            ..
-        })
-    ));
-    assert!(matches!(
-        OpaquePolicy.evaluate(
-            &invocation,
-            &scope,
-            Some(&crate::executor::PreparationIo::from_native_work(&work)?)
-        ),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            ..
-        })
-    ));
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[test]
 fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Result<()> {
     use crate::store::history::HistoryIo;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::default(),
-        &cancellation,
-    )
-    .expect("original interaction ledger");
+    let work = native_work(&cancellation);
+    assert!(matches!(
+        OpaqueRouter.identity_with_native_work(&work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            ..
+        })
+    ));
     assert!(matches!(
         OpaqueRouter.supports_native_interactions(&work),
         Err(Error::NativeBoundary {

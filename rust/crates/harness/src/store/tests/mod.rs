@@ -205,4 +205,4 @@ fn schemas() -> SchemaRegistry {
     schemas
 }
 
-use projections::projection_command;
+use projections::{projection_command, projection_fixture};

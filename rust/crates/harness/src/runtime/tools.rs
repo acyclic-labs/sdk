@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::*;
 
 /// An admission decision for one exact, schema-valid tool invocation.
@@ -46,22 +47,22 @@ pub(crate) fn validate_policy_identity(
     identity: &ComponentIdentity,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    inspect_task_metadata(io, 2)?;
+    crate::model::charge_items(io, 2)?;
     for (value, reason) in [
         (&identity.name, "policy name is invalid"),
         (&identity.version, "policy version is invalid"),
     ] {
         if !crate::contract::is_valid_component_label(value) {
-            return Err(task_workflow_error(
-                task_original_work(io)?,
+            return Err(crate::executor::stock_boundary(
+                io,
                 crate::wire::ErrorCode::Invalid,
                 reason,
             ));
         }
     }
     if identity.digest == [0; 32] {
-        return Err(task_workflow_error(
-            task_original_work(io)?,
+        return Err(crate::executor::stock_boundary(
+            io,
             crate::wire::ErrorCode::Invalid,
             "policy implementation digest is empty",
         ));
@@ -125,12 +126,15 @@ pub(crate) fn tool_approval_request(
         }
     }
     let (operation, digest) = tool_approval_binding(task, policy, definition, invocation, work)?;
-    if work.is_some() && digest == [0; 32] {
-        return Err(task_workflow_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "approval action digest is empty",
-        ));
+    if digest == [0; 32] {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "approval action digest is empty",
+            });
+        }
+        return Err(Error::Invalid("approval action digest is empty".into()));
     }
 
     Ok((
@@ -420,7 +424,7 @@ impl ToolContext {
         if let Some(source) = source {
             task.authorize_file_read(source, self.effective_scope(), Some(&io))?;
         }
-        let writer = task.bound_content_writer(
+        let writer = bound_content_writer(
             task.content_binding(source.map(FileRef::volume)),
             self.effective_scope(),
             Some(&io),
@@ -437,6 +441,31 @@ impl ToolContext {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ToolContext {
+    /// Observes this issued tool's original task admission on the supplied ledger.
+    pub async fn admission(
+        &self,
+        work: &NativeWork,
+    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
+        self.validate_native_mcp_context(work)?;
+        let context = self.task();
+        let host = context.harness.host.as_ref().ok_or_else(|| native_context::boundary(
+            crate::wire::ErrorCode::Unsupported,
+            "original admission has no durable host",
+        ))?;
+        context.verify_original_execution_owner(work).await?;
+        let observed = host.observe_admission_with_native_work(
+            context.durable_task_id().expect("validated durable tool context"), work,
+        )?.await?;
+        if observed.0.operation_id != context.task_id {
+            return Err(native_context::boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "observed input differs from the original issued task",
+            ));
+        }
+        context.verify_original_execution_owner(work).await?;
+        Ok(observed)
+    }
+
     /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
     pub fn validate_native_mcp_context(&self, work: &NativeWork) -> Result<()> {
         let context = self.validate_native_bound_context(work)?;
@@ -463,7 +492,9 @@ impl ToolContext {
             ));
         }
         let context = self.task();
-        context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+        context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(
+            work,
+        )?))?;
         Ok(context)
     }
 }
