@@ -93,8 +93,7 @@ impl McpStdioExchange {
             let body = &self.line[..end];
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
-            let mut frame_custody = frame_admission(body, self.maximum_bytes, work)?;
-            let message = decode_value(body, work, &mut frame_custody)?;
+            let (message, mut frame_custody) = decode_value(body, self.maximum_bytes, work)?;
             self.line.advance(end + 1);
             scanned = 0;
             if message.get("id").is_none() {

@@ -86,8 +86,8 @@ fn native_stat_preserves_full_file_id_and_opaque_reparse_kind() -> io::Result<()
     information.FileAttributes = FILE_ATTRIBUTE_REPARSE_POINT.0;
     information.ReparseTag = 0x9000_001A;
     let opaque = HostStat::from_stat_information(&information, 17)?;
-    assert_eq!(opaque.file_index(), u64::MAX);
-    assert_eq!(opaque.volume_serial_number(), 17);
+    assert_eq!((opaque.raw.FileId as u64), u64::MAX);
+    assert_eq!(opaque.volume_serial_number, 17);
     assert!(opaque.file_type().is_file());
     assert!(!opaque.file_type().is_symlink());
     for tag in [0xA000_0003, 0xA000_000C] {
@@ -224,93 +224,32 @@ fn held_rename_never_replaces_an_existing_destination() -> Result<(), Box<dyn st
             &mut ordinary_work(),
         )
         .map_err(ordinary_error)?;
-    assert!(
-        {
+    let rename = || {
+        rename_held(
+            &directory,
             #[cfg(unix)]
-            {
-                rename_held(
-                    &directory,
-                    Path::new("source"),
-                    &directory,
-                    Path::new("destination"),
-                    acyclic_native_runtime::RenameMode::NoReplace,
-                    None,
-                    &mut ordinary_work(),
-                )
-            }
+            Path::new("source"),
             #[cfg(windows)]
-            {
-                crate::native_host::with_wide_path(
-                    Path::new("source"),
-                    &mut ordinary_work(),
-                    |name, work| {
-                        crate::native_host::with_wide_path(
-                            Path::new("destination"),
-                            work,
-                            |target, work| {
-                                rename_held(
-                                    &directory,
-                                    name,
-                                    &directory,
-                                    target,
-                                    acyclic_native_runtime::RenameMode::NoReplace,
-                                    None,
-                                    work,
-                                )
-                            },
-                        )
-                    },
-                )
-            }
-        }
+            &[115, 111, 117, 114, 99, 101],
+            &directory,
+            #[cfg(unix)]
+            Path::new("destination"),
+            #[cfg(windows)]
+            &[100, 101, 115, 116, 105, 110, 97, 116, 105, 111, 110],
+            acyclic_native_runtime::RenameMode::NoReplace,
+            None,
+            &mut ordinary_work(),
+        )
         .map_err(ordinary_error)
-        .is_err()
-    );
+    };
+    assert!(rename().is_err());
     assert_eq!(std::fs::read(temporary.path().join("source"))?, b"source");
     assert_eq!(
         std::fs::read(temporary.path().join("destination"))?,
         b"destination"
     );
     std::fs::remove_file(temporary.path().join("destination"))?;
-    {
-        #[cfg(unix)]
-        {
-            rename_held(
-                &directory,
-                Path::new("source"),
-                &directory,
-                Path::new("destination"),
-                acyclic_native_runtime::RenameMode::NoReplace,
-                None,
-                &mut ordinary_work(),
-            )
-        }
-        #[cfg(windows)]
-        {
-            crate::native_host::with_wide_path(
-                Path::new("source"),
-                &mut ordinary_work(),
-                |name, work| {
-                    crate::native_host::with_wide_path(
-                        Path::new("destination"),
-                        work,
-                        |target, work| {
-                            rename_held(
-                                &directory,
-                                name,
-                                &directory,
-                                target,
-                                acyclic_native_runtime::RenameMode::NoReplace,
-                                None,
-                                work,
-                            )
-                        },
-                    )
-                },
-            )
-        }
-    }
-    .map_err(ordinary_error)?;
+    rename()?;
     assert_eq!(
         std::fs::read(temporary.path().join("destination"))?,
         b"source"
@@ -339,12 +278,17 @@ fn held_rename_uses_the_original_parent_after_its_path_is_replaced()
     std::fs::rename(&original, &moved)?;
     std::fs::create_dir(&original)?;
     std::fs::write(original.join("source"), b"replacement")?;
-    durable_rename_held(
+    rename_held(
         &directory,
         Path::new("source"),
         &directory,
         Path::new("destination"),
-    )?;
+        acyclic_native_runtime::RenameMode::NoReplace,
+        None,
+        &mut ordinary_work(),
+    )
+    .map_err(ordinary_error)?;
+    sync_directory_held(&directory, &mut ordinary_work()).map_err(ordinary_error)?;
     assert_eq!(std::fs::read(moved.join("destination"))?, b"held");
     assert_eq!(std::fs::read(original.join("source"))?, b"replacement");
     assert!(!original.join("destination").exists());

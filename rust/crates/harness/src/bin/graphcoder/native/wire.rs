@@ -18,8 +18,8 @@ impl NativeSession {
         }
     }
     fn binding(&self, authority: &wire::Authority) -> Result<&AuthorityBinding> {
-        std::iter::once(&self.config.owner)
-            .chain(&self.config.observed_authorities)
+        self.config
+            .bindings()
             .find(|binding| encode_authority(&binding.authority) == *authority)
             .ok_or_else(|| {
                 Error::Unauthorized("authority is not in this native composition".into())

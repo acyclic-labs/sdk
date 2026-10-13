@@ -1,10 +1,11 @@
 //! Optional persistent task composition using the existing runtime authorities.
 
 use super::{
-    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
-    FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
+    FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
+    FilesystemHost, FilesystemInteractionHost, FilesystemWorkflowJournal, PreparationIo,
 };
 use crate::runtime::TaskStateProvider;
+use crate::store::HistoryIo as _;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
@@ -13,7 +14,7 @@ use crate::{
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
     durable_tool::ResumableToolRegistry,
-    executor::{ExecutionJournal, StockExecutor, ExecutionProgress, TurnInput, TurnOutput},
+    executor::{ExecutionJournal, ExecutionProgress, StockExecutor, TurnInput, TurnOutput},
     interaction::Interaction,
     model::{Model, ModelProvider},
     runtime::{
@@ -230,7 +231,7 @@ impl WorkerTurn {
 }
 
 pub(super) enum WorkerContext {
-    Ordinary(TaskContext),
+    Ordinary(Arc<TaskContext>),
     #[cfg(not(target_arch = "wasm32"))]
     Native(Arc<crate::runtime::TaskContext>),
 }
@@ -258,7 +259,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     maximum_payload_bytes: u64,
     policy: Option<Arc<dyn ToolPolicy>>,
     interaction_owner: Option<TaskInteractionOwner>,
-    recursive_source: Option<Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>>,
+    recursive_source: Option<Arc<super::ConfiguredRecursiveToolSource<P, A, O>>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -279,7 +280,7 @@ struct TaskJournalMailbox<P: StreamProvider> {
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.owner.as_ref().require_mail_scope(scope, &mut None)
+        self.owner.as_ref().require_mail_scope(scope, None)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
@@ -303,9 +304,10 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
                 reason: "mailbox metadata differs from original work",
             });
         }
-        self.owner
-            .as_ref()
-            .require_mail_scope_with_native_work(scope, work)
+        self.owner.as_ref().require_mail_scope(
+            scope,
+            Some(&crate::executor::PreparationIo::from_native_work(work)?),
+        )
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn send_with_native_work<'a>(
@@ -420,7 +422,10 @@ where
                 .original_native_work()
                 .ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
             let io = super::PreparationIo::from_native_work(work)?;
-            volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
+            volume.validate(&mut Some(
+                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)?,
+            ))?;
             if maximum_payload_bytes == 0 {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
@@ -430,15 +435,14 @@ where
             if let Some(policy) = &policy {
                 policy.supports_native_policy(work)?;
             }
-            let payloads = FilesystemSchedulerPayloadStore::new(
+            let payloads = FilesystemContentPublisher::new(
                 filesystem.clone(),
                 volume,
                 verifier,
                 signed,
                 maximum_payload_bytes,
                 Some(&io),
-            )?
-            .into_native_shared(work)?;
+            )?;
             let reader = FilesystemContentVerifier::new(
                 filesystem.clone(),
                 verifier,
@@ -450,29 +454,39 @@ where
                 &stream,
                 reader.clone(),
                 Some(payloads.clone()),
-                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
+                &mut Some(
+                    &mut crate::filesystem::PreparationIo::from_native_work(work)
+                        .map(crate::store::HistoryWork::new)?,
+                ),
             )
             .await?;
-            let mut host = CoordinatorTaskHost::new_with_native_work(
+            let copied_scope = scope.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_scope.1)?;
+            let copied_machines = machines.copy(work)?;
+            io.absorb_native_custody(copied_machines.1)?;
+            io.retain_owned(
+                (std::mem::size_of::<CoordinatorTaskHost<P>>() + 2 * std::mem::size_of::<usize>())
+                    as u64,
+            )?;
+            let mut host = CoordinatorTaskHost::new(
                 coordinator,
                 stream.clone(),
                 payloads,
                 reader.clone(),
-                verifier.audience(),
-                signed,
-                verifier,
-                scope,
-                tasks,
-                machines,
+                io.history_io().clone_authority(verifier.audience())?,
+                signed.copy(&mut Some(&mut io.history_io()))?,
+                verifier.copy(&mut Some(&mut io.history_io()))?,
+                copied_scope.0,
+                tasks.clone_with_native_work(work)?,
+                copied_machines.0,
                 clock,
-                work,
             )?
-            .with_session_limits(session_limits, Some(work))?
-            .with_resource_creation_providers(creation_providers, Some(work))?;
+            .with_session_limits(session_limits)?
+            .with_resource_creation_providers(creation_providers, Some(&io))?;
             if let Some(policy) = &policy {
-                host = host.with_policy(policy.clone(), Some(work))?;
+                host = host.with_policy(policy.clone())?;
             }
-            let host = host.into_native_shared(work)?;
+            let host = Arc::new(host);
             let copied_tools = tools.clone_with_native_work(work)?;
             io.absorb_native_custody(copied_tools.1)?;
             let copied_resumable = resumable_tools.clone_with_native_work(work)?;
@@ -486,10 +500,14 @@ where
                 scope: copied_scope.0,
                 concurrency,
                 durable_host: Some(host.clone()),
-                content: Some(ContentBindings { reader, writer: None }),
+                content: Some(ContentBindings {
+                    reader,
+                    writer: None,
+                }),
                 policy: policy.clone(),
                 ..crate::runtime::Bindings::local()
-            }.build(Some(&io))?;
+            }
+            .build(Some(&io))?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             let volume = volume.copy(&mut Some(&mut io.history_io()))?;
             let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
@@ -528,14 +546,14 @@ where
             tools.clone(),
         );
         let resumable_tools = resumable_tools.clone();
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             filesystem.clone(),
             &volume,
             &verifier,
             &signed,
             maximum_payload_bytes,
             None,
-        )?);
+        )?;
         let reader = FilesystemContentVerifier::new(
             filesystem.clone(),
             &verifier,
@@ -554,19 +572,18 @@ where
             stream.clone(),
             payloads,
             reader.clone(),
-            &(verifier.audience()),
+            verifier.audience().clone(),
             signed.clone(),
             verifier.clone(),
             scope.clone(),
             tasks.clone(),
             machines,
             clock,
-            None,
         )?
-        .with_session_limits(session_limits, None)?
+        .with_session_limits(session_limits)?
         .with_resource_creation_providers(creation_providers, None)?;
         if let Some(policy) = &policy {
-            host = host.with_policy(policy.clone(), None)?;
+            host = host.with_policy(policy.clone())?;
         }
         let host = Arc::new(host);
         let harness = crate::runtime::Bindings {
@@ -603,7 +620,7 @@ where
     #[must_use]
     pub fn with_recursive_source(
         mut self,
-        source: Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>,
+        source: Arc<super::ConfiguredRecursiveToolSource<P, A, O>>,
     ) -> Self {
         self.recursive_source = Some(source);
         self
@@ -611,7 +628,7 @@ where
 
     pub(super) fn recursive_source(
         &self,
-    ) -> Option<&Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>> {
+    ) -> Option<&Arc<super::ConfiguredRecursiveToolSource<P, A, O>>> {
         self.recursive_source.as_ref()
     }
 
@@ -652,7 +669,10 @@ where
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native runtime configuration has no original work",
             })?;
-            volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
+            volume.validate(&mut Some(
+                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)?,
+            ))?;
         } else {
             volume.validate(&mut None)?;
         }
@@ -824,7 +844,9 @@ where
                 invocation,
                 Some(io.original_native_work().expect("native approval IO")),
             )?,
-            None => crate::runtime::tool_approval_binding(task, &identity, definition, invocation, None)?,
+            None => crate::runtime::tool_approval_binding(
+                task, &identity, definition, invocation, None,
+            )?,
         };
         #[cfg(target_arch = "wasm32")]
         let (operation, digest) =
@@ -837,7 +859,7 @@ where
             io.preflight(hashed)?;
             io.charge(hashed)?;
         }
-        let id = crate::durable_host::task_interaction_id(task, operation);
+        let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
         let host = self.interaction_host(io)?;
         match host.read_request(id, io).await? {
             None => return Ok(false),
@@ -999,59 +1021,13 @@ where
             ExecutionEvent::ModelStarted { step: recorded, purpose: ModelPurpose::Response, .. }
             | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step)
         };
-        let records = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                let (_, records, custody) = crate::executor::replay_execution_with_native_work(
-                    journal.as_ref(),
-                    operation,
-                    limits.model_events_per_step.saturating_add(1),
-                    select,
-                    io.original_native_work().expect("native approval IO"),
-                )?
-                .await?;
-                io.absorb_native_custody(custody)?;
-                records
-            }
-            _ => {
-                crate::executor::replay_execution(
-                    journal.as_ref(),
-                    operation,
-                    limits.model_events_per_step.saturating_add(1),
-                    select,
-                    io,
-                )
-                .await?
-                .1
-            }
-        };
-        let retained = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                let (retained, custody) = crate::executor::retained_model_step_with_native_work(
-                    journal.as_ref(),
-                    &records,
-                    step,
-                    ModelPurpose::Response,
-                    limits,
-                    io.original_native_work().expect("native approval IO"),
-                )?
-                .await?;
-                io.absorb_native_custody(custody)?;
-                retained
-            }
-            _ => {
-                crate::executor::retained_model_step(
-                    journal.as_ref(),
-                    &records,
-                    step,
-                    ModelPurpose::Response,
-                    limits,
-                    io,
-                )
-                .await?
-            }
-        };
+        let (_, records, hold) = crate::executor::replay_execution(
+            journal.as_ref(), operation, limits.model_events_per_step.saturating_add(1), select, io,
+        ).await?;
+        let records = crate::executor::retain_preparation((records, hold));
+        let retained = crate::executor::retain_preparation(crate::executor::retained_model_step(
+            journal.as_ref(), &records, step, ModelPurpose::Response, limits, io,
+        ).await?);
         drop(records);
         if !retained.admission.completed {
             return Err(Error::Indeterminate(operation));
@@ -1070,7 +1046,7 @@ where
                 }
                 _ => {
                     for file in message.content.file_refs() {
-                        context.read_file(file).await?;
+                        context.read_file(file, None).await?;
                     }
                 }
             }
@@ -1103,33 +1079,10 @@ where
                     | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
                     if *recorded == step && call_id == &invocation.call_id)
                 };
-                let records = match io {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) => {
-                        let (_, records, custody) =
-                            crate::executor::replay_execution_with_native_work(
-                                journal.as_ref(),
-                                operation,
-                                3,
-                                select,
-                                io.original_native_work().expect("native approval IO"),
-                            )?
-                            .await?;
-                        io.absorb_native_custody(custody)?;
-                        records
-                    }
-                    _ => {
-                        crate::executor::replay_execution(
-                            journal.as_ref(),
-                            operation,
-                            3,
-                            select,
-                            io,
-                        )
-                        .await?
-                        .1
-                    }
-                };
+                let (_, records, hold) = crate::executor::replay_execution(
+                    journal.as_ref(), operation, 3, select, io,
+                ).await?;
+                let records = crate::executor::retain_preparation((records, hold));
                 if records
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
@@ -1144,35 +1097,16 @@ where
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
                 {
-                    match io {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        Some(io) => {
-                            let projection =
-                                crate::executor::completed_tool_projection_with_native_work(
-                                    journal.as_ref(),
-                                    &records,
-                                    step,
-                                    &invocation,
-                                    &request.request().tools,
-                                    limits,
-                                    io.original_native_work().expect("native approval IO"),
-                                )?
-                                .await?;
-                            drop(projection);
-                        }
-                        _ => {
-                            crate::executor::completed_tool_projection(
-                                journal.as_ref(),
-                                &records,
-                                step,
-                                &invocation,
-                                &request.request().tools,
-                                crate::conversation::Limits::default(),
-                                io,
-                            )
-                            .await?;
-                        }
-                    }
+                    let native = io.is_some_and(|io| io.original_native_work().is_some());
+                    let projection_hold;
+                    let projection = crate::executor::completed_tool_projection(
+                        journal.as_ref(), &records, step, &invocation, &request.request().tools,
+                        if native { limits } else { crate::conversation::Limits::default() }, io,
+                    ).await?;
+                    projection_hold = io.filter(|_| native)
+                        .map(|io| io.guard_owned(projection.logical_owned_bytes()?)).transpose()?;
+                    drop(projection);
+                    drop(projection_hold);
                     continue;
                 }
                 if !records.is_empty() {
@@ -1198,7 +1132,12 @@ where
                         "approval tool differs from model request",
                     ));
                 }
-                let grant = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
+                let grant = crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("tool:call:{}", pinned.name),
+                        work,
+                    )
+                })?;
                 let grant_hold = io
                     .map(|io| io.guard_owned(grant.capacity() as u64))
                     .transpose()?;
@@ -1322,11 +1261,12 @@ where
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        let owner = self.host.journal_owner(task, fence).await?;
+        let owner = self.host.journal_owner(task, &(fence), None).await?;
         let context = self
             .harness
-            .durable_context(task, OperationId::from_bytes(task.into_bytes()))
+            .durable_context(task, OperationId::from_bytes(task.into_bytes()), None)
             .await?;
+        let context = Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
         context.with_owned_mailbox(
             task,
             Arc::new(TaskJournalMailbox {
@@ -1388,9 +1328,10 @@ where
             .host
             .readonly_fork_journal_owner_with_native_work(&witness, query, claim, work)?
             .await?;
-        let mut preparation = owner
-            .resource_preparation_with_native_work(request, work)?
-            .await?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        io.absorb_native_custody(request.1)?;
+        let mut preparation = owner.resource_preparation(request.0, &mut Some(&mut io.history_io())).await?;
+        preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
         let mut header = work.claim(
             std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64,
             u64::from(
@@ -1425,17 +1366,24 @@ where
     ) -> Result<Arc<crate::runtime::TaskContext>> {
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(
+                task,
+                fence,
+                Some(&crate::executor::PreparationIo::from_native_work(work)?),
+            )
             .await?;
         owner
             .verify(
                 allow_settlement,
-                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
+                &mut Some(
+                    &mut crate::filesystem::PreparationIo::from_native_work(work)
+                        .map(crate::store::HistoryWork::new)?,
+                ),
             )
             .await?;
-        let owner = owner.into_native_shared(work)?;
+        let owner = Arc::new(owner);
         let mailbox: Arc<dyn OwnedTaskMailbox> = {
-            if !owner.original_host_binding_matches(&self.host) {
+            if !owner.original_host_binding_matches(self.host.as_ref()) {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native mailbox owner belongs to another original host",
@@ -1458,7 +1406,7 @@ where
         } else {
             crate::runtime::NativeContextPurpose::Dispatch { fence, mailbox }
         };
-        let (context, custody) = self
+        let context = self
             .harness
             .open_durable_context(
                 task,
@@ -1466,10 +1414,7 @@ where
                 crate::runtime::ContextSource::Native { work, purpose },
             )
             .await?;
-        context.into_native_shared(
-            custody.expect("native owner context retains its original custody"),
-            work,
-        )
+        Ok(context)
     }
 
     /// Opens the original owner-fenced journal and returns its exact task/turn namespace.
@@ -1486,7 +1431,11 @@ where
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(
+                task,
+                fence,
+                Some(&crate::executor::PreparationIo::from_native_work(work)?),
+            )
             .await?;
         let journal = FilesystemExecutionJournal::for_task(
             owner,
@@ -1554,7 +1503,7 @@ where
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, fence).await?,
+            self.host.journal_owner(task, &(fence), None).await?,
             execution_operation(task, turn, None)?,
             turn,
             self.filesystem.clone(),
@@ -1598,19 +1547,23 @@ where
             Some(work) => {
                 let (_, fence) = context.task().owned_task_binding_with_native_work(work)?;
                 self.host
-                    .journal_owner_with_native_work(task, fence, work)
+                    .journal_owner(
+                        task,
+                        fence,
+                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    )
                     .await?
             }
             None => {
                 self.host
-                    .journal_owner(task, context.task().owned_task_fence()?)
+                    .journal_owner(task, &(context.task().owned_task_fence()?), None)
                     .await?
             }
         };
         #[cfg(target_arch = "wasm32")]
         let owner = self
             .host
-            .journal_owner(task, context.task().owned_task_fence()?)
+            .journal_owner(task, &(context.task().owned_task_fence()?), None)
             .await?;
         let owner = owner
             .for_tool_workflow(context, tool, invocation, cancellation, io)
@@ -1637,18 +1590,14 @@ where
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
         io: Option<&super::PreparationIo>,
-    ) -> Result<super::RecursiveToolOwner<P, A, O>> {
+    ) -> Result<(Arc<Self>, Arc<FilesystemWorkflowJournal<P, A, O>>)> {
         let workflow = self
             .workflow_journal_for_tool(context, tool, invocation, cancellation, io)
             .await?;
-        let journal_owner = workflow.owner.clone().ok_or_else(|| {
+        workflow.owner.as_ref().ok_or_else(|| {
             Error::Unauthorized("recursive tool lacks its original task owner".into())
         })?;
-        Ok(super::RecursiveToolOwner {
-            runtime: self.clone(),
-            workflow,
-            journal_owner,
-        })
+        Ok((self.clone(), workflow))
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.
@@ -1659,7 +1608,7 @@ where
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
         FilesystemWorkflowJournal::for_task(
-            self.host.journal_owner(task, fence).await?,
+            self.host.journal_owner(task, &(fence), None).await?,
             self.filesystem.clone(),
             &self.volume,
             &self.verifier,
@@ -1681,7 +1630,11 @@ where
         let admission = self.admission_observed(task, Some(&io)).await?;
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(
+                task,
+                fence,
+                Some(&crate::executor::PreparationIo::from_native_work(work)?),
+            )
             .await?;
         FilesystemWorkflowJournal::for_task(
             owner,
@@ -1730,8 +1683,13 @@ where
     pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
         let journal = self.workflow_journal(task, fence.clone()).await?;
         self.harness
-            .open_registered_task(task, &fence, journal,
-                #[cfg(not(target_arch = "wasm32"))] None)
+            .open_registered_task(
+                task,
+                &fence,
+                journal,
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            )
             .await
     }
 
@@ -1773,7 +1731,7 @@ where
             ));
         }
         let wake = self.poll_task_wake_page(cursor, maximum_events).await?;
-        let work = match self.host.pull_work(worker).await? {
+        let work = match self.host.pull_work(worker, None, &mut None).await? {
             crate::distributed::WorkPull::Idle => None,
             crate::distributed::WorkPull::Claimed(lease) => Some(
                 self.resume_task(lease, commands, maximum_transitions, None)
@@ -1821,16 +1779,12 @@ where
                     )
                 })
         } else {
-            self.host
-                .observe_task(task)
-                .await?
-                .outcome
-                .is_some_and(|outcome| {
-                    matches!(
-                        outcome,
-                        Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled
-                    )
-                })
+            self.host.outcome(task).await?.is_some_and(|outcome| {
+                matches!(
+                    outcome,
+                    Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled
+                )
+            })
         };
         if terminal {
             return Ok(None);
@@ -1849,7 +1803,8 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "worker pull requires original native work",
                     })?;
-                    let mut operation_io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
+                    let mut operation_io = crate::filesystem::PreparationIo::from_native_work(work)
+                        .map(crate::store::HistoryWork::new)?;
                     crate::store::HistoryIo::retain_owned(
                         &mut operation_io,
                         std::mem::size_of::<crate::distributed::WorkPull>()
@@ -1858,17 +1813,13 @@ where
                     )?;
                     let pull = self
                         .host
-                        .pull_operation(
-                            worker,
-                            admission.operation_id,
-                            &mut Some(&mut operation_io),
-                        )
+                        .pull_work(worker, Some(admission.operation_id), &mut Some(&mut operation_io))
                         .await?;
                     io.absorb_native_custody(operation_io.into_custody()?)?;
                     return Ok(pull);
                 }
                 self.host
-                    .pull_operation(worker, admission.operation_id, &mut None)
+                    .pull_work(worker, Some(admission.operation_id), &mut None)
                     .await
             },
             io,
@@ -1984,7 +1935,8 @@ where
                     "native wake requires original observer",
                 )
             })?;
-            let mut operation_io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
+            let mut operation_io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             crate::store::HistoryIo::retain_owned(
                 &mut operation_io,
                 std::mem::size_of::<Option<crate::scheduler::WorkflowSuspension>>() as u64,
@@ -2074,9 +2026,17 @@ where
         })?;
         if retained.operation_id != admission.operation_id
             || retained.request_digest
-                != crate::executor::with_history_io(io, |work|
-                    crate::executor::json::canonical_json_digest(&admission,
-                        if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?
+                != crate::executor::with_history_io(io, |work| {
+                    crate::executor::json::canonical_json_digest(
+                        &admission,
+                        if io.is_some() {
+                            acyclic_stream::MAX_RECORD_BYTES as u64
+                        } else {
+                            u64::MAX
+                        },
+                        work,
+                    )
+                })?
             || retained.initial.machine != admission.machine
         {
             return Err(observed::boundary(
@@ -2118,22 +2078,22 @@ where
                     "native wait context requires original observer",
                 )
             })?;
-            let (context, custody) = self
+            let context = self
                 .harness
-                .durable_context_with_native_work(task, admission.operation_id, work)
+                .durable_context(task, admission.operation_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
                 .await?;
-            WorkerContext::Native(context.into_native_shared(custody, work)?)
+            WorkerContext::Native(context)
         } else {
             WorkerContext::Ordinary(
                 self.harness
-                    .durable_context(task, admission.operation_id)
+                    .durable_context(task, admission.operation_id, None)
                     .await?,
             )
         };
         #[cfg(target_arch = "wasm32")]
         let context = WorkerContext::Ordinary(
             self.harness
-                .durable_context(task, admission.operation_id)
+                .durable_context(task, admission.operation_id, None)
                 .await?,
         );
         #[cfg(not(target_arch = "wasm32"))]
@@ -2147,7 +2107,10 @@ where
             })?;
             let body = context
                 .context()
-                .read_file_with_native_work(&command.payload, work)
+                .read_file(
+                    &command.payload,
+                    Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                )
                 .await?;
             crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<Value>,
@@ -2155,13 +2118,16 @@ where
                 crate::wire::ErrorCode::Storage,
             )?)
         } else {
-            crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
-                .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
+            crate::contract::json_from_slice(
+                &context.context().read_file(&command.payload, None).await?,
+            )
+            .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
         };
         #[cfg(target_arch = "wasm32")]
-        let payload =
-            crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
-                .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?;
+        let payload = crate::contract::json_from_slice(
+            &context.context().read_file(&command.payload, None).await?,
+        )
+        .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?;
         if !self
             .commands()
             .wait_ready_observed(context.context(), command, payload, io)
@@ -2183,18 +2149,17 @@ where
                     task,
                     slot.revision,
                     waiting,
-                    &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
+                    &mut Some(
+                        &mut crate::filesystem::PreparationIo::from_native_work(work)
+                            .map(crate::store::HistoryWork::new)?,
+                    ),
                 )
                 .await?;
         } else {
-            self.host
-                .wake_command(task, slot.revision, waiting, &mut None)
-                .await?;
+            self.host.wake_command(task, slot.revision, waiting, &mut None).await?;
         }
         #[cfg(target_arch = "wasm32")]
-        self.host
-            .wake_command(task, slot.revision, waiting, &mut None)
-            .await?;
+        self.host.wake_command(task, slot.revision, waiting, &mut None).await?;
         Ok(true)
     }
 
@@ -2231,7 +2196,10 @@ where
                         Some(command),
                         None,
                         None,
-                        &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
+                        &mut Some(
+                            &mut crate::filesystem::PreparationIo::from_native_work(work)
+                                .map(crate::store::HistoryWork::new)?,
+                        ),
                     )
                     .await
             };
@@ -2243,7 +2211,7 @@ where
                 .await
         } else {
             self.host
-                .suspend_workflow(task, &fence, revision, Some(command), None, None, &mut None)
+                .suspend_workflow(task, fence, revision, Some(command), None, None, &mut None)
                 .await
         }
     }
@@ -2298,11 +2266,11 @@ where
                         .await?,
                 )
             } else {
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?)
+                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id, None).await?)
             };
             #[cfg(target_arch = "wasm32")]
             let context =
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?);
+                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id, None).await?);
             #[cfg(not(target_arch = "wasm32"))]
             let mut session = if let WorkerContext::Native(context) = &context {
                 let work =
@@ -2311,16 +2279,16 @@ where
                             code: crate::wire::ErrorCode::Unsupported,
                             reason: "native worker lost its original observer",
                         })?;
-                self.host.start_task(lease, Some(work)).await?;
+                self.host.start_task(lease, &mut Some(&mut crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?))).await?;
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {
-                self.host.start_task(lease, None).await?;
+                self.host.start_task(lease, &mut None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(target_arch = "wasm32")]
             let mut session = {
-                self.host.start_task(lease, None).await?;
+                self.host.start_task(lease, &mut None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(not(target_arch = "wasm32"))]
@@ -2331,18 +2299,17 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native wake input requires original observer",
                 })?;
-                let (wake, custody) = self
-                    .host
-                    .workflow_input_with_native_work(task, fence, work)
-                    .await?;
+                let local = crate::executor::PreparationIo::from_native_work(work)?;
+                let wake = self.host.workflow_input(task, fence, Some(&local)).await?;
+                let custody = local.take_native_custody(local.owned_bytes()?)?;
                 wake_custody = Some(custody);
                 wake
             } else {
                 wake_custody = None;
-                self.host.workflow_input(task, fence).await?
+                self.host.workflow_input(task, fence, None).await?
             };
             #[cfg(target_arch = "wasm32")]
-            let mut wake = self.host.workflow_input(task, fence).await?;
+            let mut wake = self.host.workflow_input(task, fence, None).await?;
             let mut advanced = 0;
             loop {
                 let revision = session.checkpoint().revision;
@@ -2463,8 +2430,7 @@ where
                                 None,
                                 &mut observed::history(io)?
                                     .as_mut()
-                                    .map(|work| work as &mut dyn crate::store::HistoryIo),
-                            )
+                                    .map(|work| work as &mut dyn crate::store::HistoryIo))
                             .await?;
                         return Ok(WorkerTurn::Suspended { task, revision });
                     }
@@ -2479,8 +2445,7 @@ where
                             None,
                             &mut observed::history(io)?
                                 .as_mut()
-                                .map(|work| work as &mut dyn crate::store::HistoryIo),
-                        )
+                                .map(|work| work as &mut dyn crate::store::HistoryIo))
                         .await?;
                     return Ok(WorkerTurn::Suspended { task, revision });
                 };
@@ -2641,7 +2606,10 @@ where
                         });
                     }
                     let body = shared
-                        .read_file_with_native_work(&command.payload, work)
+                        .read_file(
+                            &command.payload,
+                            Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                        )
                         .await?;
                     let payload = crate::filesystem::retain_decoded(io.decode(
                         std::marker::PhantomData::<Value>,
@@ -2652,7 +2620,9 @@ where
                     commands
                         .execute_with_native_work(
                             Arc::clone(shared),
-                            crate::executor::with_history_io(Some(io), |work| fence.clone_with_work(work))?,
+                            crate::executor::with_history_io(Some(io), |work| {
+                                fence.clone_with_work(work)
+                            })?,
                             observed::clone_command(command, Some(io))?,
                             payload,
                             work,
@@ -2661,11 +2631,11 @@ where
                 }
                 WorkerContext::Ordinary(context) => {
                     let payload = crate::contract::json_from_slice(
-                        &context.read_file(&command.payload).await?,
+                        &context.read_file(&command.payload, None).await?,
                     )
                     .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                     commands
-                        .execute(context.clone(), fence.clone(), command.clone(), payload)
+                        .execute(context.as_ref().clone(), fence.clone(), command.clone(), payload)
                         .await
                 }
             };
@@ -2701,9 +2671,13 @@ where
             match &progress {
                 #[cfg(not(target_arch = "wasm32"))]
                 Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) => {
-                    self.host
-                        .verify_native_command_result(task, fence, custody.work())
-                        .await?;
+                    self.owner_observed(
+                        task,
+                        fence,
+                        false,
+                        Some(&crate::executor::PreparationIo::from_native_work(custody.work())?),
+                    )
+                    .await?;
                 }
                 _ => self.owner_observed(task, fence, false, io).await?,
             }
@@ -2747,17 +2721,30 @@ where
         compaction: &crate::context::CompactionPolicy,
         max_output_tokens: Option<u32>,
     ) -> Result<crate::executor::NativeStockExecutor> {
-        if !context.original_task_binding_matches(task, fence) || !context.native_metadata_matches(work) {
+        if !context.original_task_binding_matches(task, fence)
+            || !context.native_metadata_matches(work)
+        {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock model differs from original task binding",
             });
         }
         crate::executor::NativeStockExecutor::new(
-            model, provider, pipeline, &self.tools, Arc::clone(context), operation,
-            self.host.clone(), task, fence, self.policy.clone(),
-            self.interaction_owner.as_ref().map(|_| journal.clone() as Arc<dyn crate::runtime::InteractionRouter>),
-            compaction, max_output_tokens,
+            model,
+            provider,
+            pipeline,
+            &self.tools,
+            Arc::clone(context),
+            operation,
+            self.host.clone(),
+            task,
+            fence,
+            self.policy.clone(),
+            self.interaction_owner
+                .as_ref()
+                .map(|_| journal.clone() as Arc<dyn crate::runtime::InteractionRouter>),
+            compaction,
+            max_output_tokens,
         )
     }
 
@@ -2783,9 +2770,9 @@ where
                 "persistent local stock composition has no routed execution provider".into(),
             ));
         }
-        let task_context = self.task_context(task, fence.clone()).await?;
+        let task_context = Arc::new(self.task_context(task, fence.clone()).await?);
         let task_context = match output {
-            Some(volume) => task_context.with_output_volume(volume)?,
+            Some(volume) => task_context.with_output_volume(volume).await?,
             None => task_context,
         };
         let scope = task_context.scope().clone();
@@ -2937,7 +2924,10 @@ where
         self.execute_progress(input).await?.into_output()
     }
 
-    pub(crate) async fn execute_progress(&self, input: TurnInput) -> Result<ExecutionProgress<TurnOutput>> {
+    pub(crate) async fn execute_progress(
+        &self,
+        input: TurnInput,
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_input(&input)?;
         deadline::run(
             &self.host,
@@ -3042,13 +3032,21 @@ async fn verify_native_model_file(
     policy: &crate::model::FileProjectionPolicy,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let body = context.read_file_with_native_work(file, work).await?;
+    let body = context
+        .read_file(
+            file,
+            Some(&crate::executor::PreparationIo::from_native_work(work)?),
+        )
+        .await?;
     drop(body);
     if let crate::model::FileProjectionPolicy::Native(policy) = policy
         && let Some(binding) = &policy.configuration
     {
         let body = context
-            .read_file_with_native_work(&binding.configuration.content, work)
+            .read_file(
+                &binding.configuration.content,
+                Some(&crate::executor::PreparationIo::from_native_work(work)?),
+            )
             .await?;
         drop(body);
     }

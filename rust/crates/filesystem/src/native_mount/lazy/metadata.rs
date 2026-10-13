@@ -57,7 +57,7 @@ pub(super) fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {
     let stat = lookup.stat();
     let metadata = workspace_metadata(lookup.metadata());
     let (link_count, device) = match lookup {
-        LazyLookup::Authored { stat, .. } => (stat.link_count, None),
+        LazyLookup::Authored { record, .. } => (record.link_count, None),
         LazyLookup::Shadow {
             record,
             source_link_count,

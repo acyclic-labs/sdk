@@ -374,7 +374,7 @@ async fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn
     let mut reader = (volume.checkout(GenerationSelector::Head, tracking(), B, &cancellation))
         .await?
         .value;
-    let at_eof = (reader.read_file_up_to_by_id(file_id, 3, 16, B, &cancellation)).await?;
+    let at_eof = (reader.read_file_up_to(file_id, 3, 16, B, &cancellation)).await?;
     assert!(at_eof.value.bytes.is_empty());
 
     let mut writer = (volume.checkout(

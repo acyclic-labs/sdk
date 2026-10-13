@@ -192,7 +192,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     };
     let owner = fixture
         .host
-        .journal_owner(task, (&lease.reservation).into())
+        .journal_owner(task, &((&lease.reservation).into()), None)
         .await?;
     let child_agent = AgentId::from_bytes([94; 16]);
     let project = VolumeRef::new(
@@ -288,11 +288,10 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         project.capability(VolumeOperation::Write, &mut None)?,
         "conversation:bind".into(),
     ]);
-    let (resources, proofs) = preparer.creation_allocations(&fork, task, None)?;
+    let proofs = preparer.creation_allocations(&fork, task, None)?;
     admission = admission.with_resource_proofs(proofs)?;
     let mut request = created.request.clone();
     request.child = admission;
-    request.resources = resources;
     request.payload =
         serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
     let owner = Arc::new(owner);

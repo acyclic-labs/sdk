@@ -33,14 +33,15 @@ mod work;
 pub(crate) use work::*;
 mod cwd;
 pub(crate) use cwd::*;
+#[cfg(unix)]
 mod unix_path;
+#[cfg(unix)]
 pub(crate) use unix_path::*;
 mod open;
 pub(crate) use open::*;
 mod mutation;
 pub(crate) use mutation::*;
 mod metadata;
-use metadata::*;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 mod macos_metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
@@ -59,8 +60,10 @@ mod links;
 pub(crate) use links::*;
 mod unix_stat;
 pub(crate) use unix_stat::*;
+#[cfg(windows)]
 mod root_path;
-pub(crate) use root_path::*;
+#[cfg(windows)]
+use root_path::*;
 mod identity;
 pub(crate) use identity::*;
 #[cfg(all(windows, any(feature = "native-mount", test)))]

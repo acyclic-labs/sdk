@@ -445,17 +445,7 @@ impl<O> BatchOutcome<O> {
             | Admission::Rejected { .. } => true,
             Admission::Accepted(Ok(Outcome::Indeterminate { .. }) | Err(_))
             | Admission::Indeterminate { .. } => false,
-        }) && self.cancellation.as_ref().is_none_or(|result| {
-            result.as_ref().is_ok_and(|report| {
-                report.entries.iter().all(|(_, status)| {
-                    matches!(
-                        status,
-                        BatchCancellationStatus::Requested
-                            | BatchCancellationStatus::NotAdmitted { .. }
-                    )
-                })
-            })
-        })
+        }) && !cancellation_unresolved(&self.cancellation)
     }
 }
 
@@ -558,6 +548,11 @@ impl RuntimeGroup {
             ));
         }
         require_task_spawn(&self.scope, definition)?;
+        if self.harness.execution.is_some() {
+            return Err(Error::Unsupported(
+                "live task closures cannot cross an execution provider; register a resumable task and admit it with a stable operation ID".into(),
+            ));
+        }
         self.harness
             .spawn_in_group(
                 &self.group,
@@ -598,28 +593,17 @@ impl RuntimeGroup {
         O: Serialize + DeserializeOwned + Send + 'static,
     {
         let admissions = self.spawn_many(definition, inputs).await;
-        let mut outcomes = Vec::with_capacity(admissions.len());
-        let mut accepted = Vec::new();
-        for admission in admissions {
-            match admission {
-                Ok(task) => {
-                    outcomes.push(None);
-                    accepted.push(task);
+        let concurrency = admissions.len().clamp(1, 64);
+        let outcomes = stream::iter(admissions)
+            .map(|admission| async move {
+                match admission {
+                    Ok(task) => task.result().await,
+                    Err(error) => Err(error),
                 }
-                Err(error) => outcomes.push(Some(Err(error))),
-            }
-        }
-        let mut completed = join_runtime(accepted).await.into_iter();
-        let outcomes = outcomes
-            .into_iter()
-            .map(|entry| {
-                entry.unwrap_or_else(|| {
-                    completed.next().unwrap_or_else(|| {
-                        Err(Error::Storage("accepted task result is missing".into()))
-                    })
-                })
             })
-            .collect::<Vec<_>>();
+            .buffered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
         if outcomes
             .iter()
             .all(|entry| matches!(entry, Ok(Outcome::Succeeded(_))))

@@ -51,7 +51,9 @@ impl StockExecution<'_> {
             ),
             self.io,
         )?;
-        let source = stock_context_prefix(&context, through, self.io)?;
+        let (source, _) = with_history_io(self.io, |work| {
+            crate::context::clone_context(&context, Some(through), work)
+        })?;
         let instruction = ModelContent::Text(with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!(
@@ -74,8 +76,13 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let (compacted, reference) =
-            stock_compact(&context, maximum, Some(summary), &policy.retention, self.io)?;
+        let (compacted, reference) = crate::context::DurableContextProvider::compact(
+            &context,
+            maximum,
+            Some(summary),
+            &policy.retention,
+            self.io,
+        )?;
         let compaction_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:compaction"), work)
         })?;

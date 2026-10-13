@@ -6,12 +6,6 @@ use crate::{Error, NativeFutureBundle, Result};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::sync::Arc;
 
-pub(super) struct NativeMetadataSource {
-    work: NativeMaterializationWork,
-    bytes: u64,
-    pub(super) purpose: IssuedContextPurpose,
-}
-
 pub(super) fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
@@ -32,46 +26,13 @@ fn validate_scope_attenuation(
 }
 
 impl TaskContext {
-    /// Records custody after the SDK producer completes metadata allocation.
-    pub(super) fn mark_native_metadata_source(
-        &mut self,
-        work: &NativeMaterializationWork,
-        custody: &NativeAllocation,
-    ) -> Result<()> {
-        work.charge(WorkCounters::default())
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        if !custody.work().shares_allocation_context(work) {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "issued task metadata custody belongs to another original ledger",
-            ));
-        }
-        self.native_metadata_source = Some(NativeMetadataSource {
-            work: work.clone(),
-            bytes: custody.bytes(),
-            purpose: IssuedContextPurpose::Read,
-        });
-        Ok(())
-    }
-
     /// Requires the SDK's original metadata source and cancellation ledger.
     pub(crate) fn require_original_native_work(
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
-        work.charge(WorkCounters::default())
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        if !self
-            .native_metadata_source
-            .as_ref()
-            .is_some_and(|source| source.work.shares_allocation_context(work))
-        {
+        work.charge(WorkCounters::default())?;
+        if !self.native_metadata_matches(work) {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "task context differs from its original native metadata source",
@@ -84,11 +45,7 @@ impl TaskContext {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.require_original_native_work(work)?;
-        if !self
-            .native_metadata_source
-            .as_ref()
-            .is_some_and(|source| source.purpose == IssuedContextPurpose::Dispatch)
-        {
+        if self.native_purpose != Some(IssuedContextPurpose::Dispatch) {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "native task metadata was not issued for fresh dispatch",
@@ -148,55 +105,31 @@ impl TaskContext {
         validate_scope_attenuation(&self.scope, requested, limits, work)
     }
 
-    /// Consumes the actual SDK-issued context and its observed metadata custody.
-    pub fn into_native_shared(
-        mut self,
-        mut custody: NativeAllocation,
-        work: &NativeMaterializationWork,
-    ) -> Result<Arc<TaskContext>> {
-        let Some(source) = self.native_metadata_source.as_ref() else {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "task context has no original native metadata source",
-            ));
-        };
-        if !source.work.shares_allocation_context(work)
-            || !custody.work().shares_allocation_context(work)
-            || custody.bytes() < source.bytes
-        {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "task context metadata custody differs from its original source",
-            ));
+    pub(crate) fn into_shared(mut self) -> Result<Arc<TaskContext>> {
+        if let Some(mut custody) = self.native_custody.take() {
+            let mut slot = match custody.work().claim(
+                (2 * std::mem::size_of::<usize>()) as u64,
+                1,
+                WorkCounters::UNCHARGED,
+            ) {
+                Ok(slot) => slot,
+                Err(cause) => {
+                    drop(self);
+                    return Err(Error::NativeWork {
+                        cause,
+                        custody: Some(custody),
+                    });
+                }
+            };
+            custody.absorb(&mut slot)?;
+            self.native_custody = Some(custody);
         }
-        let mut slot = match work.claim(
-            (2 * std::mem::size_of::<usize>()) as u64,
-            1,
-            WorkCounters::UNCHARGED,
-        ) {
-            Ok(slot) => slot,
-            Err(cause) => {
-                drop(self);
-                return Err(Error::NativeWork {
-                    cause,
-                    custody: Some(custody),
-                });
-            }
-        };
-        custody
-            .absorb(&mut slot)
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        self.native_custody = Some(custody);
         Ok(Arc::new(self))
     }
 }
 
 impl TaskContext {
-    /// Selects an existing authenticated output writer without widening scope.
-    pub async fn with_output_volume_with_native_work(
+    pub(super) async fn project_output_volume(
         self: &Arc<Self>,
         volume: &crate::conversation::VolumeRef,
         work: &NativeMaterializationWork,
@@ -210,10 +143,8 @@ impl TaskContext {
 
         self.require_original_native_work(work)?;
         let purpose = self
-            .native_metadata_source
-            .as_ref()
-            .expect("original native metadata source")
-            .purpose;
+            .native_purpose
+            .expect("original native metadata purpose");
         if purpose == IssuedContextPurpose::Read {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,
@@ -304,22 +235,13 @@ impl TaskContext {
             owned_mailbox: self.owned_mailbox.clone(),
             output_content: Some(binding.clone()),
             model_steps: Arc::clone(&self.model_steps),
-            native_metadata_source: None,
+            native_purpose: Some(purpose),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         };
         let custody = io.into_custody()?;
-        if let Err(error) = context.mark_native_metadata_source(work, &custody) {
-            drop(context);
-            drop(custody);
-            return Err(error);
-        }
-        context
-            .native_metadata_source
-            .as_mut()
-            .expect("projected native metadata source")
-            .purpose = purpose;
-        context.into_native_shared(custody, work)
+        context.native_custody = Some(custody);
+        context.into_shared()
     }
 
     /// Borrows the original metadata ledger without granting resource authority.
@@ -338,12 +260,11 @@ impl TaskContext {
 
     /// Checks custody for this context's original metadata.
     pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
-        self.native_custody.as_ref().is_some_and(|custody| {
-            custody.work().shares_allocation_context(work)
-                && self.native_metadata_source.as_ref().is_some_and(|source| {
-                    source.work.shares_allocation_context(work) && custody.bytes() >= source.bytes
-                })
-        })
+        self.native_purpose.is_some()
+            && self
+                .native_custody
+                .as_ref()
+                .is_some_and(|custody| custody.work().shares_allocation_context(work))
     }
 }
 
@@ -360,11 +281,7 @@ impl ToolContext {
 
     fn accepted_native_context(&self, work: &NativeMaterializationWork) -> Result<&TaskContext> {
         let context = self.validate_native_bound_context(work)?;
-        if !context
-            .native_metadata_source
-            .as_ref()
-            .is_some_and(|source| source.purpose == IssuedContextPurpose::Dispatch)
-        {
+        if context.native_purpose != Some(IssuedContextPurpose::Dispatch) {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "original admission observation requires dispatch purpose",
@@ -456,11 +373,7 @@ impl ToolContext {
         router: Arc<dyn InteractionRouter>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        work.charge(WorkCounters::default())
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        work.charge(WorkCounters::default())?;
         if !self.native_metadata_matches(work) {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,

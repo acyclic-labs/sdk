@@ -30,18 +30,13 @@ mod native_stock;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native_stock::{
-    completed_tool_projection_with_native_work, load_json_with_native_work,
-    replay_execution_with_native_work, retained_model_step_with_native_work,
-    stage_json_with_native_work,
-};
 pub(crate) use native_stock::{
     stage_json, stock_boundary, stock_string_copy, stock_string_push, stock_vec_push,
 };
 
 mod journal;
 pub use journal::ExecutionJournal;
+use journal::validate_journal;
 mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
@@ -68,11 +63,11 @@ pub use checkpoint_selection::{canonical_checkpoint_for_operation, load_canonica
 mod checkpoint_projection;
 pub use checkpoint_projection::{load_canonical_checkpoint, load_canonical_checkpoint_through};
 mod payload;
+#[cfg(feature = "filesystem")]
+pub(crate) use payload::reserve_preparation_workspace;
 pub(crate) use payload::{
     decode_json, load_json, load_model_request, preparation_digest, retain_preparation,
 };
-#[cfg(feature = "filesystem")]
-pub(crate) use payload::{receive_preparation, reserve_preparation_workspace};
 mod admission;
 
 /// Internal replay batch size; callers may request any positive page allowance.

@@ -100,8 +100,7 @@ impl ToolApprovalVerifier for CatalogApproval {
 }
 
 #[tokio::test]
-async fn catalog_installation_requires_signed_namespace_and_exact_complete_approval() -> Result<()>
-{
+async fn scoped_catalog_installation_and_replacement_require_exact_approval() -> Result<()> {
     use crate::core::{AggregateKind, Authority, AuthorityIssuer};
     let authority = Authority {
         kind: AggregateKind::Conversation,
@@ -217,35 +216,8 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
     ));
     assert_eq!(registry.definitions(None)?.len(), 2);
     assert_eq!(transport.0.load(Ordering::SeqCst), 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result<()> {
-    use crate::core::{AggregateKind, Authority, AuthorityIssuer};
-    let issuer = AuthorityIssuer::new(
-        "catalog",
-        [8; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "catalog".into(),
-        },
-    );
-    let scope = issuer.issue(
-        "installer",
-        &Capabilities::new(["mcp:install:fixture"]),
-        None,
-        None,
-        &mut None,
-    )?;
-    let verifier = issuer.verifier(&mut None).expect("verifier copy");
-    let original = catalog("1", &["a", "b"]);
     let mut replacement = catalog("2", &["a"]);
     replacement.schema_exposure = McpSchemaExposure::Selected { names: vec![] };
-    let bound: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
-    let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
-    let mut registry = ToolRegistry::default();
-    original.install(&mut registry, None, &bound, &projection, 8, 8192)?;
     let approval = CatalogApproval {
         operation: OperationId::from_bytes([50; 16]),
         interaction: InteractionId::from_bytes([51; 16]),
@@ -297,12 +269,9 @@ fn context_result(context: &ToolContext, structured_content: Value) -> Value {
 
 async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let operation = OperationId::from_bytes([17; 16]);
-    let context = ToolContext::new(
-        std::sync::Arc::new(task.clone()),
-        operation,
-        "provider-call",
-        None,
-    )?;
+    let denied = Arc::new(task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?);
+    let task = Arc::new(task);
+    let context = ToolContext::new(Arc::clone(&task), operation, "provider-call", None)?;
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: "provider-call".into(),
@@ -313,40 +282,34 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
         "call":"provider-call", "serverGrant":true, "durableTask":null});
     let result = tool
         .executor
-        .execute_with_context(context.clone(), invocation.clone())
+        .execute(invocation.clone(), Some(context.clone()))
         .await?;
     assert_eq!(result.value["_meta"], expected);
     let recovered = tool
         .executor
-        .reconcile_with_context(context.clone(), invocation.clone())
+        .reconcile(invocation.clone(), Some(context.clone()))
         .await?
         .ok_or_else(|| Error::NotFound("context result".into()))?;
     assert_eq!(recovered.value["_meta"], expected);
-    let denied = task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?;
     for wrong in [
         ToolContext::new(
-            std::sync::Arc::new(task.clone()),
+            Arc::clone(&task),
             OperationId::from_bytes([18; 16]),
             "provider-call",
             None,
         )?,
-        ToolContext::new(std::sync::Arc::new(task), operation, "different-call", None)?,
-        ToolContext::new(
-            std::sync::Arc::new(denied),
-            operation,
-            "provider-call",
-            None,
-        )?,
+        ToolContext::new(task, operation, "different-call", None)?,
+        ToolContext::new(denied, operation, "provider-call", None)?,
     ] {
         assert!(matches!(
             tool.executor
-                .execute_with_context(wrong.clone(), invocation.clone())
+                .execute(invocation.clone(), Some(wrong.clone()))
                 .await,
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
             tool.executor
-                .reconcile_with_context(wrong, invocation.clone())
+                .reconcile(invocation.clone(), Some(wrong))
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -354,7 +317,7 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let mut invalid = invocation;
     invalid.arguments = json!({"value":"wrong"});
     assert!(matches!(
-        tool.executor.execute_with_context(context, invalid).await,
+        tool.executor.execute(invalid, Some(context)).await,
         Err(Error::Invalid(_))
     ));
     Ok(())
@@ -422,10 +385,15 @@ async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Res
     assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
     let scope = RuntimeScope::new(Capabilities::new(["mcp:call:fixture"]), Limits::default())?;
     tool.executor.authorize(Some(&scope), &invocation)?;
-    assert!(tool.executor.reconcile(invocation.clone()).await?.is_none());
+    assert!(
+        tool.executor
+            .reconcile(invocation.clone(), None)
+            .await?
+            .is_none()
+    );
     assert_eq!(transport.0.load(Ordering::SeqCst), 0);
     assert_eq!(
-        tool.executor.execute(invocation).await?.value["structuredContent"]["value"],
+        tool.executor.execute(invocation, None).await?.value["structuredContent"]["value"],
         1
     );
     assert_eq!(transport.0.load(Ordering::SeqCst), 1);
@@ -511,7 +479,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
     };
     let scope = RuntimeScope::new(Capabilities::new(["mcp:call:fixture"]), Limits::default())?;
     admitted.executor.authorize(Some(&scope), &invocation)?;
-    let mut call = admitted.executor.execute(invocation.clone());
+    let mut call = admitted.executor.execute(invocation.clone(), None);
     assert!(futures::poll!(&mut call).is_pending());
     catalog("2", &["a"]).install(
         &mut registry,
@@ -530,7 +498,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     assert_eq!(next.definition.revision, "2");
     assert_eq!(
-        next.executor.execute(invocation).await?.value["structuredContent"]["value"],
+        next.executor.execute(invocation, None).await?.value["structuredContent"]["value"],
         1
     );
     Ok(())

@@ -40,8 +40,10 @@ where
                     "native source has no original owner",
                 )
             })?;
-            owner.require_mail_scope_with_native_work(context.scope(), work)?;
-            if owner.task_binding() != binding
+            owner.require_mail_scope(context.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+            let (owner_task, owner_fence) = owner.task_binding();
+            if owner_task != binding.0
+                || owner_fence != binding.1
                 || owner.authenticated_binding_agent(&mut Some(
                     &mut crate::store::HistoryWork::new(
                         crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -59,7 +61,7 @@ where
             && !crate::executor::with_history_io(io, |work| {
                 Ok::<_, Error>(context.scope().current_created_content(work)?.is_some_and(
                     |binding| {
-                        binding.authority.as_ref() == Some(caller.owner.authority())
+                        binding.authority.as_ref() == Some(caller.owner.issuer.audience())
                             && binding.volume == caller.private_volume
                     },
                 ))
@@ -72,9 +74,9 @@ where
             ));
         }
         let verifier = crate::executor::with_history_io(io, |work| {
-            let verifier = caller.owner.issuer().verifier(work)?;
+            let verifier = caller.owner.issuer.verifier(work)?;
             verifier.verify_scope_for_with_work(
-                caller.owner.authority(),
+                caller.owner.issuer.audience(),
                 &caller.owner.scope,
                 work,
             )?;
@@ -83,36 +85,32 @@ where
         for volume in
             std::iter::once(&caller.private_volume).chain(project_read.then_some(&caller.project))
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io
-                .and_then(crate::filesystem::PreparationIo::original_native_work)
-                .is_some()
-            {
-                crate::executor::with_history_io(io, |work| {
-                    owner.expect("native source owner").require_volume_grant(
-                        volume,
-                        VolumeOperation::Read,
-                        work,
-                    )
-                })?;
-                continue;
-            }
-            let read = volume.capability(VolumeOperation::Read, &mut None)?;
-            if !context.scope().grants().contains(&read) {
+            let granted = match io {
+                Some(io) => {
+                    io.contains_capability(context.scope().grants(), volume, "volume:read:")?
+                }
+                None => context
+                    .scope()
+                    .grants()
+                    .contains(&volume.capability(VolumeOperation::Read, &mut None)?),
+            };
+            if !granted {
                 return Err(failure(
                     io,
                     ErrorCode::Unauthorized,
                     "configured caller lacks its selected source read",
                 ));
             }
-            ContentGrant::verify(
-                &verifier,
-                &caller.owner.scope,
-                volume,
-                VolumeOperation::Read,
-                u64::MAX,
-                &mut None,
-            )?;
+            crate::executor::with_history_io(io, |work| {
+                ContentGrant::authorize_volume(
+                    &verifier,
+                    &caller.owner.scope,
+                    volume,
+                    VolumeOperation::Read,
+                    u64::MAX,
+                    work,
+                )
+            })?;
         }
         let _ = owner;
         Ok(caller)
@@ -141,10 +139,8 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work)
             {
-                native = runtime
-                    .task_host()
-                    .observe_volume_snapshots_with_native_work(caller.task, work)
-                    .await?;
+                native = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = runtime
+                    .task_host().observe_volume_snapshots(caller.task, &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
                 break 'volumes native.0.as_slice();
             }
             ordinary = runtime.inspect_source(caller.task, caller.task).await?;
@@ -198,7 +194,7 @@ where
         let io = None;
         let verifier = if io.is_some() || content.is_none() {
             Some(crate::executor::with_history_io(io, |work| {
-                binding.issuer().verifier(work)
+                binding.issuer.verifier(work)
             })?)
         } else {
             None
@@ -248,10 +244,10 @@ where
             let owner = self
                 .runtime(io)?
                 .task_host()
-                .journal_owner_with_native_work(task, fence, work)
+                .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                 .await?
                 .with_invocation_cancellation(cancellation);
-            owner.require_mail_scope_with_native_work(context.scope(), work)?;
+            owner.require_mail_scope(context.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             return owner.into_native_shared(work);
         }
         let task = context.durable_task_id().ok_or_else(|| {
@@ -260,7 +256,7 @@ where
         Ok(Arc::new(
             self.runtime(io)?
                 .task_host()
-                .journal_owner(task, context.owned_task_fence()?)
+                .journal_owner(task, &(context.owned_task_fence()?), None)
                 .await?
                 .with_invocation_cancellation(cancellation),
         ))

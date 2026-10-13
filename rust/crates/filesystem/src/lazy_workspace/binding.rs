@@ -297,16 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let checkout = self
-            .checkout(crate::model::GenerationSelector::Head, ctx)
-            .await?;
-        let id = checkout.value.generation_id();
-        checkout.retire(ctx)?;
-        Ok(crate::Generation {
-            workspace: self.workspace.clone(),
-            id,
-            publication_closure: None,
-        })
+        accounted!(ctx, |work, cancel| self.workspace.head(work, cancel))
     }
 
     pub(crate) async fn operation_generation(
@@ -393,12 +384,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
             ctx,
         )?;
-        self.checkout(
-            crate::model::GenerationSelector::Exact(cut.authored_generation),
-            ctx,
-        )
-        .await?
-        .retire(ctx)?;
+        accounted!(ctx, |work, cancel| self.workspace.generation(
+            cut.authored_generation,
+            work,
+            cancel
+        ))?;
         Ok(())
     }
 }

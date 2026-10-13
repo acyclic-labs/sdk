@@ -2,14 +2,6 @@ use super::*;
 use crate::demand::SourceDirectoryPage;
 use std::ops::Bound;
 
-/// Sparse seek target.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LazySeekTarget {
-    /// First data byte.
-    Data,
-    /// First hole, including the end of a dense source file.
-    Hole,
-}
 /// One merged authored/source directory entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LazyDirectoryEntry {
@@ -39,18 +31,13 @@ pub struct LazyDirectoryCursor {
     phase: LazyDirectoryPhase,
     allocation: KernelOwnedAllocation,
 }
-#[derive(Debug)]
 enum LazyDirectoryPhase {
     Source(Option<SourceCursor>),
     Authored(Option<LogicalName>),
 }
 impl std::fmt::Debug for LazyDirectoryCursor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LazyDirectoryCursor")
-            .field("cut", &self.cut)
-            .field("directory", &self.directory)
-            .field("phase", &self.phase)
-            .finish()
+        f.write_str("LazyDirectoryCursor")
     }
 }
 impl LazyDirectoryCursor {
@@ -75,15 +62,12 @@ impl LazyDirectoryCursor {
         let mut owned = Owned::new(directory, guard, bytes);
         let phase = (|| {
             Ok::<_, LazyWorkspaceError>(match &self.phase {
-                LazyDirectoryPhase::Source(Some(cursor)) => {
-                    LazyDirectoryPhase::Source(Some(Clone::clone(cursor)))
-                }
+                LazyDirectoryPhase::Source(cursor) => LazyDirectoryPhase::Source(cursor.clone()),
                 LazyDirectoryPhase::Authored(Some(name)) => {
                     let (name, mut guard) = name.clone_with_accounting(ctx, cancellation(ctx))?;
                     owned.allocation.absorb(&mut guard)?;
                     LazyDirectoryPhase::Authored(Some(name))
                 }
-                LazyDirectoryPhase::Source(None) => LazyDirectoryPhase::Source(None),
                 LazyDirectoryPhase::Authored(None) => LazyDirectoryPhase::Authored(None),
             })
         })();

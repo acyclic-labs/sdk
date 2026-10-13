@@ -7,9 +7,6 @@ impl HostRoot {
         #[cfg(windows)] name: &[u16],
         work: &mut W,
     ) -> Result<HostRoot, DemandError> {
-        #[cfg(unix)]
-        let directory = open_unix_directory_path(&self.directory, name, false, work)?;
-        #[cfg(windows)]
         let directory = self.open_dir_held(name, work)?;
         let identity = directory_identity(&directory, work)?;
         Ok(HostRoot {
@@ -44,7 +41,7 @@ impl HostRoot {
         let real_directory = stat.file_type().is_dir() && !stat.file_type().is_symlink();
         #[cfg(windows)]
         let real_directory =
-            real_directory && stat.file_attributes() & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 == 0;
+            real_directory && stat.raw.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 == 0;
         if real_directory {
             let child = self.open_child(name, work)?;
             if child.identity() != expected {

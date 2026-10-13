@@ -87,7 +87,7 @@ impl NativeStockExecutor {
                 Ok::<_, Error>(identity)
             })
             .transpose()?;
-        let compaction = stock_compaction_copy(compaction, Some(&io))?;
+        let compaction = compaction.copy(Some(&io))?;
         let retained = io.owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         let limits = context.scope().limits();

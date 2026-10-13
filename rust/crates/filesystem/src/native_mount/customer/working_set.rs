@@ -27,7 +27,7 @@ where
     pub fn native_source_io_lease(
         &self,
     ) -> Result<super::super::adapter::NativeSourceIoLease, NativeMountError> {
-        self.source.native_source_io_lease().map_err(Into::into)
+        self.source.native_source_io_lease(self.source.clone()).map_err(Into::into)
     }
 
     /// Revalidates the selected root and generation before presentation.
@@ -191,10 +191,7 @@ where
         work.cancellation()
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
-        Ok(crate::NativePublicationSnapshot::unchanged(
-            self.snapshot_context(),
-            self.expected_generation,
-        ))
+        Ok(crate::NativePublicationSnapshot { context: self.snapshot_context(), operation: None, generation: self.expected_generation })
     }
 
     fn snapshot_context(&self) -> crate::lazy_workspace::NativeSnapshotContext {
@@ -231,7 +228,7 @@ pub(super) fn validate_native_working_set_root(
     if expected.is_some_and(|identity| identity != root.identity()) {
         return Err(MountSourceError::Stale.into());
     }
-    if !root.stat(selected_root, &mut &*work)?.is_dir() {
+    if !{ #[cfg(unix)] { root.stat(selected_root, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(selected_root, &mut &*work, |path, work| root.stat(path, work)) } }?.is_dir() {
         return Err(MountLifecycleError::NativePolicy(
             "selected native working-set directory is absent",
         ));

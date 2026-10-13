@@ -43,7 +43,7 @@ pub(crate) async fn authorize_selected_source(
         for _ in 0..maximum_depth {
             let admission_custody = runtime
                 .task_host()
-                .observe_admission_with_native_work(task, native_work)
+                .observe_admission_with_native_work(task, native_work)?
                 .await?;
             let admission = &admission_custody.0;
             if admission.task_id() != task {
@@ -1687,7 +1687,7 @@ fn native_extra_facts_differ(
     after: &acyclic_fs::LazyLookup,
 ) -> bool {
     let links = |lookup: &acyclic_fs::LazyLookup| match lookup {
-        acyclic_fs::LazyLookup::Authored { stat, .. } => Some(stat.link_count),
+        acyclic_fs::LazyLookup::Authored { record, .. } => Some(record.link_count),
         acyclic_fs::LazyLookup::Shadow {
             source_link_count, ..
         } => Some(*source_link_count),

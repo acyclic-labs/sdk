@@ -1,6 +1,6 @@
 use super::super::PreparationRecord;
 use super::*;
-use acyclic_fs::{MaterializationJournal, NativeAllocation};
+use acyclic_fs::MaterializationJournal;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -12,21 +12,6 @@ pub(super) struct Intent {
 }
 impl PreparationRecord for Intent {}
 impl PreparationRecord for MaterializationJournal {}
-
-/// Original protected preparation, without opening its host paths.
-pub struct NativeRecordedPreparation {
-    /// Original task.
-    pub task: crate::TaskId,
-    /// Creation fence.
-    pub original_fence: crate::scheduler::LeaseFence,
-    /// Original selection.
-    pub manifest: NativeViewManifest,
-    /// Original staging directory.
-    pub operation_directory: PathBuf,
-    /// SDK journal.
-    pub journal: MaterializationJournal,
-    pub(super) custody: NativeAllocation,
-}
 
 pub(super) fn invalid() -> Error {
     Error::NativeBoundary {
@@ -47,6 +32,6 @@ pub(super) fn intent(journal: &MaterializationJournal, io: &PreparationIo) -> Re
         crate::wire::ErrorCode::Storage,
     )?;
     let intent = super::super::retain_decoded(decoded);
-    intent.manifest.validate_with_io(Some(io))?;
+    intent.manifest.validate(Some(io))?;
     Ok(intent)
 }

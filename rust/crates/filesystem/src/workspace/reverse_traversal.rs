@@ -391,45 +391,6 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
     Ok(matches)
 }
 
-/// Reverse aliases of the actual supplied root, retaining their original allocation.
-pub(crate) async fn reverse_paths_to_file_root_with_accounting<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    volume: &Volume<A, O>,
-    root: &crate::kernel::GenerationRoot,
-    generation_root: crate::ObjectId,
-    file_id: FileId,
-    maximum_entries: u32,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &crate::CancellationToken,
-) -> Result<(Vec<NamespacePath>, KernelOwnedAllocation), WorkspaceError> {
-    let mut search = namespace_records_to_file_root_with_accounting(
-        volume,
-        root,
-        generation_root,
-        &[file_id],
-        maximum_entries,
-        accounting,
-        cancellation,
-    )
-    .await?;
-    let allocation = accounting.claim_owned(0, 0)?;
-    let mut paths = (Vec::new(), allocation);
-    let entries_bytes = workspace_vec_bytes(&search.0.records);
-    for (_, records) in std::mem::take(&mut search.0.records) {
-        let bytes = workspace_vec_bytes(&records);
-        for (path, _) in records {
-            reverse_grow(&mut paths.0, &mut paths.1, accounting)?;
-            paths.0.push(path);
-        }
-        accounting.release_owned(&mut search.1, bytes)?;
-    }
-    accounting.release_owned(&mut search.1, entries_bytes)?;
-    paths.1.absorb(&mut search.1)?;
-    Ok((paths.0, paths.1))
-}
-
 pub(super) struct NamespaceRecordSearch {
     pub(super) records: NamespaceRecords,
     pub(super) complete: bool,

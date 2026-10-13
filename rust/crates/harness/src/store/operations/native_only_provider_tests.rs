@@ -142,7 +142,7 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     };
     let encoded = crate::wire_codec::encode_event(&authority, &event, &mut None)?;
     let event_bytes = encoded.len() as u64;
-    let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
+    let publication = IndexedPublication::new(&authority, &event, encoded, None, &mut None)?;
     let request = publication
         .request(
             &ordinary,
@@ -250,10 +250,17 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         crate::filesystem::PreparationIo::from_native_work(&native)
             .expect("original checkpoint observer"),
     );
-    super::super::checkpoints::stage_immutable_record_with_work(
+    let bytes = {
+        let mut observer = Some(&mut io as &mut dyn crate::store::HistoryIo);
+        let mut source = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+        let bytes = crate::core::copy_copy_vector(b"native-checkpoint", &mut source)?;
+        source.transfer();
+        bytes
+    };
+    super::super::checkpoints::stage_immutable(
         &client,
-        StreamPath::new("harness/v3/native-only-checkpoint")?,
-        OwnedBytes::from_static(b"native-checkpoint"),
+        (StreamPath::new("harness/v3/native-only-checkpoint")?, 0),
+        Ok(bytes),
         &mut Some(&mut io),
     )
     .await?;

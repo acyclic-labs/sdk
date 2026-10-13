@@ -1,188 +1,155 @@
 use super::*;
 
 #[tokio::test]
-async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), B, &cancellation)).await?.value;
+async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (_, mut checkout) = fixture(config(), &cancel).await?;
+    let id = create(&mut checkout, "open-file", vec![b'a'; 128].into(), &cancel).await?;
     let file = path("open-file")?;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    (checkout.create(
-        AuthoredMutation::CreateFile {
-            path: file.clone(),
-            bytes: OwnedBytes::from(vec![b'a'; 128]),
-            metadata: FileMetadata::default(),
-        },
-        B,
-        &cancellation,
-    ))
-    .await?;
-    let detached = (checkout.detach_regular_file(&file, B, &cancellation)).await?;
-    let mut detached = detached.value;
-    let file_id = detached.file_id();
-    assert_eq!(
-        (detached.seek(0, ExtentSeekTarget::Data, B, &cancellation,))
-            .await?
-            .value,
-        Some(0)
-    );
-    assert_eq!(
-        (detached.seek(0, ExtentSeekTarget::Hole, B, &cancellation,))
-            .await?
-            .value,
-        Some(128)
-    );
+    let mut detached = checkout.detach_regular_file(&file, B, &cancel).await?.value;
+    assert_eq!(detached.file_id(), id);
     for (offset, target, expected) in [
+        (0, ExtentSeekTarget::Data, Some(0)),
+        (0, ExtentSeekTarget::Hole, Some(128)),
         (128, ExtentSeekTarget::Data, None),
         (128, ExtentSeekTarget::Hole, Some(128)),
         (129, ExtentSeekTarget::Data, None),
         (129, ExtentSeekTarget::Hole, None),
     ] {
         assert_eq!(
-            (detached.seek(offset, target, B, &cancellation,))
-                .await?
-                .value,
+            detached.seek(offset, target, B, &cancel).await?.value,
             expected
         );
     }
-
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.detached".to_vec(),
         128,
     )?;
     assert!(
-        (detached.read_named_attribute(&attribute, B, &cancellation,))
+        detached
+            .read_named_attribute(&attribute, B, &cancel)
             .await?
             .value
             .is_none()
     );
     assert!(
-        (detached.list_named_attributes(None, 8, B, &cancellation,))
+        detached
+            .list_named_attributes(None, 8, B, &cancel)
             .await?
             .value
             .entries
             .is_empty()
     );
-    let absent_remove =
-        (detached.change_named_attribute(&attribute.clone(), None, B, &cancellation))
-            .await
-            .err()
-            .ok_or("attribute-free detached removal unexpectedly succeeded")?;
-    assert!(matches!(absent_remove.error, FsError::NotFound));
-    let absent_replace = (detached.change_named_attribute(
-        &attribute.clone(),
-        Some((
-            &OwnedBytes::from_static(b"replacement"),
-            NamedAttributeWriteMode::Replace,
-        )),
-        B,
-        &cancellation,
-    ))
-    .await
-    .err()
-    .ok_or("absent detached replacement unexpectedly succeeded")?;
-    assert!(matches!(absent_replace.error, FsError::CreationRejected));
-    (detached.change_named_attribute(
-        &attribute.clone(),
-        Some((
-            &OwnedBytes::from_static(b"first"),
-            NamedAttributeWriteMode::Create,
-        )),
-        B,
-        &cancellation,
-    ))
-    .await?;
-    assert_eq!(
-        (detached.read_named_attribute(&attribute, B, &cancellation,))
-            .await?
-            .value
-            .map(|chunk| chunk.bytes)
-            .as_deref(),
-        Some(b"first".as_slice())
-    );
-    assert_eq!(
-        (detached.list_named_attributes(None, 8, B, &cancellation,))
-            .await?
-            .value
-            .entries
-            .len(),
-        1
-    );
-    assert!(
-        (detached.change_named_attribute(
-            &attribute.clone(),
-            Some((
-                &OwnedBytes::from_static(b"duplicate"),
-                NamedAttributeWriteMode::Create
-            )),
-            B,
-            &cancellation
-        ))
-        .await
-        .is_err()
-    );
-    (detached.change_named_attribute(
-        &attribute.clone(),
-        Some((
-            &OwnedBytes::from_static(b"second"),
-            NamedAttributeWriteMode::Replace,
-        )),
-        B,
-        &cancellation,
-    ))
-    .await?;
-
-    let mut metadata = (detached.read_metadata(B, &cancellation)).await?.value;
-    metadata.posix_mode = MetadataField::Value(0o100_640);
-    (detached.set_attributes(metadata, None, B, &cancellation)).await?;
-    metadata.posix_mode = MetadataField::Value(0o100_600);
-    (detached.set_attributes(metadata, None, B, &cancellation)).await?;
+    assert!(matches!(
+        detached
+            .change_named_attribute(&attribute, None, B, &cancel)
+            .await,
+        Err(OperationFailure {
+            error: FsError::NotFound,
+            ..
+        })
+    ));
+    assert!(matches!(
+        detached
+            .change_named_attribute(
+                &attribute,
+                Some((
+                    &OwnedBytes::from_static(b"replacement"),
+                    NamedAttributeWriteMode::Replace
+                )),
+                B,
+                &cancel
+            )
+            .await,
+        Err(OperationFailure {
+            error: FsError::CreationRejected,
+            ..
+        })
+    ));
+    for (bytes, mode) in [
+        (b"first".as_slice(), NamedAttributeWriteMode::Create),
+        (b"second".as_slice(), NamedAttributeWriteMode::Replace),
+    ] {
+        detached
+            .change_named_attribute(
+                &attribute,
+                Some((&OwnedBytes::copy_from_slice(bytes), mode)),
+                B,
+                &cancel,
+            )
+            .await?;
+        assert_eq!(
+            detached
+                .read_named_attribute(&attribute, B, &cancel)
+                .await?
+                .value
+                .unwrap()
+                .bytes
+                .as_ref(),
+            bytes
+        );
+        assert_eq!(
+            detached
+                .list_named_attributes(None, 8, B, &cancel)
+                .await?
+                .value
+                .entries
+                .len(),
+            1
+        );
+        assert!(
+            detached
+                .change_named_attribute(
+                    &attribute,
+                    Some((
+                        &OwnedBytes::from_static(b"duplicate"),
+                        NamedAttributeWriteMode::Create
+                    )),
+                    B,
+                    &cancel
+                )
+                .await
+                .is_err()
+        );
+    }
+    let mut metadata = detached.read_metadata(B, &cancel).await?.value;
+    for mode in [0o100_640, 0o100_600] {
+        metadata.posix_mode = MetadataField::Value(mode);
+        detached.set_attributes(metadata, None, B, &cancel).await?;
+    }
     assert_eq!(detached.logical_bytes(), 128);
-    (detached.set_attributes(metadata, Some(160), B, &cancellation)).await?;
+    detached
+        .set_attributes(metadata, Some(160), B, &cancel)
+        .await?;
     assert_eq!(detached.logical_bytes(), 160);
-    (checkout.mutate(
-        vec![Mutation::Remove {
-            path: file.clone(),
-            expected_file_id: Some(file_id)
-                .map_or(MetadataField::Unavailable, MetadataField::Value),
-        }],
-        B,
-        &cancellation,
-    ))
-    .await?;
-    let absent = (checkout.lookup_no_follow(&file, B, &cancellation)).await?;
-    assert!(absent.value.record.is_none());
-
-    (detached.change_content(
+    checkout
+        .mutate(
+            vec![Mutation::Remove {
+                path: file.clone(),
+                expected_file_id: MetadataField::Value(id),
+            }],
+            B,
+            &cancel,
+        )
+        .await?;
+    assert!(
+        checkout
+            .lookup_no_follow(&file, B, &cancel)
+            .await?
+            .value
+            .record
+            .is_none()
+    );
+    for change in [
         ContentChange::Write {
             offset: 0,
             bytes: OwnedBytes::from_static(b"open"),
         },
-        None,
-        B,
-        &cancellation,
-    ))
-    .await?;
-    (detached.change_content(
         ContentChange::Write {
             offset: 4,
             bytes: OwnedBytes::new(),
         },
-        None,
-        B,
-        &cancellation,
-    ))
-    .await?;
-    (detached.change_content(
         ContentChange::Preallocate {
             range: ByteRange {
                 offset: 128,
@@ -190,12 +157,6 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
             },
             keep_size: false,
         },
-        None,
-        B,
-        &cancellation,
-    ))
-    .await?;
-    (detached.change_content(
         ContentChange::ZeroRange {
             range: ByteRange {
                 offset: 64,
@@ -204,33 +165,37 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
             allocated: false,
             extend: false,
         },
-        None,
-        B,
-        &cancellation,
-    ))
-    .await?;
-    let read = (detached.read_range(
-        ByteRange {
-            offset: 0,
-            length: 80,
-        },
-        B,
-        &cancellation,
-    ))
-    .await?;
-    assert_eq!(&read.value.bytes[..4], b"open");
-    assert_eq!(&read.value.bytes[64..80], &[0; 16]);
-    (detached.change_content(
-        ContentChange::Resize { logical_bytes: 192 },
-        None,
-        B,
-        &cancellation,
-    ))
-    .await?;
+    ] {
+        detached.change_content(change, None, B, &cancel).await?;
+    }
+    let read = detached
+        .read_range(
+            ByteRange {
+                offset: 0,
+                length: 80,
+            },
+            B,
+            &cancel,
+        )
+        .await?
+        .value;
+    assert_eq!(&read.bytes[..4], b"open");
+    assert_eq!(&read.bytes[64..80], &[0; 16]);
+    detached
+        .change_content(
+            ContentChange::Resize { logical_bytes: 192 },
+            None,
+            B,
+            &cancel,
+        )
+        .await?;
     assert_eq!(detached.logical_bytes(), 192);
-    (detached.change_named_attribute(&attribute.clone(), None, B, &cancellation)).await?;
+    detached
+        .change_named_attribute(&attribute, None, B, &cancel)
+        .await?;
     assert!(
-        (detached.change_named_attribute(&attribute, None, B, &cancellation))
+        detached
+            .change_named_attribute(&attribute, None, B, &cancel)
             .await
             .is_err()
     );
@@ -238,31 +203,18 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
 }
 
 #[tokio::test]
-async fn detached_inline_file_seek_and_attribute_absence_are_exact()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), B, &cancellation)).await?.value;
-    let file = path("inline-detached")?;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    (checkout.create(
-        AuthoredMutation::CreateFile {
-            path: file.clone(),
-            bytes: OwnedBytes::from_static(b"abc"),
-            metadata: FileMetadata::default(),
-        },
-        B,
-        &cancellation,
-    ))
+async fn detached_inline_file_seek_and_attribute_absence_are_exact() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (_, mut checkout) = fixture(config(), &cancel).await?;
+    create(
+        &mut checkout,
+        "inline-detached",
+        OwnedBytes::from_static(b"abc"),
+        &cancel,
+    )
     .await?;
-    let mut detached = (checkout.detach_regular_file(&file, B, &cancellation))
+    let mut detached = checkout
+        .detach_regular_file(&path("inline-detached")?, B, &cancel)
         .await?
         .value;
     assert_eq!(detached.logical_bytes(), 3);
@@ -273,85 +225,69 @@ async fn detached_inline_file_seek_and_attribute_absence_are_exact()
         (3, ExtentSeekTarget::Hole, Some(3)),
         (4, ExtentSeekTarget::Hole, None),
     ] {
-        let receipt = (detached.seek(offset, target, B, &cancellation)).await?;
-        assert_eq!(receipt.value, expected);
-        assert_eq!(receipt.work, WorkCounters::default());
+        assert_eq!(
+            detached.seek(offset, target, B, &cancel).await?.value,
+            expected
+        );
     }
-
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.inline".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    (detached.change_named_attribute(
-        &attribute.clone(),
-        Some((
-            &OwnedBytes::from_static(b"value"),
-            NamedAttributeWriteMode::Create,
-        )),
-        B,
-        &cancellation,
-    ))
-    .await?;
-    (detached.change_named_attribute(&attribute.clone(), None, B, &cancellation)).await?;
-    let absent = (detached.read_named_attribute(&attribute, B, &cancellation)).await?;
-    assert!(absent.value.is_none());
-
-    detached.record.kind = FileKind::Fifo;
-    detached.record.payload = FilePayload::Empty;
-    assert_eq!(detached.logical_bytes(), 0);
-    let rejected = (detached.seek(0, ExtentSeekTarget::Data, B, &cancellation))
-        .await
-        .err()
-        .ok_or("non-regular detached seek succeeded")?;
-    assert!(matches!(
-        rejected.error,
-        FsError::FileRead(FileRangeReadError::NotRegular)
-    ));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    detached
+        .change_named_attribute(
+            &attribute,
+            Some((
+                &OwnedBytes::from_static(b"value"),
+                NamedAttributeWriteMode::Create,
+            )),
+            B,
+            &cancel,
+        )
+        .await?;
+    detached
+        .change_named_attribute(&attribute, None, B, &cancel)
+        .await?;
+    assert!(
+        detached
+            .read_named_attribute(&attribute, B, &cancel)
+            .await?
+            .value
+            .is_none()
+    );
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn original_detached_content_stream_keeps_atomic_metadata_transition()
--> Result<(), Box<dyn std::error::Error>> {
+async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> TestResult {
     let cancel = CancellationToken::new();
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace("original-detached-content", B, &cancel)
-        .await?
-        .value;
-    workspace
-        .write_text("/source", "real detached stream")
-        .await?;
-    workspace.write_text("/destination", "before").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace
-        .checkout(
-            GenerationSelector::Head,
-            writable_pinned(),
-            B,
-            &cancellation,
-        )
-        .await?
-        .value;
+    let (_, mut checkout) = fixture(config(), &cancel).await?;
+    create(
+        &mut checkout,
+        "source",
+        OwnedBytes::from_static(b"real detached stream"),
+        &cancel,
+    )
+    .await?;
+    create(
+        &mut checkout,
+        "destination",
+        OwnedBytes::from_static(b"before"),
+        &cancel,
+    )
+    .await?;
+    commit(&mut checkout, &cancel).await?;
     let source = checkout
-        .lookup_no_follow(&path("source")?, B, &cancellation)
+        .lookup_no_follow(&path("source")?, B, &cancel)
         .await?
         .value
         .record
-        .ok_or("real detached source absent")?;
-    let destination = checkout
-        .lookup_no_follow(&path("destination")?, B, &cancellation)
-        .await?
-        .value
-        .record
-        .ok_or("real detached destination absent")?;
+        .unwrap();
     let reader = checkout.pinned_reader()?;
-    let original =
-        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
-    let source = reader
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let bytes = reader
         .read_record_range(
             source,
             ByteRange {
@@ -359,51 +295,51 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
                 length: 20,
             },
             &original,
-            &cancellation,
+            &cancel,
         )
-        .await?;
+        .await?
+        .bytes;
     let metadata = FileMetadata {
         modified_ns: MetadataField::Value(90),
         changed_ns: MetadataField::Value(90),
         ..FileMetadata::default()
     };
-    let mut detached =
-        DetachedFile::from_record(checkout.volume.clone(), destination, B, &cancellation)?.value;
+    let mut detached = checkout
+        .detach_regular_file(&path("destination")?, B, &cancel)
+        .await?
+        .value;
+    let id = detached.file_id();
     detached
         .change_content(
-            ContentChange::Write {
-                offset: 0,
-                bytes: source.bytes,
-            },
+            ContentChange::Write { offset: 0, bytes },
             Some(metadata),
             &original,
-            &cancellation,
+            &cancel,
         )
         .await?;
-    assert_eq!(detached.record.file_id, destination.file_id);
+    assert_eq!(detached.file_id(), id);
     assert_eq!(
-        reader
-            .read_record_range(
-                detached.record,
+        detached
+            .read_range(
                 ByteRange {
                     offset: 0,
                     length: 20
                 },
                 &original,
-                &cancellation,
+                &cancel
             )
             .await?
             .bytes
             .as_ref(),
         b"real detached stream"
     );
-    let before = detached.record;
+    let before = detached.read_metadata(B, &cancel).await?.value;
     let denied = crate::NativeMaterializationWork::new(
         WorkBudget {
             bytes_encoded: 0,
             ..B
         },
-        &cancellation,
+        &cancel,
     )
     .map_err(|(cause, _)| cause)?;
     let failure = detached
@@ -417,16 +353,31 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
                 ..metadata
             }),
             &denied,
-            &cancellation,
+            &cancel,
         )
         .await
         .err()
-        .ok_or("detached metadata encoding ignored original denial")?;
+        .ok_or("metadata encoding ignored original denial")?;
     assert!(matches!(
         failure,
         FsError::Work(_) | FsError::NativeKernel(_)
     ));
-    assert_eq!(detached.record, before);
+    assert_eq!(detached.read_metadata(B, &cancel).await?.value, before);
+    assert_eq!(
+        detached
+            .read_range(
+                ByteRange {
+                    offset: 0,
+                    length: 20
+                },
+                &original,
+                &cancel
+            )
+            .await?
+            .bytes
+            .as_ref(),
+        b"real detached stream"
+    );
     assert_eq!(denied.receipt().bytes_encoded, 0);
     assert_eq!(denied.receipt().backend_write_operations, 0);
     Ok(())

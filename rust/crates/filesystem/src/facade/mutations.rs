@@ -6,8 +6,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operations: &[Mutation],
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::kernel::Owned<Vec<Dependency>>, FsError> {
-        use crate::kernel::Owned;
+    ) -> Result<Owned<Vec<Dependency>>, FsError> {
         let mut dependencies = Owned::<Vec<Dependency>>::allocate(0, accounting)?;
         let mut exact_regions =
             Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(0, accounting)?;
@@ -128,7 +127,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     pub(super) fn mutation_dependency_bytes(
         values: &Vec<Dependency>,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<u64, FsError> {
         let mut bytes = (values.capacity() as u64)
             .checked_mul(size_of::<Dependency>() as u64)
@@ -146,9 +145,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     pub(super) fn append_mutation_dependencies(
-        destination: &mut crate::kernel::Owned<Vec<Dependency>>,
-        mut incoming: crate::kernel::Owned<Vec<Dependency>>,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        destination: &mut Owned<Vec<Dependency>>,
+        mut incoming: Owned<Vec<Dependency>>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
         for dependency in incoming.value.drain(..) {
             destination.ensure_for_push(usize::MAX, accounting)?;
@@ -175,9 +174,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     pub(super) fn subsume_mutation_record_dependencies(
         regions: &mut Vec<(Option<FileRecord>, DependencyRegion)>,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
-        let mut records = crate::kernel::Owned::<Vec<FileId>>::allocate(regions.len(), accounting)?;
+        let mut records = Owned::<Vec<FileId>>::allocate(regions.len(), accounting)?;
         for (_, region) in regions.iter() {
             accounting.charge(WorkCounters {
                 items_examined: 1,
@@ -252,8 +251,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 {
                     return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
                 }
-                self.mutate_candidate(operations, budget, cancellation)
+                let mut accounting = KernelAccounting::standalone(budget, cancellation);
+                let result = async {
+                    accounting.check()?;
+                    if self.live_operation_id.is_some() {
+                        return Err(FsError::PendingLiveMutation);
+                    }
+                    if self.prepared_merge_parent.is_some() {
+                        return Err(FsError::PreparedMergePending);
+                    }
+                    let maximum =
+                        usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
+                            .unwrap_or(usize::MAX);
+                    if operations.capacity() > maximum {
+                        return Err(FsError::ExcessiveMutationCapacity);
+                    }
+                    let bytes = Self::mutation_input_owned_bytes(&operations, &mut accounting)?;
+                    let allocation = accounting.claim_owned(bytes, 0)?;
+                    self.apply_mutations(
+                        Owned::new(operations, allocation, bytes),
+                        &mut accounting,
+                        cancellation,
+                    )
                     .await
+                }
+                .await;
+                measured(result, &accounting)
             },
             budget,
             cancellation,
@@ -263,45 +286,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
     }
 
-    pub(super) async fn mutate_candidate(
+    pub(crate) async fn apply_mutations(
         &mut self,
-        operations: Vec<Mutation>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = self
-            .mutate_candidate_with_accounting(operations, None, &mut accounting, cancellation)
-            .await;
-        measured(result, &accounting)
-    }
-
-    /// Transfers an already-paid operation vector to the canonical candidate
-    pub(crate) async fn mutate_owned_with_accounting(
-        &mut self,
-        mut operations: crate::kernel::Owned<Vec<Mutation>>,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        input: Owned<Vec<Mutation>>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        use crate::kernel::allocation::KernelOwnedAllocation;
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
-        match (accounting.native_work(), &operations.allocation) {
+        match (accounting.native_work(), &input.allocation) {
             (Some(original), KernelOwnedAllocation::NativeOriginal(allocation)) => {
                 if !allocation.work().shares_ledger(original) {
-                    return Err(FsError::NativeKernel(
-                        crate::NativeTreeMaterializationError::InvalidLayout,
-                    ));
+                    return Err(NativeTreeMaterializationError::InvalidLayout.into());
                 }
                 self.validate_native_work(original)?;
             }
             (None, KernelOwnedAllocation::Standalone) => {}
-            _ => {
-                return Err(FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ));
-            }
+            _ => return Err(NativeTreeMaterializationError::InvalidLayout.into()),
         }
         if self.mode.access != AccessMode::ReadWrite
             || !matches!(
@@ -311,62 +312,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         {
             return Err(FsError::MutationNotAllowed);
         }
-        self.mutate_candidate_with_accounting(
-            operations.value,
-            Some(&mut operations.allocation),
-            accounting,
-            cancellation,
-        )
-        .await
-    }
-
-    pub(super) async fn mutate_candidate_with_accounting(
-        &mut self,
-        mut operations: Vec<Mutation>,
-        operations_allocation: Option<&mut crate::kernel::allocation::KernelOwnedAllocation>,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-        accounting.check()?;
         if self.live_operation_id.is_some() {
             return Err(FsError::PendingLiveMutation);
         }
         if self.prepared_merge_parent.is_some() {
             return Err(FsError::PreparedMergePending);
         }
+        let Owned {
+            value: mut operations,
+            allocation: mut operations_allocation,
+            ..
+        } = input;
         let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
             .unwrap_or(usize::MAX);
         if operations.capacity() > maximum {
             return Err(FsError::ExcessiveMutationCapacity);
         }
-        let incoming_bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(KernelOwnedAllocation::NativeOriginal(guard)) = operations_allocation.as_deref()
-        {
-            if guard.bytes() != incoming_bytes {
-                return Err(FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ));
+        if let KernelOwnedAllocation::NativeOriginal(guard) = &operations_allocation {
+            let bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
+            if guard.bytes() != bytes {
+                return Err(NativeTreeMaterializationError::InvalidLayout.into());
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if operations_allocation.is_none() && accounting.native_work().is_some() {
-            return Err(FsError::NativeKernel(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            ));
-        }
-        let mut ordinary_input_allocation;
-        let operations_allocation = match operations_allocation {
-            Some(allocation) => allocation,
-            None => {
-                ordinary_input_allocation = accounting.claim_owned(incoming_bytes, 0)?;
-                &mut ordinary_input_allocation
-            }
-        };
         self.admit_mutation_names_with_accounting(
             &mut operations,
-            operations_allocation,
+            &mut operations_allocation,
             accounting,
             cancellation,
         )
@@ -405,7 +376,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let (receipt, returned_operations, allocation) = produced?;
         let mut working = (receipt.root, allocation);
         drop(returned_operations);
-        accounting.release_owned(operations_allocation, final_input_bytes)?;
+        accounting.release_owned(&mut operations_allocation, final_input_bytes)?;
         if working.0.file_table == self.root.file_table {
             let bytes = root_parent_bytes(&working.0)?;
             drop(working.0);
@@ -497,7 +468,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     pub(super) fn mutation_input_owned_bytes(
         operations: &Vec<Mutation>,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<u64, FsError> {
         let mut bytes = (operations.capacity() as u64)
             .checked_mul(size_of::<Mutation>() as u64)
@@ -517,14 +488,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn observe_identity_regions_with_accounting(
         &mut self,
         regions: [Option<DependencyRegion>; 2],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         let before = readonly_standalone_live(accounting);
         let result = async {
             let count = regions.iter().flatten().count();
-            let mut requested =
-                crate::kernel::Owned::<Vec<DependencyRegion>>::allocate(count, accounting)?;
+            let mut requested = Owned::<Vec<DependencyRegion>>::allocate(count, accounting)?;
             for region in regions.into_iter().flatten() {
                 let copied = WorkCounters {
                     bytes_copied: size_of::<DependencyRegion>() as u64,
@@ -562,7 +532,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .checked_mul(size_of::<Dependency>())
                 .map(crate::foundation::usize_to_u64)
                 .ok_or(WorkError::Overflow)?;
-            let captured = crate::kernel::Owned::new(value, allocation, bytes);
+            let captured = Owned::new(value, allocation, bytes);
             let (probe, allocation) = probe;
             probe.retire_with_accounting(accounting)?;
             drop(allocation);
@@ -577,7 +547,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &mut self,
         file_id: FileId,
         range: ByteRange,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         let before = readonly_standalone_live(accounting);
@@ -608,7 +578,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn observe_base_metadata_ids_with_accounting(
         &mut self,
         file_ids: &[FileId],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         let before = readonly_standalone_live(accounting);
@@ -626,8 +596,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     count += usize::from(!proof.observes(&DependencyRegion::Metadata(*file_id)));
                     accounting.record_completed(examined)?;
                 }
-                let mut selected =
-                    crate::kernel::Owned::<Vec<FileId>>::allocate(count, accounting)?;
+                let mut selected = Owned::<Vec<FileId>>::allocate(count, accounting)?;
                 for file_id in file_ids {
                     let examined = WorkCounters {
                         items_examined: 1,
@@ -664,10 +633,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
             let records = (records, allocation);
-            let mut dependencies = crate::kernel::Owned::<Vec<Dependency>>::allocate(
-                selected.value.len(),
-                accounting,
-            )?;
+            let mut dependencies =
+                Owned::<Vec<Dependency>>::allocate(selected.value.len(), accounting)?;
             for (file_id, record) in selected.value.iter().zip(&records.0) {
                 let copied = WorkCounters {
                     items_examined: 1,

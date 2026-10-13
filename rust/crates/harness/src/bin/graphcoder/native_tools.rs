@@ -134,14 +134,7 @@ pub fn source(
 }
 
 fn authority_binding(binding: &AuthorityBinding) -> ConfiguredRecursiveAuthorityBinding {
-    ConfiguredRecursiveAuthorityBinding::new(
-        acyclic_harness::core::AuthorityIssuer::new(
-            &binding.issuer,
-            binding.key,
-            binding.authority.clone(),
-        ),
-        binding.scope.clone(),
-    )
+    ConfiguredRecursiveAuthorityBinding { issuer: acyclic_harness::core::AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()), scope: binding.scope.clone() }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -199,7 +192,7 @@ impl super::native::NativeSession {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner_with_native_work(caller, &fence, &work)
+            .journal_owner(caller, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
             .await?
             .into_native_shared(&work)?;
         let reader = FilesystemContentVerifier::new(
@@ -301,14 +294,8 @@ impl super::native::NativeSession {
             .runtime
             .task_context_with_native_work(caller, &fence, &work)
             .await?;
-        let mut guards = Vec::new();
-        for _ in &request.view.volumes {
-            guards.push(
-                native_context
-                    .volume_callback_guard_with_native_work(&owner, &work)
-                    .await?,
-            );
-        }
+        native_context.verify_volume_owner(&owner, &work).await?;
+        let guards: Vec<_> = request.view.volumes.iter().map(|_| Arc::clone(&native_context)).collect();
         let volumes = request
             .view
             .volumes

@@ -518,12 +518,14 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
         &[],
     )
     .await?;
-    let crate::distributed::WorkPull::Unresolved { lease, .. } =
-        f.host.recover_work(TaskId::from_bytes([1; 16])).await?
+    let crate::distributed::WorkPull::Unresolved { lease, .. } = f
+        .host
+        .recover_work(TaskId::from_bytes([1; 16]), &mut None)
+        .await?
     else {
         return Err(Error::Conflict("cancelled owner became runnable".into()));
     };
-    assert!(f.host.start_task(&lease).await.is_err());
+    assert!(f.host.start_task(&lease, &mut None).await.is_err());
     let journal = f.execution(f.owner(1).await?, attempt)?;
     journal
         .append(
@@ -547,5 +549,37 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
             .max_steps,
         Some(1)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_deadline_rejects_fresh_execution_publication() -> Result<()> {
+    let f = fixture::fixture().await?;
+    let mut admission = f.admission(1, json!(0));
+    admission.run_limits.deadline_epoch_ms = Some(1);
+    f.host.admit(admission).await?;
+    f.claim(1, "expired").await?;
+    let operation = OperationId::from_bytes([2; 16]);
+    let journal = f.execution(f.owner(1).await?, operation)?;
+    assert!(matches!(
+        journal
+            .append(
+                operation,
+                "started",
+                &ExecutionEvent::Started {
+                    request_digest: [9; 32]
+                },
+                None
+            )?
+            .await,
+        Err(Error::Indeterminate(_))
+    ));
+    assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
+    assert!(!matches!(
+        f.host
+            .recover_work(TaskId::from_bytes([1; 16]), &mut None)
+            .await?,
+        crate::distributed::WorkPull::Idle
+    ));
     Ok(())
 }

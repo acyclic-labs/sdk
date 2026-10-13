@@ -277,7 +277,7 @@ fn compact(
         source,
         maximum,
         Some(summary(source, through)?),
-        CompactionRetention::default(),
+        &CompactionRetention::default(),
         None,
     )
 }

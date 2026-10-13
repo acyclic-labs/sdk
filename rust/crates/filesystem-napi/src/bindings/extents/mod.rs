@@ -71,7 +71,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            plan_file_extents_by_id(
+            plan_file_extents(
                 file_id,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
@@ -117,7 +117,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            seek_file_extent_by_id(file_id, bigint_u64(&offset, "offset")?, target,)
+            seek_file_extent(file_id, bigint_u64(&offset, "offset")?, target,)
         )?;
         Ok(NativeExtentSeek {
             offset: receipt.value.map(bigint),

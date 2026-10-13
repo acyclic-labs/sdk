@@ -284,7 +284,7 @@ async fn call(shared: &Shared, params: &Value) -> Value {
             Err(error) => return error_result(format!("policy failed for {name}: {error}")),
         }
     }
-    let result = match tool.executor.execute(invocation.clone()).await {
+    let result = match tool.executor.execute(invocation.clone(), None).await {
         Ok(result) => result,
         Err(error) => return error_result(format!("{name} failed: {error}")),
     };

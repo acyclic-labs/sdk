@@ -68,7 +68,7 @@ async fn content_context(
     bindings.content = Some(ContentBindings { reader, writer });
     bindings
         .build()?
-        .durable_context(acyclic_harness::TaskId::new(), OperationId::new())
+        .durable_context(acyclic_harness::TaskId::new(), OperationId::new(), None)
         .await
 }
 
@@ -133,10 +133,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     assert_eq!(
         read_tool
             .executor
-            .execute_with_context(
-                ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?,
-                read_invocation.clone(),
-            )
+            .execute(read_invocation.clone(), Some(ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?))
             .await?
             .value,
         json!("one two")
@@ -148,7 +145,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         assert!(matches!(
             read_tool
                 .executor
-                .execute_with_context(wrong_context, read_invocation.clone())
+                .execute(read_invocation.clone(), Some(wrong_context))
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -168,7 +165,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let context = ToolContext::new(std::sync::Arc::new(task.clone()), operation, "edit", None)?;
     let first = tool
         .executor
-        .execute_with_context(context.clone(), invocation.clone())
+        .execute(invocation.clone(), Some(context.clone()))
         .await?;
     let edited: FileRef = serde_json::from_value(
         first
@@ -178,8 +175,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .clone(),
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(task.read_file(&edited).await?.as_ref(), b"one three".as_ref());
-    assert_eq!(task.read_file(&source).await?.as_ref(), b"one two".as_ref());
+    assert_eq!(task.read_file(&edited, None).await?.as_ref(), b"one three".as_ref());
+    assert_eq!(task.read_file(&source, None).await?.as_ref(), b"one two".as_ref());
     let user = writer
         .stage(
             OperationId::new(),
@@ -191,11 +188,11 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         ?.await?.0;
     assert_eq!(
         tool.executor
-            .reconcile_with_context(context, invocation.clone())
+            .reconcile(invocation.clone(), Some(context))
             .await?,
         Some(first)
     );
-    assert_eq!(task.read_file(&user).await?.as_ref(), b"user edit".as_ref());
+    assert_eq!(task.read_file(&user, None).await?.as_ref(), b"user edit".as_ref());
     let write_tool = files::write_file()?;
     let write_operation = OperationId::new();
     let write_invocation = ToolInvocation {
@@ -208,7 +205,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let write_context = ToolContext::new(std::sync::Arc::new(task.clone()), write_operation, "write", None)?;
     let written = write_tool
         .executor
-        .execute_with_context(write_context.clone(), write_invocation.clone())
+        .execute(write_invocation.clone(), Some(write_context.clone()))
         .await?;
     let written_ref: FileRef = serde_json::from_value(
         written
@@ -219,13 +216,13 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
-        task.read_file(&written_ref).await?.as_ref(),
+        task.read_file(&written_ref, None).await?.as_ref(),
         "exact \u{e9}\r\n".as_bytes()
     );
     assert_eq!(
         write_tool
             .executor
-            .reconcile_with_context(write_context, write_invocation)
+            .reconcile(write_invocation, Some(write_context))
             .await?,
         Some(written)
     );
@@ -244,7 +241,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let patch_context = ToolContext::new(std::sync::Arc::new(task.clone()), patch_operation, "patch", None)?;
     let patched = patch_tool
         .executor
-        .execute_with_context(patch_context.clone(), patch_invocation.clone())
+        .execute(patch_invocation.clone(), Some(patch_context.clone()))
         .await?;
     let patched_ref: FileRef = serde_json::from_value(
         patched
@@ -254,7 +251,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .clone(),
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(task.read_file(&patched_ref).await?.as_ref(), b"patched\r\n".as_ref());
+    assert_eq!(task.read_file(&patched_ref, None).await?.as_ref(), b"patched\r\n".as_ref());
     let later = writer
         .stage(
             OperationId::new(),
@@ -267,17 +264,17 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     assert_eq!(
         patch_tool
             .executor
-            .reconcile_with_context(patch_context.clone(), patch_invocation.clone())
+            .reconcile(patch_invocation.clone(), Some(patch_context.clone()))
             .await?,
         Some(patched)
     );
-    assert_eq!(task.read_file(&later).await?.as_ref(), b"later user edit".as_ref());
+    assert_eq!(task.read_file(&later, None).await?.as_ref(), b"later user edit".as_ref());
     let mut changed_patch = patch_invocation.clone();
     changed_patch.arguments = json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+different\n"});
     assert!(matches!(
         patch_tool
             .executor
-            .reconcile_with_context(patch_context, changed_patch)
+            .reconcile(changed_patch, Some(patch_context))
             .await,
         Err(Error::Conflict(_))
     ));
@@ -285,25 +282,19 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     assert!(matches!(
         patch_tool
             .executor
-            .execute_with_context(
-                ToolContext::new(std::sync::Arc::new(task.clone()), stale_patch_operation, "patch", None)?,
-                ToolInvocation {
+            .execute(ToolInvocation {
                     operation_id: stale_patch_operation,
                     ..patch_invocation
-                }
-            )
+                }, Some(ToolContext::new(std::sync::Arc::new(task.clone()), stale_patch_operation, "patch", None)?))
             .await,
         Err(Error::Conflict(_))
     ));
-    assert_eq!(task.read_file(&later).await?.as_ref(), b"later user edit".as_ref());
-    assert_eq!(task.read_file(&user).await?.as_ref(), b"user edit".as_ref());
+    assert_eq!(task.read_file(&later, None).await?.as_ref(), b"later user edit".as_ref());
+    assert_eq!(task.read_file(&user, None).await?.as_ref(), b"user edit".as_ref());
     assert_eq!(
         read_tool
             .executor
-            .reconcile_with_context(
-                ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?,
-                read_invocation,
-            )
+            .reconcile(read_invocation, Some(ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?))
             .await?
             .ok_or_else(|| Error::Invalid("pinned read was not reconciled".into()))?
             .value,
@@ -316,7 +307,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     };
     assert!(matches!(
         tool.executor
-            .execute_with_context(ToolContext::new(std::sync::Arc::new(task.clone()), fresh, "edit", None)?, stale)
+            .execute(stale, Some(ToolContext::new(std::sync::Arc::new(task.clone()), fresh, "edit", None)?))
             .await,
         Err(Error::Conflict(_))
     ));
@@ -336,15 +327,12 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         .await?;
         assert!(matches!(
             tool.executor
-                .execute_with_context(
-                    ToolContext::new(std::sync::Arc::new(restricted), operation, "edit", None)?,
-                    invocation.clone()
-                )
+                .execute(invocation.clone(), Some(ToolContext::new(std::sync::Arc::new(restricted), operation, "edit", None)?))
                 .await,
             Err(Error::Unauthorized(_))
         ));
     }
-    assert_eq!(task.read_file(&user).await?.as_ref(), b"user edit".as_ref());
+    assert_eq!(task.read_file(&user, None).await?.as_ref(), b"user edit".as_ref());
     let ordinary = Arc::new(OrdinaryPublisher {
         volume: volume.clone(),
         calls: AtomicUsize::new(0),
@@ -367,10 +355,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         assert!(matches!(
             write_tool
                 .executor
-                .execute_with_context(
-                    ToolContext::new(std::sync::Arc::new(write_context.clone()), op, "invalid-path", None)?,
-                    invalid
-                )
+                .execute(invalid, Some(ToolContext::new(std::sync::Arc::new(write_context.clone()), op, "invalid-path", None)?))
                 .await,
             Err(Error::Invalid(_)) | Err(Error::Unauthorized(_))
         ));
@@ -394,16 +379,13 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     .await?;
     assert!(matches!(
         tool.executor
-            .execute_with_context(
-                ToolContext::new(std::sync::Arc::new(foreign_context), operation, "edit", None)?,
-                invocation.clone()
-            )
+            .execute(invocation.clone(), Some(ToolContext::new(std::sync::Arc::new(foreign_context), operation, "edit", None)?))
             .await,
         Err(Error::Unauthorized(_))
     ));
     assert_eq!(foreign.calls.load(Ordering::SeqCst), 0);
     assert!(matches!(
-        tool.executor.execute(invocation.clone()).await,
+        tool.executor.execute(invocation.clone(), None).await,
         Err(Error::Unsupported(_))
     ));
     let mut changed = invocation;
@@ -414,7 +396,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         json!("different");
     assert!(matches!(
         tool.executor
-            .reconcile_with_context(ToolContext::new(std::sync::Arc::new(task), operation, "edit", None)?, changed)
+            .reconcile(changed, Some(ToolContext::new(std::sync::Arc::new(task), operation, "edit", None)?))
             .await,
         Err(Error::Conflict(_))
     ));

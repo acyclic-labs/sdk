@@ -99,15 +99,10 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     ));
     let nested_scope = mount.begin_original_work(&io_work)?;
     let io_scope = nested_scope.try_clone_for_io()?;
-    let bytes = io_work
-        .read_working_file::<MountLifecycleError, _, _>(
-            mount.path(),
-            identity,
-            Path::new("source.txt"),
-            32,
-            || ready(Ok(())),
-        )
-        .await?;
+    assert_eq!(mount.native_root_identity(), Some(identity));
+    let bytes = mount.source
+        .open_file(&MountPath::root().child(b"source.txt".to_vec()))?
+        .read_up_to_with_meter(0, 32, &io_work)?.bytes;
     drop(io_scope);
     drop(nested_scope);
     drop(original_scope);

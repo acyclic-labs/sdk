@@ -61,23 +61,15 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
     address: usize,
     source: *const c_char,
     destination: *const c_char,
-    flags: u32,
 ) -> c_int {
     let span = callback_span!(DEBUG, rename);
     ffi(address, &span, true, |context, work| {
-        if flags & !RENAME_NOREPLACE != 0 {
-            return Err(driver_errno(libc::EOPNOTSUPP));
-        }
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
-        let replace = flags & RENAME_NOREPLACE == 0;
-        let rename = || context.source.rename(&source, &destination, replace, work);
-        match replace.then(|| context.lookup(&destination, work)) {
-            Some(Ok(replaced)) => context.unlink(&destination, replaced, rename, work)?,
-            None => context.mutate(rename, work)?,
-            Some(Err(cause)) if callback_errno(&cause) == libc::ENOENT => {
-                context.mutate(rename, work)?
-            }
-            Some(Err(cause)) => return Err(cause),
+        let rename = || context.source.rename(&source, &destination, true, work);
+        match context.lookup(&destination, work) {
+            Ok(replaced) => context.unlink(&destination, replaced, rename, work)?,
+            Err(cause) if callback_errno(&cause) == libc::ENOENT => context.mutate(rename, work)?,
+            Err(cause) => return Err(cause),
         }
         Ok(0)
     })

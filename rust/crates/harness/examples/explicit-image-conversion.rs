@@ -82,7 +82,7 @@ impl ImageConversion {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
         self.authorize_with_context(&context, &invocation)?;
         let input = Self::input(&invocation)?;
-        let mut bytes = context.read_file(&input.source).await?;
+        let mut bytes = context.read_file(&input.source, None).await?;
         let count = bytes
             .get(4..8)
             .and_then(|count| <[u8; 4]>::try_from(count).ok())
@@ -98,14 +98,7 @@ impl ImageConversion {
             *pixel ^= input.mask;
         }
         let derived = context
-            .stage_file_once(
-                invocation.operation_id,
-                &input.destination,
-                &bytes,
-                MIME,
-                "converted.img1",
-            )
-            .await?;
+            .stage_file_once(invocation.operation_id, &input.destination, &bytes, MIME, "converted.img1", None).await.map(|(file, _)| file)?;
         Ok(ToolResult {
             value: serde_json::to_value(ConvertedImage {
                 source: input.source,
@@ -143,38 +136,25 @@ impl ToolExecutor for ImageConversion {
         self.write.authorize_with_context(context, &write)
     }
 
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async {
+
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
+let Some(context) = context else { return Box::pin(async {
             Err(Error::Unsupported(
                 "conversion needs its original task context".into(),
             ))
-        })
-    }
-
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        }); };
         Box::pin(self.run(context, invocation))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        _: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async {
+
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+let Some(context) = context else { return Box::pin(async {
             Err(Error::Unsupported(
                 "conversion needs its original task context".into(),
             ))
-        })
-    }
-
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        }); };
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
     }
 }

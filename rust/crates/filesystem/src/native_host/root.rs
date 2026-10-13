@@ -38,21 +38,7 @@ impl HostRoot {
         #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<Dir, W::Error> {
-        #[cfg(windows)]
-        {
-            let mut directory = clone_directory(&self.directory, work)?;
-            if !path.is_empty() {
-                for name in path.split(|u| *u == 92) {
-                    work.started_io(ITEM)?;
-                    directory = open_windows_directory(&directory, name, work)?.0;
-                }
-            }
-            Ok(directory)
-        }
-        #[cfg(unix)]
-        {
-            open_unix_directory_path(&self.directory, path, false, work)
-        }
+        directory_path(&self.directory, path, false, work)
     }
     pub(crate) fn read_dir_stats<W: NativeHostWork>(
         &self,
@@ -147,21 +133,6 @@ impl HostRoot {
         }
     }
 
-    #[cfg(unix)]
-    pub(crate) fn read_link<W: NativeHostWork>(
-        &self,
-        path: &Path,
-        maximum: u64,
-        work: &mut W,
-    ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
-        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
-            read_unix_link(parent, leaf, maximum, work)
-        })
-        .map(|(mut bytes, count, allocation)| {
-            bytes.truncate(count);
-            (bytes, allocation)
-        })
-    }
     #[cfg(windows)]
     pub(crate) fn open_root_wide<W: NativeHostWork>(
         name: &[u16],
@@ -229,7 +200,7 @@ impl HostRoot {
             .into_std();
         let stat = source_root.stat_file(&source, work)?;
         if !stat.file_type().is_file()
-            || stat.file_attributes() & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+            || stat.raw.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
         {
             return Err(DemandError::InvalidRequest);
         }
@@ -365,17 +336,9 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
         if path.as_os_str().is_empty() {
             return Err(io::Error::from_raw_os_error(3).into());
         }
-        let (input, input_allocation) = encode_root_path_name(path, work)?;
-        let result = normalize_root_wide_name(&input, work);
-        drop(input);
-        work.release(input_allocation)?;
-        let (name, allocation) = result?;
-        let file = work.attempt_io(READ, || {
-            open_windows_root_name(&name, fs::FILE_GENERIC_READ)
-        });
-        drop(name);
-        work.release(allocation)?;
-        file?
+        with_root_name(path, work, |name, work| {
+            work.attempt_io(READ, || open_windows_root_name(name, fs::FILE_GENERIC_READ))
+        })?
     };
     let directory = Dir::from_std_file(file);
     let identity = directory_identity(&directory, work)?;

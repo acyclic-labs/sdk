@@ -1,74 +1,5 @@
 use super::*;
 
-type TestVolume = Volume<
-    crate::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
->;
-type TestCheckout = Checkout<
-    crate::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
->;
-type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-
-async fn fixture(
-    config: VolumeConfig,
-    cancel: &CancellationToken,
-) -> TestResult<(TestVolume, TestCheckout)> {
-    let volume = Fs::memory().create_volume(config, B, cancel).await?.value;
-    let checkout = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, cancel)
-        .await?
-        .value;
-    Ok((volume, checkout))
-}
-async fn create(
-    checkout: &mut TestCheckout,
-    name: &str,
-    bytes: OwnedBytes,
-    cancel: &CancellationToken,
-) -> TestResult<FileId> {
-    Ok(checkout
-        .create(
-            AuthoredMutation::CreateFile {
-                path: path(name)?,
-                bytes,
-                metadata: FileMetadata::default(),
-            },
-            B,
-            cancel,
-        )
-        .await?
-        .value)
-}
-async fn commit(checkout: &mut TestCheckout, cancel: &CancellationToken) -> TestResult {
-    checkout
-        .commit(
-            OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
-            B,
-            cancel,
-            allow::<FsError>,
-        )
-        .await?;
-    Ok(())
-}
-async fn read(
-    checkout: &mut TestCheckout,
-    id: FileId,
-    offset: u64,
-    length: u64,
-    cancel: &CancellationToken,
-) -> TestResult<OwnedBytes> {
-    Ok(checkout
-        .read_file_range_by_id(id, ByteRange { offset, length }, B, cancel)
-        .await?
-        .value
-        .bytes)
-}
-
 #[tokio::test]
 async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range() -> TestResult
 {
@@ -118,7 +49,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             assert_eq!(&bytes[64..70], b"REMOTE");
             assert!(
                 local
-                    .plan_file_extents_by_id(
+                    .plan_file_extents(
                         id,
                         ByteRange {
                             offset: 0,
@@ -193,7 +124,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     );
     assert!(
         checkout
-            .plan_file_extents_by_id(
+            .plan_file_extents(
                 id,
                 ByteRange {
                     offset: 0,
@@ -214,7 +145,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     ] {
         assert_eq!(
             checkout
-                .seek_file_extent_by_id(id, offset, target, B, &cancel)
+                .seek_file_extent(id, offset, target, B, &cancel)
                 .await?
                 .value,
             expected
@@ -246,14 +177,14 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     )?;
     assert!(
         checkout
-            .read_named_attribute_by_id(id, &attribute, B, &cancel)
+            .read_named_attribute(id, &attribute, B, &cancel)
             .await?
             .value
             .is_none()
     );
     assert!(
         checkout
-            .list_named_attributes_by_id(id, None, 8, B, &cancel)
+            .list_named_attributes(id, None, 8, B, &cancel)
             .await?
             .value
             .entries
@@ -264,7 +195,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
         (b"second".as_slice(), NamedAttributeWriteMode::Replace),
     ] {
         checkout
-            .change_named_attribute_by_id(
+            .change_named_attribute(
                 id,
                 &attribute,
                 Some((&OwnedBytes::copy_from_slice(bytes), mode)),
@@ -274,7 +205,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
             .await?;
         assert_eq!(
             checkout
-                .read_named_attribute_by_id(id, &attribute, B, &cancel)
+                .read_named_attribute(id, &attribute, B, &cancel)
                 .await?
                 .value
                 .unwrap()
@@ -284,7 +215,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
         );
         assert_eq!(
             checkout
-                .list_named_attributes_by_id(id, None, 8, B, &cancel)
+                .list_named_attributes(id, None, 8, B, &cancel)
                 .await?
                 .value
                 .entries
@@ -295,11 +226,11 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     for (mode, size) in [(0o100_640, None), (0o100_600, Some(12))] {
         metadata.posix_mode = MetadataField::Value(mode);
         checkout
-            .set_attributes_by_id(id, metadata, size, B, &cancel)
+            .set_attributes(id, metadata, size, B, &cancel)
             .await?;
         assert_eq!(
             checkout
-                .read_metadata_by_id(id, B, &cancel)
+                .read_metadata(id, B, &cancel)
                 .await?
                 .value
                 .posix_mode,
@@ -363,11 +294,11 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
         b"....abcd\0\0gh\0\0\0\0"
     );
     checkout
-        .change_named_attribute_by_id(id, &attribute, None, B, &cancel)
+        .change_named_attribute(id, &attribute, None, B, &cancel)
         .await?;
     assert!(
         checkout
-            .read_named_attribute_by_id(id, &attribute, B, &cancel)
+            .read_named_attribute(id, &attribute, B, &cancel)
             .await?
             .value
             .is_none()

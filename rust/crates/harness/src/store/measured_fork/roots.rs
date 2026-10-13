@@ -8,7 +8,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
     let owner = fixture
         .host
-        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
+        .journal_owner(fixture.root, &((&fixture.root_lease.reservation).into()), None)
         .await?;
     let agent = owner
         .authenticated_binding_agent(&mut None)?
@@ -265,7 +265,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         crate::filesystem::PreparationIo::from_budget(guarded_publication_budget(), &cancellation)?;
     let verified = publication.verify_with_io(&ordinary_io)?;
     let frame_bytes = match &verified {
-        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => frame_bytes.to_owned(),
         _ => panic!("ordinary measured verification must retain its actual compiled frame"),
     };
     verified.await?;
@@ -280,7 +280,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     )?;
     let denied = publication.verify_with_io(&denied_io)?;
     let denied_frame = match &denied {
-        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => frame_bytes.to_owned(),
         _ => panic!("ordinary denied verification uses the same compiled frame"),
     };
     assert!(denied.await.is_err());
@@ -349,7 +349,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         .await?;
     let foreign_owner = foreign
         .host
-        .journal_owner(foreign.root, (&foreign.root_lease.reservation).into())
+        .journal_owner(foreign.root, &((&foreign.root_lease.reservation).into()), None)
         .await?;
     let before = query.receipt();
     assert!(matches!(

@@ -1,7 +1,7 @@
 use super::*;
+use crate::executor::stock_boundary;
 use crate::executor::with_history_io;
 use crate::filesystem::PreparationIo;
-use crate::executor::stock_boundary;
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -57,8 +57,9 @@ where
                 break;
             }
         }
-        let allocation = allocation
-            .ok_or_else(|| stock_boundary(io, ErrorCode::Unauthorized, "merge has no notice binding"))?;
+        let allocation = allocation.ok_or_else(|| {
+            stock_boundary(io, ErrorCode::Unauthorized, "merge has no notice binding")
+        })?;
         let runtime = self.runtime(io)?;
         let ordinary;
         #[cfg(not(target_arch = "wasm32"))]
@@ -66,10 +67,8 @@ where
         let snapshots = 'snapshots: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                native = runtime
-                    .task_host()
-                    .observe_volume_snapshots_with_native_work(arguments.source, work)
-                    .await?;
+                native = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = runtime
+                    .task_host().observe_volume_snapshots(arguments.source, &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
                 break 'snapshots native.0.as_slice();
             }
             ordinary = runtime
@@ -111,13 +110,14 @@ where
                 ));
             }
         }
-        let selected = selected
-            .ok_or_else(|| stock_boundary(io, ErrorCode::Unauthorized, "merge source has no Project"))?;
+        let selected = selected.ok_or_else(|| {
+            stock_boundary(io, ErrorCode::Unauthorized, "merge source has no Project")
+        })?;
         if let Some(original) = original
             && (original.caller != caller.task
                 || original.arguments != *arguments
-                || &original.destination != caller.owner.authority()
-                || &original.source != source.owner.authority()
+                || &original.destination != caller.owner.issuer.audience()
+                || &original.source != source.owner.issuer.audience()
                 || original.target_project != caller.project
                 || original.source_project != selected.volume)
         {
@@ -145,20 +145,14 @@ where
             if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                    let (handle, custody) = owner
-                        .restore_project_source_authorization_with_native_work(
-                            context.task(),
-                            authorization,
-                            work,
-                        )?
+                    let handle = owner
+                        .restore_project_source_authorization(context.task(), authorization, io)
                         .await?;
-                    io.expect("native merge observer")
-                        .absorb_native_custody(custody)?;
                     break 'source Some(handle);
                 }
                 break 'source Some(
                     owner
-                        .restore_project_source_authorization(context.task(), authorization)
+                        .restore_project_source_authorization(context.task(), authorization, None)
                         .await?,
                 );
             }
@@ -206,20 +200,11 @@ where
             })?;
             Some(
                 owner
-                    .authorize_project_source(
-                        context.task(),
-                        issuer,
-                        provider.as_ref(),
-                        arguments.source,
-                        context.operation_id(),
-                        ProjectSourceSnapshot {
+                    .authorize_project_source(context.task(), issuer, provider.as_ref(), arguments.source, context.operation_id(), &(ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: generation.clone(),
                             native_snapshot: source.native_snapshot.clone(),
-                        },
-                        self.config.content_budget.items_examined,
-                        self.config.history_limits.maximum_bytes,
-                    )
+                        }), self.config.content_budget.items_examined, self.config.history_limits.maximum_bytes, None)
                     .await?,
             )
         };
@@ -253,10 +238,10 @@ where
         drop(self.read(context, &notice.content, reader).await?);
         let (verifier, scope, project, source_authority, source_project) =
             with_history_io(io, |work| {
-                let verifier = caller.owner.issuer().verifier(work)?;
+                let verifier = caller.owner.issuer.verifier(work)?;
                 let source_authority = match work.as_deref_mut() {
-                    Some(work) => work.clone_authority(source.owner.authority())?,
-                    None => source.owner.authority().clone(),
+                    Some(work) => work.clone_authority(source.owner.issuer.audience())?,
+                    None => source.owner.issuer.audience().clone(),
                 };
                 Ok::<_, Error>((
                     verifier,

@@ -61,14 +61,12 @@ impl HostTool {
 impl ToolExecutor for HostTool {
     fn execute<'a>(
         &'a self,
-        invocation: ToolInvocation,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ToolResult>> {
+        invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> acyclic_stream::BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(self.call(&self.execute, invocation))
     }
     fn reconcile<'a>(
         &'a self,
-        invocation: ToolInvocation,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(self.call(&self.reconcile, invocation))
     }
 }

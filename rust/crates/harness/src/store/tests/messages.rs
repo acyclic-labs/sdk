@@ -15,7 +15,7 @@ async fn conversation_head_pins_racing_append_and_rejects_corrupt_atomic_proof()
             &Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
-                file.read_capability( &mut None)?,
+                file.read_capability(&mut None)?,
             ]),
             Some(agent),
             None,
@@ -66,6 +66,7 @@ async fn conversation_head_pins_racing_append_and_rejects_corrupt_atomic_proof()
         &authority(),
         &event,
         encode_event(&authority(), &event, &mut None)?,
+        None,
         &mut None,
     )?;
     *provider
@@ -171,7 +172,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
                 "conversation:select_context".to_owned(),
-                file.read_capability( &mut None)?,
+                file.read_capability(&mut None)?,
             ]),
             Some(agent),
             None,
@@ -620,10 +621,11 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
             "2".into(),
             &mut None,
         )?;
-        let host = Arc::new(crate::filesystem::FilesystemHost::new(
+        let host = crate::filesystem::FilesystemHost::new(
             acyclic_fs::Fs::memory(),
-            filesystem_provider.clone(),
-        )?);
+            &filesystem_provider,
+            None,
+        )?;
         let private = crate::conversation::VolumeRef::new(
             filesystem_provider,
             "journal".into(),

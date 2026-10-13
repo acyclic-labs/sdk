@@ -100,49 +100,53 @@ impl PreparationIo {
     }
 }
 
-pub(in crate::filesystem) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>,
-    reference: &WorkspaceRef,
-    io: &PreparationIo,
-) -> Result<Workspace<A, O>> {
-    reference.validate(&mut Some(&mut io.history_io()))?;
-    if reference.as_resource().provider() != &host.provider {
-        return Err(io.invalid("resource belongs to another Filesystem provider"));
+pub(in crate::filesystem) fn open<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    host: &'a FilesystemHost<A, O>,
+    reference: &'a WorkspaceRef,
+    io: &'a PreparationIo,
+) -> impl Future<Output = Result<Workspace<A, O>>> + acyclic_stream::ProviderTask + 'a {
+    async move {
+        reference.validate(&mut Some(&mut io.history_io()))?;
+        if reference.as_resource().provider() != &host.provider {
+            return Err(io.invalid("resource belongs to another Filesystem provider"));
+        }
+        let name = std::str::from_utf8(reference.as_resource().key())
+            .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
+        io.sdk(
+            host.filesystem
+                .open_workspace(name, io, io.cancellation())
+                .await,
+        )
     }
-    let name = std::str::from_utf8(reference.as_resource().key())
-        .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
-    io.sdk(
-        host.filesystem
-            .open_workspace(name, io, io.cancellation())
-            .await,
-    )
 }
 
-pub(in crate::filesystem) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>,
-    workspace: &Workspace<A, O>,
-    reference: &crate::resources::GenerationRef,
-    io: &PreparationIo,
-) -> Result<Generation<A, O>> {
-    reference.validate(&mut Some(&mut io.history_io()))?;
-    if reference.as_resource().provider() != &host.provider {
-        return Err(io.invalid("resource belongs to another Filesystem provider"));
+pub(in crate::filesystem) fn generation<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    host: &'a FilesystemHost<A, O>,
+    workspace: &'a Workspace<A, O>,
+    reference: &'a crate::resources::GenerationRef,
+    io: &'a PreparationIo,
+) -> impl Future<Output = Result<Generation<A, O>>> + acyclic_stream::ProviderTask + 'a {
+    async move {
+        reference.validate(&mut Some(&mut io.history_io()))?;
+        if reference.as_resource().provider() != &host.provider {
+            return Err(io.invalid("resource belongs to another Filesystem provider"));
+        }
+        let key = reference
+            .as_resource()
+            .key()
+            .try_into()
+            .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
+        io.remaining()?;
+        io.sdk(
+            workspace
+                .generation(
+                    GenerationId::new(acyclic_fs::Digest::from_bytes(key)),
+                    io,
+                    io.cancellation(),
+                )
+                .await,
+        )
     }
-    let key = reference
-        .as_resource()
-        .key()
-        .try_into()
-        .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
-    io.remaining()?;
-    io.sdk(
-        workspace
-            .generation(
-                GenerationId::new(acyclic_fs::Digest::from_bytes(key)),
-                io,
-                io.cancellation(),
-            )
-            .await,
-    )
 }
 
 pub(in crate::filesystem) async fn operation_generation<
@@ -261,14 +265,19 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "native creation requires its original issued task guard",
         })?);
-        guard
-            .verify(false, Some(io))?
-            .await?;
+        guard.verify(false, Some(io))?.await?;
         let mut before = acyclic_fs::NativeAuthorityGuard(
             move |work: &acyclic_fs::NativeMaterializationWork| {
                 let work = work.clone();
                 let guard = Arc::clone(&guard);
-                async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
+                async move {
+                    guard
+                        .verify(
+                            false,
+                            Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
+                        )?
+                        .await
+                }
             },
         );
         let (result, recorded) = host
@@ -336,7 +345,14 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
             let work = work.clone();
             let guard = Arc::clone(&guard);
-            async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
+            async move {
+                guard
+                    .verify(
+                        false,
+                        Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
+                    )?
+                    .await
+            }
         };
         return publish_native(host, reference, expected, mutations, key, io, &mut before).await;
     }
@@ -349,7 +365,11 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<
         io,
         &mut |_| async move {
             let result = match preparation {
-                Some(task) => task.verify(false, io).map_err(OperationFailure::before_work)?.await,
+                Some(task) => {
+                    task.verify(false, io)
+                        .map_err(OperationFailure::before_work)?
+                        .await
+                }
                 None => Ok(()),
             };
             result
@@ -610,7 +630,10 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "task-bound native fork requires its original issued creation guard",
             })?
-            .verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
+            .verify(
+                false,
+                Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+            )?
             .await?;
     } else if let Some(task) = preparation {
         task.verify(false, io)?.await?;
@@ -653,7 +676,14 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
             let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
                 let work = work.clone();
                 let guard = Arc::clone(&guard);
-                async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
+                async move {
+                    guard
+                        .verify(
+                            false,
+                            Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
+                        )?
+                        .await
+                }
             };
             break 'forked workspace
                 .fork::<_, _, crate::Error>(

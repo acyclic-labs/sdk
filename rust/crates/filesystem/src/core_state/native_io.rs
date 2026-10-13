@@ -45,7 +45,7 @@ pub(crate) fn reserve<T>(
             crate::WorkError::Overflow,
         ))? as u64;
     let capacity_result = if actual > bytes {
-        let (mut excess, result) = work.record_completed_allocation(actual - bytes, None);
+        let (mut excess, result) = work.record_completed_allocation(actual - bytes);
         held.absorb(&mut excess)?;
         result
     } else if actual < bytes {
@@ -54,7 +54,7 @@ pub(crate) fn reserve<T>(
         Ok(())
     };
     let copy_result = {
-        let mut copy = copying;
+        let copy = copying;
         copy.record_completed(crate::WorkCounters {
             bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64,
             ..crate::WorkCounters::UNCHARGED
@@ -263,10 +263,10 @@ pub(super) fn measured_decode_reader<T: DeserializeOwned>(
         failure: std::cell::RefCell::new(None),
     };
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let result = T::deserialize(MaterializationDeserializer {
+    let result = T::deserialize(Funded {
         inner: &mut deserializer,
         decode: &decode,
-        tree_set: false,
+        kind: DecodeKind::Borrowed,
     })
     .and_then(|value| deserializer.end().map(|()| value));
     if let Some(error) = decode.failure.borrow_mut().take() {
@@ -340,8 +340,7 @@ pub(super) fn materialization_parent(
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let held = crate::native_host::HostRoot::open(parent, &mut &*work)?;
-    { #[cfg(unix)] { held.open_dir_held(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| held.open_dir_held(path, work)) } }
+    crate::native_host::HostRoot::open(parent, &mut &*work).map(|root| root.directory)
 }
 
 pub(super) fn materialization_open_options(

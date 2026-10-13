@@ -12,11 +12,10 @@ use crate::{
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
-        ForkToolArguments, MergeToolArguments, RecursiveDefaultToolSource, RecursiveDefaultToolset,
-        RecursiveForkConfig, RecursiveForkSourceIntent, RecursiveForkToolBinding,
-        RecursiveForkToolPlan, RecursiveMergeToolBinding, RecursiveMergeToolPlan,
-        RecursiveToolOwner, RetainedSourceBinding, recursive_default_tools,
-        restore_recursive_fork_source,
+        ForkToolArguments, MergeToolArguments, RecursiveForkConfig,
+        RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
+        RecursiveMergeToolBinding, RecursiveMergeToolPlan,
+        RetainedSourceBinding, restore_recursive_fork_source,
     },
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
@@ -45,6 +44,10 @@ pub use config::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
     ConfiguredRecursiveMerge, ConfiguredRecursiveToolsConfig,
 };
+
+use crate::executor::stock_boundary as failure;
+use crate::filesystem::{PreparationIo, task_runtime::WorkerContext};
+use crate::wire::ErrorCode;
 
 /// Portable source factory using the runtime's actual Filesystem and Stream.
 pub struct ConfiguredRecursiveToolSource<P, A, O> {
@@ -83,26 +86,43 @@ where
                 "configured recursive configuration must have finite producer bounds".into(),
             ));
         }
-        for (index, caller) in config.callers.iter().enumerate() {
-            verifier(&caller.owner)?;
-            caller.project.validate(&mut None)?;
-            caller.private_volume.validate(&mut None)?;
-            let agent = caller.owner.scope.agent().ok_or_else(|| {
-                Error::Unauthorized("configured caller has no signed agent".into())
+        let volumes = |binding: &ConfiguredRecursiveAuthorityBinding,
+                       project: &VolumeRef,
+                       private: &VolumeRef,
+                       result: Option<&VolumeRef>|
+         -> Result<crate::AgentId> {
+            verifier(binding)?;
+            project.validate(&mut None)?;
+            private.validate(&mut None)?;
+            let agent = binding.scope.agent().ok_or_else(|| {
+                Error::Unauthorized("configured binding has no signed agent".into())
             })?;
+            if let Some(result) = result {
+                validate_result_volume(result, private, agent, provider)?;
+            }
+            if private.owner() != &VolumeOwner::Agent(agent)
+                || project.provider() != provider
+                || private.provider() != provider
+            {
+                return Err(Error::Unauthorized(
+                    "configured volume differs from its signed provider binding".into(),
+                ));
+            }
+            Ok(agent)
+        };
+        for (index, caller) in config.callers.iter().enumerate() {
+            volumes(
+                &caller.owner,
+                &caller.project,
+                &caller.private_volume,
+                caller.result_volume.as_ref(),
+            )?;
             if let Some(native) = &caller.native_snapshot {
-                crate::executor::json::json_byte_length(native, limits.file_bytes, &mut None)
-                    .map(|_| ())?;
+                crate::executor::json::json_byte_length(native, limits.file_bytes, &mut None)?;
             }
-            if let Some(result) = &caller.result_volume {
-                validate_result_volume(result, &caller.private_volume, agent, provider)?;
-            }
-            if caller.private_volume.owner() != &VolumeOwner::Agent(agent)
-                || caller.project.provider() != provider
-                || caller.private_volume.provider() != provider
-                || config.callers[..index]
-                    .iter()
-                    .any(|previous| previous.task == caller.task)
+            if config.callers[..index]
+                .iter()
+                .any(|previous| previous.task == caller.task)
             {
                 return Err(Error::Unauthorized(
                     "configured caller is not a unique signed provider binding".into(),
@@ -110,20 +130,14 @@ where
             }
         }
         for (index, fork) in config.forks.iter().enumerate() {
-            verifier(&fork.child)?;
-            fork.project.validate(&mut None)?;
-            fork.private_volume.validate(&mut None)?;
+            let agent = volumes(
+                &fork.child,
+                &fork.project,
+                &fork.private_volume,
+                fork.result_volume.as_ref(),
+            )?;
             fork.admission.validate(&mut None)?;
-            let agent = fork.child.scope.agent().ok_or_else(|| {
-                Error::Unauthorized("configured child has no signed agent".into())
-            })?;
-            if let Some(result) = &fork.result_volume {
-                validate_result_volume(result, &fork.private_volume, agent, provider)?;
-            }
             if fork.admission.parent != Some(fork.caller)
-                || fork.private_volume.owner() != &VolumeOwner::Agent(agent)
-                || fork.project.provider() != provider
-                || fork.private_volume.provider() != provider
                 || !config
                     .callers
                     .iter()
@@ -186,18 +200,14 @@ where
             Error::Conflict("configured source project policy was already bound".into())
         })
     }
-    /// Builds the default tools from this source.
-    pub fn tools(self: &Arc<Self>, maximum_bytes: u64) -> Result<RecursiveDefaultToolset> {
-        recursive_default_tools(Some(self.clone()), maximum_bytes)
-    }
     pub(super) fn runtime(
         &self,
-        io: Option<&super::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<Arc<FilesystemTaskRuntime<P, A, O>>> {
         self.runtime.get().and_then(Weak::upgrade).ok_or_else(|| {
-            super::interaction_host::interaction_boundary(
+            failure(
                 io,
-                crate::wire::ErrorCode::Unauthorized,
+                ErrorCode::Unauthorized,
                 "configured source has no original runtime",
             )
         })
@@ -205,7 +215,7 @@ where
     pub(super) fn caller(
         &self,
         task: TaskId,
-        io: Option<&super::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<&ConfiguredRecursiveCaller> {
         for caller in &self.config.callers {
             if let Some(io) = io {
@@ -221,9 +231,9 @@ where
                 return Ok(caller);
             }
         }
-        Err(super::interaction_host::interaction_boundary(
+        Err(failure(
             io,
-            crate::wire::ErrorCode::Unauthorized,
+            ErrorCode::Unauthorized,
             "task has no explicit signed configured source binding",
         ))
     }
@@ -231,7 +241,7 @@ where
         &self,
         caller: TaskId,
         arguments: &ForkToolArguments,
-        io: Option<&super::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<&ConfiguredRecursiveFork> {
         for allocation in &self.config.forks {
             if let Some(io) = io {
@@ -247,103 +257,95 @@ where
                 return Ok(allocation);
             }
         }
-        Err(super::interaction_host::interaction_boundary(
+        Err(failure(
             io,
-            crate::wire::ErrorCode::Unauthorized,
+            ErrorCode::Unauthorized,
             "new child has no explicit signed configured allocation",
         ))
     }
 }
-impl<P, A, O> RecursiveDefaultToolSource<P, A, O> for ConfiguredRecursiveToolSource<P, A, O>
+
+fn native_io(io: Option<&PreparationIo>) -> Result<()> {
+    if io.is_some_and(|io| io.original_native_work().is_none()) {
+        return Err(failure(
+            io,
+            ErrorCode::Unsupported,
+            "finite recursive source requires original native work",
+        ));
+    }
+    Ok(())
+}
+
+impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
 where
     P: StreamProvider + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_source(&self) -> bool {
+    pub(in crate::filesystem) fn supports_native_source(&self) -> bool {
         self.project_policy.get().is_none()
     }
 
-    fn owner<'a>(
+    pub(in crate::filesystem) fn owner<'a>(
         &'a self,
         context: &'a ToolContext,
         tool: &'a ResumableTool,
         invocation: &'a ToolInvocation,
         cancellation: &'a CancellationToken,
         io: Option<&'a super::PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, RecursiveToolOwner<P, A, O>>> {
+    ) -> Result<BoundedContentFuture<'a, (Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>)>> {
         BoundedContentFuture::new(io, || async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-                let owner = self
-                    .runtime(Some(io))?
-                    .recursive_tool_owner(context, tool, invocation, cancellation, Some(io))
+            native_io(io)?;
+            if io.is_none() {
+                self.authenticate_caller(context.task(), None, false, None)
                     .await?;
+            }
+            let owner = self
+                .runtime(io)?
+                .recursive_tool_owner(context, tool, invocation, cancellation, io)
+                .await?;
+            if io.is_some() {
                 self.authenticate_caller(
                     context.task(),
-                    Some(owner.journal_owner.as_ref()),
+                    owner.1.owner.as_deref(),
                     false,
-                    Some(io),
+                    io,
                 )
                 .await?;
-                return Ok(owner);
             }
-            if io.is_some() {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "finite recursive source requires original native work",
-                ));
-            }
-            self.authenticate_caller(context.task(), None, false, None)
-                .await?;
-            self.runtime(None)?
-                .recursive_tool_owner(context, tool, invocation, cancellation, None)
-                .await
+            Ok(owner)
         })
     }
-    fn select<'a>(
+    pub(in crate::filesystem) fn select<'a>(
         &'a self,
         context: &'a ToolContext,
         arguments: &'a ForkToolArguments,
         cancellation: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
+        io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
         BoundedContentFuture::new(io, || async move {
-            if io.is_some_and(|io| io.original_native_work().is_none()) {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "finite recursive source requires original native work",
-                ));
-            }
+            native_io(io)?;
             self.select_source(context, arguments, cancellation, io)
                 .await
         })
     }
-    fn fork<'a>(
+    pub(in crate::filesystem) fn fork<'a>(
         &'a self,
         context: &'a ToolContext,
         arguments: &'a ForkToolArguments,
         intent: &'a RecursiveForkSourceIntent,
         original: Option<&'a RecursiveForkToolPlan>,
         cancellation: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
+        io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, RecursiveForkToolBinding<P, A, O>>> {
         BoundedContentFuture::new(io, || async move {
-            if io.is_some_and(|io| io.original_native_work().is_none()) {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "finite recursive source requires original native work",
-                ));
-            }
+            native_io(io)?;
             self.fork_binding(context, arguments, intent, original, cancellation, io)
                 .await
         })
     }
-    fn preparation<'a>(
+    pub(in crate::filesystem) fn preparation<'a>(
         &'a self,
         context: &'a TaskContext,
         token: &'a TaskResourcePreparation,
@@ -351,7 +353,7 @@ where
     ) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>> {
         Box::pin(async move {
             self.preparation_source(
-                &crate::filesystem::task_runtime::WorkerContext::Ordinary(context.clone()),
+&WorkerContext::Ordinary(Arc::new(context.clone())),
                 token,
                 cancellation,
                 false,
@@ -360,11 +362,10 @@ where
             .await
         })
     }
-
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(
+    pub(in crate::filesystem) fn preparation_with_native_work<'a>(
         &'a self,
-        context: &'a Arc<crate::runtime::TaskContext>,
+        context: &'a Arc<TaskContext>,
         token: &'a TaskResourcePreparation,
         cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork,
@@ -372,10 +373,10 @@ where
         crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>,
     > {
         crate::NativeFutureBundle::new(work, || async move {
-            let io = super::PreparationIo::from_native_work(work)?;
+            let io = PreparationIo::from_native_work(work)?;
             let source = self
                 .preparation_source(
-                    &crate::filesystem::task_runtime::WorkerContext::Native(Arc::clone(context)),
+                    &WorkerContext::Native(Arc::clone(context)),
                     token,
                     cancellation,
                     false,
@@ -385,11 +386,10 @@ where
             crate::filesystem::native_decoded((source, io.guard_owned(io.owned_bytes()?)?))
         })
     }
-
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_for_reconciliation_with_native_work<'a>(
+    pub(in crate::filesystem) fn preparation_for_reconciliation_with_native_work<'a>(
         &'a self,
-        context: &'a Arc<crate::runtime::TaskContext>,
+        context: &'a Arc<TaskContext>,
         token: &'a TaskResourcePreparation,
         cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork,
@@ -397,10 +397,10 @@ where
         crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>,
     > {
         crate::NativeFutureBundle::new(work, || async move {
-            let io = super::PreparationIo::from_native_work(work)?;
+            let io = PreparationIo::from_native_work(work)?;
             let source = self
                 .preparation_source(
-                    &crate::filesystem::task_runtime::WorkerContext::Native(Arc::clone(context)),
+                    &WorkerContext::Native(Arc::clone(context)),
                     token,
                     cancellation,
                     true,
@@ -410,22 +410,16 @@ where
             crate::filesystem::native_decoded((source, io.guard_owned(io.owned_bytes()?)?))
         })
     }
-    fn merge<'a>(
+    pub(in crate::filesystem) fn merge<'a>(
         &'a self,
         context: &'a ToolContext,
         arguments: &'a MergeToolArguments,
         original: Option<&'a RecursiveMergeToolPlan>,
         cancellation: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
+        io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, RecursiveMergeToolBinding<P, A, O>>> {
         BoundedContentFuture::new(io, || async move {
-            if io.is_some_and(|io| io.original_native_work().is_none()) {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "finite recursive source requires original native work",
-                ));
-            }
+            native_io(io)?;
             self.merge_binding(context, arguments, original, cancellation, io)
                 .await
         })
@@ -452,7 +446,7 @@ fn validate_result_volume(
 }
 
 fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = binding.issuer().verifier(&mut None).expect("verifier copy");
+    let verifier = binding.issuer.verifier(&mut None).expect("verifier copy");
     verifier.verify(&binding.scope, &mut None)?;
     Ok(verifier)
 }
@@ -481,8 +475,8 @@ fn allocation_digest(
         let descriptor = Descriptor {
             contract: "harness.configured-recursive-allocation.v2",
             admission: admission.canonical_payload(),
-            authority: allocation.child.authority(),
-            issuer: allocation.child.issuer().id(),
+            authority: allocation.child.issuer.audience(),
+            issuer: allocation.child.issuer.id(),
             agent: scope.agent(),
             grants: scope.capabilities(),
             message_pointer: &allocation.child_message_pointer,

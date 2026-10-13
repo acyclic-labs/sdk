@@ -484,7 +484,7 @@ impl NativeExtension for FixtureExtension {
 }
 struct NativeProjector(Vec<(FileRef, NativeMediaPolicy)>);
 impl ToolExecutor for NativeProjector {
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture projection does not execute a tool".into(),
@@ -493,8 +493,7 @@ impl ToolExecutor for NativeProjector {
     }
     fn reconcile<'a>(
         &'a self,
-        _: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture projection does not reconcile a tool".into(),
@@ -1436,7 +1435,7 @@ where
         }
         let original = runtime.task_host().observe_admission(task).await?;
         assert_eq!(original.extensions.as_ref(), scope.extensions());
-        let context = runtime.harness().durable_context(task, admission).await?;
+        let context = runtime.harness().durable_context(task, admission, None).await?;
         assert_eq!(context.scope().extensions(), scope.extensions());
         let writable = acyclic_harness::runtime::Bindings {
             tasks: tasks.clone(),
@@ -1455,7 +1454,7 @@ where
         }
         .build(None,
         )?
-        .durable_context(task, admission)
+        .durable_context(task, admission, None)
         .await?;
         let arguments = serde_json::to_value(&conversion_input)
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -1483,8 +1482,8 @@ where
             serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(converted.source, source);
         assert_eq!(converted.mask, 255);
-        let original_bytes = writable.read_file(&source).await?;
-        let derived_bytes = writable.read_file(&converted.derived).await?;
+        let original_bytes = writable.read_file(&source, None).await?;
+        let derived_bytes = writable.read_file(&converted.derived, None).await?;
         let mut expected_bytes = original_bytes.as_ref().to_vec();
         for pixel in expected_bytes.iter_mut().skip(8) {
             *pixel ^= 255;

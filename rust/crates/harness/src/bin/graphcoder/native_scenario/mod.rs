@@ -126,7 +126,7 @@ async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkL
     let admission = runtime.task_host().observe_admission(task).await?;
     let lease = match runtime
         .task_host()
-        .pull_operation(worker, admission.operation_id, &mut None)
+        .pull_work(worker, Some(admission.operation_id), &mut None)
         .await?
     {
         WorkPull::Claimed(lease) => lease,

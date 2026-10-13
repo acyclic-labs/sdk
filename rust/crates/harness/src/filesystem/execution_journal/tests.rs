@@ -85,7 +85,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
     assert_eq!(reopened.replay(operation, 0, 2, None)?.await?.len(), 1);
     assert!(matches!(
         open(operation, OperationId::new())?
-            .replay(operation, 0, 1)
+            .replay(operation, 0, 1, None)?
             .await,
         Err(Error::Conflict(_))
     ));
@@ -154,7 +154,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
             .await?;
         assert!(
             matches!(
-                open(target, turn)?.replay(target, 0, 1).await,
+                open(target, turn)?.replay(target, 0, 1, None)?.await,
                 Err(Error::Storage(_) | Error::Conflict(_))
             ),
             "accepted {mutation}"
@@ -271,8 +271,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
     .enumerate()
     {
         let sequence = position as u64 + 1;
-        let file = publisher
-            .stage(
+        let file = crate::conversation::ContentPublisher::stage(publisher.as_ref(),
                 OperationId::new(),
                 &format!("messages/{sequence}.txt"),
                 format!("canonical-{sequence}").as_bytes(),
