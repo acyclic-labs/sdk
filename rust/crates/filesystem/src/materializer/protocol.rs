@@ -165,29 +165,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 .as_mut()
                 .ok_or(NativeTreeMaterializationError::MissingCustody)
                 .map_err(MaterializationError::Native)?;
-            let width = std::mem::size_of::<MaterializationPreimage>();
-            let before = owned_size(journal.preimages.capacity(), width)
+            reserve_buffer(&mut journal.preimages, journal.plan.edits.len(), custody)
                 .map_err(MaterializationError::Native)?;
-            let requested = owned_size(journal.plan.edits.len(), width)
-                .map_err(MaterializationError::Native)?;
-            let retained = custody.bytes();
-            custody
-                .grow(requested - before)
-                .map_err(MaterializationError::Native)?;
-            let reserved = journal
-                .preimages
-                .try_reserve_exact(journal.plan.edits.len() - journal.preimages.len());
-            let actual = owned_size(journal.preimages.capacity(), width)
-                .map_err(MaterializationError::Native)?;
-            let reconciled = retained
-                .checked_add(actual - before)
-                .ok_or(crate::WorkError::Overflow)
-                .map_err(NativeTreeMaterializationError::from)
-                .and_then(|bytes| custody.reconcile_capacity(bytes));
-            reserved
-                .map_err(NativeTreeMaterializationError::AllocationFailed)
-                .map_err(MaterializationError::Native)?;
-            reconciled.map_err(MaterializationError::Native)?;
         }
         while journal.preimages.len() < journal.plan.edits.len() {
             self.verify_effect_context(&journal).await?;
@@ -197,7 +176,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 .await
                 .map_err(MaterializationError::Backend)?;
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = self.backend.native_work() {
+            if self.backend.native_work().is_some() {
                 let mut allocation = preimage
                     .custody
                     .take()
@@ -208,12 +187,6 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                     .as_mut()
                     .ok_or(NativeTreeMaterializationError::MissingCustody)
                     .map_err(MaterializationError::Native)?;
-                if !work.shares_allocation_context(custody.work()) {
-                    return Err(MaterializationError::Native(
-                        NativeTreeMaterializationError::InvalidLayout,
-                    )
-                    .into());
-                }
                 custody
                     .absorb(&mut allocation)
                     .map_err(MaterializationError::Native)?;
@@ -236,94 +209,80 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<(), E>> + Send,
     {
+        use MaterializationPhase::*;
+        use MaterializationRecovery::*;
         self.verify_allocation(&journal).await?;
-        let forward = recovery == MaterializationRecovery::Complete;
-        if forward {
-            match journal.phase {
-                MaterializationPhase::RollingBack => {
-                    return Err(MaterializationError::IncompatibleJournal.into());
-                }
-                MaterializationPhase::RolledBack => {
-                    return Err(MaterializationError::PlanConflict.into());
-                }
-                MaterializationPhase::Preparing => {
-                    journal = self.capture_preimages(journal, guard).await?
-                }
-                _ => {}
-            }
-            if journal.restored != 0 {
+        match (recovery, journal.phase) {
+            (Complete, RolledBack) => return Err(MaterializationError::PlanConflict.into()),
+            (Complete, RollingBack) => return Err(MaterializationError::IncompatibleJournal.into()),
+            (Complete, _) if journal.restored != 0 => {
                 return Err(MaterializationError::IncompatibleJournal.into());
             }
-        } else {
-            if journal.preparation_progress.is_some() {
+            (Complete, Preparing) => journal = self.capture_preimages(journal, guard).await?,
+            (RollBack, _) if journal.preparation_progress.is_some() => {
                 return Err(MaterializationError::IncompatibleJournal.into());
             }
-            match journal.phase {
-                MaterializationPhase::RolledBack => return Ok(journal),
-                MaterializationPhase::Preparing => {
-                    journal.phase = MaterializationPhase::RolledBack;
-                    return self.persist(journal).await.map_err(Into::into);
-                }
-                MaterializationPhase::Applying
-                    if (journal.applied as usize) < journal.plan.edits.len() =>
-                {
-                    journal.applied += 1
-                }
-                _ => {}
+            (RollBack, RolledBack) => return Ok(journal),
+            (RollBack, Preparing) => {
+                journal.phase = RolledBack;
+                return self.persist(journal).await.map_err(Into::into);
             }
+            (RollBack, Applying) if (journal.applied as usize) < journal.plan.edits.len() => {
+                journal.applied += 1;
+            }
+            _ => {}
         }
-        let repair = forward && journal.phase == MaterializationPhase::Applied;
-        let mut index = if repair { 0 } else { journal.applied as usize };
+        let forward = recovery == Complete;
+        let repair = forward && journal.phase == Applied;
+        let target = if forward {
+            MaterializationObservation::Postimage
+        } else {
+            MaterializationObservation::Preimage
+        };
         if !repair {
-            journal.phase = if forward {
-                MaterializationPhase::Applying
-            } else {
-                MaterializationPhase::RollingBack
-            };
+            journal.phase = if forward { Applying } else { RollingBack };
             journal = self.persist(journal).await?;
         }
-        while if forward {
-            index < journal.plan.edits.len()
-        } else {
-            journal.restored < journal.applied
-        } {
-            if !forward {
-                index = (journal.applied - journal.restored - 1) as usize;
+        for offset in 0..journal.plan.edits.len() {
+            if !repair
+                && (forward && journal.applied as usize >= journal.plan.edits.len()
+                    || !forward && journal.restored >= journal.applied)
+            {
+                break;
             }
+            let index = if repair {
+                offset
+            } else if forward {
+                journal.applied as usize
+            } else {
+                (journal.applied - journal.restored - 1) as usize
+            };
             self.verify_allocation(&journal).await?;
             let edit = &journal.plan.edits[index];
             let preimage = &journal.preimages[index];
-            let observed = self
+            let effect = match self
                 .backend
                 .observe(edit, preimage)
                 .await
-                .map_err(MaterializationError::Backend)?;
-            if observed == MaterializationObservation::Diverged {
-                return Err(MaterializationError::ExternalMutation.into());
-            }
-            let target = if forward {
-                MaterializationObservation::Postimage
-            } else {
-                MaterializationObservation::Preimage
+                .map_err(MaterializationError::Backend)?
+            {
+                MaterializationObservation::Diverged => {
+                    return Err(MaterializationError::ExternalMutation.into());
+                }
+                MaterializationObservation::Unverified => !repair,
+                observed => observed != target,
             };
-            let effect = observed != target
-                && !(repair && observed == MaterializationObservation::Unverified);
             if effect || !repair {
                 guard().await?;
                 self.verify_effect_context(&journal).await?;
-                if effect {
-                    if forward {
-                        self.backend.apply(edit, preimage).await
-                    } else {
-                        self.backend.restore(edit, preimage).await
-                    }
-                } else {
+                if !effect {
                     self.backend.settle_observed(edit).await
+                } else if forward {
+                    self.backend.apply(edit, preimage).await
+                } else {
+                    self.backend.restore(edit, preimage).await
                 }
                 .map_err(MaterializationError::Backend)?;
-            }
-            if forward {
-                index += 1;
             }
             if !repair {
                 if forward {
@@ -337,11 +296,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         if repair {
             return Ok(journal);
         }
-        journal.phase = if forward {
-            MaterializationPhase::Applied
-        } else {
-            MaterializationPhase::RolledBack
-        };
+        journal.phase = if forward { Applied } else { RolledBack };
         self.persist(journal).await.map_err(Into::into)
     }
     pub(super) async fn verify_allocation(
@@ -367,7 +322,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         }
         Ok(())
     }
-    async fn verify_effect_context(
+    pub(super) async fn verify_effect_context(
         &self,
         journal: &MaterializationJournal,
     ) -> Result<(), MaterializationError<S::Error, B::Error>> {

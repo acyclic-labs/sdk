@@ -96,13 +96,9 @@ impl NativeReadMeter for NativeWorkReservation {
         }
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-        self.work().with_original_leaf(|state| {
-            let (bytes, recorded) = state.record_native_owned_completed(bytes, &None);
-            (
-                bytes,
-                recorded.map_err(|error| state.record_native_io_failure(error)),
-            )
-        })
+        self.allocation_owner()
+            .expect("original owner")
+            .record_completed_adoption(bytes)
     }
     fn release(&self, bytes: u64) {
         self.allocation_owner()

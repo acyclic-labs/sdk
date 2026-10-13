@@ -152,8 +152,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             if readonly_standalone_live(&accounting).is_some()
                 && accounting.remaining()? == WorkBudget::UNBOUNDED
             {
-                let results = stream::iter(requests.iter().enumerate().map(
-                    |(index, request)| async move {
+                let mut reads = Owned::<Vec<_>>::allocate(requests.len(), &mut accounting)?;
+                for (index, request) in requests.iter().enumerate() {
+                    reads.value.push(async move {
                         (
                             index,
                             request
@@ -167,11 +168,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                                 )
                                 .await,
                         )
-                    },
-                ))
-                .buffer_unordered(concurrency.min(requests.len().max(1)))
-                .collect::<Vec<_>>()
-                .await;
+                    });
+                }
+                let results = stream::iter(reads.value)
+                    .buffer_unordered(concurrency.min(requests.len().max(1)))
+                    .collect::<Vec<_>>()
+                    .await;
+                drop(reads.allocation);
                 let result = order_batch_results(results, WorkBudget::UNBOUNDED);
                 let work = match &result {
                     Ok(receipt) => receipt.work,
