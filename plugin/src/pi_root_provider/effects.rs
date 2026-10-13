@@ -2,6 +2,49 @@
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
+pub(crate) async fn root_effect(
+    owner: &PiOwnerConfig,
+    stream: &Arc<LocalStream>,
+    effect: EffectId,
+    work: &NativeMaterializationWork,
+) -> Result<Option<(EffectState, NativeAllocation)>> {
+    let verifier = owner.effect_verifier_with_native_work(work)?;
+    let mut reader_io =
+        acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let reader = HistoryReader::new(
+        stream,
+        verifier.0.audience(),
+        &verifier.0,
+        &mut Some(&mut reader_io),
+    )?;
+    let cursor = reader.pin(0, Some(&mut reader_io)).await?;
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let value = reader
+        .effect(
+            &cursor,
+            effect,
+            HistoryReadLimits {
+                maximum_events: owner.policy().limits.context_messages.try_into().map_err(
+                    |_| {
+                        PiRootProvider::native_failure(
+                            "root history event limit exceeds the SDK count",
+                        )
+                    },
+                )?,
+                maximum_bytes: owner
+                    .policy()
+                    .maximum_payload_bytes
+                    .min(crate::MAXIMUM_ADAPTER_STATE_BYTES),
+            },
+            Some(&mut io),
+        )
+        .await?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    Ok(Some((value.0, io.into_custody()?)))
+}
+
 impl PiRootProvider {
     pub(crate) async fn dispatch_native(
         &self,
@@ -260,41 +303,9 @@ impl PiRootProvider {
     ) -> Result<Option<(EffectState, NativeAllocation)>> {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
-        let verifier = self.owner.effect_verifier_with_native_work(work)?;
-        let mut reader_io =
-            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let reader = HistoryReader::new(
-            &self.stream,
-            verifier.0.audience(),
-            &verifier.0,
-            &mut Some(&mut reader_io),
-        )?;
-        let cursor = reader.pin(0, Some(&mut reader_io)).await?;
-        let mut io =
-            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let value = reader
-            .effect(
-                &cursor,
-                effect,
-                HistoryReadLimits {
-                    maximum_events: self
-                        .owner
-                        .policy()
-                        .limits
-                        .context_messages
-                        .try_into()
-                        .map_err(|_| {
-                            Self::native_failure("root history event limit exceeds the SDK count")
-                        })?,
-                    maximum_bytes: self.maximum(),
-                },
-                Some(&mut io),
-            )
-            .await?;
-        let Some(value) = value else {
+        let Some(state) = root_effect(&self.owner, &self.stream, effect, work).await? else {
             return Ok(None);
         };
-        let state = (value.0, io.into_custody()?);
         let plan = &self.preparation.plan;
         if state.0.provider != ROOT_ALLOCATION_PROVIDER
             || state.0.effect_kind != ROOT_ALLOCATION_EFFECT

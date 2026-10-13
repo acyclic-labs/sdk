@@ -52,6 +52,7 @@ use crate::pi_native_host::PiNativeFilesystem as Host;
 mod allocation;
 mod codec;
 mod effects;
+pub(crate) use effects::root_effect;
 mod inputs;
 mod preparation;
 mod sources;

@@ -47,12 +47,27 @@ impl PiSession {
         &mut self,
         work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<()> {
-        let observer = self.root_observer(None, work).await?;
-        let attempt =
-            EffectAttemptId::from_bytes(observer.effect_id_with_native_work(work)?.into_bytes());
-        let observed = observer
-            .observe_allocation_with_native_work(attempt, work)
-            .await?;
+        let owner =
+            pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, work)?;
+        let effect = acyclic_harness::effect_host::task_effect_id(
+            owner.policy().root_task,
+            pi_root_inputs::preparation_operation(owner.policy().root_task, work)?,
+            &mut Some(&mut &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        )?;
+        let observed = if pi_root_provider::root_effect(&owner, &self.stream, effect, work)
+            .await?
+            .is_some()
+        {
+            let observer = self.root_observer(None, work).await?;
+            observer
+                .observe_allocation_with_native_work(
+                    EffectAttemptId::from_bytes(effect.into_bytes()),
+                    work,
+                )
+                .await?
+        } else {
+            None
+        };
         let (allocation, handles) = if let Some(allocation) = observed {
             (allocation, BTreeMap::new())
         } else {
