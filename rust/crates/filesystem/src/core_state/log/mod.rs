@@ -24,17 +24,8 @@ impl CoreLog {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Reads one record from memory, or from its file on first use.
-    pub(in crate::core_state) fn get<T: Logged>(
-        &mut self,
-        root: &Namespace,
-        id: T::Id,
-    ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        self.get_bounded(root, id, None)
-    }
-
     /// Reads one record, refusing a file larger than `maximum_bytes`.
-    pub(in crate::core_state) fn get_bounded<T: Logged>(
+    pub(in crate::core_state) fn get<T: Logged>(
         &mut self,
         root: &Namespace,
         id: T::Id,

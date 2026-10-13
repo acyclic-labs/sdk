@@ -71,7 +71,8 @@ pub(super) fn await_recovery_worker(
         .mailbox
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .state_retired
+        .snapshot
+        .is_none()
     {
         if Instant::now() >= deadline {
             return Err("actual administrative state did not retire".into());
