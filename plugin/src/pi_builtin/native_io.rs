@@ -38,11 +38,11 @@ pub(super) async fn accepted_builtin_io(
     };
     let response = match &request.io {
         PiBuiltinIo::Read { maximum_bytes, .. } | PiBuiltinIo::EditRead { maximum_bytes } => {
-            let mut candidates = std::iter::once(leaf)
+            let mut last_absence = None;
+            for (leaf, candidate) in std::iter::once(leaf)
                 .chain(leaves.into_iter().flatten())
                 .zip(std::iter::once(&request.path).chain(variants.iter()))
-                .peekable();
-            while let Some((leaf, candidate)) = candidates.next() {
+            {
                 let operation = if matches!(request.io, PiBuiltinIo::EditRead { .. }) {
                     VolumeOperation::Write
                 } else {
@@ -75,13 +75,15 @@ pub(super) async fn accepted_builtin_io(
                     }
                     Err(error) => {
                         let error = Error::from(error);
-                        if !is_absent(&error) || candidates.peek().is_none() {
+                        if is_absent(&error) {
+                            last_absence = Some(error);
+                        } else {
                             return Err(error);
                         }
                     }
                 }
             }
-            return Err(denied("requested candidate is absent"));
+            return Err(last_absence.unwrap_or_else(|| denied("requested candidate is absent")));
         }
         PiBuiltinIo::Write { content } | PiBuiltinIo::EditWrite { content, .. } => {
             let expected = match &request.io {

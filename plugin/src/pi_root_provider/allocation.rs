@@ -18,7 +18,7 @@ impl PiRootProvider {
         };
         for key in paths
             .keys()
-            .map(String::as_str)
+            .map(|key| key.as_str())
             .chain(std::iter::once("scratch"))
         {
             let (volume, config) = if key == "scratch" {

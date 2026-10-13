@@ -81,11 +81,11 @@ impl crate::pi_host::PiControlHost<'_> {
                 work,
             )
             .await?;
-        let mut candidates = std::iter::once(relative)
+        let mut last_absence = None;
+        for (path, candidate) in std::iter::once(relative)
             .chain(relatives.into_iter().flatten())
             .zip(std::iter::once(&request.path).chain(variants.iter()))
-            .peekable();
-        while let Some((path, candidate)) = candidates.next() {
+        {
             let path = logical_path(path, work)?;
             match selection.read(&path.0, *maximum_bytes, work).await {
                 Ok(bytes) => {
@@ -99,11 +99,11 @@ impl crate::pi_host::PiControlHost<'_> {
                         },
                     );
                 }
-                Err(error) if is_absent(&error) && candidates.peek().is_some() => {}
+                Err(error) if is_absent(&error) => last_absence = Some(error),
                 Err(error) => return Err(error),
             }
         }
-        Err(denied("requested candidate is absent"))
+        Err(last_absence.unwrap_or_else(|| denied("requested candidate is absent")))
     }
 }
 
