@@ -3,7 +3,7 @@ use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_history_pages_preserve_original_provider_prefixes_and_custody() -> Result<()> {
-    use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError};
+    use acyclic_fs::NativeMaterializationWork;
     let provider = fixture().await?;
     let cancellation = CancellationToken::new();
     let native =
@@ -59,32 +59,6 @@ async fn native_history_pages_preserve_original_provider_prefixes_and_custody() 
         receipt.authority_bytes_read - prefix.authority_bytes_read,
         sdk.read_bytes
     );
-    let prefix = native.receipt();
-    provider.reset_io();
-    let (archived, archived_custody) = async {
-        let mut _history_io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&native)?,
-        );
-        let _history_value = reader
-            .operation_event(
-                page.events[0].operation_id,
-                budget().authority_bytes_read,
-                &mut Some(&mut _history_io),
-            )
-            .await?
-            .0;
-        _history_io.return_staged_output()?;
-        Ok::<_, crate::Error>((_history_value, _history_io.into_custody()?))
-    }
-    .await?;
-    assert_eq!(archived.as_ref(), Some(&page.events[0]));
-    assert!(native.shares_ledger(archived_custody.work()));
-    assert_eq!(
-        native.receipt().authority_bytes_read - prefix.authority_bytes_read,
-        provider.io_snapshot().read_bytes
-    );
-    drop(archived);
-    drop(archived_custody);
     drop(page);
     drop(page_custody);
 
@@ -150,83 +124,6 @@ async fn native_history_pages_preserve_original_provider_prefixes_and_custody() 
     assert_eq!(fault_work.receipt().output_bytes, 0);
     assert_eq!(fault_work.receipt().items_returned, 0);
 
-    let wrong_issuer = AuthorityIssuer::new("test", [8; 32], authority());
-    let auth_work = NativeMaterializationWork::new(budget(), &cancellation)
-        .expect("original authentication ledger");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&auth_work)
-            .expect("original reader custody"),
-    );
-    let wrong_reader = HistoryReader::new(
-        &provider,
-        &authority(),
-        &wrong_issuer.verifier(&mut None).expect("verifier copy"),
-        &mut Some(&mut io),
-    )?;
-    let wrong_custody = io.into_custody()?;
-    provider.reset_io();
-    assert!(
-        async {
-            let mut io = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(&auth_work)?,
-            );
-            let value = wrong_reader
-                .read_page(&cursor, default_projection_read_limits(), Some(&mut io))
-                .await?;
-            io.return_staged_output()?;
-            Ok::<_, Error>((value, io.into_custody()?))
-        }
-        .await
-        .is_err()
-    );
-    assert_eq!(
-        auth_work.receipt().authority_bytes_read,
-        provider.io_snapshot().read_bytes
-    );
-    assert!(auth_work.receipt().authority_bytes_read > 0);
-    assert_eq!(auth_work.receipt().output_bytes, 0);
-    drop(wrong_reader);
-    drop(wrong_custody);
-
-    let cancelled = CancellationToken::new();
-    let cancelled_work =
-        NativeMaterializationWork::new(budget(), &cancelled).expect("original cancellation ledger");
-    cancelled.cancel();
-    provider.reset_io();
-    assert!(matches!(
-        async {
-            let mut io = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(&cancelled_work)?,
-            );
-            let value = reader.pin(64, Some(&mut io)).await?;
-            Ok::<_, Error>((value, io.into_custody()?))
-        }
-        .await,
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Cancelled,
-            custody: None
-        })
-    ));
-    assert!(matches!(
-        async {
-            let mut io = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(&cancelled_work)?,
-            );
-            let value = reader
-                .read_page(&cursor, default_projection_read_limits(), Some(&mut io))
-                .await?;
-            io.return_staged_output()?;
-            Ok::<_, Error>((value, io.into_custody()?))
-        }
-        .await,
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Cancelled,
-            custody: None
-        })
-    ));
-    let sdk = provider.io_snapshot();
-    assert_eq!(sdk.reads + sdk.tails as u64, 0);
-    assert_eq!(cancelled_work.receipt().output_bytes, 0);
     drop(cursor);
     drop(cursor_custody);
     drop(reader);

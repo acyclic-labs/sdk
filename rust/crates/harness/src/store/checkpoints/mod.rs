@@ -63,7 +63,7 @@ async fn projection_cut<P: StreamProvider>(
     Ok(through_revision)
 }
 
-fn charge(
+pub(in crate::store) fn charge(
     used: &mut u64,
     bytes: u64,
     maximum: u64,
