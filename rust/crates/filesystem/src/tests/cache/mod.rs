@@ -1,7 +1,6 @@
 use super::*;
 use crate::kernel::DecodeLimits;
 use crate::{MemoryObjectStore, ObjectKind, object_digest};
-use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
@@ -86,121 +85,6 @@ struct ShortBatchStore {
     inner: Arc<MemoryObjectStore>,
 }
 
-impl AsyncObjectStore for CountingStore {
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.work.remaining(context.budget)?;
-        self.inner.put(object_id, bytes, context).await
-    }
-
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        context.read_budget()?;
-        self.scalar_reads.fetch_add(1, Ordering::AcqRel);
-        self.inner.read(object_id, maximum_bytes, context).await
-    }
-
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        context.work.remaining(context.budget)?;
-        self.batch_reads.fetch_add(1, Ordering::AcqRel);
-        let result = self.inner.read_many(requests, context).await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            assert!(result.1.is_some(), "native batch allocation");
-        }
-        Ok(result)
-    }
-
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.work.remaining(context.budget)?;
-        self.inner.contains(object_id, context).await
-    }
-}
-
-impl AsyncObjectStore for ShortBatchStore {
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.work.remaining(context.budget)?;
-
-        self.inner.put(object_id, bytes, context).await
-    }
-
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.read_budget()?;
-
-        self.inner.read(object_id, maximum_bytes, context).await
-    }
-
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.work.remaining(context.budget)?;
-
-        self.inner.read_many(requests, context).await
-    }
-
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.work.remaining(context.budget)?;
-
-        self.inner.contains(object_id, context).await
-    }
-}
-
 fn counting_store(inner: MemoryObjectStore) -> (CountingStore, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let scalar_reads = Arc::new(AtomicUsize::new(0));
     let batch_reads = Arc::new(AtomicUsize::new(0));
@@ -214,70 +98,145 @@ fn counting_store(inner: MemoryObjectStore) -> (CountingStore, Arc<AtomicUsize>,
         batch_reads,
     )
 }
+use crate::AuthorityWork;
+use acyclic_stream::OwnedBytes;
+
+macro_rules! object_work {
+    ($store:expr, $method:ident($($arg:expr),*), $budget:expr, $cancel:expr) => {
+        async {
+            let mut work = AuthorityWork::new($budget, $cancel);
+            let result = object_work!(@call $store, $method($($arg),*), work);
+            work.receipt(result)
+        }
+    };
+    (@call $store:expr, read_many($($arg:expr),*), $work:ident) => {
+        $store.read_many($($arg,)* &mut $work).await.map(|(values, _)| values)
+    };
+    (@call $store:expr, $method:ident($($arg:expr),*), $work:ident) => {
+        $store.$method($($arg,)* &mut $work).await
+    };
+}
+
+impl AsyncObjectStore for CountingStore {
+    async fn put(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        work.object_fallback()?;
+        self.inner.put(id, bytes, work).await
+    }
+    async fn contains(
+        &self,
+        id: ObjectId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, ObjectStoreError> {
+        work.object_fallback()?;
+        self.inner.contains(id, work).await
+    }
+    async fn read(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        work.read_budget()?;
+        self.scalar_reads.fetch_add(1, Ordering::AcqRel);
+        self.inner.read(id, maximum, work).await
+    }
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        work.work.remaining(work.budget)?;
+        self.batch_reads.fetch_add(1, Ordering::AcqRel);
+        self.inner.read_many(requests, work).await
+    }
+}
+
+impl AsyncObjectStore for ShortBatchStore {
+    async fn put(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        work.object_fallback()?;
+        self.inner.put(id, bytes, work).await
+    }
+    async fn contains(
+        &self,
+        id: ObjectId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, ObjectStoreError> {
+        work.object_fallback()?;
+        self.inner.contains(id, work).await
+    }
+    async fn read(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        work.read_budget()?;
+        self.inner.read(id, maximum, work).await
+    }
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        work.object_fallback()?;
+        self.inner.read_many(&requests[..1], work).await
+    }
+}
 
 impl AsyncObjectStore for GatedStore {
     async fn put(
         &self,
-        object_id: ObjectId,
+        id: ObjectId,
         bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.work.remaining(context.budget)?;
-
-        self.inner.put(object_id, bytes, context).await
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        work.object_fallback()?;
+        self.inner.put(id, bytes, work).await
     }
-
+    async fn contains(
+        &self,
+        id: ObjectId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, ObjectStoreError> {
+        work.object_fallback()?;
+        self.inner.contains(id, work).await
+    }
     async fn read(
         &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.read_budget()?;
-
+        id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        work.read_budget()?;
+        work.object_fallback()?;
         self.reads.fetch_add(1, Ordering::AcqRel);
         self.gate.wait().await;
-        self.inner.read(object_id, maximum_bytes, context).await
+        self.inner.read(id, maximum, work).await
     }
-
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        crate::async_storage::read_many_sequential(self, requests, context).await
-    }
-
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        context.work.remaining(context.budget)?;
-
-        self.inner.contains(object_id, context).await
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        work.object_fallback()?;
+        crate::async_storage::read_many_sequential(self, requests, work).await
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-mod native_cache;
-
 mod batches;
 mod flights;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_cache;
 mod residency;
+
+const B: WorkBudget = WorkBudget::UNBOUNDED;
