@@ -261,10 +261,10 @@ fn concurrent_initialization_publishes_one_owner() {
             })
             .map(|handle| handle.join().unwrap())
     });
-    assert_ne!(accepted[0], accepted[1]);
+    assert_ne!(accepted.pointer("/0").unwrap(), accepted[1]);
     assert!(
         PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap()
-            == owners[usize::from(accepted[1])]
+            == *owners.get(usize::from(*accepted.get(1).unwrap())).unwrap()
     );
 }
 
@@ -281,8 +281,8 @@ fn missing_or_corrupt_credentials_are_never_regenerated() {
     *corrupt.last_mut().unwrap() ^= 1;
     for invalid in [
         Vec::new(),
-        bytes[..7].to_vec(),
-        bytes[..39].to_vec(),
+        bytes.get(..7).unwrap().to_vec(),
+        bytes.get(..39).unwrap().to_vec(),
         corrupt,
     ] {
         fs::write(&path, &invalid).unwrap();
@@ -307,10 +307,12 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
     for mutation in 0..11 {
         let mut value = original.clone();
         match mutation {
-            0..=2 => value["version"] = json!([0, 4, 5][mutation]),
-            3 => value["key"] = json!(vec![0u8; 32]),
-            4 => value["policy"]["concurrency"] = json!(0),
-            5 => value["policy"]["maximum_payload_bytes"] = json!(65_537),
+            0..=2 => {
+                *value.pointer_mut("/version").unwrap() = json!([0, 4, 5].get(mutation).unwrap())
+            }
+            3 => value.pointer("/key").unwrap() = json!(vec![0u8; 32]),
+            4 => *value.pointer_mut("/policy/concurrency").unwrap() = json!(0),
+            5 => value.pointer("/policy/maximum_payload_bytes").unwrap() = json!(65_537),
             6 => {
                 value.as_object_mut().unwrap().remove("version");
             }
@@ -321,12 +323,16 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
                     .insert("unknown".into(), json!(true));
             }
             8 => {
-                value["policy"]
+                value
+                    .pointer_mut("/policy")
+                    .unwrap()
                     .as_object_mut()
                     .unwrap()
                     .insert("unknown".into(), json!(true));
             }
-            9 => value["policy"]["grants"]
+            9 => value
+                .pointer_mut("/policy/grants")
+                .unwrap()
                 .as_array_mut()
                 .unwrap()
                 .push(json!(
@@ -336,7 +342,9 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
                         .directory_read_capability("", &mut None)
                         .unwrap()
                 )),
-            _ => value["policy"]["grants"]
+            _ => value
+                .pointer_mut("/policy/grants")
+                .unwrap()
                 .as_array_mut()
                 .unwrap()
                 .push(json!(

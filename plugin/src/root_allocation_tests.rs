@@ -85,11 +85,13 @@ fn root_allocation_requires_explicit_complete_creation() {
         json!({"state":"preparing","creation":{"repository_workspace_id":[1]}}),
     ] {
         let mut changed = original.clone();
-        changed["allocation"] = allocation;
+        *changed.pointer_mut("/allocation").unwrap() = allocation;
         assert!(serde_json::from_value::<RootBinding>(changed).is_err());
     }
     let mut changed = original.clone();
-    changed["allocation"]["creation"]
+    changed
+        .pointer_mut("/allocation/creation")
+        .unwrap()
         .as_object_mut()
         .unwrap()
         .insert("unexpected".into(), json!(true));
@@ -139,14 +141,20 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
     let (_lock, configured, private, work) = crate::tests::configured_test_service_bootstrap(&data)
         .await
         .unwrap();
-    let (resources, mut sessions) = crate::service::ServiceResources::open(data, configured, private, &work)
+    let (resources, mut sessions) =
+        crate::service::ServiceResources::open(data, configured, private, &work)
+            .await
+            .unwrap();
+    let mut controller = resources
+        .open_session_directory(resources.session_directory("pi-root"))
         .await
         .unwrap();
-    let mut controller = resources.open_session_directory(resources.session_directory("pi-root")).await.unwrap();
     controller.state = preparing_state(selected.clone());
-    sessions.insert("pi-root".into(), SessionController::HostManaged(Box::new(controller)));
-    let concurrent =
-        ConcurrentServiceControl::from_parts(resources, sessions, &work).unwrap();
+    sessions.insert(
+        "pi-root".into(),
+        SessionController::HostManaged(Box::new(controller)),
+    );
+    let concurrent = ConcurrentServiceControl::from_parts(resources, sessions, &work).unwrap();
     assert!(concurrent.route_session(&selected).await.unwrap().is_none());
     assert!(
         ConcurrentControlRequestDispatcher::dispatch_request(

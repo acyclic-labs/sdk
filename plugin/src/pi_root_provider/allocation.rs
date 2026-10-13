@@ -28,7 +28,16 @@ impl PiRootProvider {
                 )
             } else {
                 (
-                    &self.preparation.request.binding.project_volumes[key],
+                    self.preparation
+                        .request
+                        .binding
+                        .project_volumes
+                        .get(key)
+                        .ok_or_else(|| {
+                            Self::native_failure(
+                                "root is absent from its original selected volumes",
+                            )
+                        })?,
                     VolumeConfig::native(Lifecycle::Durable),
                 )
             };
@@ -130,8 +139,21 @@ impl PiRootProvider {
                     ));
                 }
                 for (key, path) in paths {
-                    let volume = &self.preparation.request.binding.project_volumes[key];
-                    let input = &inputs.0[key];
+                    let volume = self
+                        .preparation
+                        .request
+                        .binding
+                        .project_volumes
+                        .get(key)
+                        .ok_or_else(|| {
+                            Self::native_failure(
+                                "root is absent from its original selected volumes",
+                            )
+                        })?;
+                    let input = inputs
+                        .0
+                        .get(key)
+                        .ok_or_else(|| Self::native_failure("root attachment input is missing"))?;
                     self.validate_attachment(input)?;
                     owner
                         .verify(
@@ -210,11 +232,10 @@ impl PiRootProvider {
                         .await?;
                     self.require_native_creation()?;
                     let workspace = if let Some(workspace) = existing_workspace {
-                        let mut accounting =
-                            acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                                work,
-                                cancellation: &cancellation,
-                            };
+                        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: &cancellation,
+                        };
                         let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
                             &self.store,
                             workspace.id(),
@@ -239,8 +260,8 @@ impl PiRootProvider {
                         .await
                         .map_err(crate::pi_fork_host::native_lazy_error)?
                     } else {
-                        let operation = self
-                            .creation_operation_with_native_work(effect, attempt, key, work)?;
+                        let operation =
+                            self.creation_operation_with_native_work(effect, attempt, key, work)?;
                         let name = {
                             let mut io = acyclic_harness::store::HistoryWork::new(
                                 PreparationIo::from_native_work(work)?,

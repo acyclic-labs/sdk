@@ -149,7 +149,12 @@ impl<'a> PiForkCoordinator<'a> {
                 None,
                 Some(work),
             )
-            .map(|(reference, custody)| (reference, custody.expect("native generation custody")))?;
+            .and_then(|(reference, custody)| {
+                Ok((
+                    reference,
+                    custody.ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?,
+                ))
+            })?;
             let scratch = &caller.binding.scratch.volume;
             let mut private_generation = self
                 .native_generation(context, owner, scratch, work)
@@ -219,7 +224,7 @@ impl<'a> PiForkCoordinator<'a> {
             let mut child_volume_custody = child_volume_io.into_custody()?;
             let mut child_id = work.display(&commit.child.task_id)?;
             let history_limits = HistoryReadLimits {
-                maximum_events: limits.work.min(u64::from(u32::MAX)) as u32,
+                maximum_events: u32::try_from(limits.work).unwrap_or(u32::MAX),
                 maximum_bytes: limits.bytes,
             };
             let checkpoint_snapshot = {
@@ -558,7 +563,10 @@ impl<'a> PiForkCoordinator<'a> {
                 frozen,
                 _input_allocations: Some(request_custody),
             };
-            let allocations = plan._input_allocations.as_mut().expect("new plan custody");
+            let allocations = plan
+                ._input_allocations
+                .as_mut()
+                .ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?;
             for part in [&mut fork_input.1, &mut launch_reference.1]
                 .into_iter()
                 .chain(source_read_custody.as_mut())
@@ -577,7 +585,7 @@ impl<'a> PiForkCoordinator<'a> {
             drop(publication.0);
             plan._input_allocations
                 .as_mut()
-                .expect("new plan custody")
+                .ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?
                 .absorb(&mut publication.1)?;
             self.prepare_native_source(owner, &plan, source).await?;
             Ok(plan)

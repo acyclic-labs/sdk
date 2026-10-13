@@ -63,6 +63,25 @@ pub(crate) fn control_response_for(
         Ok((payload, allocation)) => (None, allocation, Some(payload)),
         Err(error) => (Some(error), None, None),
     };
+    if original_native_work.is_none() {
+        if failure.as_ref().is_some_and(|error| {
+            !matches!(
+                error,
+                Error::NotFound(_)
+                    | Error::Conflict(_)
+                    | Error::Unsupported(_)
+                    | Error::Invalid(_)
+                    | Error::Unauthorized(_)
+                    | Error::Storage(_)
+                    | Error::InteractionRejected(_)
+                    | Error::Indeterminate(_)
+            )
+        }) {
+            if let Some(error) = failure {
+                return Err(error);
+            }
+        }
+    }
     let response = Response {
         version: 2,
         request_id: request_id.as_str(),
@@ -89,21 +108,6 @@ pub(crate) fn control_response_for(
                 code: acyclic_harness::wire::ErrorCode::Storage,
                 reason: "native response has no original control-query work",
             });
-        }
-        if failure.as_ref().is_some_and(|error| {
-            !matches!(
-                error,
-                Error::NotFound(_)
-                    | Error::Conflict(_)
-                    | Error::Unsupported(_)
-                    | Error::Invalid(_)
-                    | Error::Unauthorized(_)
-                    | Error::Storage(_)
-                    | Error::InteractionRejected(_)
-                    | Error::Indeterminate(_)
-            )
-        }) {
-            return Err(failure.expect("native failure is present"));
         }
         (encode_control_response(&response, Some(request_id)), None)
     };

@@ -20,10 +20,12 @@ impl PiSession {
                 self.restore_root_sources(&work).await?;
             }
             return pi_operator_host::inspect_operator(
-                &self.runtime,
-                &self.filesystem,
-                &self.stream,
-                &self.resources,
+                (
+                    &self.runtime,
+                    &self.filesystem,
+                    &self.stream,
+                    &self.resources,
+                ),
                 &owner,
                 &self.state.root_session_id,
                 &self.state,
@@ -127,18 +129,19 @@ impl PiSession {
             });
         }
         pi_operator_host::passive_status(
-            &self.runtime,
-            &self.filesystem,
-            &self.stream,
-            &self.resources,
+            (
+                &self.runtime,
+                &self.filesystem,
+                &self.stream,
+                &self.resources,
+            ),
             &owner,
-            &self.state.root_session_id,
-            &self.binding(caller)?.native_session_id,
-            caller,
-            operation,
-            source,
-            root,
-            selected,
+            (
+                &self.state.root_session_id,
+                &self.binding(caller)?.native_session_id,
+                caller,
+            ),
+            (operation, source, root, selected),
             work,
         )
         .await

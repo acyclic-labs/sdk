@@ -293,6 +293,11 @@ impl<'a> PiForkCoordinator<'a> {
             None,
             Some(work),
         )
-        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))
+        .and_then(|(reference, custody)| {
+            Ok((
+                reference,
+                custody.ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?,
+            ))
+        })
     }
 }

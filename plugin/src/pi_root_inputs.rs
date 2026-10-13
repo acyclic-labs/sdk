@@ -37,8 +37,7 @@ pub(crate) struct PiRootPreparation {
 impl PiRootPreparation {
     /// Authenticates the borrowed service state without reminting root metadata.
     pub(crate) async fn load(
-        private_root: &Path,
-        session: &Path,
+        private_root_session: (&Path, &Path),
         runtime: &super::pi_runtime::PiTaskRuntime,
         filesystem: &crate::pi_native_host::PiNativeFilesystem,
         binding: &PiTaskBinding,
@@ -46,6 +45,7 @@ impl PiRootPreparation {
         context: Option<std::sync::Arc<acyclic_harness::runtime::TaskContext>>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
+        let (private_root, session) = private_root_session;
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         let owner = PiOwnerConfig::load(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
@@ -53,7 +53,9 @@ impl PiRootPreparation {
         let admitted =
             super::pi_recovery::authenticate_pi_task(&runtime.runtime, binding, origin, work)
                 .await?;
-        let context = if let Some(context) = context { context } else {
+        let context = if let Some(context) = context {
+            context
+        } else {
             let io = PreparationIo::from_native_work(work)?;
             runtime
                 .runtime

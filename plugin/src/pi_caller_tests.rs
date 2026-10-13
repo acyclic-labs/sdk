@@ -95,8 +95,8 @@ fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
     assert!(verify(&owner, &state, &expanded, &binding.native_session_id, &work).is_err());
     let mut wire = serde_json::to_value(&caller.0).unwrap();
     let mut claims: serde_json::Value = serde_json::from_str(caller.0.id()).unwrap();
-    claims["root_session"] = json!("another-root");
-    wire["id"] = json!(serde_json::to_string(&claims).unwrap());
+    *claims.pointer_mut("/root_session").unwrap() = json!("another-root");
+    *wire.pointer_mut("/id").unwrap() = json!(serde_json::to_string(&claims).unwrap());
     let substituted: Scope = serde_json::from_value(wire).unwrap();
     assert!(
         verify(
