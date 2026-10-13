@@ -12,9 +12,9 @@ use crate::{
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
-        ForkToolArguments, MergeToolArguments, RecursiveDefaultToolSource, RecursiveForkConfig,
+        ForkToolArguments, MergeToolArguments, RecursiveForkConfig,
         RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
-        RecursiveMergeToolBinding, RecursiveMergeToolPlan, RecursiveToolOwner,
+        RecursiveMergeToolBinding, RecursiveMergeToolPlan,
         RetainedSourceBinding, restore_recursive_fork_source,
     },
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
@@ -249,25 +249,25 @@ where
         ))
     }
 }
-impl<P, A, O> RecursiveDefaultToolSource<P, A, O> for ConfiguredRecursiveToolSource<P, A, O>
+impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
 where
     P: StreamProvider + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_source(&self) -> bool {
+    pub(in crate::filesystem) fn supports_native_source(&self) -> bool {
         self.project_policy.get().is_none()
     }
 
-    fn owner<'a>(
+    pub(in crate::filesystem) fn owner<'a>(
         &'a self,
         context: &'a ToolContext,
         tool: &'a ResumableTool,
         invocation: &'a ToolInvocation,
         cancellation: &'a CancellationToken,
         io: Option<&'a super::PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, RecursiveToolOwner<P, A, O>>> {
+    ) -> Result<BoundedContentFuture<'a, (Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>)>> {
         BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
@@ -277,7 +277,7 @@ where
                     .await?;
                 self.authenticate_caller(
                     context.task(),
-                    Some(owner.journal_owner.as_ref()),
+                    owner.1.owner.as_deref(),
                     false,
                     Some(io),
                 )
@@ -298,7 +298,7 @@ where
                 .await
         })
     }
-    fn select<'a>(
+    pub(in crate::filesystem) fn select<'a>(
         &'a self,
         context: &'a ToolContext,
         arguments: &'a ForkToolArguments,
@@ -317,7 +317,7 @@ where
                 .await
         })
     }
-    fn fork<'a>(
+    pub(in crate::filesystem) fn fork<'a>(
         &'a self,
         context: &'a ToolContext,
         arguments: &'a ForkToolArguments,
@@ -338,7 +338,7 @@ where
                 .await
         })
     }
-    fn preparation<'a>(
+    pub(in crate::filesystem) fn preparation<'a>(
         &'a self,
         context: &'a TaskContext,
         token: &'a TaskResourcePreparation,
@@ -357,7 +357,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(
+    pub(in crate::filesystem) fn preparation_with_native_work<'a>(
         &'a self,
         context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation,
@@ -382,7 +382,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_for_reconciliation_with_native_work<'a>(
+    pub(in crate::filesystem) fn preparation_for_reconciliation_with_native_work<'a>(
         &'a self,
         context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation,
@@ -405,7 +405,7 @@ where
             crate::filesystem::native_decoded((source, io.guard_owned(io.owned_bytes()?)?))
         })
     }
-    fn merge<'a>(
+    pub(in crate::filesystem) fn merge<'a>(
         &'a self,
         context: &'a ToolContext,
         arguments: &'a MergeToolArguments,

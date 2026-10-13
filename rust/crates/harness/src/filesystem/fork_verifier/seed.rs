@@ -47,7 +47,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         require_seed(binding, seed, work)?;
         file.validate(&mut Some(&mut io.history_io()))?;
         if file.volume().provider() != &self.host.provider {
-            return Err(fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "fork file belongs to another provider",
@@ -66,7 +66,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         if !admitted {
-            return Err(fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "fork file is not in the original admitted seed inventory",
@@ -157,7 +157,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             crate::model::charge_items(Some(io), 1)?;
             if file.volume().provider() == &self.host.provider {
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::contract::canonical_json_digest(
+                    crate::executor::json::canonical_json_digest(
                         file,
                         crate::store::default_projection_read_limits().maximum_bytes,
                         work,
@@ -266,14 +266,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             {
                 crate::model::charge_items(Some(io), 1)?;
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::contract::canonical_json_digest(file, u64::MAX, work)
+                    crate::executor::json::canonical_json_digest(file, u64::MAX, work)
                 })?;
                 fork_verify_insert(&mut observed, digest, Ord::cmp, io)?;
             }
             for file in summary.payloads.iter().chain(&summary.references) {
                 crate::model::charge_items(Some(io), 1)?;
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::contract::canonical_json_digest(file, u64::MAX, work)
+                    crate::executor::json::canonical_json_digest(file, u64::MAX, work)
                 })?;
                 fork_verify_insert(&mut declared, digest, Ord::cmp, io)?;
             }
@@ -314,14 +314,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         fork_preparer_io::resolve(&self.host, &reference, Some(io)).await?;
                     }
                     ResourceRevision::History(_) => {
-                        return Err(fork_preparer_io::failure(
+                        return Err(crate::executor::stock_boundary(
                             Some(io),
                             crate::wire::ErrorCode::Unsupported,
                             "Filesystem cannot prove Stream history",
                         ));
                     }
                     _ => {
-                        return Err(fork_preparer_io::failure(
+                        return Err(crate::executor::stock_boundary(
                             Some(io),
                             crate::wire::ErrorCode::Unsupported,
                             "fork resource requires its owning provider verifier",
@@ -354,7 +354,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .generation;
         let _head = io.guard_owned(head.logical_owned_bytes()?)?;
         if head != seed.child_private_generation {
-            return Err(fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Conflict,
                 "child private generation changed before fork admission",
@@ -527,7 +527,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .generation
             != head
         {
-            return Err(fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Conflict,
                 "child private volume changed during fork admission",

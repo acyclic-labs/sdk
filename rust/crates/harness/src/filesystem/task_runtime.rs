@@ -258,7 +258,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     maximum_payload_bytes: u64,
     policy: Option<Arc<dyn ToolPolicy>>,
     interaction_owner: Option<TaskInteractionOwner>,
-    recursive_source: Option<Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>>,
+    recursive_source: Option<Arc<super::ConfiguredRecursiveToolSource<P, A, O>>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -603,7 +603,7 @@ where
     #[must_use]
     pub fn with_recursive_source(
         mut self,
-        source: Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>,
+        source: Arc<super::ConfiguredRecursiveToolSource<P, A, O>>,
     ) -> Self {
         self.recursive_source = Some(source);
         self
@@ -611,7 +611,7 @@ where
 
     pub(super) fn recursive_source(
         &self,
-    ) -> Option<&Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>> {
+    ) -> Option<&Arc<super::ConfiguredRecursiveToolSource<P, A, O>>> {
         self.recursive_source.as_ref()
     }
 
@@ -1637,18 +1637,14 @@ where
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
         io: Option<&super::PreparationIo>,
-    ) -> Result<super::RecursiveToolOwner<P, A, O>> {
+    ) -> Result<(Arc<Self>, Arc<FilesystemWorkflowJournal<P, A, O>>)> {
         let workflow = self
             .workflow_journal_for_tool(context, tool, invocation, cancellation, io)
             .await?;
-        let journal_owner = workflow.owner.clone().ok_or_else(|| {
+        workflow.owner.as_ref().ok_or_else(|| {
             Error::Unauthorized("recursive tool lacks its original task owner".into())
         })?;
-        Ok(super::RecursiveToolOwner {
-            runtime: self.clone(),
-            workflow,
-            journal_owner,
-        })
+        Ok((self.clone(), workflow))
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.

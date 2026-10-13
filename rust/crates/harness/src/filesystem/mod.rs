@@ -120,8 +120,6 @@ pub(in crate::filesystem) use default_tools::{
 pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::*;
-#[cfg(not(target_arch = "wasm32"))]
-pub use recursive::restore_recursive_fork_source_with_native_work;
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,
@@ -220,7 +218,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(lease) = publication_lease {
             match io {
-                Some(io) => io.finish_future(lease.verify(Some(io))?).await?,
+                Some(io) => lease.verify(Some(io))?.await?,
                 None => lease.verify(None)?.await?,
             }
         }
@@ -392,7 +390,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let indexed = match io {
                 Some(io) => {
                     let indexed_path = crate::executor::with_history_io(Some(io), |work| {
-                        crate::contract::preparation_format(format_args!("/{metadata_path}"), work)
+                        crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
                     })?;
                     read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, Some(io))
                         .await?
@@ -443,7 +441,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Ok(reference);
         }
         let absolute = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("/{}", provisional.path()), work)
+            crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
         })?;
         let mut mutations = crate::model::vec_with_capacity(6, io)?;
         if let Some((parent, _)) = absolute.rsplit_once('/')
@@ -466,13 +464,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         });
         mutations.push(WorkspaceMutation::PutFile {
             path: crate::executor::with_history_io(io, |work| {
-                crate::contract::preparation_format(format_args!("/{metadata_path}"), work)
+                crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
             })?,
             bytes: metadata_bytes,
         });
         mutations.push(WorkspaceMutation::PutFile {
             path: crate::executor::with_history_io(io, |work| {
-                crate::contract::preparation_format(format_args!("/{receipt_path}"), work)
+                crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
             })?,
             bytes: receipt_bytes,
         });
@@ -489,7 +487,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     let original = original.clone();
                                     async move {
                                         let io = PreparationIo::from_native_work(&original)?;
-                                        io.finish_future(lease.verify(Some(&io))?).await
+                                        lease.verify(Some(&io))?.await
                                     }
                                 };
                             fork_preparer_io::publish_native(
@@ -508,7 +506,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     PreparationIo::from_budget(budget, io.cancellation())
                                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 let result = match lease.verify(Some(&callback)) {
-                                    Ok(future) => callback.finish_future(future).await,
+                                    Ok(future) => future.await,
                                     Err(error) => Err(error),
                                 };
                                 callback.finish(result)

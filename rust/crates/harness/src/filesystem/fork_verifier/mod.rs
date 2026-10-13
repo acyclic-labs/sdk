@@ -28,7 +28,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .unwrap_or_else(|| maximum_inherited_bytes.saturating_mul(1_024));
         let io = original.map(|(_, _, io)| io);
         if maximum_inherited_bytes == 0 || maximum_total_reference_bytes == 0 {
-            return Err(fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "fork reference limits must be positive",
@@ -67,7 +67,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         if original.is_some() {
-            return Err(fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "native fork verification is unavailable",
@@ -257,7 +257,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                     self.require_seed_file(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(fork_preparer_io::failure(
+                    return Err(crate::executor::stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork manifest belongs to another provider",
@@ -271,7 +271,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                     0
                 } else {
                     bytes.retained_capacity().ok_or_else(|| {
-                        fork_preparer_io::failure(
+                        crate::executor::stock_boundary(
                             Some(&io),
                             crate::wire::ErrorCode::Unsupported,
                             "manifest producer does not expose its admitted owned capacity",
@@ -304,7 +304,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                     self.require_seed_file(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(fork_preparer_io::failure(
+                    return Err(crate::executor::stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork file belongs to another provider",
@@ -342,7 +342,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
             let io = fork_io(work)?;
             let result = async {
                 if seed.child_private_volume.provider() != &self.host.provider {
-                    return Err(fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Unauthorized,
+                    return Err(crate::executor::stock_boundary(Some(&io), crate::wire::ErrorCode::Unauthorized,
                         "fork private volume belongs to another provider"));
                 }
                 #[cfg(not(target_arch = "wasm32"))]
@@ -353,7 +353,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                     if binding.verifier.audience() != &seed.parent
                         && !io.contains_capability(binding.scope.capabilities(), &seed.child_private_volume, "volume:write:")?
                     {
-                        return Err(fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Unauthorized,
+                        return Err(crate::executor::stock_boundary(Some(&io), crate::wire::ErrorCode::Unauthorized,
                             "fork private publication fence lacks the exact current provider write grant"));
                     }
                     self.host.read_fork_allocation(seed, &seed.child_private_volume,
@@ -374,7 +374,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                 match io.sdk(guard.workspace.reserve_publication(operation, &io, io.cancellation()).await) {
                     Ok(reservation) => guard.reservation = Some(reservation),
                     Err(cause) => {
-                        if io.original_native_work().is_some() && let Ok(Some(reservation)) = io.sdk(guard.workspace.publication_reservation(operation, &io, io.cancellation()).await) {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(work) = io.original_native_work() && let Ok(Some(reservation)) = guard.workspace.publication_reservation(operation, work, io.cancellation()).await {
                             let _cleanup = io.sdk(guard.workspace.release_publication(reservation, &io, io.cancellation()).await);
                         }
                         return Err(cause);

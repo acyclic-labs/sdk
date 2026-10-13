@@ -298,7 +298,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     continue;
                 }
                 grants.push(crate::executor::with_history_io(io, |work| {
-                    Ok(ReferenceGrant {
+                    Ok::<_, Error>(ReferenceGrant {
                         reader,
                         file: record.file.copy(work)?,
                         attachment_manifest: record
@@ -340,7 +340,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         #[cfg(not(target_arch = "wasm32"))]
         let native = io.and_then(PreparationIo::original_native_work);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native {
+        if native.is_some() {
             native_creation_guard
                 .ok_or_else(|| {
                     stock_boundary(
@@ -349,13 +349,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         "native inherited publication requires its original issued creation guard",
                     )
                 })?
-                .verify_creation_with_native_work(work)?
+                .verify(false, io)?
                 .await?;
         }
         if io.is_none_or(|io| io.original_native_work().is_none())
             && let Some(preparation) = preparation
         {
-            preparation.verify_creation().await?;
+            preparation.verify(false, io)?.await?;
         }
         self.require(capability::FORK_PUBLISH, VolumeOperation::Read, io)?;
         if parent.authority() != self.verifier.audience()
@@ -510,7 +510,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     },
                     WorkspaceMutation::PutFile {
                         path: crate::executor::with_history_io(io, |work| {
-                            crate::contract::preparation_format(format_args!("/{path}"), work)
+                            crate::executor::preparation_format(format_args!("/{path}"), work)
                         })?,
                         bytes: bytes.clone(),
                     },
@@ -590,7 +590,7 @@ fn insert_reference(
         }
     }
     let record = crate::executor::with_history_io(io, |work| {
-        Ok(ReferenceGrant {
+        Ok::<_, Error>(ReferenceGrant {
             file: file.copy(work)?,
             reader: child_agent,
             attachment_manifest: manifest.map(|manifest| manifest.copy(work)).transpose()?,

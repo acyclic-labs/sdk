@@ -218,7 +218,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .0;
         let copy = recursive_box(copy, io)?;
         let key = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("recursive-merge-publication:{}", context.operation_id()),
                 work,
             )

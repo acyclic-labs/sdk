@@ -1,5 +1,6 @@
 use super::fork_preparer::FilesystemRootBootstrapAllocation;
 use super::{FilesystemHost, PreparationIo, UploadRecord};
+use crate::executor::stock_boundary;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{
@@ -113,7 +114,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
             let path_hold;
             let path = crate::executor::with_history_io(io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("scheduler/results/{operation}/{key}.json"),
                     work,
                 )
@@ -123,7 +124,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 .transpose()?;
             let retry_hold;
             let retry = crate::executor::with_history_io(io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("scheduler-result:{operation}:{key}"),
                     work,
                 )
@@ -257,7 +258,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                 io.charge(hashing)?;
             }
             let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("filesystem-upload:{operation}:{}", digest.to_hex()),
                     work,
                 )
@@ -334,7 +335,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if let Some(source) = source {
             crate::executor::with_history_io(io, |work| source.validate(work))?;
             if source.volume() != &self.volume {
-                return Err(super::fork_preparer_io::failure(
+                return Err(crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "source belongs to another writer volume",

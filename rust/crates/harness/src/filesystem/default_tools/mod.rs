@@ -6,7 +6,6 @@ use super::{
     TASK_ADMIT_PREPARED_COMMAND_KIND, TaskCommandHost, TaskCommandProgress,
     fork_preparation_request,
 };
-use crate::runtime::TaskStateProvider;
 use crate::{
     Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, VolumeOperation, VolumeRef},
@@ -16,7 +15,7 @@ use crate::{
     merge::ProjectMergeReceipt,
     resources::GenerationRef,
     runtime::{
-        DurableTaskHost, RuntimeScope, TaskAdmissionRecord, TaskContext, ToolContext,
+        RuntimeScope, TaskAdmissionRecord, ToolContext,
         task_id_for_admission,
     },
     store::{StreamAggregate, history::HistoryIo as _},

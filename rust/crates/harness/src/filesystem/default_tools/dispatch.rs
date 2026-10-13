@@ -73,10 +73,11 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                                 Some(&temporary),
                             )?,
                         };
-                        let command = crate::filesystem::task_runtime::observed::clone_command(
-                            command,
-                            Some(&temporary),
-                        )?;
+                        let command = WorkflowCommand {
+                            operation_id: command.operation_id,
+                            kind: crate::executor::stock_string_copy(&command.kind, Some(&temporary))?,
+                            payload: crate::executor::with_history_io(Some(&temporary), |work| command.payload.copy(work))?,
+                        };
                         let payload = crate::executor::with_history_io(Some(&temporary), |work| {
                             crate::wire_codec::CodecQuota::produce(work, |quota| {
                                 crate::core::copy_value(&payload, quota)
@@ -272,7 +273,7 @@ pub(super) async fn stage<T: Serialize>(
     )?;
     let path_hold;
     let path = crate::executor::with_history_io(Some(io), |work| {
-        crate::contract::preparation_format(
+        crate::executor::preparation_format(
             format_args!("recursive-tools/{}/{label}.json", context.operation_id()),
             work,
         )
@@ -280,7 +281,7 @@ pub(super) async fn stage<T: Serialize>(
     path_hold = io.guard_owned(path.capacity() as u64)?;
     let display_hold;
     let display = crate::executor::with_history_io(Some(io), |work| {
-        crate::contract::preparation_format(format_args!("{label}.json"), work)
+        crate::executor::preparation_format(format_args!("{label}.json"), work)
     })?;
     display_hold = io.guard_owned(display.capacity() as u64)?;
     let result = 'stage: {
