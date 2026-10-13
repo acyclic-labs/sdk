@@ -41,3 +41,27 @@ test("Windows Rust tests run independently without changing workspace or ignored
   const projfs = action.slice(action.indexOf("    - name: Enable Windows ProjFS"), action.indexOf("    - name: Run qualification lane"));
   assert.ok(projfs.includes("if: runner.os == 'Windows'"));
 });
+
+test("Windows Rust restores dependency builds after toolchain setup and skips unused sccache", () => {
+  const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  const cache = action.slice(action.indexOf("    - name: Restore Windows Rust dependency builds"), action.indexOf("    - name: Enable Windows ProjFS"));
+  assert.ok(action.indexOf("    - name: Finish Windows Rust setup") < action.indexOf("    - name: Restore Windows Rust dependency builds"));
+  assert.ok(cache.includes("if: inputs.lane == 'windows-rust'"));
+  assert.ok(cache.includes("Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"));
+  assert.ok(cache.includes("shared-key: sdk-windows-rust-v1"));
+  assert.ok(cache.includes("workspaces: . -> ${{ runner.temp }}/target"));
+  assert.ok(cache.includes("CARGO_TARGET_DIR: ${{ runner.temp }}/target"));
+  assert.ok(cache.includes("RUSTC_WRAPPER: ''"));
+  assert.ok(cache.includes("cache-bin: false"));
+  assert.ok(cache.includes("save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}"));
+  assert.doesNotMatch(cache, /add-rust-environment-hash-key: false|cache-targets: false|cache-workspace-crates: true/);
+  for (const step of ["Restore lane build cache", "Enable compiler cache"]) {
+    const body = action.split("    - name: " + step)[1]?.split("    - name:")[0] ?? assert.fail("missing cache step");
+    assert.ok(body.includes("if: inputs.lane != 'windows-rust'"));
+  }
+  const save = action.split("    - name: Save lane build cache")[1]?.split("    - name:")[0] ?? assert.fail("missing cache save");
+  assert.ok(save.includes("inputs.lane != 'windows-rust'"));
+  assert.ok(workflow.includes("RUSTC_WRAPPER: ${{ matrix.lane != 'windows-rust' && 'sccache' || '' }}"));
+  assert.ok(action.includes('if [[ "$LANE" != windows-rust ]]; then'));
+});
