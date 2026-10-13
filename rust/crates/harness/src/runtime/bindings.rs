@@ -27,6 +27,19 @@ pub struct AgentHarness {
     pub(super) native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
+#[derive(Clone)]
+pub(super) struct ModelBinding {
+    pub(super) model: Model,
+    pub(super) provider: Arc<dyn ModelProvider>,
+}
+
+#[derive(Clone)]
+pub(super) struct ForkBinding {
+    pub(super) parent: crate::core::Authority,
+    pub(super) revision: u64,
+    pub(super) preparer: Arc<dyn crate::fork::ForkPreparer>,
+}
+
 impl Clone for AgentHarness {
     fn clone(&self) -> Self {
         Self {
@@ -55,19 +68,6 @@ impl Clone for AgentHarness {
             native_configuration_custody: None,
         }
     }
-}
-
-#[derive(Clone)]
-pub(super) struct ModelBinding {
-    pub(super) model: Model,
-    pub(super) provider: Arc<dyn ModelProvider>,
-}
-
-#[derive(Clone)]
-pub(super) struct ForkBinding {
-    pub(super) parent: crate::core::Authority,
-    pub(super) revision: u64,
-    pub(super) preparer: Arc<dyn crate::fork::ForkPreparer>,
 }
 
 impl ForkBinding {
@@ -103,7 +103,7 @@ impl ForkBinding {
     }
 }
 
-/// Provider-owned, scope-bound file handles.
+/// Provider-owned, scope-bound file handles. The reader verifies every exact
 #[derive(Clone)]
 pub struct ContentBindings {
     /// Authenticated, exact-version read and residency boundary.
@@ -112,10 +112,10 @@ pub struct ContentBindings {
     pub writer: Option<Arc<dyn ContentPublisher>>,
 }
 
-/// Artifact access uses immutable file references.
+/// Artifact access uses the same immutable, digest-verified file contract as
 pub type ArtifactBindings = ContentBindings;
 
-/// Immutable admission bindings assembled before tasks can run.
+/// Immutable admission bindings assembled before tasks can run. Each optional
 pub struct Bindings {
     /// Version-pinned typed task definitions.
     pub tasks: TaskRegistry,
@@ -182,7 +182,7 @@ impl Bindings {
         self
     }
 
-    /// Validates all dependency edges and seals the runtime composition.
+    /// Validates the immutable composition under caller IO limits.
     pub fn build(
         self,
         startup: Option<&crate::conversation::ContentIo>,
@@ -193,26 +193,29 @@ impl Bindings {
                 "native startup is unavailable on this platform".into(),
             ));
         }
-
+        let native = task_original_work(startup)?;
         if self.fork_preparer.is_some() && !self.scope.grants().contains(capability::FORK_PUBLISH) {
-            return Err(Error::Unauthorized(
-                "fork preparer requires fork:publish in the root scope".into(),
+            return Err(native_startup::error(
+                startup,
+                crate::wire::ErrorCode::Unauthorized,
+                "fork preparer requires fork:publish in the root scope",
             ));
         }
         if self.execution.is_some() && self.durable_host.is_some() {
-            return Err(Error::Conflict(
-                "execution route and legacy durable host are both bound".into(),
+            return Err(native_startup::error(
+                startup,
+                crate::wire::ErrorCode::Conflict,
+                "execution route and durable host are both bound",
             ));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if startup.is_some()
+        if native.is_some()
             && self.execution.is_some()
             && (self.state.is_none() || self.spawner.is_none())
         {
             return Err(native_startup::error(
                 startup,
                 crate::wire::ErrorCode::Unsupported,
-                "native route configuration requires owned state and spawner bindings",
+                "native route requires owned state and spawner bindings",
             ));
         }
         let execution = self.execution;
@@ -226,7 +229,6 @@ impl Bindings {
         let state_available = host_available || bound_state.is_some();
         let spawner_available = host_available || bound_spawner.is_some();
         let durable_ready = host_available || (state_available && spawner_available);
-
         let Self {
             tasks,
             tools,
@@ -235,15 +237,14 @@ impl Bindings {
             concurrency,
             durable_host: host,
             interactions,
+            interaction_resolver,
             content,
             artifacts,
             policy,
-            interaction_resolver,
             fork_preparer,
             workspaces,
             ..
         } = self;
-
         if concurrency == 0 {
             return Err(native_startup::error(
                 startup,
@@ -253,47 +254,24 @@ impl Bindings {
         }
         scope.run_limits().validate_observed(startup)?;
         let concurrency = scope.concurrency_bound(concurrency);
+        let mut policy_identity = policy
+            .as_ref()
+            .filter(|_| native.is_none())
+            .map(|policy| policy.identity());
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native_policy_identity = if let Some(io) = startup {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "startup requires original native work",
-            })?;
-            let identity = match &policy {
-                Some(policy) => {
-                    policy.supports_native_policy(work)?;
-                    let identity = policy.identity_with_native_work(work)?;
-                    validate_policy_identity_with_native_work(&identity.0, &identity.1, work)?;
-                    io.absorb_native_custody(identity.1)?;
-                    Some(identity.0)
-                }
-                None => None,
-            };
-            if let Some(host) = &host
-                && TaskStateProvider::policy_identity_with_native_work(host.as_ref(), work)?
-                    != identity.as_ref()
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "runtime and durable host policies differ",
-                });
-            }
-            identity
-        } else {
-            None
-        };
-        if startup.is_none() {
-            if let Some(policy) = &policy {
-                validate_policy_identity(&policy.identity(), None)?;
-            }
-            if host.as_ref().is_some_and(|host| {
-                TaskStateProvider::policy_identity(host.as_ref())
-                    != policy.as_ref().map(|policy| policy.identity())
-            }) {
-                return Err(Error::Conflict(
-                    "runtime and durable host policies differ".into(),
-                ));
-            }
+        if let (Some(work), Some(policy)) = (native, &policy) {
+            policy.supports_native_policy(work)?;
+            let identity = policy.identity_with_native_work(work)?;
+            validate_policy_identity_with_native_work(&identity.0, &identity.1, work)?;
+            startup
+                .expect("native startup observer")
+                .absorb_native_custody(identity.1)?;
+            policy_identity = Some(identity.0);
+        }
+        if native.is_none()
+            && let Some(identity) = &policy_identity
+        {
+            validate_policy_identity(identity, startup)?;
         }
         if resumable_tools.definitions().next().is_some() && !durable_ready {
             return Err(native_startup::error(
@@ -304,58 +282,34 @@ impl Bindings {
         }
         for definition in resumable_tools.definitions() {
             native_startup::item(startup, 0)?;
-            let adapter = tools.get(&definition.name, Some(&definition.revision), startup)?;
-            if let Some(adapter) = adapter {
+            if let Some(adapter) =
+                tools.get(&definition.name, Some(&definition.revision), startup)?
+            {
                 let pinned = crate::executor::with_history_io(startup, |work| {
                     resumable_tools.get(&definition.name, &definition.revision, work)
-                })?;
-                let pinned = pinned.ok_or_else(|| {
+                })?
+                .ok_or_else(|| {
                     native_startup::error(
                         startup,
                         crate::wire::ErrorCode::Invalid,
                         "resumable registry differs from its definitions",
                     )
                 })?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let native = startup
-                    .map(|io| {
-                        io.original_native_work().ok_or(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unsupported,
-                            reason: "startup requires original native work",
-                        })
-                    })
-                    .transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                let native = None;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let machine = match native {
-                    Some(work) => pinned.machine.identity_with_native_work(work)?,
-                    None => pinned.machine.identity(),
-                };
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                let machine = pinned.machine.identity();
-                let same_adapter = adapter.definition == *definition
-                    && adapter.executor.resumable_machine_identity(native)? == Some(machine);
-                if same_adapter {
-                    continue;
+                let machine = task_machine_identity(pinned.machine.as_ref(), startup)?;
+                if adapter.definition != *definition
+                    || adapter.executor.resumable_machine_identity(native)? != Some(machine)
+                {
+                    return Err(native_startup::error(
+                        startup,
+                        crate::wire::ErrorCode::Conflict,
+                        "live and resumable implementations differ",
+                    ));
                 }
-                return Err(native_startup::error(
-                    startup,
-                    crate::wire::ErrorCode::Conflict,
-                    "live and resumable implementations differ",
-                ));
             }
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let dependency_io = startup
-            .map(|io| {
-                crate::filesystem::PreparationIo::from_native_work(
-                    io.original_native_work().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "startup requires original native work",
-                    })?,
-                )
-            })
+        let dependency_io = native
+            .map(crate::filesystem::PreparationIo::from_native_work)
             .transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let dependency_observer = dependency_io.as_ref();
@@ -377,15 +331,6 @@ impl Bindings {
         )?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         drop(dependency_io);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let policy_identity = if startup.is_some() {
-            native_policy_identity
-        } else {
-            policy.as_ref().map(|policy| policy.identity())
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let policy_identity = policy.as_ref().map(|policy| policy.identity());
-        let extension_runtime = scope.extension_runtime();
         let spawner = bound_spawner.or_else(|| {
             host.as_ref()
                 .map(|host| Arc::clone(host) as Arc<dyn TaskSpawner>)
@@ -394,20 +339,6 @@ impl Bindings {
             host.as_ref()
                 .map(|host| Arc::clone(host) as Arc<dyn TaskStateProvider>)
         });
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let live = if let Some(io) = startup {
-            TaskGroup::new(
-                concurrency,
-                Some(io.original_native_work().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "startup requires original native work",
-                })?),
-            )?
-        } else {
-            TaskGroup::new(concurrency, None)?
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let live = TaskGroup::new(concurrency, None)?;
         if spawner.is_some() && state.is_none() {
             return Err(native_startup::error(
                 startup,
@@ -417,15 +348,9 @@ impl Bindings {
         }
         if let Some(route) = &execution {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let identity = if let Some(io) = startup {
-                std::borrow::Cow::Borrowed(
-                    route
-                        .identity_with_native_work(io.original_native_work().ok_or_else(
-                            || io.invalid("startup requires original native work"),
-                        )?)?,
-                )
-            } else {
-                std::borrow::Cow::Owned(route.identity())
+            let identity = match native {
+                Some(work) => std::borrow::Cow::Borrowed(route.identity_with_native_work(work)?),
+                None => std::borrow::Cow::Owned(route.identity()),
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let identity = route.identity();
@@ -459,13 +384,13 @@ impl Bindings {
             .map(|preparer| ForkBinding::new(preparer, startup))
             .transpose()?;
         let mut runtime = AgentHarness {
+            extension_runtime: scope.extension_runtime(),
+            live: TaskGroup::new(concurrency, native)?,
             tasks,
             tools,
             resumable_tools,
-            live,
-            concurrency,
             scope,
-            extension_runtime,
+            concurrency,
             host,
             state,
             spawner,
@@ -483,11 +408,7 @@ impl Bindings {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_configuration_custody: None,
         };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let original = startup.and_then(crate::filesystem::PreparationIo::original_native_work);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let original = None;
-        runtime.assert_durable_policy_bindings(original)?;
+        runtime.assert_durable_policy_bindings(native)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = startup {
             io.retain_owned(std::mem::size_of::<AgentHarness>() as u64)?;

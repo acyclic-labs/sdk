@@ -16,7 +16,7 @@ impl WorkflowCommand {
     pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         if !crate::contract::is_valid_component_label(&self.kind) {
             return Err(crate::scheduler::diagnostic(
@@ -79,18 +79,22 @@ pub struct WorkflowRecord {
     pub operation_id: OperationId,
     /// Permanently bound retry identity.
     pub idempotency_key: IdempotencyKey,
-    /// Canonical input digest.
-    pub input_digest: [u8; 32],
     /// Exact prior checkpoint.
     pub prior: MachineCheckpoint,
     /// Input for deterministic replay.
     pub input: Value,
     /// Step result and commands.
     pub transition: MachineTransition,
-    /// Checkpoint committed with the commands.
-    pub next: MachineCheckpoint,
 }
 impl WorkflowRecord {
+    /// Borrows the checkpoint committed by this transition.
+    pub fn checkpoint(&self) -> Result<(&MachineIdentity, u64, &Value)> {
+        Ok((
+            &self.prior.machine,
+            next_revision(self.prior.revision, None)?,
+            &self.transition.state,
+        ))
+    }
     /// All identities reserved by this atomic transition.
     pub fn operation_ids(&self) -> impl Iterator<Item = OperationId> + '_ {
         std::iter::once(self.operation_id).chain(
@@ -103,17 +107,8 @@ impl WorkflowRecord {
     /// Validates the envelope before storage or replay.
     pub fn validate(&self, io: Option<&PreparationIo>) -> Result<()> {
         validate_key(&self.idempotency_key, io)?;
-        if self.input_digest != crate::executor::preparation_digest(&self.input, io)?
-            || self.prior.machine != self.next.machine
-            || self.next.revision != next_revision(self.prior.revision, io)?
-            || self.next.state != self.transition.state
-        {
-            return Err(error(
-                io,
-                Conflict,
-                "workflow transition envelope is inconsistent",
-            ));
-        }
+        crate::executor::preparation_digest(&self.input, io)?;
+        next_revision(self.prior.revision, io)?;
         validate_commands(&self.transition.commands, io)?;
         if self
             .transition
@@ -121,7 +116,7 @@ impl WorkflowRecord {
             .iter()
             .any(|command| command.operation_id == self.operation_id)
         {
-            return Err(error(
+            return Err(stock_boundary(
                 io,
                 Conflict,
                 "workflow command reuses its transition identity",
@@ -146,7 +141,11 @@ impl WorkflowAdmission {
     /// Validates the retained admission identity.
     pub fn validate(&self, io: Option<&PreparationIo>) -> Result<()> {
         if self.request_digest == [0; 32] || self.initial.revision != 0 {
-            return Err(error(io, Invalid, "workflow admission identity is invalid"));
+            return Err(stock_boundary(
+                io,
+                Invalid,
+                "workflow admission identity is invalid",
+            ));
         }
         with_history_io(io, |work| self.initial.machine.validate(work))
     }
@@ -176,7 +175,7 @@ pub(super) fn validate_commands(
         for command in commands {
             command.validate(quota.work())?;
             if let Some(observer) = quota.work().as_deref_mut() {
-                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if !identities.insert(command.operation_id) {
                 return Err(crate::scheduler::diagnostic(
@@ -199,7 +198,7 @@ pub(crate) fn validate_workflow_commit(
     validate_key(key, io)?;
     record.validate(io)?;
     if record.idempotency_key != *key || record.prior.revision != expected {
-        return Err(error(
+        return Err(stock_boundary(
             io,
             Invalid,
             "workflow commit identity or revision is invalid",
@@ -209,7 +208,7 @@ pub(crate) fn validate_workflow_commit(
 }
 
 pub(crate) fn validate_workflow_next(
-    checkpoint: &MachineCheckpoint,
+    checkpoint: (&MachineIdentity, u64, &Value),
     terminal: bool,
     reserved: &BTreeSet<OperationId>,
     keys: &BTreeSet<IdempotencyKey>,
@@ -217,8 +216,14 @@ pub(crate) fn validate_workflow_next(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     record.validate(io)?;
-    if record.prior != *checkpoint || terminal {
-        return Err(error(
+    if (
+        &record.prior.machine,
+        record.prior.revision,
+        &record.prior.state,
+    ) != checkpoint
+        || terminal
+    {
+        return Err(stock_boundary(
             io,
             Conflict,
             "workflow transition differs from its current checkpoint",
@@ -227,7 +232,7 @@ pub(crate) fn validate_workflow_next(
     if keys.contains(&record.idempotency_key)
         || record.operation_ids().any(|id| reserved.contains(&id))
     {
-        return Err(error(
+        return Err(stock_boundary(
             io,
             Conflict,
             "workflow command, transition or retry identity is already bound",

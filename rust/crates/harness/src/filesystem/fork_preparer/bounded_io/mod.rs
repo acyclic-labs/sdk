@@ -96,7 +96,8 @@ impl PreparationIo {
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_native_custody(custody: acyclic_fs::NativeAllocation) -> Self {
+    /// Adopts retained input storage on its original native ledger.
+    pub fn from_native_custody(custody: acyclic_fs::NativeAllocation) -> Self {
         Self::Native {
             work: custody.work().clone(),
             custody: Mutex::new(custody),
@@ -463,7 +464,7 @@ impl PreparationIo {
         let hex = blake3::Hash::from_bytes(hash).to_hex();
         self.charge(encoding)?;
         crate::executor::with_history_io(Some(self), |work| {
-            crate::contract::preparation_format(format_args!("{prefix}{hex}"), work)
+            crate::executor::preparation_format(format_args!("{prefix}{hex}"), work)
         })
     }
     pub(crate) fn contains_capability<T: Serialize>(

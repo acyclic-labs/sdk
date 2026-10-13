@@ -30,10 +30,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                 .file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         );
-        let parent = match root.open_dir_held(
-            relative.parent().unwrap_or_else(|| Path::new("")),
-            &mut &*work,
-        ) {
+        let parent = match { #[cfg(unix)] { root.open_dir_held(relative.parent().unwrap_or_else(|| Path::new("")), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative.parent().unwrap_or_else(|| Path::new("")), &mut &*work, |path, work| root.open_dir_held(path, work)) } } {
             Ok(parent) => Some(parent),
             Err(NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
@@ -43,7 +40,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             Err(error) => return Err(error.into()),
         };
         let observed = match &parent {
-            Some(_) => match root.stat(relative, &mut &*work) {
+            Some(_) => match { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } } {
                 Ok(stat) => Some(stat),
                 Err(NativeTreeMaterializationError::Io(error))
                     if error.kind() == std::io::ErrorKind::NotFound =>
@@ -166,7 +163,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             }
             _ => return Ok(false),
         }
-        let selected = root.stat(relative, &mut &*work)?;
+        let selected = { #[cfg(unix)] { { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } } } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } }?;
         if selected.identity() != observed.identity()
             || children && observed.is_dir() && selected.modified()? != observed.modified()?
         {
@@ -190,7 +187,7 @@ pub(super) async fn generation_children<
     )>,
     work: &NativeMaterializationWork,
 ) -> Result<bool, NativeWorkspacePublicationError> {
-    let directory = root.open_dir_held(Path::new(path), &mut &*work)?;
+    let directory = { #[cfg(unix)] { root.open_dir_held(Path::new(path), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(path), &mut &*work, |path, work| root.open_dir_held(path, work)) } }?;
     let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
     let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut names = Vec::new();

@@ -291,7 +291,7 @@ where
             {
                 host_root
                     .0
-                    .create_dir_all_held_wide(&host_path.0[..separator], work)?;
+                    .create_dir_all_held(&host_path.0[..separator], work)?;
             }
             Ok(())
         })?;
@@ -318,11 +318,7 @@ where
             path,
             &host_path,
             directory,
-            record.file_id,
-            record.kind,
-            record.payload,
-            #[cfg(any(target_os = "macos", windows))]
-            record.metadata,
+            &record,
             options,
             cancellation,
             &mut known_files,
@@ -423,11 +419,7 @@ where
                     child,
                     &child_host,
                     selected_directory.clone(),
-                    entry.record.file_id,
-                    entry.record.kind,
-                    entry.record.payload,
-                    #[cfg(any(target_os = "macos", windows))]
-                    entry.record.metadata,
+                    &entry.record,
                     options,
                     cancellation,
                     &mut known_files,
@@ -729,8 +721,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             };
             let stage_identity = stage_root.identity();
             drop(stage_root);
-            let cleanup = stage_owner
-                .remove_identity(&stage_name.0, stage_identity, work)
+            let cleanup = { #[cfg(unix)] { stage_owner.remove(&stage_name.0, Some(stage_identity), work) } #[cfg(windows)] { crate::native_host::with_wide_path(&stage_name.0, work, |path, work| stage_owner.remove(path, Some(stage_identity), work)) } }
                 .and_then(|()| {
                     crate::native_host::sync_directory_held(&stage_owner.directory, work)
                 });

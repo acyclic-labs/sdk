@@ -50,7 +50,7 @@ impl ResourcePreparationRequest {
             self.provider.logical_owned_bytes()?,
             self.child.logical_owned_bytes()?,
             self.creation_grant.capacity() as u64,
-            crate::contract::json_value_logical_owned_bytes(&self.payload)?,
+            crate::executor::json::json_value_logical_owned_bytes(&self.payload)?,
             vector_bytes(&self.input_files, FileRef::logical_owned_bytes)?,
             self.source_checkpoint
                 .as_ref()
@@ -86,7 +86,7 @@ impl ResourcePreparationRequest {
         {
             return Err(invalid(work));
         }
-        crate::contract::json_byte_length(self, self.maximum_bytes, work)?;
+        crate::executor::json::json_byte_length(self, self.maximum_bytes, work)?;
         if let Some(checkpoint) = &self.source_checkpoint {
             checkpoint.validate(work)?;
             if checkpoint.descriptor().byte_length() > self.maximum_bytes {

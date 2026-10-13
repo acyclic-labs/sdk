@@ -15,7 +15,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
             || {
                 context.source.create_directory(
                     &path,
-                    create_metadata(mode, mode::IFDIR, uid, gid),
+                    create_metadata(mode, libc::S_IFDIR as u32, uid, gid),
                     work,
                 )
             },
@@ -117,7 +117,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
                 context.source.create_symbolic_link(
                     &destination,
                     target,
-                    create_metadata(0o777, mode::IFLNK, uid, gid),
+                    create_metadata(0o777, libc::S_IFLNK as u32, uid, gid),
                     work,
                 )
             },
@@ -166,11 +166,11 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
 ) -> c_int {
     let span = callback_span!(TRACE, mknod);
     ffi(address, &span, true, |context, work| {
-        let kind = match mode & mode::IFMT {
-            mode::IFIFO => MountNodeKind::Fifo,
-            mode::IFSOCK => MountNodeKind::Socket,
-            mode::IFCHR => MountNodeKind::CharacterDevice,
-            mode::IFBLK => MountNodeKind::BlockDevice,
+        let kind = match (mode & libc::S_IFMT as u32) as libc::mode_t {
+            libc::S_IFIFO => MountNodeKind::Fifo,
+            libc::S_IFSOCK => MountNodeKind::Socket,
+            libc::S_IFCHR => MountNodeKind::CharacterDevice,
+            libc::S_IFBLK => MountNodeKind::BlockDevice,
             _ => return Err(driver_errno(libc::EOPNOTSUPP)),
         };
         let device = matches!(
@@ -185,7 +185,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
                     &path,
                     kind,
                     device,
-                    create_metadata(mode, mode & mode::IFMT, uid, gid),
+                    create_metadata(mode, mode & libc::S_IFMT as u32, uid, gid),
                     work,
                 )
             },
@@ -208,7 +208,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
             &*mount_path(path, work)?,
             handle,
             |metadata| {
-                let kind = metadata_or(metadata.posix_mode, 0) & mode::IFMT;
+                let kind = metadata_or(metadata.posix_mode, 0) & libc::S_IFMT as u32;
                 metadata.posix_mode = MetadataField::Value(kind | (mode & 0o7777));
                 Ok(())
             },

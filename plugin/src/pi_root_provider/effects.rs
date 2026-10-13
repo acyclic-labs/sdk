@@ -250,31 +250,36 @@ impl PiRootProvider {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
         let verifier = self.owner.effect_verifier_with_native_work(work)?;
-        let reader = HistoryReader::new_with_native_work(
+        let mut reader_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let reader = HistoryReader::new(
             &self.stream,
             verifier.0.audience(),
             &verifier.0,
-            work,
+            &mut Some(&mut reader_io),
         )?;
-        let cursor = reader.0.pin_with_native_work(0, work).await?;
-        let (value, custody) = reader
-            .0
-            .effect_with_native_work(
-                &cursor.0,
+        let cursor = reader.pin(0, Some(&mut reader_io)).await?;
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let value = reader
+            .effect(
+                &cursor,
                 effect,
                 HistoryReadLimits {
                     maximum_events: self.owner.policy().limits.context_messages,
                     maximum_bytes: self.maximum(),
                 },
-                work,
+                Some(&mut io),
             )
             .await?;
         let state = (
             value.ok_or(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "original root effect is absent",
-            })?,
-            custody,
+            })?.0,
+            io.into_custody()?,
         );
         let plan = &self.preparation.plan;
         if state.0.provider != ROOT_ALLOCATION_PROVIDER

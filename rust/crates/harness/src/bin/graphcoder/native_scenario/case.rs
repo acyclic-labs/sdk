@@ -377,7 +377,7 @@ pub(super) async fn prepare_case(
         .logical_revision()
         .checked_add(1)
         .ok_or_else(|| Error::Invalid("merge notice sequence overflow".into()))?;
-    producer.config.tools.merges.push(NativeToolMerge {
+    producer.config.tools.merges.push(ConfiguredRecursiveMerge {
         caller: left.task,
         source: grandchild.task,
         notice: ConversationMessage {

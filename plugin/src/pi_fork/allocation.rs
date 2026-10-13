@@ -149,31 +149,39 @@ impl<'a> PiForkCoordinator<'a> {
                 let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody()?)
             };
-            let parent = acyclic_harness::store::HistoryReader::new_with_native_work(
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let parent = acyclic_harness::store::HistoryReader::new(
                 &self.stream,
                 &parent_authority.0.0,
                 &parent_verifier.0,
-                work,
+                &mut Some(&mut io),
             )?;
-            let child = acyclic_harness::store::HistoryReader::new_with_native_work(
+            let child = acyclic_harness::store::HistoryReader::new(
                 &self.stream,
                 &child_authority.0.0,
                 &child_verifier.0,
-                work,
+                &mut Some(&mut io),
             )?;
             let seed = report.0.clone_with_native_work(work)?;
             let seed_value = seed.0.into_seed()?;
             child
-                .0
-                .verify_published_child_with_native_work(
-                    &parent.0,
+                .verify_published_child_with_work(
+                    &parent,
                     &seed_value,
                     plan.history_limits(),
-                    work,
+                    &mut Some(&mut io),
                 )
                 .await?;
             source
-                .validate_snapshot_with_native_work(plan.frozen, work)
+                .validate_snapshot(
+                    plan.frozen,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok(Some(
@@ -218,12 +226,14 @@ impl<'a> PiForkCoordinator<'a> {
                 (value, io.into_custody()?)
             };
             let prepared = source
-                .prepare_fork_snapshot_with_native_work(
+                .prepare_fork_snapshot(
                     &name.0,
                     plan.frozen,
                     plan.project_creation,
-                    work,
-                    cancel,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: cancel,
+                    },
                 )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
@@ -297,16 +307,13 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let checkpoint = context
-            .read_file_with_native_work(
-                plan.request
+            .read_file(plan.request
                     .source_checkpoint
                     .as_ref()
                     .ok_or(Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Unauthorized,
                         reason: "Pi fork plan lacks its original source checkpoint",
-                    })?,
-                work,
-            )
+                    })?, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
             .await?;
         (owner)
             .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
@@ -354,28 +361,33 @@ impl<'a> PiForkCoordinator<'a> {
         let provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
             "local", "stream", "1", work,
         )?;
-        let restored = acyclic_harness::filesystem::restore_recursive_fork_source_with_native_work(
+        let restored = acyclic_harness::filesystem::restore_recursive_fork_source(
             self.filesystem.clone(),
             &self.stream,
-            reducer,
+            (reducer, Some(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
             &verifier.0,
             &authority.0.2,
             caller_project,
             &provider.0,
-            request,
+            request.0,
             plan.history_limits(),
             source_read.as_ref().map(|pair| &pair.0),
             resolver,
             cancel,
-            work,
         )
         .await?;
         source
-            .validate_snapshot_with_native_work(plan.frozen, work)
+            .validate_snapshot(
+                plan.frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
-        let preparer = restored.0.preparer;
-        if preparer.project_creation_operation(&restored.0.request)? != plan.project_creation {
+        let preparer = restored.preparer;
+        if preparer.project_creation_operation(&restored.request)? != plan.project_creation {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi native companion changed its original filesystem operation",

@@ -46,7 +46,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             object_bytes_written: length,
             ..WorkCounters::UNCHARGED
         })?;
-        let result = match work {
+        let result: Result<u64, ObjectStoreError> = match work {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => self
                 .provider

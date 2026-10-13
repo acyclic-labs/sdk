@@ -676,13 +676,13 @@ impl PiSession {
                 let workspace = self
                     .resources
                     .fs
-                    .open_workspace_with_native_work(
+                    .open_workspace(
                         &workspace_name.0,
                         original_native_work,
                         original_native_work.cancellation(),
                     )
                     .await
-                    .map_err(|(source, custody)| RootError::NativeFilesystem { source, custody })?;
+                    .map_err(|source| RootError::NativeFilesystem { source, custody: None })?;
                 drop(workspace_name.0);
                 drop(workspace_name.1);
                 if workspace.id().into_bytes() != creation.repository_workspace_id {
@@ -691,15 +691,31 @@ impl PiSession {
                         reason: "Pi selected project workspace was substituted",
                     });
                 }
-                let resumed = LazyWorkspace::resume_root_observation_with_native_work(
+                let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: original_native_work,
+                    cancellation: original_native_work.cancellation(),
+                };
+                let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+                    &self.resources.store,
+                    workspace.id(),
+                    &mut accounting,
+                )
+                .await
+                .map_err(|source| RootError::NativeSource { source, custody: None })?
+                .ok_or(RootError::NativeSource {
+                    source: acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                    custody: None,
+                })?;
+                original.validate_root_binding(workspace.id(), expected)
+                    .map_err(|source| RootError::NativeSource { source, custody: None })?;
+                let resumed = LazyWorkspace::open(
                     workspace,
                     Arc::clone(&physical.source),
                     self.resources.store.clone(),
-                    expected,
-                    original_native_work,
+                    &mut accounting,
                 )
                 .await
-                .map_err(|(source, custody)| RootError::NativeSource { source, custody })?;
+                .map_err(|source| RootError::NativeSource { source, custody: None })?;
                 let key =
                     original_native_work
                         .display(key)
@@ -720,7 +736,7 @@ impl PiSession {
         for (key, handle) in &self.roots {
             let rebound = handle
                 .workspace
-                .rebind_source(
+                .state(
                     &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                         work: original_native_work,
                         cancellation: original_native_work.cancellation(),

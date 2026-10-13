@@ -1,5 +1,5 @@
 use super::*;
-use crate::contract::canonical_json_digest as digest;
+use crate::executor::json::canonical_json_digest as digest;
 use crate::store::default_projection_read_limits;
 use crate::wire::ErrorCode;
 

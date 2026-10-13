@@ -16,7 +16,7 @@ impl StockExecution<'_> {
         let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?;
         stock_tool_support(tool, self.io)?;
         let capability = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("tool:call:{}", tool.definition.name),
                 work,
             )
@@ -49,7 +49,7 @@ impl StockExecution<'_> {
             self.io,
         )?;
         crate::executor::with_history_io(self.io, |work| {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 &tool.definition.input_schema,
                 &invocation.arguments,
                 "tool input",
@@ -116,7 +116,7 @@ impl StockExecution<'_> {
             let result =
                 retain_preparation(load_json::<ToolResult>(journal, completed.0, self.io).await?);
             crate::executor::with_history_io(self.io, |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &tool.definition.output_schema,
                     &result.value,
                     "tool output",
@@ -181,8 +181,12 @@ impl StockExecution<'_> {
                                 )?;
                             let approval =
                                 crate::durable_host::task_interaction_id(task, approval_operation);
-                            journal.open_interaction(approval, request).await?;
-                            let Some(outcome) = journal.interaction_outcome(approval).await? else {
+                            journal
+                                .open_interaction(approval, &request, self.io)?
+                                .await?;
+                            let Some(outcome) =
+                                journal.interaction_outcome(approval, self.io)?.await?
+                            else {
                                 if started.is_some() {
                                     return Err(Error::Indeterminate(invocation.operation_id));
                                 }
@@ -206,7 +210,7 @@ impl StockExecution<'_> {
                 false
             } else {
                 let key = with_history_io(self.io, |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!("tool:{step}:{}:invocation", invocation.call_id),
                         work,
                     )
@@ -224,7 +228,7 @@ impl StockExecution<'_> {
                     return Err(Error::Indeterminate(operation_id));
                 }
                 let key = with_history_io(self.io, |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!(
                             "tool:{step}:{}:claim:{}",
                             invocation.call_id,
@@ -316,7 +320,7 @@ impl StockExecution<'_> {
                 }
             };
             if let Err(error) = crate::executor::with_history_io(self.io, |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &tool.definition.output_schema,
                     &result.value,
                     "tool output",
@@ -357,7 +361,7 @@ impl StockExecution<'_> {
                     }
                 };
             let key = with_history_io(self.io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("tool:{step}:{}:result", invocation.call_id),
                     work,
                 )
@@ -386,7 +390,7 @@ impl StockExecution<'_> {
                 }
             };
             let key = with_history_io(self.io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("tool:{step}:{}:projection", invocation.call_id),
                     work,
                 )
@@ -427,7 +431,7 @@ impl StockExecution<'_> {
                 return Err(Error::Indeterminate(operation_id));
             }
             let key = with_history_io(self.io, |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!(
                         "tool:{step}:{}:completed:{}",
                         invocation.call_id,

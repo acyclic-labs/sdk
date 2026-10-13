@@ -47,8 +47,6 @@ mod directory;
 mod engine;
 pub use engine::*;
 mod extents;
-mod git;
-pub use git::*;
 mod history;
 pub use history::*;
 mod merge;
@@ -100,10 +98,10 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
-    Checkout, LivePublicationObservation, DependencyRegion, DependencyState, DependencyUse, Digest,
-    DirectoryPage, EmbeddedCapabilities, FileCloneRequest, FileId, ForkOptions, Fs, Generation,
-    GenerationExportManifest, GitCommand, GitCompatRepository, IdempotencyKey, JoinHistory,
-    JoinOutcome, JoinPlan, LiveMutationOutcome, LogicalObjectStore, MemoryGitCompatStore,
+    Checkout, DependencyRegion, DependencyState, DependencyUse, Digest, DirectoryPage,
+    EmbeddedCapabilities, FileCloneRequest, FileId, ForkOptions, Fs, Generation,
+    GenerationExportManifest, IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan,
+    LiveMutationOutcome, LivePublicationObservation, LogicalObjectStore,
     MemoryWorkspaceContextStore, MergeConflict, MergePreparation, NamedAttributeWriteMode,
     ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency, OperationId,
     PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions, RebaseConflict,
@@ -112,8 +110,7 @@ use acyclic_fs::{
     StreamAuthorityStore, Transaction, TransactionCommit, TransactionRebase, Volume, VolumeId,
     Workspace, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceExtentKind,
     WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase, WorkspaceRootId,
-    WorkspaceStat, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
-    decode_generation_export_manifest, encode_generation_export_manifest, parse_git_public_command,
+    WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
 };
 use backend::{BrowserAuthority, BrowserObjects};
 pub use operation_windows::BrowserOperationWindowCoordinator;

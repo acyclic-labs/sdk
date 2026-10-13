@@ -19,7 +19,7 @@ impl TextTool {
         invocation: &ToolInvocation,
     ) -> Result<FileRef> {
         ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
-        crate::contract::json_byte_length(&invocation.arguments, scope.limits().file_bytes, &mut None).map(|_| ())?;
+        crate::executor::json::json_byte_length(&invocation.arguments, scope.limits().file_bytes, &mut None).map(|_| ())?;
         let result_bound = self.maximum_result_bytes.min(scope.limits().file_bytes);
         let file = match self.kind {
             TextKind::Read(options) => {
@@ -90,7 +90,7 @@ impl TextTool {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
         let file = self.preflight_with_context(&context, &invocation)?;
         let task = context.task();
-        let bytes = task.read_file(&file).await?;
+        let bytes = task.read_file(&file, None).await?;
         let source = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid("text tool requires UTF-8 content".into()))?;
         let maximum = self
@@ -108,7 +108,7 @@ impl TextTool {
                         &mut super::edit::AlgorithmWork::ordinary(),
                     )?,
                 };
-                crate::contract::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
+                crate::executor::json::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
                 serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?
             }
             TextKind::Search(options) => {
@@ -124,7 +124,7 @@ impl TextTool {
                     query: input.query,
                     matches,
                 };
-                crate::contract::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
+                crate::executor::json::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
                 serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?
             }
         };
@@ -288,7 +288,7 @@ impl TextTool {
             TextKind::Read(options) => {
                 let input = super::decode::<ReadInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file_with_native_work(&input.0.file, work)
+                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
@@ -310,7 +310,7 @@ impl TextTool {
             TextKind::Search(options) => {
                 let input = super::decode::<SearchInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file_with_native_work(&input.0.file, work)
+                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;

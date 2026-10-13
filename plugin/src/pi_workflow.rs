@@ -312,8 +312,11 @@ impl PiControlHost<'_> {
             }
             drop(expected);
             let journal_owner = journal_owner.into_native_shared(work)?;
-            let content =
-                context.content_residency_verifier_with_native_work(journal_owner.clone(), work)?;
+            let content = acyclic_harness::runtime::content_residency_verifier(
+                Arc::clone(&context),
+                Arc::clone(&journal_owner),
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )?;
             let authority = owner.effect_authority_with_native_work(work)?;
             let provider = pi_root_provider::root_provider(
                 owner,

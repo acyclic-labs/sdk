@@ -147,7 +147,7 @@ impl TaskAdmissionRecord {
             .ok_or_else(overflow)?;
         for value in [&self.input, &self.input_schema, &self.output_schema] {
             owned = owned
-                .checked_add(crate::contract::json_value_logical_owned_bytes(value)?)
+                .checked_add(crate::executor::json::json_value_logical_owned_bytes(value)?)
                 .ok_or_else(overflow)?;
         }
         owned = owned
@@ -318,7 +318,7 @@ impl TaskAdmissionRecord {
         for (index, proof) in self.resource_proofs.iter().enumerate() {
             for previous in &self.resource_proofs[..index] {
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if previous.resource == proof.resource {
                     return Err(crate::store::guarded_boundary(
@@ -330,7 +330,7 @@ impl TaskAdmissionRecord {
             }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true, work)?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &self.input_schema,
             &self.input,
             "task input",
@@ -459,27 +459,27 @@ impl TaskAdmissionRecord {
             .is_some_and(|io| io.original_native_work().is_some())
         {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let decoded = crate::contract::json_from_value_bounded(
+            let decoded = crate::executor::json::json_from_value_bounded(
                 std::borrow::Cow::Owned(body),
-                crate::contract::JsonBounds {
+                crate::executor::json::JsonBounds {
                     maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_depth: 256,
                 },
                 0,
                 Some(crate::wire::ErrorCode::Invalid),
-                crate::contract::JsonValueSchema::TaskAdmissionRecord,
+                crate::executor::json::JsonValueSchema::TaskAdmissionRecord,
                 &mut |charge| match charge {
-                    crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
-                        let containers = crate::contract::json_decode_owned_bytes(
+                    crate::executor::json::JsonCodecCharge::Admission { value_shape, .. } => {
+                        let containers = crate::executor::json::json_decode_owned_bytes(
                             value_shape,
                             false,
                             Some(crate::wire::ErrorCode::Invalid),
                         )?
                         .0;
-                        let diagnostics = crate::contract::json_typed_diagnostic_owned_bytes(
+                        let diagnostics = crate::executor::json::json_typed_diagnostic_owned_bytes(
                             value_shape,
-                            crate::contract::preparation_serde_diagnostic_label_bytes(),
+                            crate::executor::json::preparation_serde_diagnostic_label_bytes(),
                             Some(crate::wire::ErrorCode::Invalid),
                         )?;
                         let bytes = containers

@@ -336,7 +336,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         };
         if let Some(plan) = plan {
             source
-                .validate_snapshot_with_native_work(plan.frozen, work)
+                .validate_snapshot(
+                    plan.frozen,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok((source, plan.frozen, None));
@@ -345,7 +351,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let frozen = if command.commit.source_task == self.protected.policy().root_task {
             if let Some(frozen) = command.root_source {
                 source
-                    .validate_snapshot_with_native_work(frozen, work)
+                    .validate_snapshot(
+                        frozen,
+                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        },
+                    )
                     .await
                     .map_err(crate::pi_fork_host::native_lazy_error)?;
                 frozen
@@ -426,7 +438,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                         invalid("Pi undispatched source lost its actual first native companion")
                     })?;
                 source
-                    .validate_snapshot_with_native_work(frozen, work)
+                    .validate_snapshot(
+                        frozen,
+                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        },
+                    )
                     .await
                     .map_err(crate::pi_fork_host::native_lazy_error)?;
                 frozen
@@ -657,14 +675,26 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let parent = StreamAggregate::open_with_native_work(
-            &self.stream,
-            authority.0.0,
-            verifier.0,
-            SchemaRegistry::new(),
-            work,
-        )
-        .await?;
+        let parent = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            io.preflight()?;
+            let aggregate = StreamAggregate::open(
+                &self.stream,
+                authority.0.0,
+                verifier.0,
+                SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut io),
+            )
+            .await?;
+            io.return_staged_output()?;
+            (aggregate, io.into_custody()?)
+        };
         let mut parent_custody = parent.1;
         drop(authority.0.1);
         drop(authority.0.2);
@@ -871,7 +901,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             }
             actual
                 .workspace
-                .validate_snapshot_with_native_work(observed.snapshot, work)
+                .validate_snapshot(
+                    observed.snapshot,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return ready(
@@ -1063,7 +1099,7 @@ where
         cancellation: work.cancellation(),
     };
     let rebound = source
-        .rebind_source(&mut accounting)
+        .state(&mut accounting)
         .await
         .map_err(native_lazy_error)?;
     guard().await?;

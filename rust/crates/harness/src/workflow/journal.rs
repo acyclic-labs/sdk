@@ -16,9 +16,19 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
         admission: WorkflowAdmission,
     ) -> BoxFuture<'a, Result<WorkflowAdmission>>;
     /// Reads the retained admission.
-    fn admission(&self) -> BoxFuture<'_, Result<Option<WorkflowAdmission>>>;
+    fn admission<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<
+        crate::store::history::HistoryContentFuture<'a, (Option<WorkflowAdmission>, NativeCustody)>,
+    >;
     /// Reads at most `maximum` transitions after the given revision.
-    fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>>;
+    fn replay<'a>(
+        &'a self,
+        after: u64,
+        maximum: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, (Vec<WorkflowRecord>, NativeCustody)>>;
     /// Atomically commits one checkpoint and its outbox with CAS and idempotency.
     fn commit<'a>(
         &'a self,
@@ -31,16 +41,6 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
     fn supports_native_work(&self) -> bool {
         false
     }
-    /// Reads admission with original-ledger decode custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn admission_with_native_work<'a>(
-        &'a self,
-        _: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (Option<WorkflowAdmission>, acyclic_fs::NativeAllocation)>,
-    > {
-        Err(unsupported("journal has no native admission callback"))
-    }
     /// Publishes admission through the original fenced engine.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn admit_with_native_work<'a>(
@@ -52,17 +52,6 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
         Err(unsupported(
             "journal has no native admission publication callback",
         ))
-    }
-    /// Reads a bounded page with original-ledger custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn replay_with_native_work<'a>(
-        &'a self,
-        _: u64,
-        _: u32,
-        _: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<WorkflowRecord>, acyclic_fs::NativeAllocation)>>
-    {
-        Err(unsupported("journal has no native replay callback"))
     }
     /// Commits with the original CAS, cancellation and lease fence.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -82,22 +71,28 @@ pub(super) async fn admission(
     io: Option<&PreparationIo>,
 ) -> Result<(Option<WorkflowAdmission>, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        let work = io
-            .original_native_work()
-            .ok_or_else(|| unsupported("native admission requires original work"))?;
-        let (value, custody) = journal.admission_with_native_work(work)?.await?;
-        if !work.shares_ledger(custody.work()) {
-            drop(value);
+    let native = io
+        .map(|io| {
+            io.original_native_work()
+                .ok_or_else(|| unsupported("native admission requires original work"))
+        })
+        .transpose()?;
+    let observed = journal.admission(io)?.await?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = native {
+        if observed
+            .1
+            .as_ref()
+            .is_none_or(|custody| !work.shares_ledger(custody.work()))
+        {
+            drop(observed.0);
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                custody: Some(custody),
+                custody: observed.1,
             });
         }
-        return Ok((value, Some(custody)));
     }
-    let _ = io;
-    Ok((journal.admission().await?, None))
+    Ok(observed)
 }
 
 pub(super) async fn page(
@@ -107,22 +102,26 @@ pub(super) async fn page(
     io: Option<&PreparationIo>,
 ) -> Result<(Vec<WorkflowRecord>, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        let work = io
-            .original_native_work()
-            .ok_or_else(|| unsupported("native replay requires original work"))?;
-        let (records, custody) = journal
-            .replay_with_native_work(after, maximum, work)?
-            .await?;
-        if !work.shares_ledger(custody.work()) {
-            drop(records);
+    let native = io
+        .map(|io| {
+            io.original_native_work()
+                .ok_or_else(|| unsupported("native replay requires original work"))
+        })
+        .transpose()?;
+    let observed = journal.replay(after, maximum, io)?.await?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = native {
+        if observed
+            .1
+            .as_ref()
+            .is_none_or(|custody| !work.shares_ledger(custody.work()))
+        {
+            drop(observed.0);
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                custody: Some(custody),
+                custody: observed.1,
             });
         }
-        return Ok((records, Some(custody)));
     }
-    let _ = io;
-    Ok((journal.replay(after, maximum).await?, None))
+    Ok(observed)
 }

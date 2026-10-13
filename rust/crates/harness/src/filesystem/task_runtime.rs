@@ -1070,7 +1070,7 @@ where
                 }
                 _ => {
                     for file in message.content.file_refs() {
-                        context.read_file(file).await?;
+                        context.read_file(file, None).await?;
                     }
                 }
             }
@@ -1198,7 +1198,7 @@ where
                         "approval tool differs from model request",
                     ));
                 }
-                let grant = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
+                let grant = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
                 let grant_hold = io
                     .map(|io| io.guard_owned(grant.capacity() as u64))
                     .transpose()?;
@@ -2043,21 +2043,28 @@ where
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         let retained = if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| {
+            let _work = io.original_native_work().ok_or_else(|| {
                 observed::boundary(
                     Some(io),
                     crate::wire::ErrorCode::Unsupported,
                     "native wake admission requires original observer",
                 )
             })?;
-            let (retained, custody) = journal.admission_with_native_work(work)?.await?;
+            let (retained, custody) = journal.admission(Some(io))?.await?;
+            let Some(custody) = custody else {
+                drop(retained);
+                return Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                    custody: None,
+                });
+            };
             io.absorb_native_custody(custody)?;
             retained
         } else {
-            journal.admission().await?
+            journal.admission(None)?.await?.0
         };
         #[cfg(target_arch = "wasm32")]
-        let retained = journal.admission().await?;
+        let retained = journal.admission(None)?.await?.0;
         let retained = retained.ok_or_else(|| {
             observed::boundary(
                 io,
@@ -2068,7 +2075,7 @@ where
         if retained.operation_id != admission.operation_id
             || retained.request_digest
                 != crate::executor::with_history_io(io, |work|
-                    crate::contract::canonical_json_digest(&admission,
+                    crate::executor::json::canonical_json_digest(&admission,
                         if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?
             || retained.initial.machine != admission.machine
         {
@@ -2079,8 +2086,9 @@ where
             ));
         }
         let record = journal.observe_transition(slot.revision, io).await?;
-        if record.next.revision != slot.revision
-            || record.next.machine != admission.machine
+        let checkpoint = record.checkpoint()?;
+        if checkpoint.1 != slot.revision
+            || checkpoint.0 != &admission.machine
             || !matches!(record.transition.status, MachineStatus::Suspended)
         {
             return Err(observed::boundary(
@@ -2139,7 +2147,7 @@ where
             })?;
             let body = context
                 .context()
-                .read_file_with_native_work(&command.payload, work)
+                .read_file(&command.payload, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                 .await?;
             crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<Value>,
@@ -2147,12 +2155,12 @@ where
                 crate::wire::ErrorCode::Storage,
             )?)
         } else {
-            crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+            crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
         };
         #[cfg(target_arch = "wasm32")]
         let payload =
-            crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+            crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?;
         if !self
             .commands()
@@ -2633,7 +2641,7 @@ where
                         });
                     }
                     let body = shared
-                        .read_file_with_native_work(&command.payload, work)
+                        .read_file(&command.payload, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                         .await?;
                     let payload = crate::filesystem::retain_decoded(io.decode(
                         std::marker::PhantomData::<Value>,
@@ -2653,7 +2661,7 @@ where
                 }
                 WorkerContext::Ordinary(context) => {
                     let payload = crate::contract::json_from_slice(
-                        &context.read_file(&command.payload).await?,
+                        &context.read_file(&command.payload, None).await?,
                     )
                     .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                     commands
@@ -2736,40 +2744,21 @@ where
         pipeline: &ContextPipeline,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
+        compaction: &crate::context::CompactionPolicy,
+        max_output_tokens: Option<u32>,
     ) -> Result<crate::executor::NativeStockExecutor> {
-        if !context.original_task_binding_matches(task, fence) {
+        if !context.original_task_binding_matches(task, fence) || !context.native_metadata_matches(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock model differs from original task binding",
             });
         }
-        let executor = crate::executor::StockExecutor::new_with_native_work(
-            model,
-            provider,
-            pipeline,
-            &self.tools,
-            work,
-        )?
-        .with_limits(context.scope().limits())
-        .with_task_context_with_native_work(
-            Arc::clone(context),
-            operation,
-            self.host.clone(),
-            task,
-            fence,
-            work,
-        )?
-        .with_tool_authority_with_native_work(
-            context.scope(),
-            self.policy.clone(),
-            work,
-        )?;
-        if self.interaction_owner.is_some() {
-            journal.supports_native_interactions(work)?;
-            executor.with_native_interactions(journal.clone(), work)
-        } else {
-            Ok(executor)
-        }
+        crate::executor::NativeStockExecutor::new(
+            model, provider, pipeline, &self.tools, Arc::clone(context), operation,
+            self.host.clone(), task, fence, self.policy.clone(),
+            self.interaction_owner.as_ref().map(|_| journal.clone() as Arc<dyn crate::runtime::InteractionRouter>),
+            compaction, max_output_tokens,
+        )
     }
 
     /// Constructs stock execution with the task-owned journal and optional output volume.
@@ -3053,13 +3042,13 @@ async fn verify_native_model_file(
     policy: &crate::model::FileProjectionPolicy,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let body = context.read_file_with_native_work(file, work).await?;
+    let body = context.read_file(file, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
     drop(body);
     if let crate::model::FileProjectionPolicy::Native(policy) = policy
         && let Some(binding) = &policy.configuration
     {
         let body = context
-            .read_file_with_native_work(&binding.configuration.content, work)
+            .read_file(&binding.configuration.content, Some(&crate::executor::PreparationIo::from_native_work(work)?))
             .await?;
         drop(body);
     }
