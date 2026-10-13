@@ -30,8 +30,31 @@ pub(crate) use protocol::{protocol_identity, validate_protocol};
 mod errors;
 pub use errors::encode_error;
 mod authority;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub(crate) use authority::decode_aggregate_kind;
 pub use authority::encode_authority;
-pub(crate) use authority::{Fault, decode_aggregate_kind, decode_authority, decode_scope};
-use authority::{decode_reference, encode_reference, parse_scope_agent};
+pub(crate) use authority::{decode_authority, decode_scope};
+use authority::{decode_reference, encode_reference};
 #[cfg(test)]
 mod tests;
+
+fn boundary(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    code: wire::ErrorCode,
+    reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work
+        .as_deref()
+        .is_some_and(|io| io.original_native_work().is_some())
+    {
+        return Error::NativeBoundary { code, reason };
+    }
+    let _ = work;
+    match code {
+        wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
+        wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+        wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
+        _ => Error::Storage(reason.into()),
+    }
+}

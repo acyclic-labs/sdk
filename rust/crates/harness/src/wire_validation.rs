@@ -19,7 +19,12 @@ pub fn negotiate(
     supported: &wire::CapabilitySet,
 ) -> Result<wire::HandshakeResponse> {
     let expected = current_protocol();
-    validate_protocol(request.protocol.as_ref(), &expected, Error::Invalid)?;
+    validate_protocol(
+        request.protocol.as_ref(),
+        (&expected.version, &expected.descriptor_digest),
+        wire::ErrorCode::Invalid,
+        &None,
+    )?;
     let available = supported
         .capabilities
         .iter()
@@ -72,10 +77,12 @@ pub fn validate_operation_status(
     owner: Option<&wire::Authority>,
     status: &wire::OperationStatus,
 ) -> Result<()> {
+    let expected = current_protocol();
     validate_protocol(
         status.protocol.as_ref(),
-        &current_protocol(),
-        Error::Conflict,
+        (&expected.version, &expected.descriptor_digest),
+        wire::ErrorCode::Conflict,
+        &None,
     )?;
     if operation_id.is_empty()
         || status
@@ -102,8 +109,10 @@ pub fn validate_cancel_response(
 ) -> Result<()> {
     if request.operation_id.is_empty()
         || request.idempotency_key.is_empty()
-        || response.operation.as_ref().is_none_or(|operation|
-            operation.operation_id != request.operation_id || operation.idempotency_key != request.idempotency_key)
+        || response.operation.as_ref().is_none_or(|operation| {
+            operation.operation_id != request.operation_id
+                || operation.idempotency_key != request.idempotency_key
+        })
     {
         return Err(Error::Conflict("cancellation identity mismatch".into()));
     }
@@ -111,10 +120,7 @@ pub fn validate_cancel_response(
         .status
         .as_ref()
         .ok_or_else(|| Error::Conflict("cancellation status is missing".into()))?;
-    validate_operation_status(
-        &request.operation_id, request.owner.as_ref(),
-        status,
-    )
+    validate_operation_status(&request.operation_id, request.owner.as_ref(), status)
 }
 
 /// Validates a protobuf-encoded handshake request and response.
