@@ -1080,9 +1080,9 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&reopened, &cancellation);
         let decoded = decode_publication_evidence_with_accounting(&commit.payload, 4_096, &mut accounting)?;
         assert_eq!(decoded.original_evidence, Some(b"immutable original operation data".as_slice()));
-        assert_eq!(contextual_publication_fingerprint_from_payload_with_accounting(
-            request, intent.operation_context.ok_or("missing original context")?, &commit.payload, &mut accounting,
-        )?, commit.fingerprint);
+        assert_eq!(publication_fingerprint(
+            request, Some(intent.operation_context.ok_or("missing original context")?), &commit.payload,
+        ), commit.fingerprint);
     }
     let later = publish_generation_async_guarded_with_native_work(
         &objects, &authority, PublishGenerationRequest {

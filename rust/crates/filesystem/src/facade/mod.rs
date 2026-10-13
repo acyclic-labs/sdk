@@ -18,7 +18,7 @@ use crate::kernel::{
     lookup_file_record_async_with_accounting, lookup_path_async_with_accounting, lookup_paths,
     lookup_paths_async_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    merge_generation_with_borrowed_resolutions_with_accounting, observe_path_edges_async,
+    merge_generation_with_borrowed_resolutions_with_accounting,
     plan_extent_range_with_accounting, prove_record_closure_async, read_blob_range_with_accounting,
     read_generation_root_with_accounting, retire_allocation, types,
 };

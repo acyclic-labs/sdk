@@ -923,18 +923,6 @@ pub async fn observe_path_async<S: AsyncObjectStore>(
         .await
 }
 
-pub(crate) async fn observe_path_edges_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    path: &NamespacePath,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<ObservedPathLookup, PathLookupFailure> {
-    observe_path_with_terminal_async(store, generation, path, config, budget, cancellation, false, None)
-        .await
-}
-
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
 pub async fn lookup_paths<S: AsyncObjectStore>(
     store: &S,
@@ -957,20 +945,6 @@ pub async fn lookup_paths<S: AsyncObjectStore>(
     )
     .await
     .map(|observed| observed.lookup)
-}
-
-pub(crate) async fn lookup_paths_selected_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    lookup_path_queries_async(
-        store, generation, PathQueries::Owned(paths), false, config, budget,
-        cancellation, None, PathBatchMode::SelectedRestore,
-    ).await.map(|observed| observed.lookup)
 }
 
 /// Resolves a non-empty no-follow path batch with shared work while capturing, in the same walk, every region [`observe_path_async`] would capture for each path.

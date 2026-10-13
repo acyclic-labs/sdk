@@ -1686,14 +1686,7 @@ async fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Bo
         WorkBudget::UNBOUNDED,
         &cancellation,
     )).await?;
-    let root_edges = (observe_path_edges_async(
-        &store,
-        &generation,
-        &root,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let root_edges = (async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); observe_path_async_with_accounting(&store, &generation, &root, config(), &mut accounting, cancellation, None, false).await.map(|result| result.value) }).await?;
     assert_eq!(observed_root.lookup.record, root_edges.lookup.record);
     assert_eq!(observed_root.lookup.parent, root_edges.lookup.parent);
     assert_eq!(
@@ -1711,14 +1704,7 @@ async fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Bo
         WorkBudget::UNBOUNDED,
         &cancellation,
     )).await?;
-    let edges = (observe_path_edges_async(
-        &store,
-        &generation,
-        &path,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let edges = (async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); observe_path_async_with_accounting(&store, &generation, &path, config(), &mut accounting, cancellation, None, false).await.map(|result| result.value) }).await?;
     assert_eq!(observed.lookup.record, edges.lookup.record);
     assert_eq!(observed.lookup.parent, edges.lookup.parent);
     assert_eq!(
@@ -1867,9 +1853,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
         LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?, child,
     ], config().limits)?;
     let queries = [impossible.clone(), main.clone(), missing, impossible.clone()];
-    let selected = lookup_paths_selected_async(
-        &store, &generation, &queries, config(), WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    ).await?;
+    let selected = async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &queries, config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await?;
     assert_eq!(selected.entries.len(), queries.len());
     assert!(selected.entries[0].record.is_none());
     assert!(selected.entries[0].parent.is_none());
@@ -1916,22 +1900,15 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
         config().limits, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0,
     )?.value;
-    let failure = lookup_paths_selected_async(
-        &store, &generation, &[query.clone()], config(), WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    ).await.expect_err("a malformed binding is not authenticated absence");
+    let failure = async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &[query.clone()], config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await.expect_err("a malformed binding is not authenticated absence");
     assert!(matches!(failure.error, PathLookupError::KindMismatch));
     assert!(failure.work.backend_read_operations > 0);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = lookup_paths_selected_async(
-        &store, &generation, &[query.clone()], config(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await.expect_err("cancelled selected batch must fail before allocation/read");
+    let failure = async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &[query.clone()], config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await.expect_err("cancelled selected batch must fail before allocation/read");
     assert_eq!(failure.work.allocation_operations, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
-    let failure = lookup_paths_selected_async(
-        &store, &generation, &[query], config(),
-        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &CancellationToken::new(),
-    ).await.expect_err("unadmitted selected batch must fail before allocation/read");
+    let failure = async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &[query], config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await.expect_err("unadmitted selected batch must fail before allocation/read");
     assert_eq!(failure.work.allocation_operations, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
     Ok(())
