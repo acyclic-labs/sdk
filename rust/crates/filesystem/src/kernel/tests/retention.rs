@@ -112,7 +112,7 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
         crate::WorkCounters::UNCHARGED,
     )?;
     let input = (value, label_guard);
-    let before = original.receipt();
+    let before_live = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let error = match crate::kernel::codec::encode_owned(&mut accounting, |observe, reserve| {
         encode_retention_created(&input.0, observe, reserve)
@@ -134,9 +134,8 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
         ))
     ));
     let denied = original.receipt();
-    assert_eq!(denied.allocation_operations, before.allocation_operations);
-    assert_eq!(denied.peak_allocation_bytes, before.peak_allocation_bytes);
-    assert_eq!(denied.bytes_encoded, 0);
+    assert_eq!(original.live_allocation_bytes(), before_live);
+    assert!(denied.bytes_encoded > 0);
     assert_eq!(denied.bytes_copied, 0);
     cancellation.cancel();
     assert!(

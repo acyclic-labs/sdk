@@ -345,9 +345,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         for value in values.iter().skip(start).take(self.target.saturating_sub(self.values.len())) {
             self.examine_value(value)?;
             let prefix = begin_custody_leaf(self.accounting, self.data_custody).map_err(|error| self.failure(error))?;
-            let result = persistent_io::clone_value_with_accounting::<F>(
-                value, self.limits.maximum_name_bytes, self.accounting,
-            );
+            let result = persistent_io::clone_value::<F>(value, self.limits.maximum_name_bytes, self.accounting, None, 0);
             let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
             let (cloned, allocation) = result.map_err(|error| self.failure(error))?;
             let nested = F::value_owned_bytes(&cloned);
@@ -490,7 +488,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
 
     fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, Failure> {
         let prefix = begin_custody_leaf(self.accounting, self.data_custody).map_err(|error| self.failure(error))?;
-        let result = persistent_io::clone_key_with_accounting::<F>(key, self.limits.maximum_name_bytes, self.accounting);
+        let result = persistent_io::clone_key::<F>(key, self.limits.maximum_name_bytes, self.accounting, None, 0);
         let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
         let (value, allocation) = result.map_err(|error| self.failure(error))?;
         let bytes = F::key_owned_bytes(&value);

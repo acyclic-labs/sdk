@@ -59,7 +59,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         if path.is_empty() {
             page.entries
-                .retain(|entry| entry.name.unicode_text().as_deref() != Some(".system"));
+                .retain(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() != Some(".system"));
             if page.entries.len() > maximum_entries as usize {
                 page.entries.truncate(maximum_entries as usize);
                 page.has_more = true;

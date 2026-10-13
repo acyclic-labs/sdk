@@ -260,7 +260,6 @@ impl ControlPlane {
                 },
                 root: &root_binding.path,
                 source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(root_binding.created()?.native_root_identity),
-                store: &self.store,
             };
             let repository = GitCompatRepository::new(repository_id, self.store.clone());
             let output = run_git_command(
@@ -273,7 +272,7 @@ impl ControlPlane {
                 &executor,
             )
             .await?;
-            let switched = executor.switched_workspace().map_err(display)?;
+            let switched = executor.inner.switched_workspace().map_err(display)?;
             drop(executor);
             if let Some(switched) = switched {
                 WorkspaceContextRegistry::new(self.store.clone())

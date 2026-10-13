@@ -1472,16 +1472,12 @@ fn clone_conflict_region(
     use super::tree_mutation::TreeFormat;
     match region {
         DependencyRegion::DirectoryName { directory_id, name } => {
-            let (name, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(
-                name, u32::MAX, accounting,
-            )?;
+            let (name, allocation) = super::persistent_io::clone_key::<TreeFormat>(name, u32::MAX, accounting, None, 0)?;
             let bytes = TreeFormat::key_owned_bytes(&name);
             Ok((DependencyRegion::DirectoryName { directory_id: *directory_id, name }, allocation, bytes))
         }
         DependencyRegion::DirectoryRange { directory_id, after: Some(after), maximum_entries } => {
-            let (after, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(
-                after, u32::MAX, accounting,
-            )?;
+            let (after, allocation) = super::persistent_io::clone_key::<TreeFormat>(after, u32::MAX, accounting, None, 0)?;
             let bytes = TreeFormat::key_owned_bytes(&after);
             Ok((DependencyRegion::DirectoryRange {
                 directory_id: *directory_id, after: Some(after), maximum_entries: *maximum_entries,

@@ -16,6 +16,8 @@ pub(in crate::store) fn budget() -> WorkBudget {
         authority_records_appended: 32,
         authority_bytes_written: 1_048_576,
         backend_write_operations: 32,
+        output_bytes: 1_048_576,
+        items_returned: 32,
         items_examined: 1_048_576,
         allocation_operations: 1_048_576,
         peak_allocation_bytes: 1_048_576,
@@ -65,7 +67,7 @@ async fn competing_immutable_identity_recovers_or_rejects_without_retained_sourc
                 .remaining()
                 .expect("competitor recovery retires all original aliases")
                 .peak_allocation_bytes,
-            budget().peak_allocation_bytes
+            budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes()
         );
     }
     Ok(())

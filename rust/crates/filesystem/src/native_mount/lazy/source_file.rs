@@ -375,7 +375,7 @@ where
             if output.bytes.len() as u64 != data_length {
                 return Err(MountSourceError::Stale);
             }
-            if !output.is_intrinsic() {
+            if !output.intrinsic {
                 return Err(MountSourceError::NativeUnsupported);
             }
             work.charge(crate::WorkCounters {
@@ -392,7 +392,7 @@ where
             let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
             let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
             let mut spans = scratch.vec(1)?;
-            let (bytes, _, _) = output.into_owned_parts();
+            let bytes = output.bytes;
             spans.push(crate::native_mount::MountSparseSpan {
                 relative_offset: 0,
                 bytes,

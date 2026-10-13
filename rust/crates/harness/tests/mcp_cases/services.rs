@@ -5,22 +5,20 @@ use acyclic_harness::{
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::Limits,
     core::AuthorityIssuer,
-    executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
+    executor::{ExecutionJournal, StockExecutor},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{
         McpToolTransport,
         callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks},
         http::{HttpMcpTransport, NativeMcpHttpProvider},
-        stdio::McpStdioRequest,
     },
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     runtime::{
-        AgentHarness, InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry,
-        ToolContext,
+        InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, ToolContext,
     },
     tool::ToolRegistry,
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use acyclic_stream::BoxProviderStream;
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
@@ -76,7 +74,7 @@ impl ModelProvider for ByteModel {
 }
 
 pub(super) struct Participant {
-    pub(super) journal: Arc<LocalJournal>,
+    pub(super) journal: std::sync::Weak<LocalJournal>,
     pub(super) issuer: AuthorityIssuer,
 }
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -87,11 +85,13 @@ impl InteractionRouter for Participant {
         operation: OperationId,
         interaction: Interaction,
     ) -> Result<InteractionOutcome> {
+        let journal = self
+            .journal
+            .upgrade()
+            .ok_or_else(|| Error::NotFound("interaction journal is closed".into()))?;
         let id = InteractionId::from_bytes(operation.into_bytes());
-        self.journal
-            .open_interaction(id, &interaction, None)?
-            .await?;
-        if let Some(outcome) = self.journal.interaction_outcome(id, None)?.await? {
+        journal.open_interaction(id, &interaction, None)?.await?;
+        if let Some(outcome) = journal.interaction_outcome(id, None)?.await? {
             return Ok(outcome);
         }
         let response = match interaction {
@@ -121,10 +121,8 @@ impl InteractionRouter for Participant {
                 &mut None,
             )
             .expect("scope proof");
-        self.journal
-            .resolve_interaction(id, response, &scope)
-            .await?;
-        self.journal
+        journal.resolve_interaction(id, response, &scope).await?;
+        journal
             .interaction_outcome(id, None)?
             .await?
             .ok_or_else(|| Error::NotFound("recorded participant decision".into()))
@@ -218,14 +216,15 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let context = admitted_context(
             scope.clone(),
             Arc::new(Participant {
-                journal: Arc::clone(&disk),
+                journal: Arc::downgrade(&disk),
                 issuer,
             }),
             None,
         )
         .await?;
         let operation = OperationId::from_bytes([81; 16]);
-        let tool = ToolContext::new(Arc::new(context), operation, "remote", None)?;
+        let context = Arc::new(context);
+        let tool = ToolContext::new(Arc::clone(&context), operation, "remote", None)?;
         let model = Arc::new(ByteModel {
             dispatches: AtomicUsize::new(0),
             pause: false,
@@ -336,17 +335,8 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         drop(callback);
         drop(disk);
         drop(tool);
-        let (disk, issuer, _) = journal(root.path(), false).await?;
-        let context = admitted_context(
-            scope.clone(),
-            Arc::new(Participant {
-                journal: Arc::clone(&disk),
-                issuer,
-            }),
-            None,
-        )
-        .await?;
-        let tool = ToolContext::new(Arc::new(context), operation, "remote", None)?;
+        let (disk, _, _) = journal(root.path(), false).await?;
+        let tool = ToolContext::new(context, operation, "remote", None)?;
         let reopened = McpRuntimeCallbacks::new(
             executor(Arc::clone(&model), scope)?,
             disk,
@@ -385,7 +375,7 @@ async fn form_callback_replays_owner_answer_and_rejects_changed_schema() -> Resu
     let context = admitted_context(
         scope.clone(),
         Arc::new(Participant {
-            journal: Arc::clone(&disk),
+            journal: Arc::downgrade(&disk),
             issuer,
         }),
         None,
@@ -596,7 +586,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let context = admitted_context(
         scope.clone(),
         Arc::new(Participant {
-            journal: Arc::clone(&disk),
+            journal: Arc::downgrade(&disk),
             issuer,
         }),
         None,
@@ -751,7 +741,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         let context = admitted_context(
             scope.clone(),
             Arc::new(Participant {
-                journal: Arc::clone(&disk),
+                journal: Arc::downgrade(&disk),
                 issuer,
             }),
             Some(content),

@@ -174,5 +174,5 @@ fn portable_git_names_decode_canonical_windows_names() {
     let name =
         crate::kernel::LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, bytes, 255)
             .expect("valid Windows name");
-    assert_eq!(name.unicode_text().as_deref(), Some("source-λ.rs"));
+    assert_eq!(name.unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref(), Some("source-λ.rs"));
 }

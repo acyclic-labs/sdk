@@ -67,7 +67,7 @@ where
             for entry in &page.entries {
                 let name = entry
                     .name
-                    .unicode_text()
+                    .unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value)
                     .ok_or(GitCaptureError::NonPortableName)?;
                 let path = if directory == "/" {
                     name.to_string()
@@ -116,7 +116,7 @@ pub(crate) fn portable_changed_path(
         }
         portable.push_str(
             &component
-                .unicode_text()
+                .unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value)
                 .ok_or(GitCaptureError::NonPortableName)?,
         );
     }

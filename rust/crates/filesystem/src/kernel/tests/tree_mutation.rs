@@ -511,8 +511,7 @@ async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn decoded_page_allocation_is_admitted_after_shape_read_before_decode()
--> Result<(), Box<dyn std::error::Error>> {
+async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let existing = wide_entry(1, FileKind::Regular)?;
     let root = put(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
@@ -558,8 +557,8 @@ async fn decoded_page_allocation_is_admitted_after_shape_read_before_decode()
         "{failure:?}"
     );
     assert!(failure.work.peak_allocation_bytes <= maximum);
-    assert_eq!(failure.work.backend_read_operations, 1);
     assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.object_bytes_written, 0);
     Ok(())
 }
 

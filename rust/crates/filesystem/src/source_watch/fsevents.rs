@@ -87,7 +87,7 @@ impl NativeSourceWatch {
                     reader.delivery.failed_with_work(error, &mut callback);
                 }
             });
-            let mut stream = EventStream::start_borrowed_with_work(
+            let mut stream = EventStream::start(
                 std::slice::from_ref(&shared.root), handler, Some(&shared.stream_bytes), work,
             )?;
             stream.set_terminal(Arc::clone(&shared) as Arc<dyn crate::fsevents::StreamTerminal>);

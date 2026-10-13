@@ -15,7 +15,7 @@ async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>
             for entry in &page.entries {
                 let name = entry
                     .name
-                    .unicode_text()
+                    .unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value)
                     .ok_or_else(|| "recorded name is not Unicode".to_owned())?;
                 let path = if directory == "/" {
                     format!("/{name}")
