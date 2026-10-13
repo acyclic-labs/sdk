@@ -6,8 +6,12 @@ fn work(
     budget: acyclic_fs::WorkBudget,
     token: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(budget, token)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })
+    acyclic_fs::NativeMaterializationWork::new(budget, token).map_err(|(cause, work)| {
+        Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        }
+    })
 }
 
 impl<P, A, O> Fixture<P, A, O>
@@ -16,6 +20,40 @@ where
     A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
     O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
 {
+    async fn native_journals(
+        &self,
+        byte: u8,
+        attempt: OperationId,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<(
+        crate::filesystem::FilesystemExecutionJournal<P, A, O>,
+        Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>,
+    )> {
+        let task = TaskId::from_bytes([byte; 16]);
+        let fence = self.owner(byte).await?.task_binding().1.clone();
+        let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
+            self.host.journal_owner(task, &fence, Some(io)).await?,
+            attempt,
+            attempt,
+            self.files.clone(),
+            &self.storage,
+            &self.issuer.verifier(&mut None)?,
+            &self.host.owner_scope,
+            65_536,
+            Some(io),
+        )?;
+        let workflow = crate::filesystem::FilesystemWorkflowJournal::for_task(
+            self.host.journal_owner(task, &fence, Some(io)).await?,
+            self.files.clone(),
+            &self.storage,
+            &self.issuer.verifier(&mut None)?,
+            &self.host.owner_scope,
+            65_536,
+            Some(io),
+        )?;
+        Ok((journal, workflow))
+    }
+
     async fn suspend(
         &self,
         byte: u8,
@@ -46,13 +84,13 @@ async fn b19_release_requires_suspended_workflow_and_settled_tool() -> Result<()
     let f = fixture::fixture().await?;
     f.running(1).await?;
     let attempt = OperationId::from_bytes([2; 16]);
-    let journal = f.execution(f.owner(1).await?, attempt)?;
-    let workflow = f.workflow(f.owner(1).await?)?;
     let token = acyclic_fs::CancellationToken::new();
     let work = work(
         acyclic_fs::performance::work_budget(100_000, 100_000_000),
         &token,
     )?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let (journal, workflow) = f.native_journals(1, attempt, &io).await?;
     assert!(
         !journal
             .release_if_quiescent_with_native_work(&work, &workflow)
@@ -121,7 +159,7 @@ async fn b19_release_requires_suspended_workflow_and_settled_tool() -> Result<()
             .release_if_quiescent_with_native_work(&work, &workflow)
             .await?
     );
-    assert!(!!matches!(
+    assert!(matches!(
         f.host
             .recover_work(TaskId::from_bytes([1; 16]), &mut None)
             .await?,
@@ -215,26 +253,48 @@ async fn b21_cancelled_or_zero_read_work_retains_reservation() -> Result<()> {
     let budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
     for cancelled in [true, false] {
         let token = acyclic_fs::CancellationToken::new();
-        let work = work(
-            if cancelled {
-                budget
-            } else {
-                acyclic_fs::WorkBudget {
-                    backend_read_operations: 0,
-                    ..budget
-                }
-            },
-            &token,
-        )?;
-        if cancelled {
+        let work = work(budget, &token)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let (journal, workflow) = f.native_journals(1, attempt, &io).await?;
+        let reads = work.receipt().backend_read_operations;
+        let _reserved_reads = if cancelled {
             token.cancel();
+            None
+        } else {
+            let reserved = work.reserve_work(acyclic_fs::WorkCounters {
+                backend_read_operations: work.remaining()?.backend_read_operations,
+                ..acyclic_fs::WorkCounters::UNCHARGED
+            })?;
+            assert_eq!(work.remaining()?.backend_read_operations, 0);
+            Some(reserved)
+        };
+        let error = journal
+            .release_if_quiescent_with_native_work(&work, &workflow)
+            .await
+            .expect_err("cancelled or exhausted reads must retain the reservation");
+        if cancelled {
+            assert!(matches!(
+                error,
+                Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    custody: None,
+                }
+            ));
+        } else {
+            assert!(matches!(
+                error,
+                Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "backend_read_operations",
+                            ..
+                        }
+                    ),
+                    custody: None,
+                }
+            ));
         }
-        assert!(
-            journal
-                .release_if_quiescent_with_native_work(&work, &workflow)
-                .await
-                .is_err()
-        );
+        assert_eq!(work.receipt().backend_read_operations, reads);
         assert!(!matches!(
             f.host
                 .recover_work(TaskId::from_bytes([1; 16]), &mut None)

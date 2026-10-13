@@ -350,7 +350,7 @@ fn default_turn_rejects_history_overflow_instead_of_selecting_a_suffix() -> Resu
     assert_eq!(prepared.selection.message_ids[0], historical_user);
     assert_eq!(
         prepared.selection.message_ids[2],
-        canonical_user_message_id(operation)
+        derived_uuid(operation, "user")
     );
     assert!(prepared.selection.checkpoint.is_none());
     assert_eq!(state.messages().len(), 2);

@@ -132,7 +132,7 @@ fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error:
         assert_eq!(
             path.components()
                 .first()
-                .and_then(LogicalName::unicode_text)
+                .and_then(|name| name.unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new()).ok().map(|receipt| receipt.value))
                 .as_deref(),
             Some("é")
         );
@@ -284,10 +284,10 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
         assert_eq!(name.case_fold_key(), expected, "ordinary key: {text:?}");
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::UNCHARGED;
-        let held = lowercase_unicode("already-held-root", &mut ledger, &mut work, WorkBudget::UNBOUNDED, Some(&cancellation))?;
+        let held = lowercase_unicode("already-held-root", &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut ledger,&mut work,WorkBudget::UNBOUNDED,&cancellation), &cancellation)?.0;
         let held_bytes = held.capacity() as u64;
         let before = work;
-        let folded = lowercase_unicode(&text, &mut ledger, &mut work, WorkBudget::UNBOUNDED, Some(&cancellation))?;
+        let folded = lowercase_unicode(&text, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut ledger,&mut work,WorkBudget::UNBOUNDED,&cancellation), &cancellation)?.0;
         assert_eq!(folded, expected, "measured key: {text:?}");
         let bytes = folded.capacity() as u64;
         assert_eq!(ledger.live_bytes(), held_bytes + bytes);
@@ -299,7 +299,7 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
             WorkBudget::UNBOUNDED, &cancellation,
         );
-        let (bridged, allocation) = crate::kernel::types::lowercase_unicode_with_accounting(
+        let (bridged, allocation) = crate::kernel::types::lowercase_unicode(
             &text, &mut accounting, &cancellation,
         )?;
         assert_eq!(bridged, expected, "accounting bridge: {text:?}");

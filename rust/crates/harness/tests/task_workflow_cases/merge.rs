@@ -145,10 +145,10 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             None,
         )?;
         let base = host
-            .resolve(&workspace_ref(
-                provider.clone(),
-                &project.storage_name(&mut None)?,
-            )?, None)
+            .resolve(
+                &workspace_ref(provider.clone(), &project.storage_name(&mut None)?)?,
+                None,
+            )
             .await?;
         let fork = controller
             .fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?)
@@ -324,7 +324,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             None,
         )?;
         let plan = controller
-            .prepare_project_import(&source, &source_head, Some(&target_head))
+            .prepare_project_import_at(&source, &source_head, &target_head, operation)
             .await?;
         let denied = issuer
             .issue(
@@ -393,7 +393,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 &workspace_ref(provider.clone(), &project.storage_name(&mut None)?)?,
                 None,
                 "/concurrent.txt",
-                128, None
+                128,
+                None
             )
             .await?
             .as_ref(),
@@ -404,17 +405,18 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 &workspace_ref(provider.clone(), &project.storage_name(&mut None)?)?,
                 None,
                 "/shared.txt",
-                128, None
+                128,
+                None
             )
             .await?
             .as_ref(),
             b"custom resolution"
         );
         assert_eq!(
-            host.resolve(&workspace_ref(
-                provider.clone(),
-                &source.storage_name(&mut None)?
-            )?, None)
+            host.resolve(
+                &workspace_ref(provider.clone(), &source.storage_name(&mut None)?)?,
+                None
+            )
             .await?
             .generation,
             source_head

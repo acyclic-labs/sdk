@@ -10,8 +10,8 @@
 use crate::{
     Error, OperationId, Result,
     conversation::{
-        Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, FileDescriptor,
-        FileRef, VolumeOperation, VolumeRef, validate_content_path,
+        ContentGrant, ContentPublisher, ContentResidencyVerifier, FileDescriptor, FileRef,
+        VolumeOperation, VolumeRef, validate_content_path,
     },
     core::{AuthorityVerifier, Scope},
     fork::{
@@ -30,6 +30,5 @@ mod store;
 pub use store::ObjectContentStore;
 mod mount;
 pub use mount::ObjectContentMountResolver;
-use store::{content_identity, storage};
 #[cfg(test)]
 mod tests;

@@ -215,11 +215,10 @@ where
                 .map(|entry| {
                     let name = entry
                         .name
-                        .unicode_text()
+                        .unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value)
                         .ok_or_else(|| {
                             Error::Unsupported("private directory name is not Unicode".into())
-                        })?
-                        .into_owned();
+                        })?;
                     let kind = match entry.kind {
                         FileKind::Regular => PrivateDirectoryEntryKind::File,
                         FileKind::Directory => PrivateDirectoryEntryKind::Directory,

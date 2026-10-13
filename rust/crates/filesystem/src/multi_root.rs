@@ -1367,7 +1367,7 @@ fn portable_namespace_path(path: &crate::kernel::NamespacePath) -> Option<String
     let mut value = String::new();
     for component in path.components() {
         value.push('/');
-        value.push_str(&component.unicode_text()?);
+        value.push_str(&component.unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value)?);
     }
     if value.is_empty() {
         value.push('/');

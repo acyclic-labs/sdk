@@ -7,16 +7,15 @@ async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_
         let fixture = Fixture::new().await?;
         fixture.machine.native.store(true, Ordering::SeqCst);
         fixture.tool.native.store(true, Ordering::SeqCst);
-        let runtime = fixture.runtime().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::default(),
-            &cancellation,
-        )
-        .map_err(|(cause, work)| Error::NativeConstruction {
-            cause,
-            work: Box::new(work),
-        })?;
+        let work =
+            acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let runtime = fixture.runtime(Some(&io)).await?;
         let (mut lease, custody) = fixture.native_lease(&runtime, &work).await?;
         if stale {
             lease.reservation.id.replace_range(0..1, "x");

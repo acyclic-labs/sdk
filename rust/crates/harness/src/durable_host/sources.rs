@@ -204,7 +204,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let project = snapshot.project.copy(quota.work())?;
         let reference = crate::core::copy_resource(snapshot.generation.as_resource(), &mut quota)?;
         let generation =
-            crate::resources::GenerationRef::from_resource_with_work(reference, quota.work())?;
+            crate::resources::GenerationRef::from_resource(reference, quota.work())?;
         let native_snapshot = snapshot
             .native_snapshot
             .as_ref()

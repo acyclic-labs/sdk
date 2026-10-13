@@ -45,12 +45,7 @@ pub struct TurnPreparation {
     pub disposition: TurnDisposition,
 }
 
-/// Canonical identity for the user record of one local conversation operation.
-pub fn canonical_user_message_id(operation_id: OperationId) -> Uuid {
-    derived_uuid(operation_id, "user")
-}
-
-/// Shared UUID derivation used by the local turn planner and WASM facade.
+/// Derives a stable operation UUID for the supplied label.
 pub fn derived_uuid(operation_id: OperationId, label: &str) -> Uuid {
     let mut digest = Sha256::new();
     digest.update(operation_id.to_string().as_bytes());
@@ -66,7 +61,7 @@ pub fn derived_uuid(operation_id: OperationId, label: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-/// Prepare one deterministic turn with optional identity and checkpoint.
+/// Prepares one deterministic turn with optional identity and checkpoint.
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -109,7 +104,7 @@ pub fn prepare_turn(
         limits.validate_file(manifest, &mut None)?;
     }
 
-    let user_id = user_id_override.unwrap_or_else(|| canonical_user_message_id(operation_id));
+    let user_id = user_id_override.unwrap_or_else(|| derived_uuid(operation_id, "user"));
     if conversation
         .unresolved_user()
         .is_some_and(|id| id != user_id)
@@ -161,7 +156,7 @@ pub fn prepare_turn(
     let selection_is_new = existing_selection.is_none();
     let selection = match existing_selection {
         Some(selection) => {
-            // Validate the committed selection against its original revision.
+            // Validate against the original committed revision.
             if selection.conversation_revision < user_message.sequence
                 || selection.conversation_revision > conversation.logical_revision()
             {

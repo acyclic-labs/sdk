@@ -404,11 +404,7 @@ where
     }
 
     fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, crate::FsError> {
-        let (value, allocation) = persistent_io::clone_key_with_accounting::<F>(
-            key,
-            self.limits.maximum_name_bytes,
-            self.accounting,
-        )?;
+        let (value, allocation) = persistent_io::clone_key::<F>(key, self.limits.maximum_name_bytes, self.accounting, None, 0)?;
         let bytes = F::key_owned_bytes(&value);
         Ok(Owned::new(value, allocation, bytes))
     }
@@ -431,11 +427,7 @@ where
     }
 
     fn clone_value(&mut self, value: &F::Value) -> Result<Owned<Option<F::Value>>, crate::FsError> {
-        let (value, allocation) = persistent_io::clone_value_with_accounting::<F>(
-            value,
-            self.limits.maximum_name_bytes,
-            self.accounting,
-        )?;
+        let (value, allocation) = persistent_io::clone_value::<F>(value, self.limits.maximum_name_bytes, self.accounting, None, 0)?;
         let bytes = F::value_owned_bytes(&value);
         Ok(Owned::new(Some(value), allocation, bytes))
     }

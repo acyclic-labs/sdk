@@ -82,6 +82,21 @@ impl CreationFixture {
             },
             &mut None,
         )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let metadata_work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let metadata_io = Some(crate::filesystem::PreparationIo::from_native_work(
+            &metadata_work,
+        )?);
+        #[cfg(target_arch = "wasm32")]
+        let metadata_io = None;
         let schema = serde_json::json!({"type":"object"});
         let (task, machine, tasks, machines) = test_registries(
             Arc::new(super::super::fixture::FixtureMachine {
@@ -94,6 +109,7 @@ impl CreationFixture {
             }),
             schema.clone(),
             schema,
+            metadata_io.as_ref(),
         )?;
         let creator = FilesystemResourceCreationProvider::new(
             filesystem.clone(),
@@ -125,7 +141,7 @@ impl CreationFixture {
             &[filesystem_creator.clone()
                 as Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
             &crate::durable_tool::ResumableToolRegistry::default(),
-            None,
+            metadata_io.as_ref(),
         )
         .await?;
         let host = runtime.task_host().clone();

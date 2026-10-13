@@ -7,13 +7,7 @@ pub(crate) fn lowercase_unicode_with_work(
     work.reconcile_cancellation_registry()?;
     work.check()?;
     let (allocations, counters, budget, cancellation) = work.allocation_parts();
-    let bytes = crate::kernel::types::lowercase_unicode(
-        text,
-        allocations,
-        counters,
-        budget,
-        Some(cancellation),
-    )?;
+    let bytes = crate::kernel::types::lowercase_unicode(text, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(allocations,counters,budget,cancellation), cancellation)?.0;
     if let Err(error) = work.check() {
         let owned = bytes.capacity() as u64;
         drop(bytes);

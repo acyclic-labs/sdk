@@ -16,9 +16,9 @@ use crate::foundation::{
 use crate::heap_future::in_heap;
 
 use crate::kernel::{
-    contextual_publication_fingerprint_with_accounting, list_attributes_async_with_accounting,
+    list_attributes_async_with_accounting,
     lookup_file_record_async_with_accounting, lookup_path_async_with_accounting,
-    lookup_paths_async_with_accounting,
+    lookup_paths_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
     merge_generation_with_borrowed_resolutions_with_accounting, plan_extent_range_with_accounting,
     prove_record_closure_async, read_blob_range_with_accounting,

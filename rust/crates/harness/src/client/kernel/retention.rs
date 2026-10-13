@@ -28,7 +28,7 @@ impl<D: Domain> Client<D> {
         Ok(result)
     }
 
-    /// Discard one hypothesis and invalidate descendants.
+    /// Discards a hypothesis and invalidates descendants.
     pub fn discard(&mut self, id: BranchId) -> Result<Vec<BranchId>, Error> {
         if !self.branches.contains_key(&id) {
             return Err(Error::Missing);
@@ -84,7 +84,7 @@ impl<D: Domain> Client<D> {
         }
     }
 
-    /// Advance monotonic logical retention within the work bound.
+    /// Advances monotonic retention within the work bound.
     pub fn advance(&mut self, now: u64) -> Result<Vec<BranchId>, Error> {
         if now < self.now {
             return Err(Error::Time);
@@ -115,7 +115,7 @@ impl<D: Domain> Client<D> {
         Ok(affected.into_iter().collect())
     }
 
-    /// Release demanded canonical data when no hypothesis references it.
+    /// Releases canonical data with no remaining hypotheses.
     pub fn release(&mut self, key: &D::Key) -> Result<(), Error> {
         if self.by_key.contains_key(key) {
             return Err(Error::Conflict);

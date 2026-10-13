@@ -140,7 +140,7 @@ if let Some(context) = context { return {
             ..invocation.clone()
         };
         let write = ToolInvocation {
-            arguments: json!({"path":input.destination}),
+            arguments: json!({"path":input.destination,"text":""}),
             ..invocation.clone()
         };
         self.read.authorize(None, Some(context), &read, None)?;
