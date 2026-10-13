@@ -231,7 +231,10 @@ mod tests {
     #[test]
     fn unbound_native_writer_returns_a_static_failure() -> Result<()> {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(16, 1_024),
+            acyclic_fs::performance::work_budget(
+                16,
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, _)| Error::NativeWork {

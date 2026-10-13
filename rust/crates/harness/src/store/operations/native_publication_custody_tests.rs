@@ -1,4 +1,3 @@
-use super::super::history::HistoryIo;
 use super::*;
 use crate::store::checkpoints::native_staging_custody_tests::budget;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -158,7 +157,7 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
         if let Some(prior) = &commit_id {
             assert_eq!(prior, &envelope.commit_id);
         }
-        commit_id = Some(envelope.commit_id.clone());
+        commit_id = Some(envelope.commit_id);
     }
     let query =
         NativeMaterializationWork::new(budget(), &cancellation).expect("finite query budget");

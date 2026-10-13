@@ -75,9 +75,7 @@ pub(super) fn push<T>(
 ) -> Result<()> {
     if values.len() == values.capacity() {
         let target = values
-            .capacity()
-            .checked_mul(2)
-            .unwrap_or(usize::MAX)
+            .capacity().saturating_mul(2)
             .max(4);
         let bytes = target
             .checked_mul(size_of::<T>())

@@ -190,9 +190,9 @@ where
                 let _prepared_hold;
                 let prepared = match io {
                     Some(io) => {
-                        crate::model::PreparedModelRequest::decode(&bytes, limits, Some(io))?
+                        crate::model::PreparedModelRequest::decode(bytes, limits, Some(io))?
                     }
-                    None => crate::model::PreparedModelRequest::decode(&bytes, limits, None)?,
+                    None => crate::model::PreparedModelRequest::decode(bytes, limits, None)?,
                 };
                 _prepared_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(
@@ -226,7 +226,7 @@ where
                     Some(io) => {
                         let parsed = io.decode(
                             std::marker::PhantomData::<ModelEvent>,
-                            &bytes,
+                            bytes,
                             crate::wire::ErrorCode::Storage,
                         )?;
                         let _canonical_hold;
@@ -241,7 +241,7 @@ where
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json::<ModelEvent>(&bytes, None)?.0,
+                    None => decode_json::<ModelEvent>(bytes, None)?.0,
                 });
             }
         }

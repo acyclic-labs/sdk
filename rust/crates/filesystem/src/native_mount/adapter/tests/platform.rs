@@ -470,12 +470,17 @@ fn native_name_encoding_and_capture_cases() -> Result<(), Box<dyn std::error::Er
             .flat_map(u16::to_le_bytes)
             .collect(),
     );
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     let (host_name, captured_name) = {
         use std::os::unix::ffi::OsStringExt;
         let name = vec![b'c', 0xfe, b'p'];
         (std::ffi::OsString::from_vec(name.clone()), name)
     };
+    #[cfg(target_os = "macos")]
+    let (host_name, captured_name) = (
+        std::ffi::OsString::from("captured-β.bin"),
+        "captured-β.bin".as_bytes().to_vec(),
+    );
     let host_path = host.path().join(host_name);
     let captured = MountPath::root().child(captured_name);
     std::fs::write(&host_path, b"captured")?;

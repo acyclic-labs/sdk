@@ -174,8 +174,8 @@ pub(in crate::fork) async fn acquire_fork_fence(
     let result = future.await;
     let guard = release_frame(result, bytes, work)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(native) = work.as_ref().and_then(|io| io.original_native_work()) {
-        if !guard
+    if let Some(native) = work.as_ref().and_then(|io| io.original_native_work())
+        && !guard
             ._allocation
             .as_ref()
             .is_some_and(|allocation| allocation.work().shares_ledger(native))
@@ -187,6 +187,5 @@ pub(in crate::fork) async fn acquire_fork_fence(
                 custody: _allocation,
             });
         }
-    }
     Ok(guard)
 }

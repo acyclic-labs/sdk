@@ -98,41 +98,38 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "project source graph is cancelled",
                 ));
             }
-            match &state.spec.parent {
-                Some(parent) => {
-                    operation = parent.operation_id;
-                    if let Some(io) = work.as_deref_mut() {
-                        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
-                            items: 1,
-                        })?;
-                    }
-                    if operation == anchor {
-                        return Err(crate::store::guarded_boundary(
+            if let Some(parent) = &state.spec.parent {
+                operation = parent.operation_id;
+                if let Some(io) = work.as_deref_mut() {
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+                        items: 1,
+                    })?;
+                }
+                if operation == anchor {
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "project source graph is cyclic",
+                    ));
+                }
+                steps += 1;
+                if steps == run {
+                    anchor = operation;
+                    run = run.checked_mul(2).ok_or_else(|| {
+                        crate::store::guarded_boundary(
                             work,
-                            crate::wire::ErrorCode::Unauthorized,
-                            "project source graph is cyclic",
-                        ));
-                    }
-                    steps += 1;
-                    if steps == run {
-                        anchor = operation;
-                        run = run.checked_mul(2).ok_or_else(|| {
-                            crate::store::guarded_boundary(
-                                work,
-                                crate::wire::ErrorCode::Invalid,
-                                "project source graph depth overflows",
-                            )
-                        })?;
-                        steps = 0;
-                    }
+                            crate::wire::ErrorCode::Invalid,
+                            "project source graph depth overflows",
+                        )
+                    })?;
+                    steps = 0;
                 }
-                None => {
-                    coordinator
-                        .scheduler()
-                        .session_limits(operation, work)?
-                        .validate(work)?;
-                    return Ok(TaskId::from_bytes(operation.into_bytes()));
-                }
+            } else {
+                coordinator
+                    .scheduler()
+                    .session_limits(operation, work)?
+                    .validate(work)?;
+                return Ok(TaskId::from_bytes(operation.into_bytes()));
             }
         }
     }

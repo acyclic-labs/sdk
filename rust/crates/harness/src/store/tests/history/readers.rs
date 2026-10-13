@@ -151,7 +151,7 @@ async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Resu
     for revision in 0..5 {
         writer
             .execute(
-                projection_command(revision as u128 + 1, revision)?,
+                projection_command(u128::from(revision) + 1, revision)?,
                 #[cfg(feature = "filesystem")]
                 None,
                 &mut None,

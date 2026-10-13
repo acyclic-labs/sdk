@@ -3,7 +3,7 @@ use super::*;
 use crate::conversation::FileRef;
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
 use acyclic_fs::{
-    CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError,
+    CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError,
 };
 use std::sync::Mutex;
 mod codec;

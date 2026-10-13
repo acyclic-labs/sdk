@@ -73,7 +73,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
         McpStdioRequest {
             method: "tools/list".into(),
             params: json!({"cursor":1}),
-            ..request.clone()
+            ..request
         }
         .exchange(None)
         .is_err()

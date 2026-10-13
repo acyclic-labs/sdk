@@ -51,12 +51,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )
         })?;
         let ordinary;
-        let io = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(budget, context.cancellation)?;
-                &ordinary
-            }
+        let io = if let Some(io) = io { io } else {
+            ordinary = PreparationIo::from_budget(budget, context.cancellation)?;
+            &ordinary
         };
         io.check_cancellation()?;
         if !io.contains_capability(&context.source.grants, &snapshot.project, "volume:read:")? {
@@ -72,7 +69,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             io.retain_owned(opened.name().as_str().len() as u64)?;
         }
         let selected =
-            (&self.host).generation(&opened, &snapshot.generation, Some(io)).await?;
+            self.host.generation(&opened, &snapshot.generation, Some(io)).await?;
         drop(selected);
         check()?;
         io.remaining()?;

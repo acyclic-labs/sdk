@@ -14,8 +14,6 @@ use acyclic_stream::{
     StreamProvider,
 };
 
-#[cfg(test)]
-use acyclic_stream::CommitMutation;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
