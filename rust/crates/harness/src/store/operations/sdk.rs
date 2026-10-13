@@ -55,7 +55,7 @@ pub(crate) fn stream<P: StreamProvider>(
 
 /// Native payload custody is intrinsic to the SDK's `OwnedBytes`.
 pub(crate) fn sdk_record_retained_bytes(record: &Record, work: &Option<&mut dyn HistoryIo>) -> u64 {
-    if work.as_deref().is_some_and(original_native_decode_mode) {
+    if work.is_none() || work.as_deref().is_some_and(original_native_decode_mode) {
         0
     } else {
         record.value.len() as u64
