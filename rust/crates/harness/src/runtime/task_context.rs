@@ -94,21 +94,30 @@ impl TaskContext {
 
     /// Selects an authenticated created destination without widening task authority.
     pub async fn with_output_volume(self: &Arc<Self>, volume: &VolumeRef) -> Result<Arc<Self>> {
+        let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
+            Error::Unauthorized("output volume has no admitted creation binding".into())
+        })?;
+        self.with_output_bindings(binding.clone()).await
+    }
+
+    /// Selects provider-authenticated content within this task's existing grants.
+    pub async fn with_output_bindings(
+        self: &Arc<Self>,
+        binding: ContentBindings,
+    ) -> Result<Arc<Self>> {
+        let io = self.preparation_io()?;
+        bound_content_writer(Some(&binding), &self.scope, io.as_ref())?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = self.preparation_io()? {
+        if let Some(io) = io {
             return self
-                .project_output_volume(
-                    volume,
+                .project_output_binding(
+                    &binding,
                     io.original_native_work().expect("original context work"),
                 )
                 .await;
         }
-        let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
-            Error::Unauthorized("output volume has no admitted creation binding".into())
-        })?;
-        bound_content_writer(Some(binding), &self.scope, None)?;
         let mut context = self.as_ref().clone();
-        context.output_content = Some(binding.clone());
+        context.output_content = Some(binding);
         context.into_shared()
     }
 
