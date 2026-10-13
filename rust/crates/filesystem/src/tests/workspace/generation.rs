@@ -11,22 +11,22 @@ async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<d
     let key = IdempotencyKey::from_bytes([0x51; 16]);
 
     assert!(matches!(
-        workspace.restore_generation(&first, second.id(), key).await?,
+        workspace.restore_generation(&first, second.id(), key, crate::PublicationPermit::Unrestricted).await?,
         WorkspaceRestore::Restored(ref generation) if generation.id() == first.id()
     ));
     assert!(matches!(
-        workspace.restore_generation(&first, second.id(), key).await?,
+        workspace.restore_generation(&first, second.id(), key, crate::PublicationPermit::Unrestricted).await?,
         WorkspaceRestore::AlreadyRestored(ref generation) if generation.id() == first.id()
     ));
     assert!(matches!(
         workspace
-            .restore_generation(&second, first.id(), key)
+            .restore_generation(&second, first.id(), key, crate::PublicationPermit::Unrestricted)
             .await?,
         WorkspaceRestore::IdempotencyConflict
     ));
     assert!(matches!(
         workspace
-            .restore_generation(&second, second.id(), IdempotencyKey::new())
+            .restore_generation(&second, second.id(), IdempotencyKey::new(), crate::PublicationPermit::Unrestricted)
             .await?,
         WorkspaceRestore::Stale(ref generation) if generation.id() == first.id()
     ));

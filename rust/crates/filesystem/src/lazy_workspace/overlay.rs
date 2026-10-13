@@ -127,7 +127,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         Ok(Some(Some((
                             crate::kernel::decode_file_record(record)
                                 .map_err(crate::FsError::from)?,
-                            **metadata,
+                            *metadata,
                         ))))
                     }
                     order => {
@@ -160,24 +160,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             bytes_hashed: 16,
             ..WorkCounters::UNCHARGED
         })?;
-        let (bytes, mut guard) = crate::kernel::codec::encode_owned(ctx, |observe, error| {
+        let (bytes, guard) = crate::kernel::codec::encode_owned(ctx, |observe, error| {
             crate::kernel::encode_file_record(record, observe, error)
         })?;
-        let boxed = ctx.claim_owned(std::mem::size_of::<crate::WorkspaceMetadata>() as u64, 1);
-        let mut boxed = match boxed {
-            Ok(guard) => guard,
-            Err(error) => {
-                let size = bytes.capacity() as u64;
-                Owned::new(bytes, guard, size).retire(ctx)?;
-                return Err(error.into());
-            }
-        };
-        guard.absorb(&mut boxed)?;
         let node = LazyShadow::Node {
             file_id: id,
             priority: shadow_priority(id),
             record: bytes,
-            metadata: Box::new(metadata),
+            metadata,
             left: root,
             right: root,
         };
@@ -192,24 +182,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
-        let path = self.canonical_path(path, ctx)?;
-        let result = async {
-            let mut ancestor = path.value.as_str();
-            loop {
-                if matches!(
-                    self.overlay_fact(root, ancestor, ctx).await?,
-                    Some(LazyOverlayChange::Tombstone { .. })
-                ) {
-                    return Ok(true);
-                }
-                if ancestor == "/" {
-                    return Ok(false);
-                }
-                ancestor = parent_path(ancestor).ok_or(LazyWorkspaceError::UnsupportedNode)?;
+        PortablePath::validate(path, self.workspace.limits())
+            .map_err(crate::kernel::NamespacePathError::Path)?;
+        let mut ancestor = path;
+        loop {
+            if matches!(
+                self.overlay_fact(root, ancestor, ctx).await?,
+                Some(LazyOverlayChange::Tombstone { .. })
+            ) {
+                return Ok(true);
             }
+            if ancestor == "/" {
+                return Ok(false);
+            }
+            ancestor = parent_path(ancestor).ok_or(LazyWorkspaceError::UnsupportedNode)?;
         }
-        .await;
-        path.retire(ctx)?;
-        result
     }
 }

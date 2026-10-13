@@ -15,7 +15,7 @@ use acyclic_harness::distributed::{
     SchedulerPayloadStore,
 };
 use acyclic_harness::filesystem::{
-    FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
+    FilesystemContentVerifier, FilesystemHost, FilesystemContentPublisher,
 };
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::scheduler::{
@@ -156,13 +156,13 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
          None, None)
         .await?;
     let verifier = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_024, None)?;
-    let stager = Arc::new(FilesystemSchedulerPayloadStore::new(
+    let stager = FilesystemContentPublisher::new(
         host.clone(),
         &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         1_024, None,
-    )?);
+    )?;
     let stream = Arc::new(MemoryStream::default());
     let mut coordinator = DistributedCoordinator::open(&stream, verifier.clone(), Some(stager.clone()), &mut None)
         .await?

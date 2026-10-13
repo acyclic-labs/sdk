@@ -1,5 +1,4 @@
 use super::*;
-use crate::kernel::KernelAccounting;
 
 pub(crate) fn hash_lazy_value<T: Serialize>(
     value: &T,

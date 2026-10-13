@@ -537,8 +537,8 @@ pub(super) async fn execute(
             let file = native
                 .caller_context(caller, &lease)
                 .await?
-                .stage_file_in(
-                    &volume,
+                .stage_file(
+                    Some(&volume),
                     operation,
                     &path,
                     bytes.as_bytes(),

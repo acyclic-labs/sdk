@@ -27,7 +27,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     cancellation,
                 )
                 .await?;
-            self.mutate_owned_with_accounting(compiled, &mut accounting, cancellation)
+            self.apply_mutations(compiled, &mut accounting, cancellation)
                 .await
         }
         .await;
@@ -143,7 +143,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 )?;
                 if let ContentTimes::Stamp(at_ns) = times {
                     let mut metadata = self
-                        .read_metadata_by_id_with_accounting(file_id, accounting, cancellation)
+                        .read_metadata_with_accounting(file_id, accounting, cancellation)
                         .await?;
                     if metadata.stamp_content_change(at_ns) {
                         let metadata = self

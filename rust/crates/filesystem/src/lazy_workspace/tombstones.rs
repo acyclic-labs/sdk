@@ -32,16 +32,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             pending.value.push(id);
                         }
                         if matches!(change, LazyOverlayChange::Tombstone { removed: Some(_) }) {
-                            if output.value.len() == maximum {
-                                return Err(crate::WorkError::BudgetExceeded {
-                                    counter: "source_tombstones",
-                                    observed: (maximum as u64)
-                                        .checked_add(1)
-                                        .ok_or(crate::WorkError::Overflow)?,
-                                    maximum: maximum as u64,
-                                }
-                                .into());
-                            }
                             output.ensure_for_push(maximum, ctx)?;
                             output.allocation.absorb(&mut node.1)?;
                         }

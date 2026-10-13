@@ -30,7 +30,7 @@ pub fn mcp_callback_operation(
     #[wasm_bindgen(unchecked_param_type = "McpCallbackRequest")] request: JsValue,
 ) -> Result<String, JsValue> {
     let request: crate::mcp::callbacks::McpCallbackRequest = from_js(request)?;
-    request.validate().map(|operation| operation.to_string()).map_err(js_error)
+    request.validate().map(|(operation, _)| operation.to_string()).map_err(js_error)
 }
 
 /// Validates the complete bounded replacement before the host selects it.

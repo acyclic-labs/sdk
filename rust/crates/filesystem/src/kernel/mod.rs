@@ -75,7 +75,6 @@ pub(crate) use list::{
 pub(crate) use merge::{
     MergeGenerationBorrowedRequest, merge_generation_with_accounting, merge_generation_with_borrowed_map_resolutions_with_accounting, merge_generation_with_borrowed_resolutions_with_accounting};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use namespace_path::NamespacePathStep;
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting};
 pub(crate) use persistent_point::split_allocation;
@@ -161,8 +160,9 @@ pub use mutation::{
     FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{
     NamespacePath, NamespacePathError};
+pub(crate) use namespace_path::NamespacePathStep;
 pub(crate) use path_access::{
-    lookup_path_async_with_accounting, lookup_paths_async_with_accounting, lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting, observe_path_refs_async_with_accounting, observe_paths_async_with_accounting};
+    lookup_path_async_with_accounting, lookup_paths_async_with_accounting, lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting, observe_paths_async_with_accounting};
 pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError, PathLookupFailure, lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async};
 pub(crate) use persistent_point::retire_allocation;
@@ -174,7 +174,7 @@ pub(crate) use publication::encode_publication_payload;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation};
 pub(crate) use publication::{
-    PublicationIntent, permit_context_with_accounting, publish_generation_async_guarded, publish_generation_async_with_permit, decode_publication_evidence_with_accounting};
+    PublicationIntent, publish_generation_async_guarded, publish_generation_async_with_permit, decode_publication_evidence_with_accounting};
 pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent};
 pub(crate) use range::seek_extent_with_accounting;

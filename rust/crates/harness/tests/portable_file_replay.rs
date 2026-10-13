@@ -363,7 +363,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 Admission::Accepted(_)
             ));
         }
-        let context = runtime.harness().durable_context(task, admission).await?;
+        let context = runtime.harness().durable_context(task, admission, None).await?;
         let writable = AgentHarness::with_policy(
             tasks.clone(),
             tools.clone(),
@@ -378,7 +378,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             None,
             None,
         )?
-        .durable_context(task, admission)
+        .durable_context(task, admission, None)
         .await?;
         let journal = Arc::new(JournalSpy {
             inner: Arc::new(FilesystemExecutionJournal::new(
@@ -437,8 +437,13 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             tool.executor
                 .authorize_with_context(&original, &invocation)?;
             for wrong in [
-                ToolContext::new(context.clone(), OperationId::new(), operation.to_string())?,
-                ToolContext::new(context.clone(), operation, "different-call")?,
+                ToolContext::new(
+                    Arc::new(context.clone()),
+                    OperationId::new(),
+                    &operation.to_string(),
+                    None,
+                )?,
+                ToolContext::new(Arc::new(context.clone()), operation, "different-call", None)?,
             ] {
                 assert!(matches!(
                     tool.executor.authorize_with_context(&wrong, &invocation),

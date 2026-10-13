@@ -1,46 +1,18 @@
 use super::*;
 
 #[tokio::test]
-async fn shared_epoch_follows_refresh_without_enumeration() {
-    let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"before")));
-    let root = attach(
-        &fs,
-        "root",
-        Arc::clone(&source),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
-    root.stat("/file.txt", accounting!()).await.unwrap();
-    source.replace(Bytes::from_static(b"after"));
-    assert_eq!(
-        root.state(accounting!()).await.unwrap().source,
-        source.reference()
-    );
-    assert_eq!(
-        root.read("/new.txt", 16, accounting!())
-            .await
-            .unwrap()
-            .bytes
-            .as_slice(),
-        b"after"
-    );
-    assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
-}
-
-#[tokio::test]
 async fn tombstones_distinguish_deletion_from_hiding() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
     .unwrap();
+    let head = root.head(accounting!()).await.unwrap().id();
     root.remove("/removed", None, accounting!()).await.unwrap();
+    assert_eq!(root.head(accounting!()).await.unwrap().id(), head);
     root.hide_source_path("/hidden", accounting!())
         .await
         .unwrap();
@@ -65,7 +37,6 @@ async fn exactification_denials_do_not_publish_or_create_children() {
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"content")));
     let root = attach(
         &fs,
-        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -73,7 +44,7 @@ async fn exactification_denials_do_not_publish_or_create_children() {
     .unwrap();
     let cut = root.snapshot(accounting!()).await.unwrap();
     let cancellation = CancellationToken::new();
-    source.cancel_next_page();
+    source.cancel_on_page.store(true, Ordering::Relaxed);
     assert!(
         root.exactify(
             "/",
@@ -120,7 +91,12 @@ async fn exactification_denials_do_not_publish_or_create_children() {
             .await
             .is_err()
         );
-        assert!(fs.open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).is_err());
+        assert!(
+            fs.open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map(|receipt| receipt.value)
+                .is_err()
+        );
     }
 }
 
@@ -129,8 +105,10 @@ async fn full_directory_page_is_funded_before_projection() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
-        Arc::new(CountingSource::new(Bytes::from_static(b"content")).with_directory_entries(1024)),
+        Arc::new(CountingSource {
+            directory_entries: 1024,
+            ..CountingSource::new(Bytes::from_static(b"content"))
+        }),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
@@ -163,11 +141,14 @@ async fn attach_open_and_fork_demand_no_source_work() {
     let fs = Fs::memory();
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
     let store = MemoryLazyWorkspaceStore::default();
-    let root = attach(&fs, "root", Arc::clone(&source), store.clone())
+    let root = attach(&fs, Arc::clone(&source), store.clone())
         .await
         .unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .unwrap(),
         Arc::clone(&source),
         store,
         accounting!(),
@@ -182,10 +163,17 @@ async fn attach_open_and_fork_demand_no_source_work() {
     let second = child.snapshot(accounting!()).await.unwrap();
     assert_eq!(first, second);
     assert_eq!(first, original);
-    let resumed = root
-        .open_related(fs.open_workspace("child", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(), accounting!())
-        .await
-        .unwrap();
+    let resumed = LazyWorkspace::open(
+        fs.open_workspace("child", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .unwrap(),
+        Arc::clone(&root.source),
+        root.store.clone(),
+        accounting!(),
+    )
+    .await
+    .unwrap();
     assert_eq!(resumed.snapshot(accounting!()).await.unwrap(), original);
     assert_eq!(
         child

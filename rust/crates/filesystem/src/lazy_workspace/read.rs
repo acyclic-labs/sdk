@@ -53,15 +53,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let result = if lookup.0.stat().kind != kind {
             Err(LazyWorkspaceError::NotRegularFile)
         } else {
-            self.read_resolved(
-                &lookup.0,
-                path,
-                range,
-                maximum,
-                crate::model::GenerationSelector::Head,
-                ctx,
-            )
-            .await
+            self.read_resolved(&lookup.0, path, range, maximum, ctx)
+                .await
         };
         self.retire_lookup(lookup, ctx)?;
         result
@@ -81,16 +74,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let result = if source && cut.source != self.source.reference() {
             Err(LazyWorkspaceError::StaleSource)
         } else {
-            self.read_resolved(
-                &lookup,
-                path,
-                range,
-                maximum,
-                crate::model::GenerationSelector::Exact(cut.authored_generation),
-                ctx,
-            )
-            .await
-            .map(|bytes| (bytes, used || source))
+            self.read_resolved(&lookup, path, range, maximum, ctx)
+                .await
+                .map(|bytes| (bytes, used || source))
         };
         self.retire_lookup((lookup, guard), ctx)?;
         result
@@ -101,7 +87,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         range: Option<crate::ByteRange>,
         maximum: u64,
-        generation: crate::model::GenerationSelector,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
         let stat = lookup.stat();
@@ -122,43 +107,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             _ => return Err(LazyWorkspaceError::NotRegularFile),
         };
         let bytes = match lookup {
-            LazyLookup::Authored { path, .. } => {
-                let mut checkout = self.checkout(generation, ctx).await?;
-                let result = async {
-                    let namespace = self.namespace_path(path, ctx)?;
-                    let result = async {
-                        if let Some(range) = range {
-                            let read = checkout
-                                .value
-                                .read_file_range_with_accounting(
-                                    &namespace.value,
-                                    range,
-                                    ctx,
-                                    cancellation(ctx),
-                                )
-                                .await?;
-                            Ok(read_chunk(read.bytes, read.logical_owned_bytes, ctx))
-                        } else {
-                            checkout
-                                .value
-                                .read_symbolic_link_with_accounting(
-                                    &namespace.value,
-                                    ctx,
-                                    cancellation(ctx),
-                                )
-                                .await
-                                .map_err(LazyWorkspaceError::from)
-                        }
-                    }
-                    .await;
-                    namespace.retire(ctx)?;
-                    result
-                }
-                .await;
-                checkout.retire(ctx)?;
-                result?
-            }
-            LazyLookup::Shadow { record, .. } => {
+            LazyLookup::Authored { record, .. } | LazyLookup::Shadow { record, .. } => {
                 let detached = accounted!(ctx, |work, cancel| async {
                     crate::facade::DetachedFile::from_record(
                         self.workspace.volume.clone(),

@@ -111,33 +111,26 @@ impl ContextStage for PinnedContextStage {
 
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+        if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.validate(io)?;
-            #[derive(serde::Serialize)]
-            struct Contract<'a> {
-                name: &'a str,
-                revision: &'a str,
-                reference: &'a FileRef,
-                placement: ContextPlacement,
-                limits: Limits,
-            }
-            let (value, custody) = super::context_contract_native(
-                &Contract {
-                    name: &self.name,
-                    revision: &self.revision,
-                    reference: &self.reference,
-                    placement: self.placement,
-                    limits: self.limits,
-                },
-                work,
-            )?;
-            io.expect("native ledger").absorb_native_custody(custody)?;
-            return Ok(value);
         }
-        let _ = io;
-        Ok(
-            serde_json::json!({"name": self.name, "revision": self.revision, "reference": self.reference,
-            "placement": self.placement, "limits": self.limits}),
+        #[derive(serde::Serialize)]
+        struct Contract<'a> {
+            name: &'a str,
+            revision: &'a str,
+            reference: &'a FileRef,
+            placement: ContextPlacement,
+            limits: Limits,
+        }
+        super::context_contract(
+            &Contract {
+                name: &self.name,
+                revision: &self.revision,
+                reference: &self.reference,
+                placement: self.placement,
+                limits: self.limits,
+            },
+            io,
         )
     }
 

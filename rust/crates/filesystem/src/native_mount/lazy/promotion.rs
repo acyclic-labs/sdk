@@ -25,7 +25,6 @@ where
         let changed = lazy
             .stage_into_checkout(
                 &mut candidate.checkout,
-                None,
                 path,
                 expected_source,
                 u64::MAX,

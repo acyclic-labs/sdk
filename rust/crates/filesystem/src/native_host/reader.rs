@@ -8,8 +8,6 @@ pub struct HostStatReader {
     filled: usize,
     #[cfg(windows)]
     volume_serial_number: u32,
-    #[cfg(target_os = "macos")]
-    base: libc::off_t,
 }
 
 impl HostStatReader {
@@ -141,11 +139,12 @@ impl HostStatReader {
                     base: *mut libc::off_t,
                 ) -> libc::ssize_t;
             }
+            let mut base = 0;
             getdirentries64(
                 self.directory.as_raw_fd(),
                 self.buffer.as_mut_ptr().cast(),
                 Self::BUFFER_BYTES,
-                &mut self.base,
+                &mut base,
             )
         };
         if count < 0 {
@@ -163,24 +162,26 @@ impl HostStatReader {
         if !self
             .next
             .is_multiple_of(align_of::<FILE_ID_EXTD_DIR_INFO>())
-            || start > self.filled
+            || self
+                .next
+                .checked_add(size_of::<FILE_ID_EXTD_DIR_INFO>())
+                .is_none_or(|end| end > self.filled)
         {
             return Err(malformed());
         }
-        // SAFETY: the fixed header fits aligned owned storage initialized by the query.
+        // SAFETY: the complete aligned record header fits initialized owned storage.
         let record = unsafe {
-            self.buffer
+            &*self
+                .buffer
                 .as_ptr()
                 .cast::<u8>()
                 .add(self.next)
                 .cast::<FILE_ID_EXTD_DIR_INFO>()
         };
-        let (length, step) = unsafe {
-            (
-                std::ptr::addr_of!((*record).FileNameLength).read_unaligned() as usize,
-                std::ptr::addr_of!((*record).NextEntryOffset).read_unaligned() as usize,
-            )
-        };
+        let (length, step) = (
+            record.FileNameLength as usize,
+            record.NextEntryOffset as usize,
+        );
         let end = if step == 0 {
             self.filled
         } else {
@@ -265,8 +266,6 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
             filled: HostStatReader::BUFFER_BYTES,
             #[cfg(windows)]
             volume_serial_number,
-            #[cfg(target_os = "macos")]
-            base: 0,
         },
         allocation,
     ))

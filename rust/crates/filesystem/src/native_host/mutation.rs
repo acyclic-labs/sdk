@@ -75,31 +75,12 @@ impl HostRoot {
         #[cfg(windows)] path: &[u16],
         work: &mut W,
     ) -> Result<HostRoot, DemandError> {
-        #[cfg(windows)]
-        {
-            let mut directory = clone_directory(&self.directory, work)?;
-            if !path.is_empty() {
-                for name in path.split(|u| *u == 92) {
-                    work.started_io(ITEM)?;
-                    directory =
-                        Dir::from_std_file(create_windows_directory(&directory, name, work)?);
-                }
-            }
-            let identity = directory_identity(&directory, work)?;
-            Ok(Self {
-                directory,
-                identity,
-            })
-        }
-        #[cfg(unix)]
-        {
-            let directory = open_unix_directory_path(&self.directory, path, true, work)?;
-            let identity = directory_identity(&directory, work)?;
-            Ok(Self {
-                directory,
-                identity,
-            })
-        }
+        let directory = directory_path(&self.directory, path, true, work)?;
+        let identity = directory_identity(&directory, work)?;
+        Ok(Self {
+            directory,
+            identity,
+        })
     }
     #[cfg(unix)]
     pub(crate) fn symlink<W: SourceDemandReadWork>(
@@ -256,8 +237,8 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
             return Err(io::Error::last_os_error().into());
         }
         let observed = unsafe { observed.assume_init() };
-        if through_descriptor.dev() != observed.st_dev as u64
-            || through_descriptor.ino() != observed.st_ino as u64
+        if (through_descriptor.raw.st_dev as u64) != observed.st_dev as u64
+            || (through_descriptor.raw.st_ino as u64) != observed.st_ino as u64
         {
             unix_mutation(work, || unsafe { libc::unlink(path.as_ptr().cast()) })?;
             return Err(io::Error::other("socket parent directory moved during bind").into());

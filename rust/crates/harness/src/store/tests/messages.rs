@@ -620,10 +620,11 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
             "2".into(),
             &mut None,
         )?;
-        let host = Arc::new(crate::filesystem::FilesystemHost::new(
+        let host = crate::filesystem::FilesystemHost::new(
             acyclic_fs::Fs::memory(),
-            filesystem_provider.clone(),
-        )?);
+            &filesystem_provider,
+            None,
+        )?;
         let private = crate::conversation::VolumeRef::new(
             filesystem_provider,
             "journal".into(),

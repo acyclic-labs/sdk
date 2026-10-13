@@ -208,10 +208,10 @@ pub(super) async fn runtime(
         let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
             files.clone(),
             &config.owner.authority,
-            graph_root,
+            graph_root, None,
             None,
         )?;
-        source.with_project_source_policy(issuer, Arc::new(policy))?;
+        source.with_project_source_policy(issuer, policy)?;
     }
     let toolset = acyclic_harness::filesystem::recursive_default_tools(
         Some(source.clone()),

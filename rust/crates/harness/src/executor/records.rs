@@ -13,7 +13,7 @@ impl StockExecution<'_> {
             .model_events_per_step
             .saturating_add(self.stock.limits.tool_calls_per_step.saturating_mul(3))
             .saturating_add(4);
-        let (_, records) = replay_execution(
+        let (_, records, hold) = replay_execution(
             journal,
             operation_id,
             maximum,
@@ -39,7 +39,7 @@ impl StockExecution<'_> {
             self.io,
         )
         .await?;
-        Ok(records)
+        Ok(retain_preparation((records, hold)))
     }
 
     pub(super) async fn model_records(
@@ -65,6 +65,7 @@ impl StockExecution<'_> {
             self.io,
         )
         .await
+        .map(|(tail, records, hold)| (tail, retain_preparation((records, hold))))
     }
 
     pub(super) async fn tool_records(
@@ -88,5 +89,6 @@ impl StockExecution<'_> {
             self.io,
         )
         .await
+        .map(|(tail, records, hold)| (tail, retain_preparation((records, hold))))
     }
 }

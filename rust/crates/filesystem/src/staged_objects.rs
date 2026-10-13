@@ -433,7 +433,7 @@ impl<S> StagedObjects<S> {
                 buffer.extend_from_slice(bytes);
             }
             if let Some(copy) = copy {
-                { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: spilled, ..crate::WorkCounters::UNCHARGED }) }.map_err(|error| ObjectFailure::before_work(error.into()))?;
+                { let copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: spilled, ..crate::WorkCounters::UNCHARGED }) }.map_err(|error| ObjectFailure::before_work(error.into()))?;
             }
             if let Some(native) = native {
                 native.admit(WorkCounters { object_bytes_written: spilled, ..WorkCounters::default() })

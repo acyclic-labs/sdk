@@ -4,7 +4,7 @@ use acyclic_harness::{Capabilities, Error, InteractionId, OperationId, Outcome, 
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
-    mcp::{McpToolTransport, callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
+    mcp::{McpToolTransport, callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::McpStdioRequest},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     runtime::{AgentHarness, InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, ToolContext},
     tool::ToolRegistry,
@@ -238,7 +238,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000, Some((policy(), Arc::clone(&callbacks))))?;
     assert!(matches!(transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await, Err(Error::Indeterminate(id)) if id == operation));
     let callback = sampling(operation);
-    let records = disk.replay(callback.validate()?, 0, 64).await?;
+    let records = disk.replay(callback.validate()?.0, 0, 64).await?;
     assert!(records.iter().any(|record| matches!(record.event, acyclic_harness::executor::ExecutionEvent::ModelStarted { .. })));
     assert!(matches!(callbacks.admit(tool, &callback).await, Err(Error::Indeterminate(_))));
     assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
@@ -277,7 +277,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         assert_eq!(result.is_ok(), granted);
         assert_eq!(model.dispatches.load(Ordering::SeqCst), usize::from(granted));
         if granted {
-            let records = disk.replay(request.validate()?, 0, 64).await?;
+            let records = disk.replay(request.validate()?.0, 0, 64).await?;
             let file = records.iter().find_map(|record| match &record.event {
                 acyclic_harness::executor::ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
             }).ok_or_else(|| Error::NotFound("media model request".into()))?;

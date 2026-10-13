@@ -140,12 +140,10 @@ async fn generation_changes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     to: &Generation<A, O>,
     maximum: u32,
 ) -> Result<ChangeSet<A, O>, WorkspaceError> {
-    from.diff_to(
+    value!(from.diff_to(
         to,
         maximum,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )
-    .await
-    .map_err(|failure| failure.error)
+    ).await).map(|(changes, _)| changes)
 }

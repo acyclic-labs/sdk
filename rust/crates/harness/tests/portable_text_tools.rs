@@ -68,7 +68,7 @@ async fn content_context(
     bindings.content = Some(ContentBindings { reader, writer });
     bindings
         .build()?
-        .durable_context(acyclic_harness::TaskId::new(), OperationId::new())
+        .durable_context(acyclic_harness::TaskId::new(), OperationId::new(), None)
         .await
 }
 
