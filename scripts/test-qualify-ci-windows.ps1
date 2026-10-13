@@ -109,7 +109,8 @@ try {
     if ($dispatch.Clauses.Count -ne $expected.Count) { throw 'missing audit lane' }
 } finally {
     if ($null -eq $priorTarget) { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue }
-    else { $env:CARGO_TARGET_DIR = $priorTarget
-    $env:RUST_TEST_THREADS = $priorTestThreads }
+    else { $env:CARGO_TARGET_DIR = $priorTarget }
+    if ($null -eq $priorTestThreads) { Remove-Item Env:RUST_TEST_THREADS -ErrorAction SilentlyContinue }
+    else { $env:RUST_TEST_THREADS = $priorTestThreads }
 }
 Write-Host 'Windows qualification audit dispatch and failure propagation passed.'
