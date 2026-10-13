@@ -193,7 +193,7 @@ impl LocalCoreStateStore {
         let meter = work.clone();
         let result = async {
             let empty = lazy_digest(&T::default(), &meter)?;
-            if lazy_digest((&owned.0), &meter)? != T::address(id) {
+            if lazy_digest(&owned.0, &meter)? != T::address(id) {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
             if T::address(id) == empty {
@@ -221,7 +221,7 @@ impl LocalCoreStateStore {
                                 return Err(LocalCoreStateStoreError::Integrity);
                             }
                         } else {
-                            write_journaled(paths, (&owned.0))?;
+                            write_journaled(paths, &owned.0)?;
                         }
                         Ok(())
                     })

@@ -68,12 +68,17 @@ pub enum ContentTimes {
     Stamp(i64),
 }
 
-pub(crate) enum ContentAddress<'a> {
+/// A file addressed by namespace path or stable identity.
+pub enum ContentAddress<'a> {
+    /// Resolves the path in the current checkout.
     Path(&'a NamespacePath),
+    /// Uses the file's stable identity.
     File(FileId),
 }
 
-pub(crate) trait ContentFile: Sized {
+/// A file accepted by content and metadata operations.
+pub trait ContentFile: Sized {
+    /// Returns the path or identity to resolve.
     fn address(&self) -> ContentAddress<'_>;
 }
 
