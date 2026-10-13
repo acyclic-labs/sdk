@@ -451,12 +451,7 @@ pub(super) async fn execute(
             #[cfg(feature = "native-execution")]
             {
                 let request = read_json(path)?;
-                let result = match name {
-                    "/publication-open" => native.publication_open(&request).await?,
-                    "/publication-observe" => native.publication_observe(&request).await?,
-                    "/publication-apply" => native.publication_apply(&request).await?,
-                    _ => native.publication_reconcile(&request).await?,
-                };
+                let result = native.publication(name, &request).await?;
                 json_line("publication", &result)
             }
             #[cfg(not(feature = "native-execution"))]

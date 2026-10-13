@@ -3,8 +3,6 @@
 mod config;
 pub use config::NativePublicationConfig;
 #[cfg(feature = "native-execution")]
-mod apply;
-#[cfg(feature = "native-execution")]
 mod approval;
 #[cfg(feature = "native-execution")]
 mod approval_frame;

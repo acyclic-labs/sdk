@@ -83,6 +83,46 @@ struct Caller {
     aggregate: StreamAggregate<LocalStream>,
     lease: WorkLease,
 }
+impl Caller {
+    fn message(&self, kind: MessageKind, content: FileRef) -> Result<ConversationMessage> {
+        let sequence = self
+            .aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("caller conversation is missing".into()))?
+            .logical_revision()
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("conversation sequence overflow".into()))?;
+        Ok(ConversationMessage {
+            id: uuid::Uuid::new_v4(),
+            sequence,
+            kind,
+            content,
+            attachments: Default::default(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: Default::default(),
+        })
+    }
+    async fn apply(&mut self, action: Action) -> Result<()> {
+        let operation_id = OperationId::new();
+        self.aggregate
+            .execute(
+                Command {
+                    operation_id,
+                    idempotency_key: IdempotencyKey::new(operation_id.to_string())?,
+                    expected_revision: self.aggregate.reducer().revision(),
+                    scope: self.binding.scope.clone(),
+                    causal_parent: None,
+                    action,
+                },
+                None,
+                &mut None,
+            )
+            .await?;
+        Ok(())
+    }
+}
 struct Producer {
     root: PathBuf,
     files: Arc<Files>,
@@ -153,39 +193,4 @@ fn admitted_task<T: Send + 'static>(admission: Admission<RuntimeTask<T>>) -> Res
 async fn persist(path: &Path, value: &impl Serialize) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(invalid)?;
     tokio::fs::write(path, bytes).await.map_err(storage)
-}
-
-async fn write(
-    files: &Files,
-    owner: &AuthorityBinding,
-    volume: &VolumeRef,
-    path: &str,
-    bytes: &[u8],
-    media: &str,
-    display: &str,
-    key: &str,
-) -> Result<FileRef> {
-    let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, owner.authority.clone());
-    let writer = ContentGrant::verify(
-        &issuer.verifier(&mut None)?,
-        &owner.scope,
-        volume,
-        VolumeOperation::Write,
-        u64::MAX,
-        &mut None,
-    )?;
-    files
-        .put_content(
-            volume,
-            &writer,
-            path,
-            bytes,
-            media,
-            display,
-            PAYLOAD_BYTES,
-            &IdempotencyKey::new(key)?,
-            None,
-            None,
-        )
-        .await
 }
