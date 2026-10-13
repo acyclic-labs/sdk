@@ -1,184 +1,369 @@
 use super::*;
-
-/// Dispatches each durable tool call once and reconciles retained dispatches.
-pub struct DurableToolRunner {
-    tools: ToolRegistry,
+/// Executes a pinned dispatch once and reconciles its journal.
+pub struct DurableToolRunner<'a> {
+    tools: &'a ToolRegistry,
     journal: Arc<dyn ExecutionJournal>,
     limits: Limits,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    native_custody: Option<acyclic_fs::NativeAllocation>,
+    work: NativeWork<'a>,
 }
-
-impl DurableToolRunner {
-    /// Pins the registered definitions and the owner-bound ref-only journal.
+impl<'tools> DurableToolRunner<'tools> {
+    /// Pins the borrowed registry and owner-bound journal.
     pub fn new(
-        tools: &ToolRegistry,
+        tools: &'tools ToolRegistry,
         journal: Arc<dyn ExecutionJournal>,
-        _work: crate::NativeWork<'_>,
+        work: NativeWork<'tools>,
     ) -> Result<Self> {
+        let io = preparation_io(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = _work {
-            if !journal.supports_native_execution(work)? {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "tool journal has no native execution producer",
-                });
-            }
-            let metadata =
-                (std::mem::size_of::<Self>() - std::mem::size_of::<ToolRegistry>()) as u64;
-            let mut custody = work.claim(metadata, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-            let mut tools_custody;
-            let (tools, hold) = tools.clone_with_native_work(work)?;
-            tools_custody = hold;
-            custody.absorb(&mut tools_custody)?;
-            return Ok(Self {
-                tools,
-                journal,
-                limits: Limits::default(),
-                native_custody: Some(custody),
-            });
+        if let Some(work) = work
+            && !journal.supports_native_execution(work)?
+        {
+            return Err(boundary(
+                io.as_ref(),
+                Unsupported,
+                "journal has no native producer",
+            ));
         }
         Ok(Self {
-            tools: tools.clone(),
+            tools,
             journal,
             limits: Limits::default(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
+            work,
         })
     }
-
-    /// Narrows the maximum artifact and projection bytes before publication.
+    /// Sets finite publication limits.
     pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let io = self
-            .native_custody
-            .as_ref()
-            .map(|custody| crate::filesystem::PreparationIo::from_native_work(custody.work()))
-            .transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let io = None;
-        crate::executor::with_history_io(io.as_ref(), |work| limits.validate(work))?;
+        let io = preparation_io(self.work)?;
+        with_history_io(io.as_ref(), |work| limits.validate(work))?;
         self.limits = limits;
         Ok(self)
     }
-
-    /// Runs an admitted invocation; reconciliation never dispatches missing intent.
+    /// Runs or reconciles the admitted invocation on its original work.
     pub fn run<'a>(
         &'a self,
         task_id: TaskId,
         definition: &'a ToolDefinition,
         invocation: &'a ToolInvocation,
         context: &'a ToolContext,
-        work: crate::NativeWork<'a>,
+        work: NativeWork<'a>,
         reconcile_only: bool,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (Outcome<Value>, crate::NativeCustody)>>
-    {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let io = work
-            .map(crate::executor::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let io: Option<crate::executor::PreparationIo> = {
-            if work.is_some() {
-                return Err(Error::Invalid("native tool work is unavailable".into()));
-            }
-            None
-        };
+    ) -> Result<crate::store::HistoryContentFuture<'a, (Outcome<Value>, NativeCustody)>> {
+        let io = preparation_io(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
-            work.remaining()?;
             if !context.native_metadata_matches(work)
                 || !self
-                    .native_custody
-                    .as_ref()
-                    .is_some_and(|guard| guard.work().shares_ledger(work))
+                    .work
+                    .is_some_and(|original| original.shares_ledger(work))
             {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "native tool context or runner metadata has no original custody",
-                });
+                return Err(boundary(
+                    io.as_ref(),
+                    Unauthorized,
+                    "tool context or runner belongs to another work",
+                ));
             }
         }
         let tool = self
             .tools
             .get(&definition.name, Some(&definition.revision), io.as_ref())?
             .ok_or_else(|| {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work.is_some() {
-                    return Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::NotFound,
-                        reason: "admitted tool revision is not registered",
-                    };
-                }
-                Error::NotFound(format!("tool {}@{}", definition.name, definition.revision))
+                boundary(
+                    io.as_ref(),
+                    NotFound,
+                    "admitted tool revision is not registered",
+                )
             })?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             tool.executor.supports_native_execution(work)?;
             tool.projection.supports_native_projection(Some(work))?;
-            if !self.journal.supports_native_execution(work)? {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "tool journal has no native execution producer",
-                });
-            }
         }
         let future = || async move {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let io = work
-                .map(crate::executor::PreparationIo::from_native_work)
-                .transpose()?;
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let io: Option<crate::executor::PreparationIo> = None;
-            let copied = 'copy: {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if let Some(work) = work {
-                    let mut custody = work.claim(
-                        (std::mem::size_of::<ToolInvocation>() - std::mem::size_of::<Value>())
-                            as u64,
-                        0,
-                        acyclic_fs::WorkCounters::UNCHARGED,
-                    )?;
-                    // Payload tuples drop before the header guard on every error path.
-                    let mut call = work.display(&invocation.call_id)?;
-                    custody.absorb(&mut call.1)?;
-                    let mut name = work.display(&invocation.name)?;
-                    custody.absorb(&mut name.1)?;
-                    let mut arguments =
-                        crate::tool::clone_value(&invocation.arguments, None, work)?;
-                    custody.absorb(&mut arguments.1)?;
-                    break 'copy (
-                        ToolInvocation {
-                            operation_id: invocation.operation_id,
-                            call_id: call.0,
-                            name: name.0,
-                            arguments: arguments.0,
-                        },
-                        Some(custody),
-                    );
-                }
-                (invocation.clone(), None)
-            };
-            let result = self
-                .run_engine(
-                    task_id,
-                    invocation.operation_id,
-                    definition,
-                    copied,
-                    context,
-                    tool,
-                    io.as_ref(),
-                    reconcile_only,
-                )
-                .await?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() && result.1.is_none() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Storage,
-                    reason: "native tool outcome has no custody",
-                });
+            let io = io.as_ref();
+            let operation_id = invocation.operation_id;
+            if tool.definition != *definition || invocation.name != definition.name {
+                return Err(boundary(io, Conflict, "admitted tool definition changed"));
             }
-            Ok(result)
+            with_history_io(io, |work| {
+                ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work)
+            })?;
+            if context.operation_id() != operation_id
+                || context.call_id() != invocation.call_id
+                || context.task().durable_task_id() != Some(task_id)
+            {
+                return Err(boundary(
+                    io,
+                    Unauthorized,
+                    "tool invocation context mismatch",
+                ));
+            }
+            let scope = context.effective_scope();
+            let limits = Limits {
+                file_bytes: self.limits.file_bytes.min(scope.limits().file_bytes),
+                render_bytes: self.limits.render_bytes.min(scope.limits().render_bytes),
+                path_bytes: self.limits.path_bytes.min(scope.limits().path_bytes),
+                attachments: self.limits.attachments.min(scope.limits().attachments),
+                ..self.limits
+            };
+            tool_json_bound(invocation, limits.file_bytes, io)?;
+            let digest = preparation_digest(&(&task_id, definition, invocation, limits), io)?;
+            loop {
+                // Reauthorize before reading or publishing replay.
+                authorize(tool, invocation, context, io).await?;
+                let (_, records, hold) =
+                    replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, io).await?;
+                let records = (records, hold);
+                for (index, record) in records.0.iter().enumerate() {
+                    match (index, &record.event) {
+                        (0, ExecutionEvent::Started { request_digest })
+                            if *request_digest == digest => {}
+                        (
+                            1,
+                            ExecutionEvent::ToolStarted {
+                                step: 0,
+                                call_id,
+                                invocation: reference,
+                            },
+                        ) if *call_id == invocation.call_id => {
+                            if reference.descriptor().byte_length() > limits.file_bytes {
+                                return Err(boundary(
+                                    io,
+                                    Conflict,
+                                    "invocation descriptor exceeds limit",
+                                ));
+                            }
+                            let pinned = self.load::<ToolInvocation>(reference, io).await?;
+                            if pinned.0 != *invocation {
+                                return Err(boundary(io, Conflict, "journal invocation changed"));
+                            }
+                        }
+                        (
+                            2,
+                            ExecutionEvent::ToolCompleted {
+                                step: 0, call_id, ..
+                            }
+                            | ExecutionEvent::ToolFailed {
+                                step: 0, call_id, ..
+                            },
+                        ) if *call_id == invocation.call_id => {}
+                        _ => return Err(boundary(io, Conflict, "incompatible tool history")),
+                    }
+                }
+                if let Some(ExecutionEvent::ToolCompleted {
+                    result, projection, ..
+                }) = records.0.get(2).map(|record| &record.event)
+                {
+                    if result.descriptor().byte_length() > limits.file_bytes
+                        || projection.descriptor().byte_length() > limits.render_bytes
+                    {
+                        return Err(boundary(
+                            io,
+                            Conflict,
+                            "tool history descriptor exceeds limits",
+                        ));
+                    }
+                    let result = self.load::<ToolResult>(result, io).await?;
+                    let projection = self.load::<Value>(projection, io).await?;
+                    if let Err(error) = tool_json_bound(&result.0, limits.file_bytes, io)
+                        .and_then(|()| tool_json_bound(&projection.0, limits.render_bytes, io))
+                    {
+                        if tool_propagate(&error, io) {
+                            return Err(error);
+                        }
+                        return Err(boundary(io, Conflict, "tool history exceeds limits"));
+                    }
+                    with_history_io(io, |work| {
+                        validate_json_schema_value(
+                            &definition.output_schema,
+                            &result.0.value,
+                            "tool output",
+                            work,
+                        )
+                    })?;
+                    tool_validate_projection(definition, &projection.0, limits, io)?;
+                    return tool_success(result, io);
+                }
+                if let Some(ExecutionEvent::ToolFailed { reason, .. }) =
+                    records.0.get(2).map(|record| &record.event)
+                {
+                    return tool_outcome(operation_id, Some(*reason), io);
+                }
+                let started = !records.0.is_empty();
+                let dispatched = records.0.len() >= 2;
+                if reconcile_only && !dispatched {
+                    return tool_outcome(operation_id, None, io);
+                }
+                drop(records);
+                if !started {
+                    self.journal
+                        .append(
+                            operation_id,
+                            "tool:started",
+                            &ExecutionEvent::Started {
+                                request_digest: digest,
+                            },
+                            io,
+                        )?
+                        .await?;
+                }
+                let mut claimed = false;
+                if !dispatched {
+                    let reference = self
+                        .stage(operation_id, "tool:invocation", invocation, io)
+                        .await?;
+                    let (_, current, hold) =
+                        replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, io)
+                            .await?;
+                    let current = (current, hold);
+                    if matches!(current.0.as_slice(), [record] if matches!(&record.event, ExecutionEvent::Started { request_digest } if *request_digest == digest))
+                    {
+                        let key = tool_text(format_args!("tool:claim:{}", OperationId::new()), io)?;
+                        let call = tool_text(format_args!("{}", invocation.call_id), io)?;
+                        let event = ExecutionEvent::ToolStarted {
+                            step: 0,
+                            call_id: call.0,
+                            invocation: reference.0,
+                        };
+                        match async {
+                            self.journal
+                                .append_if_tail(operation_id, 1, &key.0, &event, io)?
+                                .await
+                        }
+                        .await
+                        {
+                            Ok(true) => claimed = true,
+                            Ok(false) => continue,
+                            Err(error) if tool_propagate(&error, io) => return Err(error),
+                            Err(Error::Indeterminate(_)) => {
+                                return tool_outcome(operation_id, None, io);
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    } else if !matches!(current.0.get(1).map(|record| &record.event), Some(ExecutionEvent::ToolStarted { step: 0, call_id, .. }) if *call_id == invocation.call_id)
+                    {
+                        return Err(boundary(io, Conflict, "journal changed before dispatch"));
+                    } else {
+                        continue;
+                    }
+                }
+                macro_rules! fail {
+                    ($reason:expr) => {
+                        if let Some(outcome) =
+                            self.fail(operation_id, invocation, $reason, io).await?
+                        {
+                            return Ok(outcome);
+                        }
+                        continue;
+                    };
+                }
+                let execution = if claimed {
+                    self.invoke(tool, invocation, context, io).await.map(Some)
+                } else {
+                    self.reconcile(tool, invocation, context, io).await
+                };
+                let result = match execution {
+                    Ok(Some(result)) => result,
+                    Ok(None) => return tool_outcome(operation_id, None, io),
+                    Err(error) if tool_propagate(&error, io) => return Err(error),
+                    Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                        return tool_outcome(operation_id, None, io);
+                    }
+                    Err(error) => {
+                        if !claimed {
+                            return Err(error);
+                        }
+                        fail!(ToolFailureKind::ExecutorRejected);
+                    }
+                };
+                if let Err(error) = with_history_io(io, |work| {
+                    validate_json_schema_value(
+                        &definition.output_schema,
+                        &result.0.value,
+                        "tool output",
+                        work,
+                    )
+                }) {
+                    if tool_propagate(&error, io) {
+                        return Err(error);
+                    }
+                    fail!(ToolFailureKind::InvalidOutput);
+                }
+                if let Err(error) = tool_json_bound(&result.0, limits.file_bytes, io) {
+                    if tool_propagate(&error, io) {
+                        return Err(error);
+                    }
+                    fail!(ToolFailureKind::PublicationRejected);
+                }
+                let projection =
+                    match tool
+                        .projection
+                        .project(invocation, &result.0, native_work(io))
+                    {
+                        Ok(projection) => projection,
+                        Err(error) if tool_propagate(&error, io) => return Err(error),
+                        Err(_) => {
+                            fail!(ToolFailureKind::ProjectionRejected);
+                        }
+                    };
+                if native_work(io).is_some() && projection.1.is_none() {
+                    return Err(boundary(io, Unsupported, "tool projection has no custody"));
+                }
+                if let Err(error) = tool_validate_projection(definition, &projection.0, limits, io)
+                    .and_then(|()| tool_json_bound(&projection.0, limits.render_bytes, io))
+                {
+                    if tool_propagate(&error, io) {
+                        return Err(error);
+                    }
+                    fail!(ToolFailureKind::ProjectionRejected);
+                }
+                let result_ref = match self.stage(operation_id, "tool:result", &result.0, io).await
+                {
+                    Ok(reference) => reference,
+                    Err(error) if tool_propagate(&error, io) => return Err(error),
+                    Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                        return tool_outcome(operation_id, None, io);
+                    }
+                    Err(_) => {
+                        fail!(ToolFailureKind::PublicationRejected);
+                    }
+                };
+                let projection_ref = match self
+                    .stage(operation_id, "tool:projection", &projection.0, io)
+                    .await
+                {
+                    Ok(reference) => reference,
+                    Err(error) if tool_propagate(&error, io) => return Err(error),
+                    Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                        return tool_outcome(operation_id, None, io);
+                    }
+                    Err(_) => {
+                        fail!(ToolFailureKind::PublicationRejected);
+                    }
+                };
+                let key = tool_text(format_args!("tool:completed:{}", OperationId::new()), io)?;
+                let call = tool_text(format_args!("{}", invocation.call_id), io)?;
+                let event = ExecutionEvent::ToolCompleted {
+                    step: 0,
+                    call_id: call.0,
+                    result: result_ref.0,
+                    projection: projection_ref.0,
+                };
+                match async {
+                    self.journal
+                        .append_if_tail(operation_id, 2, &key.0, &event, io)?
+                        .await
+                }
+                .await
+                {
+                    Ok(true) => return tool_success(result, io),
+                    Ok(false) => continue,
+                    Err(error) if tool_propagate(&error, io) => return Err(error),
+                    Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                        return tool_outcome(operation_id, None, io);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
@@ -191,9 +376,7 @@ impl DurableToolRunner {
         })
     }
 }
-
-mod engine;
 mod journal;
+use journal::authorize;
 mod value;
-pub(super) use value::tool_error;
 use value::*;
