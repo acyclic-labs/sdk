@@ -1,28 +1,21 @@
 //! Portable recursive tools over the configured source and existing workflow host.
 use super::{
     ConfiguredRecursiveToolSource, FORK_PREPARE_TASK_COMMAND_KIND, FilesystemHost,
-    FilesystemTaskRuntime, FilesystemWorkflowJournal, ForkPreparationLimits, ForkToolArguments,
-    MODEL_TASK_COMMAND_KIND, ParentProjectController, RetainedSourceBinding,
-    TASK_ADMIT_PREPARED_COMMAND_KIND, TaskCommandHost, TaskCommandProgress,
-    fork_preparation_request,
+    FilesystemTaskRuntime, ForkPreparationLimits, ForkToolArguments, MODEL_TASK_COMMAND_KIND,
+    ParentProjectController, RetainedSourceBinding, fork_preparation_request,
 };
 use crate::{
     Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, VolumeOperation, VolumeRef},
     core::{Action, Authority, AuthorityVerifier, Command, Scope},
-    durable_tool::{ResumableTool, ResumableToolRegistry},
+    durable_host::TaskJournalOwner,
     fork::{ForkReport, ForkRequest, ForkSeed},
     merge::ProjectMergeReceipt,
     resources::GenerationRef,
-    runtime::{
-        RuntimeScope, TaskAdmissionRecord, ToolContext,
-        task_id_for_admission,
-    },
+    runtime::{RuntimeScope, TaskAdmissionRecord, ToolContext, task_id_for_admission},
     store::{StreamAggregate, history::HistoryIo as _},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
-    workflow::{
-        MachineIdentity, MachineStatus, MachineTransition, ResumableMachine, WorkflowCommand,
-    },
+    workflow::{MachineStatus, MachineTransition, WorkflowCommand},
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictSide, JoinOutcome,
@@ -32,20 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
-const FORK_SOURCE_STAGE: &str = "acyclic.recursive.fork.source_stage.v1";
-const FORK_OBSERVE: &str = "acyclic.recursive.fork.observe.v1";
-const FORK_PUBLISH: &str = "acyclic.recursive.fork.publish.v1";
-const MERGE_APPLY: &str = "acyclic.recursive.merge.apply.v1";
-const MERGE_PUBLISH: &str = "acyclic.recursive.merge.publish.v1";
-const REVISION: &str = "portable-recursive-3";
-
-/// The same tools registered for ordinary and resumable callers.
-pub struct RecursiveDefaultToolset {
-    /// Ordinary tool registrations.
-    pub tools: ToolRegistry,
-    /// Resumable tool registrations.
-    pub resumable_tools: ResumableToolRegistry,
-}
+const REVISION: &str = "portable-recursive-5";
 
 /// Selects an explicitly readable project and exact conflict sides.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -154,7 +134,7 @@ pub fn recursive_default_tools<
 >(
     source: Option<Arc<ConfiguredRecursiveToolSource<P, A, O>>>,
     maximum_request_bytes: u64,
-) -> Result<RecursiveDefaultToolset> {
+) -> Result<ToolRegistry> {
     if maximum_request_bytes == 0 || maximum_request_bytes == u64::MAX {
         return Err(Error::Invalid(
             "recursive request bound must be finite and positive".into(),
@@ -168,20 +148,15 @@ pub fn recursive_default_tools<
     ] {
         tools.register((tool, None), &mut None, None)?;
     }
-    let mut resumable_tools = ResumableToolRegistry::default();
     for name in ["acyclic.fork", "acyclic.merge"] {
-        let durable = ResumableTool {
-            definition: definition(name, maximum_request_bytes),
-            machine: Arc::new(RecursiveToolMachine::new(name, maximum_request_bytes)),
-        };
-        resumable_tools.register(durable.clone())?;
+        let definition = definition(name, maximum_request_bytes);
         tools.register(
             (
                 Tool {
-                    definition: durable.definition.clone(),
+                    definition: definition.clone(),
                     executor: Arc::new(RecursiveExecutor {
                         source: source.clone(),
-                        durable,
+                        definition,
                         maximum_request_bytes,
                     }),
                     projection: Arc::new(crate::tool::JsonToolProjection),
@@ -192,10 +167,7 @@ pub fn recursive_default_tools<
             None,
         )?;
     }
-    Ok(RecursiveDefaultToolset {
-        tools,
-        resumable_tools,
-    })
+    Ok(tools)
 }
 
 fn definition(name: &str, maximum: u64) -> ToolDefinition {
@@ -227,36 +199,9 @@ pub(super) enum Plan {
     Fork(Box<RecursiveForkToolPlan>),
     Merge(Box<RecursiveMergeToolPlan>),
 }
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
-enum State {
-    Ready {
-        arguments: Value,
-    },
-    SourcePinned {
-        intent: RecursiveForkSourceIntent,
-        command: WorkflowCommand,
-    },
-    Waiting {
-        plan: Plan,
-        command: WorkflowCommand,
-        report: Option<Box<ForkReport>>,
-        receipt: Option<Box<ProjectMergeReceipt>>,
-    },
-    Complete {
-        value: Value,
-    },
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Receipt {
-    operation_id: OperationId,
-    value: Outcome<Value>,
-    next: Option<WorkflowCommand>,
-}
 struct RecursiveExecutor<P, A, O> {
     source: Option<Arc<ConfiguredRecursiveToolSource<P, A, O>>>,
-    durable: ResumableTool,
+    definition: ToolDefinition,
     maximum_request_bytes: u64,
 }
 
@@ -271,12 +216,10 @@ mod dispatch;
 mod executor;
 mod fork;
 mod input;
-mod machine;
 mod merge;
 mod validation;
 use codec::*;
 use dispatch::*;
-use machine::RecursiveToolMachine;
 use validation::*;
 #[cfg(test)]
 #[path = "../default_tools_tests.rs"]

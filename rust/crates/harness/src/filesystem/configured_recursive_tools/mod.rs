@@ -8,7 +8,6 @@ use crate::{
         VolumeOwner, VolumeRef,
     },
     core::{Authority, AuthorityIssuer, AuthorityVerifier, Reducer, SchemaRegistry, Scope},
-    durable_tool::ResumableTool,
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
@@ -25,7 +24,6 @@ use crate::{
         ProjectSourceReadHandle, ProjectSourceSnapshot, RootProjectSourceProvider,
     },
     store::{HistoryReadLimits, StreamAggregate},
-    tool::ToolInvocation,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
@@ -288,33 +286,14 @@ where
     }
 
     pub(in crate::filesystem) fn owner<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        tool: &'a ResumableTool,
-        invocation: &'a ToolInvocation,
-        cancellation: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, (Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>)>> {
+        &'a self, context: &'a ToolContext, cancellation: &'a CancellationToken,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, (Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::durable_host::TaskJournalOwner<P>>)>> {
         BoundedContentFuture::new(io, || async move {
             native_io(io)?;
-            if io.is_none() {
-                self.authenticate_caller(context.task(), None, false, None)
-                    .await?;
-            }
-            let owner = self
-                .runtime(io)?
-                .recursive_tool_owner(context, tool, invocation, cancellation, io)
-                .await?;
-            if io.is_some() {
-                self.authenticate_caller(
-                    context.task(),
-                    owner.1.owner.as_deref(),
-                    false,
-                    io,
-                )
-                .await?;
-            }
-            Ok(owner)
+            let owner = self.source_owner(context.task(), cancellation, io).await?;
+            self.authenticate_caller(context.task(), Some(&owner), false, io).await?;
+            Ok((self.runtime(io)?, owner))
         })
     }
     pub(in crate::filesystem) fn select<'a>(
@@ -496,7 +475,7 @@ fn allocation_digest(
     digest
 }
 
-fn checkpoint_operation(effect: OperationId) -> OperationId {
+pub(in crate::filesystem) fn checkpoint_operation(effect: OperationId) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"harness/v2/configured-recursive-checkpoint\0");
     hash.update(&effect.into_bytes());

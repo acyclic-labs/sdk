@@ -252,14 +252,14 @@ pub(super) async fn runtime(
             scope,
             tasks,
             machines,
-            toolset.tools,
+            toolset,
             config.session_limits,
             config.concurrency,
             MAX_FRAME_BYTES as u64,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
             vec![creation],
-            toolset.resumable_tools,
+            acyclic_harness::durable_tool::ResumableToolRegistry::default(),
         )
         .await?
         .with_recursive_source(source.clone()),
