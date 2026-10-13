@@ -171,7 +171,11 @@ impl PiTaskRuntime {
         let fork_machine = Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new());
         let mut tasks = TaskRegistry::default();
         tasks.register(machine.definition(work)?)?;
-        tasks.register(fork_machine.definition::<serde_json::Value, serde_json::Value>()?)?;
+        tasks.register(
+            fork_machine
+                .definition::<serde_json::Value, serde_json::Value>()?
+                .publish(work)?,
+        )?;
         let definition =
             tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);

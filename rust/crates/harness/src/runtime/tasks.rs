@@ -101,6 +101,40 @@ impl<I, O> TaskDefinition<I, O> {
         Ok(definition)
     }
 
+    /// Publishes a funded copy of a resumable definition and its requirements.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn publish(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        let TaskImplementation::Resumable(machine) = &self.implementation else {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "live tasks have no resumable workflow",
+            });
+        };
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = (|| {
+            machine.identity_with_native_work(work)?;
+            let input = task_copy_value(&self.input_schema, Some(&io))?;
+            let output = task_copy_value(&self.output_schema, Some(&io))?;
+            let schemas = io.owned_bytes()?;
+            let (mut definition, _) =
+                Self::resumable_with_io(machine.clone(), input, output, Some(&io))?;
+            definition.requirements = task_copy_with_io(Some(&io), |quota| {
+                crate::core::copy(&self.requirements, quota, |value, _| {
+                    crate::core::owned_bytes(value)
+                })
+            })?;
+            let retained = io.owned_bytes()?;
+            definition.refresh_digest(Some(&io))?;
+            Ok((definition, schemas, retained))
+        })();
+        let retained = result.as_ref().map_or(0, |(_, _, retained)| *retained);
+        let ((mut definition, schemas, _), mut custody) =
+            crate::workflow::finish_native_io(result, io, retained)?;
+        definition.native_schema_custody = Some(custody.split_off(schemas)?);
+        definition.native_metadata_custody = Some(custody);
+        Ok(definition)
+    }
+
     pub(super) fn resumable_with_io(
         machine: Arc<dyn ResumableMachine>,
         input_schema: Value,

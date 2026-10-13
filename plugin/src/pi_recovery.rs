@@ -211,7 +211,8 @@ where
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
         Some(
             std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new())
-                .definition::<serde_json::Value, serde_json::Value>()?,
+                .definition::<serde_json::Value, serde_json::Value>()?
+                .publish(work)?,
         )
     } else {
         None
