@@ -1,29 +1,25 @@
 use super::*;
+use crate::executor::json::{JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape};
 
-pub(crate) fn original_native_decode_mode(observer: &dyn crate::store::history::HistoryIo) -> bool {
+pub(crate) fn original_native_decode_mode(_observer: &dyn HistoryIo) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        observer.original_native_work().is_some()
-    }
+    return _observer.original_native_work().is_some();
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = observer;
-        false
-    }
+    false
 }
 
 pub(crate) fn decode_preclaimed_json_with_mode<T, F>(
     bytes: &[u8],
-    bounds: crate::executor::json::JsonBounds,
+    bounds: JsonBounds,
     maximum_owned_bytes: u64,
     code: crate::wire::ErrorCode,
     native: bool,
-    value_schema: &'static crate::executor::json::JsonValueSchema,
+    value_schema: &'static JsonValueSchema,
     charge: &mut F,
 ) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
-    F: FnMut(crate::executor::json::JsonCodecCharge) -> Result<()>,
+    F: FnMut(JsonCodecCharge) -> Result<()>,
 {
     let native = native && cfg!(all(feature = "filesystem", not(target_arch = "wasm32")));
     crate::executor::json::json_from_slice_bounded(
@@ -39,31 +35,27 @@ where
 
 pub(crate) fn retain_original_decode_error<T>(
     mut result: Result<T>,
-    reservation: &mut u64,
-    observer: &mut dyn crate::store::history::HistoryIo,
+    _reservation: &mut u64,
+    _observer: &mut dyn HistoryIo,
 ) -> Result<T> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Err(Error::NativeJson { custody, .. }) = &mut result
         && custody.is_none()
     {
         *custody = Some(
-            observer
-                .take_native_custody(*reservation)
+            _observer
+                .take_native_custody(*_reservation)
                 .expect("original native decoder reservation has source custody"),
         );
-        *reservation = 0;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = (&mut result, reservation, observer);
+        *_reservation = 0;
     }
     result
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::store) struct OperationLocation {
-    pub(in crate::store) authority: Authority,
+pub(in crate::store) struct OperationLocation<A = Authority> {
+    pub(in crate::store) authority: A,
     pub(in crate::store) operation_id: OperationId,
     pub(in crate::store) revision: u64,
     pub(in crate::store) intent_digest: [u8; 32],
@@ -74,46 +66,41 @@ pub(in crate::store) struct OperationLocation {
 pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
     maximum_bytes: u64,
-    labels: &[&str],
-    admission: fn(
-        crate::executor::json::JsonValueShape,
-        &mut dyn crate::store::HistoryIo,
-    ) -> Result<u64>,
+    labels: &str,
+    admission: fn(JsonValueShape, &mut dyn HistoryIo) -> Result<u64>,
     retained: fn(&T) -> (u64, u64),
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<T> {
     if bytes.len() as u64 > maximum_bytes {
-        return Err(crate::store::guarded_boundary(
-            work,
-            crate::wire::ErrorCode::Storage,
-            "index JSON exceeds its byte bound",
-        ));
+        return Err(boundary(work, Storage, "index JSON exceeds its byte bound"));
     }
     let Some(observer) = work.as_deref_mut() else {
-        return crate::contract::json_from_slice(bytes).map_err(|error| {
-            Error::Storage(format!("execution journal content is invalid: {error}"))
-        });
+        return crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Storage(error.to_string()));
     };
     let diagnostic = crate::executor::json::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
-        labels.iter().map(|label| label.len() as u64 + 4).sum(),
+        labels
+            .split_ascii_whitespace()
+            .map(|label| label.len() as u64 + 4)
+            .sum(),
     )?;
     let mut reservation = 0;
     let mut observed_failure = false;
     let native = original_native_decode_mode(observer);
     let decoded = decode_preclaimed_json_with_mode::<T, _>(
         bytes,
-        crate::executor::json::JsonBounds {
+        JsonBounds {
             maximum_bytes,
             maximum_items: maximum_bytes,
             maximum_depth: 256,
         },
         bytes.len() as u64,
-        crate::wire::ErrorCode::Storage,
+        Storage,
         native,
-        crate::executor::json::JsonValueSchema::None,
+        JsonValueSchema::None,
         &mut |charge| {
-            let result = if let crate::executor::json::JsonCodecCharge::Admission {
+            let result = if let JsonCodecCharge::Admission {
                 maximum_owned_bytes,
                 value_shape,
             } = charge
@@ -129,71 +116,40 @@ pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned>(
             } else {
                 observer.codec_charge(charge)
             };
-            if result.is_err() {
-                observed_failure = true;
-            }
+            observed_failure |= result.is_err();
             result
         },
     );
     let decoded =
         retain_original_decode_error(decoded, &mut reservation, observer).map_err(|error| {
             match error {
-                Error::Invalid(message) if !observed_failure => {
-                    Error::Storage(format!("execution journal content is invalid: {message}"))
-                }
+                Error::Invalid(message) if !observed_failure => Error::Storage(message),
                 other => other,
             }
         });
-    let value = match decoded {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = observer.release_owned(reservation);
-            return Err(error);
-        }
-    };
+    let mut quota = CodecQuota::from_retained(work, reservation);
+    let value = decoded?;
     let (owned, copied) = retained(&value);
-    let Some(scratch) = reservation.checked_sub(owned) else {
-        drop(value);
-        observer.release_owned(reservation)?;
+    if owned > quota.retained() {
         return Err(Error::Storage(
             "decoded index exceeds its admitted storage".into(),
         ));
-    };
-    let result = observer
-        .release_owned(scratch)
-        .and_then(|()| observer.copy_bytes(copied));
-    if let Err(error) = result {
-        drop(value);
-        let _ = observer.release_owned(owned);
-        return Err(error);
     }
+    quota.replace(owned)?;
+    let observer = quota.work().as_deref_mut().expect("index observer");
+    observer.copy_bytes(copied)?;
+    quota.transfer();
     Ok(value)
 }
 
 pub(in crate::store) fn decode_location_with_work(
     bytes: &[u8],
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<OperationLocation> {
     decode_index(
         bytes,
         acyclic_stream::MAX_RECORD_BYTES as u64,
-        &[
-            "OperationLocation",
-            "Authority",
-            "AggregateKind",
-            "authority",
-            "operation_id",
-            "revision",
-            "intent_digest",
-            "effect_position",
-            "kind",
-            "id",
-            "agent",
-            "conversation",
-            "session",
-            "turn",
-            "task",
-        ],
+        "OperationLocation Authority AggregateKind authority operation_id revision intent_digest effect_position kind id agent conversation session turn task",
         |_, _| Ok(0),
         |location: &OperationLocation| {
             (
@@ -207,40 +163,20 @@ pub(in crate::store) fn decode_location_with_work(
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::store) struct MessageLocation {
-    pub(in crate::store) location: OperationLocation,
+pub(in crate::store) struct MessageLocation<A = Authority> {
+    pub(in crate::store) location: OperationLocation<A>,
     pub(in crate::store) message_id: uuid::Uuid,
     pub(in crate::store) sequence: u64,
 }
 
 pub(in crate::store) fn decode_message_location_with_work(
     bytes: &[u8],
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<MessageLocation> {
     decode_index(
         bytes,
         acyclic_stream::MAX_RECORD_BYTES as u64,
-        &[
-            "MessageLocation",
-            "OperationLocation",
-            "Authority",
-            "AggregateKind",
-            "location",
-            "message_id",
-            "sequence",
-            "authority",
-            "operation_id",
-            "revision",
-            "intent_digest",
-            "effect_position",
-            "kind",
-            "id",
-            "agent",
-            "conversation",
-            "session",
-            "turn",
-            "task",
-        ],
+        "MessageLocation OperationLocation Authority AggregateKind location message_id sequence authority operation_id revision intent_digest effect_position kind id agent conversation session turn task",
         |_, _| Ok(0),
         |message: &MessageLocation| {
             (

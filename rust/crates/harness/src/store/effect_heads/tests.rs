@@ -59,8 +59,7 @@ async fn copy_cut(
 ) -> Result<std::sync::Arc<MemoryStream>> {
     let client = Arc::new(MemoryStream::default());
     let canonical_path = StreamPath::new(authority().stream_path(&mut None)?)?;
-    let proof_path =
-        path(&authority(), HEADS, Some((&"cuts", 4)), &mut None).map(|(path, _)| path)?;
+    let proof_path = path(&authority(), HEADS, Some(&"cuts"), &mut None).map(|(path, _)| path)?;
     if atomic {
         client
             .commit(CommitRequest {
@@ -137,9 +136,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         .await?;
     let certificates = acyclic_stream::Stream::new(
         client.clone(),
-        path(&owner, HEADS, Some((&"cuts", 4)), &mut None)?
-            .0
-            .as_str(),
+        path(&owner, HEADS, Some(&"cuts"), &mut None)?.0.as_str(),
     )?
     .read(0, 1)
     .await?

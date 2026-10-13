@@ -31,12 +31,7 @@ fn node_path_with_work(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
     let hex = blake3::Hash::from_bytes(hash).to_hex();
-    path(
-        authority,
-        HEADS,
-        Some((&format_args!("nodes/{hex}"), 70)),
-        work,
-    )
+    path(authority, HEADS, Some(&format_args!("nodes/{hex}")), work)
 }
 pub(super) fn charge(used: &mut u64, bytes: u64, maximum: u64) -> Result<()> {
     *used = used
@@ -67,7 +62,7 @@ impl<P: StreamProvider> Tree<'_, P> {
             return Ok((None, 0));
         }
         let mut quota = CodecQuota::from_retained(work, 0);
-        let stream = path(authority, HEADS, Some((&"cuts", 4)), quota.work())?;
+        let stream = path(authority, HEADS, Some(&"cuts"), quota.work())?;
         let record = operations::publication_record(self.client, stream, revision - 1, &mut quota)
             .await?
             .ok_or_else(|| Error::Unsupported("complete effect cut is missing".into()))?;
@@ -76,7 +71,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         let certificate: (Option<Digest>, Digest) = operations::decode_index(
             &record.value,
             MAX_CERTIFICATE_BYTES,
-            &["tuple", "array"],
+            "tuple array",
             |_, _| Ok(0),
             |_| (0, 0),
             quota.work(),
@@ -127,10 +122,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         let node = operations::decode_index(
             &record.value,
             MAX_NODE_BYTES,
-            &[
-                "Node", "Leaf", "Branch", "leaf", "branch", "array", "tuple", "u8", "u64",
-                "EffectId",
-            ],
+            "Node Leaf Branch leaf branch array tuple u8 u64 EffectId",
             |_, _| Ok(0),
             |_| (0, 0),
             quota.work(),
@@ -340,11 +332,11 @@ pub(super) async fn publication<P: StreamProvider>(
             let stream = path(
                 authority,
                 "harness/v2/effect-transitions/",
-                Some((&effect, 36)),
+                Some(&effect),
                 quota.work(),
             )?;
             let bytes = publication.indexes[0].2.clone();
-            publication.push_index(stream, position, bytes, 0, quota.work())?;
+            publication.add_index(stream, position, Ok((bytes, 0)), quota.work())?;
         }
         if let Some(io) = quota.work().as_deref_mut() {
             io.hashed_bytes(publication.bytes.len() as u64)?;
@@ -356,9 +348,11 @@ pub(super) async fn publication<P: StreamProvider>(
             root,
             quota.work(),
         )?;
-        let stream = path(authority, HEADS, Some((&"cuts", 4)), quota.work())?;
+        let stream = path(authority, HEADS, Some(&"cuts"), quota.work())?;
         let encoded = encode(&(root, proof), MAX_CERTIFICATE_BYTES, quota.work());
-        publication.add_derived_index_with_work(stream, previous, encoded, quota.work())
+        let encoded = encoded
+            .and_then(|bytes| operations::owned_bytes_from_retained_vec(bytes, quota.work()));
+        publication.add_index(stream, previous, encoded, quota.work())
     }
     .await;
     match result {
