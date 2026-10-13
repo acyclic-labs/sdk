@@ -2,14 +2,10 @@
 use super::*;
 /// Copies text into the supplied quota.
 pub(crate) fn copy_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
-    if quota.work().is_none() {
-        return Ok(source.to_owned());
-    }
-    let text = quota
-        .work()
-        .as_deref_mut()
-        .expect("component copy observer")
-        .clone_text(source)?;
+    let text = match quota.work().as_deref_mut() {
+        Some(work) => work.clone_text(source)?,
+        None => return Ok(source.to_owned()),
+    };
     quota.adopt(text.capacity() as u64)?;
     Ok(text)
 }
@@ -17,14 +13,10 @@ pub(crate) fn copy_authority(
     source: &Authority,
     quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Authority> {
-    if quota.work().is_none() {
-        return Ok(source.clone());
-    }
-    let authority = quota
-        .work()
-        .as_deref_mut()
-        .expect("component copy observer")
-        .clone_authority(source)?;
+    let authority = match quota.work().as_deref_mut() {
+        Some(work) => work.clone_authority(source)?,
+        None => return Ok(source.clone()),
+    };
     quota.adopt(authority.id.capacity() as u64)?;
     Ok(authority)
 }
