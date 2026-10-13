@@ -325,6 +325,10 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn admission(&self) -> (&TaskAdmissionRecord, &crate::workflow::WorkflowAdmission) {
+        (self.owner.admission(), self.owner.workflow_admission())
+    }
     fn verify_owner<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,

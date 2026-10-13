@@ -10,6 +10,8 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     ) -> Result<()>;
     #[cfg(feature = "filesystem")]
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn admission(&self) -> (&TaskAdmissionRecord, &WorkflowAdmission);
     fn verify_owner<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,
