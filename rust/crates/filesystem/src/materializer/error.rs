@@ -18,9 +18,6 @@ pub enum NativeTreeMaterializationError {
     /// Native rename edits are unsupported.
     #[error("native rename edit is unsupported")]
     UnsupportedRename,
-    /// Authored metadata cannot be verified on this host.
-    #[error("source metadata is unverified")]
-    UnverifiedSourceMetadata,
     /// Invocation stopped.
     #[error("native materialization cancelled")]
     Cancelled,

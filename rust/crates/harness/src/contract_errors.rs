@@ -279,7 +279,7 @@ pub(crate) fn native_work_error_code(
         | Native::UnexpectedBackup
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
-        Native::UnsupportedRename | Native::UnverifiedSourceMetadata => ErrorCode::Unsupported,
+        Native::UnsupportedRename => ErrorCode::Unsupported,
         Native::Io(_)
         | Native::Cancelled
         | Native::OriginalWorkPoisoned

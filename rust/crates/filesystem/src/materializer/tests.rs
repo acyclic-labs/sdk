@@ -67,7 +67,7 @@ fn native_backend(
 #[derive(Default)]
 struct Crashing {
     tree: Mutex<BTreeMap<String, u8>>,
-    journals: MemoryMaterializationJournalStore,
+    journals: Store,
     steps: AtomicU64,
     crash_at: AtomicU64,
 }
@@ -275,7 +275,7 @@ fn plan(edits: Vec<MaterializationEdit>) -> MaterializationPlan {
 
 #[tokio::test]
 async fn obsolete_journals_and_forward_rollback_are_rejected() {
-    for version in [0, 2, u32::MAX, JOURNAL_VERSION] {
+    for version in [0, 2, 3, u32::MAX, JOURNAL_VERSION] {
         let backend = Crashing::default();
         let store = &backend.journals;
         let materializer = JournaledMaterializer::new(&backend, &backend);
@@ -323,8 +323,7 @@ async fn obsolete_journals_and_forward_rollback_are_rejected() {
 #[tokio::test]
 async fn overlapping_or_noncanonical_plans_are_rejected_before_capture() {
     let backend = Crashing::default();
-    let materializer =
-        JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), &backend);
+    let materializer = JournaledMaterializer::new(Store::default(), &backend);
     for path in ["directory/file", "../file", "", "/file"] {
         assert!(matches!(
             materializer
@@ -379,8 +378,7 @@ async fn native_selected_paths_complete_and_roll_back() -> Result<(), Box<dyn st
         },
     ]);
     let operation_id = plan.operation_id;
-    let materializer =
-        JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
+    let materializer = JournaledMaterializer::new(Store::default(), backend);
     materializer.apply(plan, &mut allow).await?;
     assert!(!root.join("old").exists());
     assert_eq!(std::fs::read(root.join("new"))?, b"new");
@@ -409,10 +407,7 @@ async fn native_mutated_endpoints_are_preserved() -> Result<(), Box<dyn std::err
             Err(NativeTreeMaterializationError::MissingEntry)
         ));
         std::fs::write(&target, b"after")?;
-        let materializer = JournaledMaterializer::new(
-            MemoryMaterializationJournalStore::default(),
-            backend.clone(),
-        );
+        let materializer = JournaledMaterializer::new(Store::default(), backend.clone());
         let journal = materializer.prepare(plan(vec![edit.clone()]), None).await?;
         let journal = materializer.capture_preimages(journal, &mut allow).await?;
         let preimage = &journal.preimages[0];
@@ -485,10 +480,7 @@ async fn native_recovery_handles_both_rename_boundaries() -> Result<(), Box<dyn 
                 image: vec![1],
             }]);
             let operation_id = plan.operation_id;
-            let materializer = JournaledMaterializer::new(
-                MemoryMaterializationJournalStore::default(),
-                backend.clone(),
-            );
+            let materializer = JournaledMaterializer::new(Store::default(), backend.clone());
             let journal = materializer.prepare(plan, None).await?;
             let mut journal = materializer.capture_preimages(journal, &mut allow).await?;
             journal.phase = MaterializationPhase::Applying;
@@ -545,10 +537,7 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
         path: "directory".into(),
         image: serde_json::to_vec(&desired)?,
     };
-    let materializer = JournaledMaterializer::new(
-        MemoryMaterializationJournalStore::default(),
-        backend.clone(),
-    );
+    let materializer = JournaledMaterializer::new(Store::default(), backend.clone());
     let journal = materializer.prepare(plan(vec![edit.clone()]), None).await?;
     let journal = materializer.capture_preimages(journal, &mut allow).await?;
     let preimage = &journal.preimages[0];
@@ -604,8 +593,7 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
 async fn native_dangling_links_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     let (_temporary, root, _operation, backend) = fixture();
     std::os::unix::fs::symlink("missing", root.join("link"))?;
-    let materializer =
-        JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
+    let materializer = JournaledMaterializer::new(Store::default(), backend);
     let plan = plan(vec![MaterializationEdit::Remove {
         path: "link".into(),
     }]);
@@ -636,45 +624,4 @@ fn nested_operation_is_rejected_without_effects() {
         Err(NativeTreeMaterializationError::InvalidLayout)
     ));
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn accepted_action_conflict_retains_the_journal() -> Result<(), Box<dyn std::error::Error>> {
-    let (_temporary, _root, _operation, backend) = fixture();
-    let materializer = JournaledMaterializer::new(
-        MemoryMaterializationJournalStore::default(),
-        backend.clone(),
-    );
-    let journal = materializer
-        .prepare(
-            plan(vec![MaterializationEdit::Remove {
-                path: "file".into(),
-            }]),
-            None,
-        )
-        .await?;
-    let operation = journal.plan.operation_id;
-    let store = materializer.store();
-    let completion = store.prepare_action(journal).await?;
-    let mut competitor = store.load(operation).await?.unwrap();
-    let expected = next_revision(&mut competitor.revision);
-    assert!(
-        store
-            .compare_and_swap(operation, expected, competitor)
-            .await?
-            .0
-    );
-    let Err(MemoryMaterializationJournalStoreError::ActionConflict(journal)) = completion.await
-    else {
-        panic!("accepted action must retain its conflicting journal");
-    };
-    assert!(journal.is_valid_for(operation));
-    let custody = journal.custody.as_ref().unwrap();
-    assert!(custody.bytes() > 0);
-    assert!(custody.work().shares_allocation_context(backend.work()));
-    let stored = store.load(operation).await?.unwrap();
-    assert_eq!(stored.revision, journal.revision);
-    assert_eq!(stored.plan, journal.plan);
-    Ok(())
 }

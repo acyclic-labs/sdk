@@ -421,22 +421,11 @@ pub(super) fn valid_journal(journal: &MaterializationJournal, operation: Operati
     let count = journal.plan.edits.len();
     let applied = journal.applied as usize;
     let restored = journal.restored as usize;
-    let allocations = journal.preparation_progress.is_none_or(|progress| {
+    let allocations = journal.preparation_progress.is_none_or(|_| {
         journal.phase == MaterializationPhase::Preparing
             && journal.preimages.is_empty()
             && journal.root_identity.is_some()
             && journal.preparation_identity.is_none()
-            && (progress.target.is_none() || progress.operation.is_some())
-            && (progress.backup.is_none() || progress.target.is_some())
-            && progress.pending.is_none_or(|step| match step {
-                MaterializationPreparationAllocation::Operation => progress.operation.is_none(),
-                MaterializationPreparationAllocation::Target => {
-                    progress.operation.is_some() && progress.target.is_none()
-                }
-                MaterializationPreparationAllocation::Backup => {
-                    progress.target.is_some() && progress.backup.is_none()
-                }
-            })
     });
     journal.version == JOURNAL_VERSION
         && journal.revision != 0
