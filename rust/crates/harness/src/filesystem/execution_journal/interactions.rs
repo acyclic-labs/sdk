@@ -18,7 +18,7 @@ where
             let host = self.interactions()?;
             host.verify_responder_scope_with_io(id, responder, None)?;
             if let Some((owner, _)) = &self.owner {
-                owner.require_interaction_grant(None)?;
+                owner.require_interaction_grant(&mut None)?;
                 owner.verify(true, &mut None).await?;
             }
             let (ticket, prior) = host
@@ -142,7 +142,7 @@ where
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         interaction.validate(&mut work)?;
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(io)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| {
@@ -268,7 +268,7 @@ where
             .as_mut()
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(io)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| {

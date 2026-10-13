@@ -43,7 +43,7 @@ pub(crate) async fn authorize_selected_source(
         for _ in 0..maximum_depth {
             let admission_custody = runtime
                 .task_host()
-                .observe_admission_with_native_work(task, native_work)
+                .observe_admission_with_native_work(task, native_work)?
                 .await?;
             let admission = &admission_custody.0;
             if admission.task_id() != task {

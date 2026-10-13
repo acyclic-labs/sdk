@@ -42,6 +42,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     &key,
                     bytes.clone(),
                     crate::distributed::JournalWrite::Fresh,
+                    &mut None,
                 )
                 .await?
             {
