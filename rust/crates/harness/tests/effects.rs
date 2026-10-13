@@ -10,8 +10,9 @@ mod test_stream;
 
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{FilesystemContentVerifier, FilesystemHost};
+use acyclic_harness::runtime::TaskSpawner;
 use acyclic_harness::{
-    AgentId, Capabilities, EffectAttemptId, EffectId, IdempotencyKey, OperationId, Result,
+    AgentId, Capabilities, EffectAttemptId, IdempotencyKey, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, EffectStatus,

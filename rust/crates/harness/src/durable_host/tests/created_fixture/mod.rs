@@ -8,7 +8,7 @@ use crate::filesystem::{
 use crate::resource_preparation::{ResourcePreparationRequest, TaskResourcePreparation};
 use crate::resources::{GenerationRef, ProviderRef};
 use crate::runtime::AgentHarness;
-use crate::workflow::{MachineStatus, MachineTransition, ResumableMachine};
+use crate::workflow::ResumableMachine;
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 
 pub(crate) type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;

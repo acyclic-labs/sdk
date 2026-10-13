@@ -136,7 +136,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     missing_grant.scope = original_issuer
         .issue(
             "original-native-root-bind",
-            &Capabilities::new([]),
+            &Capabilities::default(),
             Some(agent),
             None,
             &mut None,
