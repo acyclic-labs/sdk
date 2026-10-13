@@ -17,7 +17,7 @@ impl FileTool {
         let io: Option<&crate::executor::PreparationIo> = None;
         let error = |code, reason| {
             crate::executor::with_history_io(io, |history| {
-                crate::effect_host::effect_error(history, code, reason)
+                crate::store::guarded_boundary(history, code, reason)
             })
         };
         crate::executor::with_history_io(io, |history| {
@@ -115,7 +115,7 @@ impl FileTool {
         crate::executor::with_history_io(io, |history| {
             scope.limits().validate_file(&file, history)?;
             if !crate::runtime::read_granted_with_work(scope.grants(), &file, history)? {
-                return Err(crate::effect_host::effect_error(
+                return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,
                     "file tool requires original source read grant",
@@ -139,7 +139,7 @@ impl FileTool {
         crate::executor::with_history_io(io, |history| {
             crate::conversation::validate_content_path(path, history)?;
             if crate::conversation::is_internal_path(path) {
-                return Err(crate::effect_host::effect_error(
+                return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,
                     "file tools cannot access internal storage",

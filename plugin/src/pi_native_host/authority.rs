@@ -270,8 +270,7 @@ impl PiNativeCommandHost {
             registry,
             Some(custody),
             Some(work),
-        )?
-        .into_arc(work)
+        )
     }
 
     pub(super) async fn original_effect(

@@ -429,7 +429,7 @@ where
     );
     let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(process.clone(), None)?;
-    let effects = Arc::new(ConversationEffectHost::new(
+    let effects = ConversationEffectHost::new(
         stream.clone(),
         issuer
             .verifier(&mut None)
@@ -443,7 +443,7 @@ where
         registry,
         None,
         None,
-    )?);
+    )?;
     let mut restart = Restart {
         task: task_id,
         fence: LeaseFence::from(&lease.reservation),
@@ -488,7 +488,7 @@ where
         None
     } else {
         let first = effects
-            .run_task_effect(&owner, command, &plan, None)
+            .run_task_effect(&owner, command, &plan, None, false)
             .await
             .map(|result| result.0);
         verify_first_result(
