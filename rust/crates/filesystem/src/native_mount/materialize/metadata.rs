@@ -114,7 +114,7 @@ pub(super) async fn apply_host_attributes_offloaded(
                     crate::native_host::set_extended_attributes(file, &attributes.0, work)
                 }
                 crate::native_host::MacMetadataTarget::Noop { .. } => {
-                    work.check()
+                    crate::native_host::NativeHostWork::check(work)
                         .and(Err(crate::native_host::NativeMetadataError(
                             "named_attributes on a non-ordinary file kind",
                         )

@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use crate::demand::{DemandWork, SourceDemandReadWork};
+use crate::native_host::NativeHostWork as _;
 use crate::{DemandError, WorkBudget, WorkCounters};
 
 type CfTypeRef = *const c_void;
@@ -229,14 +230,14 @@ impl Api {
             .ok_or(crate::WorkError::Overflow)?;
         let cleanup_records = u64::try_from(paths.len()).map_err(|_| crate::WorkError::Overflow)?;
         work.check()?;
-        work.preflight(WorkCounters {
+        work.admit(WorkCounters {
             items_examined: cleanup_records, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup_records))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items.delta(cleanup_records)))?;
         let mut slot_allocation = match work.claim(slots) {
             Ok(allocation) => allocation,
             Err(error) => {
-                work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_records).expect("original reservation is balanced"));
+                work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_records)).expect("original reservation is balanced"));
                 return Err(error);
             }
         };
@@ -248,7 +249,7 @@ impl Api {
         if let Err(error) = reserved.map_err(DemandError::Allocation).and(reconciled) {
             drop(strings);
             work.release(slot_allocation)?;
-            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_records).expect("original reservation is balanced"));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_records)).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut cleanup_remaining = cleanup_records;
@@ -262,7 +263,7 @@ impl Api {
                 let owned = u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?;
                 let copy = work.reserve_source_copy(owned)?;
                 let cleanup = strings.len() as u64 + 1;
-                work.preflight(WorkCounters {
+                work.admit(WorkCounters {
                     backend_write_operations: cleanup + 1,
                     ..WorkCounters::default()
                 })?;
@@ -294,7 +295,7 @@ impl Api {
                 }
             }
             let count = isize::try_from(strings.len()).map_err(|_| DemandError::InvalidRequest)?;
-            work.preflight(WorkCounters {
+            work.admit(WorkCounters {
                 backend_write_operations: strings.len() as u64 + 2,
                 bytes_copied: slots, ..WorkCounters::default()
             })?;
@@ -330,10 +331,10 @@ impl Api {
             let retired = work.record(WorkCounters {
                 backend_write_operations: 1, ..WorkCounters::default()
             });
-            let visited = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1));
+            let visited = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items.delta(1), crate::materializer::NativeResourceCredit::Items.delta(1)));
             if let Err(error) = retired.and(visited) { result = Err(error); }
         }
-        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_remaining)).expect("original reservation is balanced"));
         drop(strings);
         work.release(slot_allocation)?;
         match result {
@@ -364,7 +365,7 @@ fn notify_error(error: DemandError) -> Error {
 /// Keep mandatory failure cleanup admissible without charging unused calls.
 fn native_write<W: SourceDemandReadWork>(work: &mut W, cleanup: u64) -> Result<(), DemandError> {
     work.check()?;
-    work.preflight(WorkCounters {
+    work.admit(WorkCounters {
         backend_write_operations: cleanup + 1, ..WorkCounters::default()
     })?;
     work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })
@@ -372,7 +373,7 @@ fn native_write<W: SourceDemandReadWork>(work: &mut W, cleanup: u64) -> Result<(
 
 fn native_allocate<W: SourceDemandReadWork>(work: &mut W, cleanup: u64) -> Result<(), DemandError> {
     work.check()?;
-    work.preflight(WorkCounters {
+    work.admit(WorkCounters {
         backend_write_operations: cleanup + 1, allocation_operations: 1,
         ..WorkCounters::default()
     })?;
@@ -537,15 +538,6 @@ impl EventStream {
         Self::start_handler_measured(paths, StreamHandler::Owned(handler), None, work)
     }
 
-    /// Publishes source custody's retained payload before callback exposure.
-    /// The source owner retires that scalar only after native teardown returns.
-    pub(crate) fn start_borrowed_measured(
-        paths: &[PathBuf], handler: Arc<BorrowedEventHandlerFn>,
-        published_bytes: Option<&AtomicU64>, work: &mut DemandWork,
-    ) -> Result<Self, DemandError> {
-        Self::start_handler_measured(paths, StreamHandler::Borrowed(handler), published_bytes, work)
-    }
-
     pub(crate) fn start_borrowed_with_work<W: SourceDemandReadWork>(
         paths: &[PathBuf], handler: Arc<BorrowedEventHandlerFn>,
         published_bytes: Option<&AtomicU64>, work: &mut W,
@@ -553,16 +545,11 @@ impl EventStream {
         Self::start_handler_measured(paths, StreamHandler::Borrowed(handler), published_bytes, work)
     }
 
-    /// A stopped stream has no remaining native work for its later Drop.
-    pub(crate) fn stop_measured(&mut self, work: &mut DemandWork) -> Result<(), DemandError> {
-        self.stop_with_work(work)
-    }
-
     pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &mut self, work: &mut W,
     ) -> Result<(), DemandError> {
         work.check()?;
-        if !self.birth_work(work) { work.preflight(self.cleanup_work())?; }
+        if !self.birth_work(work) { work.admit(self.cleanup_work())?; }
         self.cleanup_admitted(work)
     }
 
@@ -863,7 +850,7 @@ impl Drop for EventStream {
         }
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.stop_measured(&mut work)
+        self.stop_with_work(&mut work)
             .expect("ordinary unbounded FSEvents cleanup is admissible");
     }
 }
@@ -1074,7 +1061,7 @@ mod tests {
         let mut start = DemandWork::new(
             WorkBudget::UNBOUNDED, &crate::cancellation::CancellationToken::new(),
         );
-        let mut stream = EventStream::start_borrowed_measured(
+        let mut stream = EventStream::start_borrowed_with_work(
             &[root.path().to_path_buf()], Arc::new(|_| {}), None, &mut start,
         )?;
         let cancellation = crate::cancellation::CancellationToken::new();
@@ -1109,7 +1096,7 @@ mod tests {
             allocation_operations: 16, peak_allocation_bytes: 32 * 1024,
             ..WorkBudget::default()
         }, &crate::cancellation::CancellationToken::new());
-        let mut stream = EventStream::start_borrowed_measured(
+        let mut stream = EventStream::start_borrowed_with_work(
             &[root.path().to_path_buf()], Arc::new(|_| {}), None, &mut start,
         )?;
         assert!(!stream.stream.is_null());
@@ -1120,7 +1107,7 @@ mod tests {
             backend_write_operations: 4, backend_read_operations: 1,
             ..WorkBudget::default()
         }, &crate::cancellation::CancellationToken::new());
-        stream.stop_measured(&mut stop)?;
+        stream.stop_with_work(&mut stop)?;
         assert!(stream.stream.is_null());
         assert!(stream.queue.is_null());
         assert!(stream.is_stopped());
@@ -1130,7 +1117,7 @@ mod tests {
             ..WorkCounters::default()
         });
         let before = stop.work;
-        stream.stop_measured(&mut stop)?;
+        stream.stop_with_work(&mut stop)?;
         assert_eq!(stop.work, before);
         drop(stream);
         Ok(())
