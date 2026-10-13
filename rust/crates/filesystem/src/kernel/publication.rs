@@ -463,7 +463,7 @@ fn native_publication_owner<E, F, Fut>(
     original: crate::NativeMaterializationWork,
     mut factory: F,
 ) -> impl FnMut(&crate::NativeMaterializationWork)
-    -> futures::future::Either<std::future::Ready<Result<(), E>>, Fut>
+    -> futures::future::Either<std::future::Ready<Result<(), E>>, acyclic_stream::BoxProviderFuture<'static, Result<(), E>>>
     + Clone + Send + 'static
 where
     E: From<crate::FsError> + Send + 'static,
@@ -477,7 +477,27 @@ where
             Err(E::from(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)))
         };
         match admitted {
-            Ok(()) => futures::future::Either::Right(factory(work)),
+            Ok(()) => {
+                let boxed = crate::heap_future::in_heap_admitted(
+                    None,
+                    |allocation, bytes| {
+                        *allocation = Some(original.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
+                            .map_err(crate::FsError::from).map_err(E::from)?);
+                        Ok::<(), E>(())
+                    },
+                    |allocation| {
+                        let future = factory(work);
+                        async move {
+                            let _allocation = allocation;
+                            future.await
+                        }
+                    },
+                );
+                match boxed {
+                    Ok((future, _)) => futures::future::Either::Right(future),
+                    Err(error) => futures::future::Either::Left(std::future::ready(Err(error))),
+                }
+            }
             Err(error) => futures::future::Either::Left(std::future::ready(Err(error))),
         }
     }

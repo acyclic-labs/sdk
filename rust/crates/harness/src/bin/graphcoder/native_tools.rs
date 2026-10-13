@@ -386,7 +386,7 @@ impl super::native::NativeSession {
             None,
         )?;
         let (status, _status_custody) = effects
-            .run_task_effect(&owner, operation, &configured.plan, None)
+            .run_task_effect(&owner, operation, &configured.plan, None, false)
             .await?;
         super::native::json_line("command", &status)
     }

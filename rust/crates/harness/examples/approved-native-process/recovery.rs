@@ -42,7 +42,7 @@ where
     let (owner, effects, content) =
         effects(stream.clone(), files.clone(), &runtime, seed, &issuer).await?;
     let recovered_status = effects
-        .reconcile_task_effect(&owner, seed.command, &seed.plan, None)
+        .run_task_effect(&owner, seed.command, &seed.plan, None, true)
         .await
         .map(|result| result.0)?;
     verify_status(&recovered_status, seed.first.as_ref(), receipt_fault)?;
@@ -95,7 +95,7 @@ where
         .await?;
     }
     if effects
-        .run_task_effect(&owner, seed.command, &seed.plan, None)
+        .run_task_effect(&owner, seed.command, &seed.plan, None, false)
         .await
         .map(|result| result.0)?
         != recovered_status
@@ -174,7 +174,7 @@ where
     );
     let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(recovered, None)?;
-    let effects = Arc::new(ConversationEffectHost::new(
+    let effects = ConversationEffectHost::new(
         stream,
         issuer
             .verifier(&mut None)
@@ -188,7 +188,7 @@ where
         registry,
         None,
         None,
-    )?);
+    )?;
     Ok((owner, effects, content))
 }
 
