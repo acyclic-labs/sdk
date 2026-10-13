@@ -43,27 +43,31 @@ impl TaskContext {
     }
 
     /// Publishes one immutable file per operation under caller IO limits.
-    pub async fn stage_file_once(
-        &self,
+    pub fn stage_file_once<'a>(
+        &'a self,
         operation_id: OperationId,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-        io: Option<&ContentIo>,
-    ) -> Result<(FileRef, u64)> {
-        self.stage_bound_file(
-            self.content_binding(None),
-            operation_id,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            ContentPublication::OperationBound,
-            &self.scope,
-            io,
-        )
-        .await
+        path: &'a str,
+        bytes: &'a [u8],
+        media_type: &'a str,
+        display_name: &'a str,
+        io: Option<&'a ContentIo>,
+    ) -> impl std::future::Future<Output = Result<(FileRef, u64)>> + acyclic_stream::ProviderTask + 'a
+    {
+        let binding = self.content_binding(None).cloned();
+        async move {
+            self.stage_bound_file(
+                binding.as_ref(),
+                operation_id,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                ContentPublication::OperationBound,
+                &self.scope,
+                io,
+            )
+            .await
+        }
     }
 
     /// Checks the original content destination without reading or publishing bytes.

@@ -176,8 +176,12 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         io: Option<&PreparationIo>,
     ) -> Result<TaskAdmissionRecord> {
         require_original(io)?;
+        #[cfg(feature = "filesystem")]
         let mut history = io.map(PreparationIo::history_io);
+        #[cfg(feature = "filesystem")]
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut work: Observer<'_> = None;
         self.admission(OperationId::from_bytes(task.into_bytes()), &mut work)
             .await
     }

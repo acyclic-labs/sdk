@@ -1576,7 +1576,7 @@ mod tests {
                 }
                 std::process::exit(0);
             }
-            "stdin-stall" | "stdin-echo" | "stdin-handshake" => stdin_helper(&mode, &root),
+            "stdin-stall" | "stdin-handshake" => stdin_helper(&mode, &root),
             "exit-code" => std::process::exit(7),
             _ => assert_eq!(mode, "known helper mode"),
         }
@@ -1591,16 +1591,6 @@ mod tests {
                 std::io::stdout().flush().expect("flush stall marker");
                 fs::write(root.join("stdin-stall-ready"), b"ready").expect("stall ready");
                 thread::sleep(Duration::from_secs(30));
-            }
-            "stdin-echo" => {
-                let mut input = Vec::new();
-                std::io::stdin()
-                    .read_to_end(&mut input)
-                    .expect("input through EOF");
-                std::io::stdout()
-                    .write_all(&input)
-                    .expect("echo exact input");
-                std::process::exit(0);
             }
             "stdin-handshake" => {
                 let mut first = [0; 6];
@@ -1782,9 +1772,19 @@ mod tests {
 
     #[test]
     fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let mut command = command("stdin-echo", temporary.path());
-        command.stdin(Stdio::piped());
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt as _;
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile", "-NonInteractive", "-Command",
+                "[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())",
+            ]).creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = Command::new("cat");
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn input echo");
         let input: Vec<u8> = (0..BULK_BYTES)
             .map(|index| u8::try_from(index % 251).expect("byte pattern")).collect();

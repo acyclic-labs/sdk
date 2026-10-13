@@ -233,16 +233,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
         let io = operation_io(work)?;
-        let admission = self
-            .admission(
-                operation,
-                &mut io
-                    .as_ref()
-                    .map(|io| io.history_io())
-                    .as_mut()
-                    .map(|io| io as &mut dyn crate::store::HistoryIo),
-            )
-            .await?;
+        #[cfg(feature = "filesystem")]
+        let mut admission_history = io.as_ref().map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut admission_work = admission_history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut admission_work = None;
+        let admission = self.admission(operation, &mut admission_work).await?;
         admission.limits.validate_file(&input, work)?;
         if !read_granted(&admission.grants, &input)? {
             return Err(crate::scheduler::diagnostic(
@@ -278,15 +277,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<(u64, Value)>> {
         let operation = OperationId::from_bytes(task.into_bytes());
-        let admission = self
-            .admission(
-                operation,
-                &mut io
-                    .map(|io| io.history_io())
-                    .as_mut()
-                    .map(|io| io as &mut dyn crate::store::HistoryIo),
-            )
-            .await?;
+        #[cfg(feature = "filesystem")]
+        let mut admission_history = io.map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut admission_work = admission_history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut admission_work = None;
+        let admission = self.admission(operation, &mut admission_work).await?;
         #[cfg(feature = "filesystem")]
         let mut history = io.map(|io| io.history_io());
         #[cfg(feature = "filesystem")]

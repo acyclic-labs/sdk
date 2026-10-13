@@ -1,314 +1,219 @@
 use super::*;
-
 impl<P: StreamProvider> ConversationEffectHost<P> {
-    /// Runs the admitted task effect and returns its original output custody.
+    /// Runs or observes the exact retained task effect on its original ledger.
     #[cfg(feature = "filesystem")]
     pub async fn run_task_effect(
         &self,
         owner: &crate::durable_host::TaskJournalOwner<P>,
-        command_id: OperationId,
+        command: OperationId,
         plan: &TaskEffectPlan,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(EffectStatus, crate::NativeCustody)> {
+        work: NativeWork<'_>,
+        reconcile_only: bool,
+    ) -> Result<(EffectStatus, NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
-        let mut io = match work {
-            Some(work) => {
-                self.require_native_metadata(work)?;
-                self.providers.require_native_metadata(work)?;
-                Some(crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(work)?,
-                ))
-            }
-            None => None,
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let observed = &mut io
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::history::HistoryIo);
-        #[cfg(target_arch = "wasm32")]
-        let observed = &mut None;
+        if let Some(work) = work {
+            self.require_native_metadata(work)?;
+            self.providers.require_native_metadata(work)?;
+        }
+        let mut io = history(work)?;
+        let observed = &mut io.as_mut().map(|io| io as &mut dyn HistoryIo);
         let status = async {
-            use crate::core::ApplyResult;
-            validate_task_plan(owner, plan, true, observed)?;
-            let effect_id = task_effect_id(owner.task_binding().0, command_id, observed)?;
-            self.task_action(owner, effect_id, Some(plan), observed)
-                .await?;
-            let stream = owner.stream();
-            let aggregate = self.aggregate(&stream, observed).await?;
-            let effect = self
-                .effect_for_host(&aggregate.0, effect_id, observed)
-                .await?;
-            if !matches!(
-                effect.0.status,
-                EffectStatus::Planned | EffectStatus::Dispatched | EffectStatus::Indeterminate
-            ) {
-                return clone_status(&effect.0.status, observed);
-            }
-            self.providers.resolve(&effect.0, observed)?;
-            let dispatched = if effect.0.status == EffectStatus::Planned {
-                matches!(
-                    self.task_action(owner, effect_id, None, observed).await?,
-                    ApplyResult::Applied { .. }
-                )
-            } else {
-                false
-            };
-            drop(effect);
-            drop(aggregate);
-            let aggregate = self.aggregate(&stream, observed).await?;
-            let effect = self
-                .effect_for_host(&aggregate.0, effect_id, observed)
-                .await?;
-            if !matches!(
-                effect.0.status,
-                EffectStatus::Dispatched | EffectStatus::Indeterminate
-            ) {
+            if reconcile_only {
                 owner.verify(true, observed).await?;
-                return clone_status(&effect.0.status, observed);
             }
-            let attestation = if dispatched {
-                owner.verify(false, observed).await?;
-                Some(
-                    self.providers
-                        .dispatch_state_and_attest(&self.issuer, effect_id, &effect.0, observed)
-                        .await?,
-                )
-            } else {
-                self.providers
-                    .reconcile_and_attest(&self.issuer, effect_id, &effect.0, observed)
-                    .await?
-            };
-            match attestation {
-                Some(attestation) => {
-                    self.settle(effect_id, &effect.0, attestation, Some(owner), observed)
-                        .await
-                }
-                None => Ok(EffectStatus::Indeterminate),
+            owner.require_effect_grants(&plan.provider, !reconcile_only, observed)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let input = original(observed)
+                .map(crate::executor::PreparationIo::from_native_work)
+                .transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let input = None;
+            owner.validate_input_file(&plan.request, input.as_ref())?;
+            owner.validate_input_file(&plan.result_schema, input.as_ref())?;
+            let effect_id = task_effect_id(owner.task_binding().0, command, observed)?;
+            if !reconcile_only {
+                self.task_action(owner, effect_id, Some(plan), observed)
+                    .await?;
             }
-        }
-        .await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let custody = match io {
-            Some(mut io) => {
-                use crate::store::history::HistoryIo as _;
-                io.return_output(status_clone_bytes(&status)?, 1)?;
-                Some(io.take_native_custody(status_owned_bytes(&status)?)?)
-            }
-            None => None,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let custody = {
-            let _ = work;
-            None
-        };
-        Ok((status, custody))
-    }
-
-    /// Observes the retained command without dispatching and returns its output custody.
-    #[cfg(feature = "filesystem")]
-    pub async fn reconcile_task_effect(
-        &self,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        command_id: OperationId,
-        plan: &TaskEffectPlan,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(EffectStatus, crate::NativeCustody)> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut io = match work {
-            Some(work) => {
-                self.require_native_metadata(work)?;
-                self.providers.require_native_metadata(work)?;
-                Some(crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(work)?,
-                ))
-            }
-            None => None,
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let observed = &mut io
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::history::HistoryIo);
-        #[cfg(target_arch = "wasm32")]
-        let observed = &mut None;
-        let status = async {
-            owner.verify(true, observed).await?;
-            validate_task_plan(owner, plan, false, observed)?;
-            let effect_id = task_effect_id(owner.task_binding().0, command_id, observed)?;
             let stream = owner.stream();
-            let aggregate = self.aggregate(&stream, observed).await?;
-            let effect = self
-                .effect_for_host(&aggregate.0, effect_id, observed)
-                .await?;
-            if effect.0.provider != plan.provider
-                || effect.0.guarantee != plan.guarantee
-                || effect.0.effect_kind != plan.effect_kind
-                || effect.0.request != plan.request
-                || effect.0.result_schema != plan.result_schema
-            {
-                return Err(effect_error(
-                    observed,
-                    crate::wire::ErrorCode::Conflict,
-                    "task effect differs from retained command",
-                ));
-            }
-            if !matches!(
-                effect.0.status,
-                EffectStatus::Dispatched | EffectStatus::Indeterminate
-            ) {
-                return clone_status(&effect.0.status, observed);
-            }
-            match self
-                .providers
-                .reconcile_and_attest(&self.issuer, effect_id, &effect.0, observed)
-                .await?
-            {
-                Some(attestation) => {
-                    self.settle(effect_id, &effect.0, attestation, Some(owner), observed)
-                        .await
+            let mut dispatch = reconcile_only.then_some(false);
+            loop {
+                let aggregate = self.aggregate(&stream, observed).await?;
+                let effect = self
+                    .effect_for_host(&aggregate.0, effect_id, observed)
+                    .await?;
+                if reconcile_only
+                    && (effect.0.provider != plan.provider
+                        || effect.0.guarantee != plan.guarantee
+                        || effect.0.effect_kind != plan.effect_kind
+                        || effect.0.request != plan.request
+                        || effect.0.result_schema != plan.result_schema)
+                {
+                    return Err(boundary(
+                        observed,
+                        Conflict,
+                        "effect differs from retained command",
+                    ));
                 }
-                None => Ok(EffectStatus::Indeterminate),
+                if dispatch.is_none() {
+                    if !matches!(
+                        effect.0.status,
+                        EffectStatus::Planned
+                            | EffectStatus::Dispatched
+                            | EffectStatus::Indeterminate
+                    ) {
+                        return copy_status(&effect.0.status, observed);
+                    }
+                    self.providers.resolve(&effect.0, observed)?;
+                    dispatch = Some(
+                        effect.0.status == EffectStatus::Planned
+                            && matches!(
+                                self.task_action(owner, effect_id, None, observed).await?,
+                                crate::core::ApplyResult::Applied { .. }
+                            ),
+                    );
+                    continue;
+                }
+                if !matches!(
+                    effect.0.status,
+                    EffectStatus::Dispatched | EffectStatus::Indeterminate
+                ) {
+                    if !reconcile_only {
+                        owner.verify(true, observed).await?;
+                    }
+                    return copy_status(&effect.0.status, observed);
+                }
+                let attestation = if dispatch == Some(true) {
+                    owner.verify(false, observed).await?;
+                    Some(
+                        self.providers
+                            .dispatch_state_and_attest(&self.issuer, effect_id, &effect.0, observed)
+                            .await?,
+                    )
+                } else {
+                    self.providers
+                        .reconcile_and_attest(&self.issuer, effect_id, &effect.0, observed)
+                        .await?
+                };
+                return match attestation {
+                    Some(attestation) => {
+                        self.settle(effect_id, &effect.0, attestation, Some(owner), observed)
+                            .await
+                    }
+                    None => Ok(EffectStatus::Indeterminate),
+                };
             }
         }
         .await?;
         #[cfg(not(target_arch = "wasm32"))]
-        let custody = match io {
-            Some(mut io) => {
-                use crate::store::history::HistoryIo as _;
-                io.return_output(status_clone_bytes(&status)?, 1)?;
-                Some(io.take_native_custody(status_owned_bytes(&status)?)?)
-            }
-            None => None,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let custody = {
-            let _ = work;
+        let custody = if let Some(mut io) = io {
+            let copied = match &status {
+                EffectStatus::Succeeded { result } => result.logical_clone_owned_bytes()?,
+                EffectStatus::Failed { message } => message.len() as u64,
+                _ => 0,
+            };
+            io.return_output(copied, 1)?;
+            Some(io.take_native_custody(status_owned(&status)?)?)
+        } else {
             None
         };
+        #[cfg(target_arch = "wasm32")]
+        let custody = None;
         Ok((status, custody))
     }
-
     #[cfg(feature = "filesystem")]
     async fn task_action(
         &self,
         owner: &crate::durable_host::TaskJournalOwner<P>,
         effect_id: EffectId,
         plan: Option<&TaskEffectPlan>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<crate::core::ApplyResult> {
         let phase = if plan.is_some() { "plan" } else { "dispatch" };
-        let digest = crate::executor::json::canonical_json_digest(
-            &("task-effect", effect_id, phase),
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            work,
-        )?;
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_copy(16)?;
-        }
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&digest[..16]);
-        if let Some(io) = work.as_deref_mut() {
-            io.copy_bytes(16)?;
-        }
-        let operation_id = OperationId::from_bytes(identity);
+        let operation_id =
+            OperationId::from_bytes(plan::identity(&("task-effect", effect_id, phase), work)?);
         loop {
             let stream = owner.stream();
             let mut aggregate = self.aggregate(&stream, work).await?;
-            let expected_revision = aggregate
+            let revision = aggregate
                 .0
                 .reducer()
                 .operation_revision(operation_id)
                 .map_or(aggregate.0.reducer().revision(), |revision| revision - 1);
-            let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let scope = self.scope.copy(custody.work())?;
-            custody.adopt(scope.logical_owned_bytes()?)?;
-            let copied_action = match plan {
-                Some(plan) => {
-                    let provider = match custody.work().as_deref_mut() {
-                        Some(io) => io.clone_text(&plan.provider)?,
-                        None => plan.provider.clone(),
-                    };
-                    let effect_kind = match custody.work().as_deref_mut() {
-                        Some(io) => io.clone_text(&plan.effect_kind)?,
-                        None => plan.effect_kind.clone(),
-                    };
-                    Action::PlanEffect {
-                        effect_id,
-                        provider,
-                        guarantee: plan.guarantee,
-                        effect_kind,
-                        request: plan.request.copy(custody.work())?,
-                        result_schema: plan.result_schema.copy(custody.work())?,
-                    }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let scope = self.scope.copy(quota.work())?;
+            quota.adopt(scope.logical_owned_bytes()?)?;
+            let action = if let Some(plan) = plan {
+                let request = plan.request.copy(quota.work())?;
+                quota.adopt(request.logical_owned_bytes()?)?;
+                let schema = plan.result_schema.copy(quota.work())?;
+                quota.adopt(schema.logical_owned_bytes()?)?;
+                Action::PlanEffect {
+                    effect_id,
+                    provider: crate::core::copy_text(&plan.provider, &mut quota)?,
+                    guarantee: plan.guarantee,
+                    effect_kind: crate::core::copy_text(&plan.effect_kind, &mut quota)?,
+                    request,
+                    result_schema: schema,
                 }
-                None => Action::MarkEffectDispatched {
+            } else {
+                Action::MarkEffectDispatched {
                     effect_id,
                     attempt_id: crate::EffectAttemptId::from_bytes(effect_id.into_bytes()),
-                },
+                }
             };
-            custody.adopt(action_owned_bytes(&copied_action)?)?;
-            let (key, key_bytes) =
-                effect_key("task-effect:", effect_id, Some(phase), custody.work())?;
-            custody.adopt(key_bytes)?;
+            let key = crate::executor::preparation_format(
+                format_args!("task-effect:{effect_id}:{phase}"),
+                quota.work(),
+            )?;
+            quota.adopt(key.capacity() as u64)?;
             let command = Command {
                 operation_id,
-                idempotency_key: key,
-                expected_revision,
+                idempotency_key: IdempotencyKey::new(key)?,
+                expected_revision: revision,
                 scope,
                 causal_parent: None,
-                action: copied_action,
+                action,
             };
             match aggregate
                 .0
-                .execute(command, Some(owner), custody.work())
+                .execute(command, Some(owner), quota.work())
                 .await
             {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 Err(error) if error.is_native_failure() => return Err(error),
-                Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
+                Err(error) if error.code() == Conflict => {
                     if aggregate
                         .0
                         .reducer()
                         .operation_revision(operation_id)
                         .is_some()
                     {
-                        return Err(effect_error(
-                            custody.work(),
-                            crate::wire::ErrorCode::Conflict,
-                            "task effect command changed after admission",
+                        return Err(boundary(
+                            quota.work(),
+                            Conflict,
+                            "admitted effect command changed",
                         ));
                     }
-                    owner.verify(false, custody.work()).await?;
+                    owner.verify(false, quota.work()).await?;
                 }
                 result => return result,
             }
         }
     }
-
     async fn settle(
         &self,
-        effect_id: EffectId,
+        id: EffectId,
         effect: &EffectState,
         attestation: EffectAttestation,
         #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<EffectStatus> {
-        let mut retained = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut retained = CodecQuota::new(work, 0)?;
         let attestation = attestation;
-        retained.adopt(attestation_owned_bytes(&attestation)?)?;
-        let digest = crate::executor::json::canonical_json_digest(
-            &(effect_id, &attestation),
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            retained.work(),
-        )?;
-        if let Some(io) = retained.work().as_deref_mut() {
-            io.admit_copy(16)?;
-        }
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&digest[..16]);
-        if let Some(io) = retained.work().as_deref_mut() {
-            io.copy_bytes(16)?;
-        }
-        let operation_id = OperationId::from_bytes(identity);
+        retained.adopt(attestation_owned(&attestation)?)?;
+        let operation_id =
+            OperationId::from_bytes(plan::identity(&(id, &attestation), retained.work())?);
         loop {
             #[cfg(feature = "filesystem")]
             if let Some(owner) = owner {
@@ -323,10 +228,10 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let stream = self.stream.clone();
             let mut aggregate = self.aggregate(&stream, retained.work()).await?;
             let current = self
-                .effect_for_host(&aggregate.0, effect_id, retained.work())
+                .effect_for_host(&aggregate.0, id, retained.work())
                 .await?;
             if current.0.status == attestation.status {
-                return clone_status(&attestation.status, retained.work());
+                return copy_status(&attestation.status, retained.work());
             }
             if current.0.attempts != effect.attempts
                 || !matches!(
@@ -334,107 +239,96 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     EffectStatus::Dispatched | EffectStatus::Indeterminate
                 )
             {
-                return Err(effect_error(
+                return Err(boundary(
                     retained.work(),
-                    crate::wire::ErrorCode::Conflict,
-                    "effect attempt changed during reconciliation",
+                    Conflict,
+                    "effect attempt changed",
                 ));
             }
             drop(current);
-            let mut command_custody = crate::wire_codec::CodecQuota::new(retained.work(), 0)?;
-            let scope = self.scope.copy(command_custody.work())?;
-            command_custody.adopt(scope.logical_owned_bytes()?)?;
-            let observation = attestation.copy(command_custody.work())?.0;
-            command_custody.adopt(attestation_owned_bytes(&observation)?)?;
-            let (key, key_bytes) = effect_key(
-                "effect-reconcile:",
-                operation_id,
-                None,
-                command_custody.work(),
+            let mut quota = CodecQuota::new(retained.work(), 0)?;
+            let scope = self.scope.copy(quota.work())?;
+            quota.adopt(scope.logical_owned_bytes()?)?;
+            let (observation, paid) = attestation.copy(quota.work())?;
+            quota.adopt(paid)?;
+            let key = crate::executor::preparation_format(
+                format_args!("effect-reconcile:{operation_id}"),
+                quota.work(),
             )?;
-            command_custody.adopt(key_bytes)?;
+            quota.adopt(key.capacity() as u64)?;
             let command = Command {
                 operation_id,
-                idempotency_key: key,
+                idempotency_key: IdempotencyKey::new(key)?,
                 expected_revision: aggregate.0.reducer().revision(),
                 scope,
                 causal_parent: None,
                 action: Action::ResolveEffect { observation },
             };
-            #[cfg(feature = "filesystem")]
-            let result = match owner {
-                Some(owner) => {
-                    aggregate
-                        .0
-                        .execute(command, Some(owner), command_custody.work())
-                        .await
-                }
-                None => {
-                    if command_custody.work().is_some() {
-                        return Err(effect_error(
-                            command_custody.work(),
-                            crate::wire::ErrorCode::Unsupported,
-                            "observed effect settlement requires its task owner",
-                        ));
-                    }
-                    aggregate
-                        .0
-                        .execute(command, None, command_custody.work())
-                        .await
-                }
-            };
-            #[cfg(not(feature = "filesystem"))]
-            let result = {
-                if command_custody.work().is_some() {
-                    return Err(effect_error(
-                        command_custody.work(),
+            if quota.work().is_some() {
+                #[cfg(feature = "filesystem")]
+                if owner.is_none() {
+                    return Err(boundary(
+                        quota.work(),
                         crate::wire::ErrorCode::Unsupported,
-                        "native effect settlement requires filesystem task ownership",
+                        "observed settlement requires task owner",
                     ));
                 }
-                aggregate.0.execute(command, command_custody.work()).await
-            };
-            drop(command_custody);
+                #[cfg(not(feature = "filesystem"))]
+                return Err(boundary(
+                    quota.work(),
+                    crate::wire::ErrorCode::Unsupported,
+                    "observed settlement requires filesystem",
+                ));
+            }
+            let result = aggregate
+                .0
+                .execute(
+                    command,
+                    #[cfg(feature = "filesystem")]
+                    owner,
+                    quota.work(),
+                )
+                .await;
+            drop(quota);
             match result {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Err(error) if error.is_native_failure() => return Err(error),
-                Ok(_) => return clone_status(&attestation.status, retained.work()),
-                Err(error) if error.code() == crate::wire::ErrorCode::Conflict => continue,
+                Ok(_) => return copy_status(&attestation.status, retained.work()),
+                Err(error) if error.code() == Conflict => continue,
                 Err(error) => return Err(error),
             }
         }
     }
 }
-
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
-    async fn reconcile(&self, effect_id: EffectId) -> Result<EffectStatus> {
+    async fn reconcile(&self, id: EffectId) -> Result<EffectStatus> {
         let aggregate = self.aggregate(&self.stream, &mut None).await?;
-        let effect = self
-            .effect_for_host(&aggregate.0, effect_id, &mut None)
-            .await?;
+        let effect = self.effect_for_host(&aggregate.0, id, &mut None).await?;
         if !matches!(
             effect.0.status,
             EffectStatus::Dispatched | EffectStatus::Indeterminate
         ) {
-            return clone_status(&effect.0.status, &mut None);
+            return copy_status(&effect.0.status, &mut None);
         }
-        let Some(attestation) = self
+        match self
             .providers
-            .reconcile_and_attest(&self.issuer, effect_id, &effect.0, &mut None)
+            .reconcile_and_attest(&self.issuer, id, &effect.0, &mut None)
             .await?
-        else {
-            return Ok(EffectStatus::Indeterminate);
-        };
-        self.settle(
-            effect_id,
-            &effect.0,
-            attestation,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await
+        {
+            Some(attestation) => {
+                self.settle(
+                    id,
+                    &effect.0,
+                    attestation,
+                    #[cfg(feature = "filesystem")]
+                    None,
+                    &mut None,
+                )
+                .await
+            }
+            None => Ok(EffectStatus::Indeterminate),
+        }
     }
 }
