@@ -1,19 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { chooseLanes } from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
 test("the workspace gate uses sixteen CPUs while short independent workspaces stay at four", () => {
-  const matrix = chooseLanes(lanes, {
-    mainPush: false, force: true, marker: () => null, retained: () => "",
-  }).matrix;
+  const matrix = lanes;
   const gate = matrix.find(lane => lane.lane === "gate");
   assert.equal(gate.runner, "blacksmith-16vcpu-ubuntu-2404");
   assert.equal(gate.workers, 16);
-  assert.equal(gate.scope, "both");
-  assert.equal(gate.inputs, "rust");
   assert.equal(gate.artifact, "");
   for (const name of ["docs", "generation"]) {
     const lane = matrix.find(lane => lane.lane === name);

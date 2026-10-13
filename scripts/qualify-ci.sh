@@ -407,28 +407,24 @@ case "$lane" in
     bun run --filter '@acyclic-labs/objects' build
     bun run --filter '@acyclic-labs/stream' build
     bun run --filter '@acyclic-labs/harness' build
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/fs' test:browser
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/harness' test:browser:mcp
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/harness' test:client:browser
-    ;;
-  typescript)
-    # Family admission resolves the locked Cargo graph offline before WASM
-    # compilation, so a cold runner needs the dependency index and crates first.
-    cargo fetch --locked
-    # Pull requests and main pushes only; full runs cover this in the linux
-    # lane. As there, check:generated runs after `bun run test` has built the
-    # uncommitted packages. It compares tracked surfaces with immutable HEAD
-    # blobs and validates freshly generated runtimes for all six packages.
-    source scripts/ensure-bun.sh
-    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
-    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
-    bun install --frozen-lockfile
-    client_bindings
-    bun run test
-    bun run check:generated
+    export CHROME="$(command -v google-chrome || command -v chromium)"
+    browser_qualification() {
+      local name="$1" start="$EPOCHREALTIME" status=0
+      shift
+      "$@" || status=$?
+      printf '%s\t%s\t%s\t%s\0' "$start" "$EPOCHREALTIME" "$status" "$*" >"$observability/browser-$name.tsv"
+      return "$status"
+    }
+    browser_pids=()
+    # Each driver owns its server and profile; overlap their browser cleanup.
+    browser_qualification fs bun run --filter '@acyclic-labs/fs' test:browser & browser_pids+=("$!")
+    browser_qualification mcp bun run --filter '@acyclic-labs/harness' test:browser:mcp & browser_pids+=("$!")
+    browser_qualification client bun run --filter '@acyclic-labs/harness' test:client:browser & browser_pids+=("$!")
+    browser_status=0
+    for browser_pid in "${browser_pids[@]}"; do
+      if wait "$browser_pid"; then :; else browser_status=1; fi
+    done
+    if (( browser_status != 0 )); then exit "$browser_status"; fi
     ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \

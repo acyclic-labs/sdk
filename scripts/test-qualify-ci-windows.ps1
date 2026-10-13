@@ -63,7 +63,8 @@ function rustup { Record-Command rustup $args }
 
 $expected = @{
     'windows-rust' = @(
-        'cargo test --workspace --all-features --locked'
+        'cargo nextest run --workspace --all-features --locked --profile ci --test-threads 32',
+        'cargo test --workspace --all-features --locked --doc'
     )
     'windows-fork-join' = @(
         'cargo test -p acyclic-plugin --all-features --locked --test fork_join --ignored --test-threads=1 --skip support::'
@@ -79,6 +80,8 @@ $expected = @{
     )
 }
 $priorTarget = $env:CARGO_TARGET_DIR
+$priorTestThreads = $env:RUST_TEST_THREADS
+$env:RUST_TEST_THREADS = '32'
 try {
     foreach ($clause in $dispatch.Clauses) {
         $name = $clause.Item1.Value
@@ -107,5 +110,7 @@ try {
 } finally {
     if ($null -eq $priorTarget) { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue }
     else { $env:CARGO_TARGET_DIR = $priorTarget }
+    if ($null -eq $priorTestThreads) { Remove-Item Env:RUST_TEST_THREADS -ErrorAction SilentlyContinue }
+    else { $env:RUST_TEST_THREADS = $priorTestThreads }
 }
 Write-Host 'Windows qualification audit dispatch and failure propagation passed.'

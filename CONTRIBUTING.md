@@ -36,7 +36,8 @@ one codegen unit, stripped) and writes `target/[<triple>/]dist/acyclic`.
 
 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features
 --locked -- -D warnings`, and `cargo test --workspace --all-features --locked`
-locally — CI enforces all of them. Every PR should get review and approval from a
+locally for the affected crates; full release qualification enforces the broader
+suites. Every PR should get review and approval from a
 code owner (`.github/CODEOWNERS`) before it merges; branch protection does not yet
 require this, so treat it as a norm until it's enforced (not yet tracked in a
 dedicated issue). An automated Greptile review already runs on every PR.
@@ -70,76 +71,34 @@ that set, so it lands together with the fixes in a follow-up PR instead of break
 Open a GitHub issue for regular bugs. For security vulnerabilities, follow
 [SECURITY.md](SECURITY.md) instead of filing a public issue.
 
-`.github/workflows/qualification.yml` is the only authored qualification graph;
-`.github/qualification-lanes.json` lists its lanes, which run on Blacksmith and
-form a bounded graph of at most four concurrent matrix lanes. Pull requests and
-`main` pushes run the lanes scoped `core` or `both`, in parallel:
+## CI and releases
 
-- `gate`: `cargo nextest run --workspace --all-features --locked` (unit and
-  integration tests, without the ignored live-mount and fork/join suites) and
-  the standalone `sdk-docs` and `sdk-generation` crates, plus generated snippet
-  admission tests.
-- `policy`: `cargo clippy --workspace --all-targets --all-features --locked -- -D
-  warnings`, rustfmt, and the planner and preflight script tests.
-- `typescript`: `bun run check:generated` and `bun run test` (WASM and
-  TypeScript builds, type tests, package tests, and protocol contracts).
+Pull requests and main pushes run **SDK Static**, which checks lockfile and
+manifest consistency without compiling. Heavy checks run only through
+**SDK Release** on main; [CI and releases](docs/ci-releases.md) documents
+its dispatch and recovery steps.
 
-Release, scheduled, and manual runs run the `full` and `both` lanes instead:
-coverage, policy (cargo-deny, rustdoc, feature sets, workflow lint), packaging
-on Linux, native suites on Linux ARM64 and macOS, Windows, musl, and browser.
-A lane whose observed inputs (see `ignored` in
-`scripts/plan-qualification.mjs`) already qualified is reused, so a pull request
-touching no TypeScript, WASM-compiled Rust, or generated bindings skips the
-`typescript` lane. Every lane caps Cargo, CMake, Make, Rayon, and test parallelism at four
-processes. The macOS runner is Blacksmith's smallest six-vCPU image but still uses
-only four processes. Blacksmith's colocated dependency/tool cache and sccache make
-cold and warm runs fast. Windows Rust caches dependency build artifacts in its
-workspace target directory, keyed by the toolchain, manifests and lockfiles;
-other lanes use sccache without caching Cargo targets. Only `main`
-saves compiler caches (main pushes run the core lanes; a manual run on `main`
-warms the full lanes), and every other run restores main's newest entry.
-Successful jobs and their declared outputs may be reused only for the identical
-source tree, manifest semantics, toolchain, lockfile, operating system, and
-architecture.
+`.github/workflows/qualification.yml` executes every lane in
+`.github/qualification-lanes.json` at the frozen release source. The graph
+includes Rust, docs/generation, policy, TypeScript/package, native, musl and
+browser checks. There is no fingerprinting or prior-run lane reuse. Runner and
+worker counts in the registry control compilation and test parallelism.
 
-Every lane's job summary shows the wall time of each top-level `qualify-ci.sh`
-command, the slowest Rust and TypeScript tests with per-binary and per-file
-totals, and sccache hit rates (`scripts/ci-summary.mjs`); the raw JUnit, step,
-and cache files are kept for seven days as the `timings-<lane>` artifact. Linux
-and macOS run Rust tests with pinned cargo-nextest, whose `ci` profile
-(`.config/nextest.toml`) flags tests slower than 30 seconds. Doctests, coverage,
-the serial live-mount suites, and the Windows lane stay on `cargo test`.
+Dependency/tool caches and sccache reuse compiler objects without skipping
+qualification; only main saves compiler caches. Windows Rust caches dependency
+build artifacts in its workspace target directory, keyed by the toolchain,
+manifests and lockfiles. Other lanes use sccache without caching Cargo targets.
+Job summaries report command/test timings and cache hit rates.
+Timing artifacts expire after three days, or thirty for release runs; coverage
+uploads expire after one. Windows qualification enables and exercises ProjFS.
 
-The policy lane verifies and runs pinned cargo-deny and gitleaks archives from the
-tool cache. The secret scanner keeps all default rules. Blacksmith's Windows image does
-not enable the `Client-ProjFS` optional component: the Windows lane
-executes the portable workspace and TypeScript suites and compiles all ProjFS paths,
-while Linux and macOS execute native-mount behavior.
-
-The Linux lane reuses a prior result only for an identical source tree and returns
-the exact retained output inventory with that result. It retains the isolated, tested Rust
-crates and all twelve public TypeScript package archives with a source-bound qualification
-receipt and SHA-256 inventory in `packages-linux`. The filesystem archive runs
-the existing public-export/WASM composition test outside the workspace; a missing
-packaged WASM must fail. Cargo packages and verifies the public Objects, Streams,
-and Filesystem dependency closure together with all features. Registry publication
-must publish the exact Objects and Streams archives before Filesystem.
-Publication consumes these exact successful-run bytes, never a rebuild. An operator
-creates an immutable family or TypeScript GitHub release from the retained artifact
-and points its tag at the matching qualified main commit. The crates.io publisher
-remains a separate, tag-triggered publication boundary. Qualification runs on
-Blacksmith; the small npm publication job uses a GitHub-hosted runner so npm trusted
-publishing can exchange GitHub's OIDC identity without a stored token. After the exact
-main commit qualifies, an operator creates an annotated `npm-v<VERSION>` tag at that
-commit. The publisher downloads the exact retained archives, verifies their source and
-integrity receipt, and publishes them directly to `latest` with provenance. Each
-executable native lane
-also retains the exact filesystem companion copy
-loaded by its successful ABI child, named by package version/host OS/architecture with
-a SHA-256 inventory. An existing output directory is rejected. These are host-qualified
-debug binaries, not optimized or cross-target binaries; cross-target `cargo check` does
-not produce a publishable companion. Retained archives are not published registry
-versions, browser qualification, or qualification of other SDK families.
+Linux retains tested Rust and TypeScript archives with exact-source receipts
+and SHA-256 inventories. Native binding producers retain their host-qualified
+ABI-tested companions; cross-target checks do not produce those artifacts.
+SDK Release requires all qualification and native builds before assembly,
+which verifies native receipts, installation and evidence. Publication is
+explicit and consumes that run's admitted bytes without rebuilding. Retry failed
+jobs in the same run to preserve source and artifact identity.
 
 Public contracts originate here. A service implementation may validate a
 candidate commit, but it must not maintain a competing customer schema.

@@ -38,7 +38,12 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
   assert.doesNotMatch(publisher,/actions\/workflows\/[^\n]*\/runs/);
   assert.match(publisher,/id-token: write/);
  }
- assert.match(read('release-acyclic.yml'),/force: true/);
+ const qualification=YAML.parse(read('qualification.yml'));
+ assert.equal(qualification.env.FORCE,'true');
+ assert.equal(qualification.on.workflow_call.inputs.force,undefined);
+ assert.deepEqual(Object.keys(qualification.jobs),['plan','qualification','gate']);
+ assert.equal(qualification.jobs.plan.steps.filter(step=>step.uses?.startsWith('actions/cache/restore@')).length,0);
+ assert.equal(qualification.jobs.plan.steps.filter(step=>step.name==='Select lanes to execute').length,1);
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
 });
 
