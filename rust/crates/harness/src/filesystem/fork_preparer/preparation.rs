@@ -1,191 +1,85 @@
-//! Journaled captures of the selected history and volumes.
 use super::*;
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
-    #[allow(
-        clippy::too_many_lines,
-        clippy::cognitive_complexity,
-        reason = "one journaled fork preparation must bind each side effect to the same request"
-    )]
-    pub(super) async fn prepare(&self, request: ForkRequest) -> Result<ForkReport> {
-        if request.authorized_source.is_some() && self.task_preparation.is_none() {
-            return Err(stock_boundary(
-                self.io.as_ref(),
-                crate::wire::ErrorCode::Unauthorized,
-                "authorized workspace capture requires its original preparation lease",
-            ));
-        }
-        self.verify_task_lease(false).await?;
-        let summary_proof = self
-            .preparer
-            .prepare_bound_summary(&request, self.io.as_ref())?;
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
+    pub(super) async fn prepare_inner(&self, request: ForkRequest) -> Result<ForkReport> {
+        self.check_request(&request)?;
         let journal = self.claim(&request).await?;
-        if let Some(report) = read_report(
-            &self.preparer.host,
-            &journal,
-            &request,
-            self.journal_limit(MAX_REPORT_BYTES),
-            self.io.as_ref(),
-        )
-        .await?
-        {
-            self.verify_task_allocations(&request).await?;
+        if let Some(report) = self.read_report(&journal, &request).await? {
             return Ok(report);
         }
-        let (source_project, source_generation) = request
+        let source_generation = request
             .selections
             .iter()
             .find_map(|selection| match &selection.revision {
-                ResourceRevision::Project { volume, generation } => Some((volume, generation)),
+                ResourceRevision::Project { generation, .. } => Some(generation),
                 _ => None,
             })
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io.as_ref(),
-                    crate::wire::ErrorCode::Invalid,
-                    "fork has no project selection",
-                )
-            })?;
-        let request_digest = blake3::Hash::from(record_digest(
-            &request,
-            self.journal_limit(MAX_REQUEST_BYTES),
-            self.io.as_ref(),
-        )?);
-        for volume in creation_volumes(&request) {
-            self.verify_task_lease(false).await?;
-            self.preparer
-                .host
-                .claim_fork_allocation(
-                    AllocationClaim {
-                        operation_id: request.operation_id,
-                        preparation_digest: *request_digest.as_bytes(),
-                        task_origin: self
-                            .task_preparation
-                            .map(|task| self.clone_origin(task.origin()))
-                            .transpose()?,
-                        parent: self.clone_authority(&request.parent)?,
-                        child: self.clone_authority(&request.child)?,
-                        volume: crate::executor::with_history_io(self.io.as_ref(), |work| {
-                            volume.copy(work)
-                        })?,
-                    },
-                    self.journal_limit(MAX_REQUEST_BYTES),
-                    self.io.as_ref(),
-                    self.task_preparation,
-                )
+            .ok_or_else(|| Error::Invalid("fork has no project selection".into()))?;
+        let request_bytes = encode_record(&request, MAX_REQUEST_BYTES)?;
+        let request_digest = blake3::hash(&request_bytes);
+        for volume in [
+            &request.preparation.child_private_volume,
+            &request.preparation.child_project_volume,
+        ] {
+            self.host
+                .claim_fork_allocation(AllocationClaim {
+                    operation_id: request.operation_id,
+                    preparation_digest: *request_digest.as_bytes(),
+                    parent: request.parent.clone(),
+                    child: request.child.clone(),
+                    volume: volume.clone(),
+                })
                 .await?;
         }
-        let private = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            request.preparation.child_private_volume.copy(work)
-        })?;
+        let private = request.preparation.child_private_volume.clone();
         let (source_private, private_generation, paths) = request
             .selections
             .iter()
-            .find_map(|selection| match &selection.revision {
-                ResourceRevision::PrivateVolume {
+            .find_map(|selection| {
+                if let ResourceRevision::PrivateVolume {
                     volume,
                     generation,
                     paths,
-                } => Some((volume, generation, paths)),
-                _ => None,
+                } = &selection.revision
+                {
+                    Some((volume, generation, paths))
+                } else {
+                    None
+                }
             })
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io.as_ref(),
-                    crate::wire::ErrorCode::Invalid,
-                    "fork has no parent scratch selection",
-                )
-            })?;
-        let private_key = IdempotencyKey::new(crate::executor::with_history_io(
-            self.io.as_ref(),
-            |work| {
-                crate::executor::preparation_format(
-                    format_args!("fork:{}:{request_digest}:scratch", request.operation_id),
-                    work,
-                )
-            },
-        )?)?;
-        let private_grant = self.read_grant(source_private)?;
-        let project_grant = if request.authorized_source.is_some() {
-            std::borrow::Cow::Borrowed(self.preparer.sealed_project_read(
-                &request,
-                source_project,
-                source_generation,
-                self.io.as_ref(),
-                self.task_preparation.map(Arc::as_ref),
-            )?)
-        } else {
-            std::borrow::Cow::Owned(self.read_grant(source_project)?)
-        };
-        self.verify_task_lease(false).await?;
-        let private_observation = bounded_io::fork(
-            &self.preparer.host,
-            source_private,
-            &private_grant,
-            private_generation,
-            &private,
-            Some(self.clone_paths(paths)?),
-            &private_key,
-            self.io.as_ref(),
-            self.task_preparation,
-        )
-        .await?;
-        let controller = self.preparer.controller(self.io.as_ref())?;
-        let project_key = IdempotencyKey::new(crate::executor::with_history_io(
-            self.io.as_ref(),
-            |work| {
-                crate::executor::preparation_format(
-                    format_args!("fork:{}:{request_digest}:project", request.operation_id),
-                    work,
-                )
-            },
-        )?)?;
-        self.verify_task_lease(false).await?;
-        let child_project = bounded_io::fork(
-            &self.preparer.host,
-            source_project,
-            &project_grant,
-            source_generation,
-            &request.preparation.child_project_volume,
+            .ok_or_else(|| Error::Invalid("fork has no parent scratch selection".into()))?;
+        let private_key = IdempotencyKey::new(format!(
+            "fork:{}:{request_digest}:scratch",
+            request.operation_id
+        ))?;
+        let private_observation = self
+            .host
+            .fork_volume_pinned(
+                source_private,
+                private_generation,
+                &private,
+                Some(paths.clone()),
+                &private_key,
+            )
+            .await?;
+        let controller = ParentProjectController::new(
+            &self.host,
+            &self.parent,
+            &self.verifier,
+            &self.scope,
+            &self.project,
             None,
-            &project_key,
-            self.io.as_ref(),
-            self.task_preparation,
-        )
-        .await?;
-        let (child_result_volume, child_result_generation) =
-            if let Some(volume) = &request.preparation.child_result_volume {
-                self.verify_task_lease(false).await?;
-                let key = IdempotencyKey::new(crate::executor::with_history_io(
-                    self.io.as_ref(),
-                    |work| {
-                        crate::executor::preparation_format(
-                            format_args!("fork:{}:{request_digest}:result", request.operation_id),
-                            work,
-                        )
-                    },
-                )?)?;
-                let result = bounded_io::fork(
-                    &self.preparer.host,
-                    source_private,
-                    &private_grant,
-                    private_generation,
-                    volume,
-                    Some(Vec::new()),
-                    &key,
-                    self.io.as_ref(),
-                    self.task_preparation,
-                )
-                .await?;
-                (
-                    Some(crate::executor::with_history_io(
-                        self.io.as_ref(),
-                        |work| volume.copy(work),
-                    )?),
-                    Some(result.generation),
-                )
-            } else {
-                (None, None)
-            };
+        )?;
+        let project_key = IdempotencyKey::new(format!(
+            "fork:{}:{request_digest}:project",
+            request.operation_id
+        ))?;
+        let child_project = controller
+            .fork_project(
+                source_generation,
+                &request.preparation.child_project_volume,
+                &project_key,
+            )
+            .await?;
         let (
             mut child_private_generation,
             mut inherited_context,
@@ -193,119 +87,82 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             attachment_manifests,
         ) = if request.preparation.inherited_through_sequence == 0 {
             (
-                self.io.as_ref().map_or_else(
-                    || Ok(private_observation.generation.clone()),
-                    |io| private_observation.generation.clone_with_io(io),
-                )?,
+                private_observation.generation.clone(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )
         } else {
-            let context_key = IdempotencyKey::new(crate::executor::with_history_io(
-                self.io.as_ref(),
-                |work| {
-                    crate::executor::preparation_format(
-                        format_args!("fork:{}:{request_digest}:context", request.operation_id),
-                        work,
-                    )
-                },
-            )?)?;
+            let context_key = IdempotencyKey::new(format!(
+                "fork:{}:{request_digest}:context",
+                request.operation_id
+            ))?;
             let continuation_keys = if request.preparation.summary.is_some() {
-                let keys =
-                    crate::filesystem::summary_fork::summary_keys(&context_key, self.io.as_ref())?;
-                let mut values = crate::model::vec_with_capacity(keys.len(), self.io.as_ref())?;
-                values.extend(keys);
-                values
+                crate::filesystem::summary_fork::summary_keys(&context_key)?.to_vec()
             } else {
                 Vec::new()
             };
             let inherited = controller
-                .materialize_inherited_conversation(
-                    &self.preparer.parent,
+                .materialize_inherited_conversation_continued(
+                    &self.parent,
                     &private,
                     &private_observation.generation,
                     request.child_agent,
                     &request.attached_agents,
                     request.preparation.inherited_through_sequence,
-                    usize::try_from(request.preparation.maximum_inherited_messages).map_err(
-                        |_| {
-                            stock_boundary(
-                                self.io.as_ref(),
-                                crate::wire::ErrorCode::Invalid,
-                                "fork message bound is too large",
-                            )
-                        },
-                    )?,
+                    usize::try_from(request.preparation.maximum_inherited_messages)
+                        .map_err(|_| Error::Invalid("fork message bound is too large".into()))?,
                     request.preparation.maximum_inherited_bytes,
                     request.preparation.maximum_inherited_references as usize,
-                    self.preparer.resolver.as_ref(),
+                    self.resolver.as_ref(),
                     &context_key,
                     &continuation_keys,
-                    self.preparer
-                        .history
-                        .as_ref()
-                        .map(PreparedForkHistory::conversation),
-                    self.io.as_ref(),
-                    self.task_preparation.map(Arc::as_ref),
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.task_preparation,
                 )
                 .await?;
             (
                 inherited.generation,
-                {
-                    let mut files = crate::model::vec_with_capacity(1, self.io.as_ref())?;
-                    files.push(inherited.file);
-                    files
-                },
+                vec![inherited.file],
                 inherited.reference_grants,
                 inherited.attachment_manifests,
             )
         };
         let summary = if request.preparation.summary.is_some() {
-            let bound = self.preparer.summary.as_ref().ok_or_else(|| {
-                stock_boundary(
-                    self.io.as_ref(),
-                    crate::wire::ErrorCode::Unsupported,
-                    "summary fork provider is not installed",
-                )
+            let bound = self.summary.as_ref().ok_or_else(|| {
+                Error::Unsupported("summary fork provider is not installed".into())
             })?;
-            let prepared = summary_proof.as_ref().ok_or_else(|| {
-                stock_boundary(
-                    self.io.as_ref(),
-                    crate::wire::ErrorCode::Storage,
-                    "summary source proof is missing",
-                )
-            })?;
-            let key = IdempotencyKey::new(crate::executor::with_history_io(
-                self.io.as_ref(),
-                |work| {
-                    crate::executor::preparation_format(
-                        format_args!("fork:{}:{request_digest}:context", request.operation_id),
-                        work,
-                    )
-                },
-            )?)?;
-            let prefix = inherited_context.first().ok_or_else(|| {
-                stock_boundary(
-                    self.io.as_ref(),
-                    crate::wire::ErrorCode::Invalid,
-                    "summary fork omitted its logical prefix",
-                )
-            })?;
+            let key = IdempotencyKey::new(format!(
+                "fork:{}:{request_digest}:context",
+                request.operation_id
+            ))?;
+            let prefix = inherited_context
+                .first()
+                .ok_or_else(|| Error::Invalid("summary fork omitted its logical prefix".into()))?;
+            // Count the exact additional reader grants before either Summary
+            // publication phase. Reuse original prefix grants when identical.
             let (_, summary_references) =
-                crate::filesystem::summary_fork::split_references(prepared, self.io.as_ref())?;
-            add_summary_readers(
-                &request,
-                &mut reference_grants,
-                &summary_references,
-                self.io.as_ref(),
-            )?;
+                crate::filesystem::summary_fork::split_references(&bound.prepared)?;
+            let mut planned_grants = reference_grants
+                .iter()
+                .map(|grant| Ok((grant.capability()?, grant.reader)))
+                .collect::<Result<BTreeSet<_>>>()?;
+            for reader in
+                std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
+            {
+                for file in summary_references.values() {
+                    if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader) {
+                        planned_grants.insert((file.read_capability()?, reader));
+                    }
+                }
+            }
+            if planned_grants.len() > request.preparation.maximum_inherited_references as usize {
+                return Err(Error::Invalid(
+                    "summary fork reader grants exceed capture allowance".into(),
+                ));
+            }
             let (capture, generation) = controller
                 .materialize_summary_context(
-                    &self.preparer.parent,
-                    prepared,
+                    &self.parent,
+                    &bound.prepared,
                     bound.journal.as_ref(),
                     &private,
                     &child_private_generation,
@@ -313,114 +170,100 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     request.preparation.maximum_inherited_bytes,
                     request.preparation.maximum_inherited_references as usize,
                     &key,
-                    self.preparer.resolver.as_ref(),
-                    self.io.as_ref(),
-                    self.task_preparation,
                 )
                 .await?;
-            let capacity = inherited_context
-                .len()
-                .checked_add(capture.inherited_files().count())
-                .ok_or_else(|| {
-                    stock_boundary(
-                        self.io.as_ref(),
-                        crate::wire::ErrorCode::Invalid,
-                        "summary context count overflows",
-                    )
-                })?;
-            crate::filesystem::PreparationIo::reserve(
-                &mut inherited_context,
-                capacity,
-                self.io.as_ref(),
-            )?;
-            for file in capture.inherited_files() {
-                inherited_context.push(crate::executor::with_history_io(
-                    self.io.as_ref(),
-                    |work| file.copy(work),
-                )?);
+            let mut granted = reference_grants
+                .iter()
+                .map(|grant| Ok((grant.capability()?, grant.reader)))
+                .collect::<Result<BTreeSet<_>>>()?;
+            for reader in
+                std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
+            {
+                for file in &capture.references {
+                    if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader)
+                        && granted.insert((file.read_capability()?, reader))
+                    {
+                        reference_grants.push(ReferenceGrant {
+                            file: file.clone(),
+                            reader,
+                            attachment_manifest: None,
+                        });
+                    }
+                }
             }
+            inherited_context.extend(capture.inherited_files().cloned());
             child_private_generation = generation;
             Some(capture)
         } else {
             None
         };
-        let mut captures =
-            crate::model::vec_with_capacity(request.selections.len(), self.io.as_ref())?;
-        let shared_count = request.selections.iter().filter(|selection|
-            matches!(&selection.revision, ResourceRevision::SharedVolume(volume) if volume.provider() == &self.preparer.host.provider))
-            .count().checked_mul(request.attached_agents.len() + 1)
-            .ok_or_else(|| stock_boundary(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "shared reader count overflows"))?;
-        let mut shared_grants = crate::model::vec_with_capacity(shared_count, self.io.as_ref())?;
+        let mut captures = Vec::with_capacity(request.selections.len());
+        let mut shared_grants = Vec::new();
         for (index, selection) in request.selections.iter().enumerate() {
-            self.verify_task_lease(false).await?;
-            let revision = match &selection.revision {
-                ResourceRevision::History(_) => {
-                    crate::executor::with_history_io(self.io.as_ref(), |work| {
-                        selection.revision.copy(work).map(|(value, _)| value)
-                    })?
+            let capture = match &selection.revision {
+                ResourceRevision::History(_) => Capture::Captured(CapturedResource {
+                    source: selection.revision.clone(),
+                    revision: selection.revision.clone(),
+                }),
+                ResourceRevision::Project { .. } => Capture::Captured(CapturedResource {
+                    source: selection.revision.clone(),
+                    revision: ResourceRevision::Project {
+                        volume: request.preparation.child_project_volume.clone(),
+                        generation: child_project.generation.clone(),
+                    },
+                }),
+                ResourceRevision::PrivateVolume { paths, .. } => {
+                    Capture::Captured(CapturedResource {
+                        source: selection.revision.clone(),
+                        revision: ResourceRevision::PrivateVolume {
+                            volume: private.clone(),
+                            generation: private_observation.generation.clone(),
+                            paths: paths.clone(),
+                        },
+                    })
                 }
-                ResourceRevision::Project { .. } => ResourceRevision::Project {
-                    volume: crate::executor::with_history_io(self.io.as_ref(), |work| {
-                        request.preparation.child_project_volume.copy(work)
-                    })?,
-                    generation: self.io.as_ref().map_or_else(
-                        || Ok(child_project.generation.clone()),
-                        |io| child_project.generation.clone_with_io(io),
-                    )?,
-                },
-                ResourceRevision::PrivateVolume { paths, .. } => ResourceRevision::PrivateVolume {
-                    volume: crate::executor::with_history_io(self.io.as_ref(), |work| {
-                        private.copy(work)
-                    })?,
-                    generation: self.io.as_ref().map_or_else(
-                        || Ok(private_observation.generation.clone()),
-                        |io| private_observation.generation.clone_with_io(io),
-                    )?,
-                    paths: self.clone_paths(paths)?,
-                },
                 ResourceRevision::SharedVolume(volume)
-                    if volume.provider() == &self.preparer.host.provider =>
+                    if volume.provider() == &self.host.provider =>
                 {
-                    self.read_grant(volume)?;
-                    let reference = bounded_io::content_workspace(
-                        &self.preparer.host.provider,
+                    ContentGrant::verify(
+                        &self.verifier,
+                        &self.scope,
                         volume,
-                        self.io.as_ref(),
+                        VolumeOperation::Read,
                     )?;
-                    bounded_io::resolve(&self.preparer.host, &reference, self.io.as_ref()).await?;
+                    let reference =
+                        workspace_ref(self.host.provider.clone(), &volume.storage_name()?)?;
+                    self.host.resolve(&reference).await?;
                     for reader in std::iter::once(request.child_agent)
                         .chain(request.attached_agents.iter().copied())
                     {
-                        crate::model::charge_items(self.io.as_ref(), 1)?;
-                        if let Some(io) = self.io.as_ref() {
-                            io.retain_owned(std::mem::size_of::<VolumeOperation>() as u64)?;
-                        }
                         shared_grants.push(SharedGrant {
-                            volume: crate::executor::with_history_io(self.io.as_ref(), |work| {
-                                volume.copy(work)
-                            })?,
+                            volume: volume.clone(),
                             child_agent: reader,
                             operations: BTreeSet::from([VolumeOperation::Read]),
                         });
                     }
-                    crate::executor::with_history_io(self.io.as_ref(), |work| {
-                        selection.revision.copy(work).map(|(value, _)| value)
-                    })?
+                    Capture::Captured(CapturedResource {
+                        source: selection.revision.clone(),
+                        revision: selection.revision.clone(),
+                    })
                 }
                 _ => {
-                    let capture = if let Some(provider) = self
-                        .preparer
+                    if let Some(provider) = self
                         .capture_providers
                         .iter()
                         .find(|provider| provider.provider() == selection.revision.provider())
                     {
-                        if let Some(committed) =
-                            self.capture_result(&journal, index, selection).await?
+                        if let Some(committed) = self
+                            .capture_result(&journal, &request, index, selection)
+                            .await?
                         {
                             committed
                         } else {
-                            let captured = if self.start_capture(&journal, &request, index).await? {
-                                self.verify_task_lease(false).await?;
+                            let fresh = self
+                                .start_capture(&journal, &request, index, selection)
+                                .await?;
+                            let captured = if fresh {
                                 provider.capture(&request, selection).await?
                             } else {
                                 provider
@@ -434,64 +277,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                             .await?
                         }
                     } else {
-                        Capture::Unsupported(stock_string_copy(
-                            "resource capture provider is not installed",
-                            self.io.as_ref(),
-                        )?)
-                    };
-                    captures.push(capture);
-                    continue;
+                        Capture::Unsupported("resource capture provider is not installed".into())
+                    }
                 }
             };
-            captures.push(Capture::Captured(CapturedResource {
-                source: crate::executor::with_history_io(self.io.as_ref(), |work| {
-                    selection.revision.copy(work).map(|(value, _)| value)
-                })?,
-                revision,
-            }));
+            captures.push(capture);
         }
         let inherited_through_sequence = request.preparation.inherited_through_sequence;
-        let mut report = ForkReport {
+        let report = ForkReport {
             request,
             captures,
-            child_private_volume: private,
+            child_private_volume: private.clone(),
             child_private_generation,
-            child_result_volume,
-            child_result_generation,
             inherited_context,
             summary,
             inherited_through_sequence,
             shared_grants,
             reference_grants,
-            history_witness: None,
             attachment_manifests,
         };
-        let mut history = self.io.as_ref();
-        report.validate(
-            &mut history
-                .as_mut()
-                .map(|history| history as &mut dyn crate::store::history::HistoryIo),
-        )?;
-        if let Some(preparation) = &self.task_preparation {
-            for grant in &report.reference_grants {
-                require_reference_donor(&preparation.origin().source_grants, grant, self.io.as_ref())?;
-                if grant.reader == report.request.child_agent
-                    && !{
-                        let key = match self.io.as_ref() {
-                            Some(io) => io.capability(&grant.file, "file:read:"),
-                            None => grant.file.read_capability(&mut None),
-                        }?;
-                        preparation.request().child.grants.contains(&key)
-                    }
-                {
-                    return Err(stock_boundary(
-                        self.io.as_ref(),
-                        crate::wire::ErrorCode::Unauthorized,
-                        "prepared child omitted an exact inherited-file read grant",
-                    ));
-                }
-            }
-        }
+        report.validate(&mut None)?;
         let required_captures_ready =
             report
                 .request
@@ -502,40 +307,38 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     !selection.required || matches!(capture, Capture::Captured(_))
                 });
         if required_captures_ready {
-            self.verify_task_lease(false).await?;
-            let mut seed = if let Some(io) = &self.io {
-                let mut observer = io.history_io();
-                report
-                    .copy(&mut Some(&mut observer))?
-                    .0
-                    .into_seed(&mut Some(&mut observer))?
-            } else {
-                report.clone().into_seed(&mut None)?
-            };
-            if let Some(history) = &self.preparer.history {
-                let mut observer = self.io.as_ref();
-                self.preparer.parent.attest_fork_history_with_work(
-                    &mut seed,
-                    history.conversation(),
-                    &mut observer
-                        .as_mut()
-                        .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
-                )?;
-                report.history_witness = seed.history_witness;
-            }
-            self.preparer
-                .host
-                .bind_fork_seed(
-                    &seed,
-                    self.journal_limit(MAX_REQUEST_BYTES),
-                    self.io.as_ref(),
-                    self.task_preparation,
-                )
-                .await?;
+            let seed = report.clone().into_seed()?;
+            self.host.bind_fork_seed(&seed).await?;
         }
-        self.verify_task_lease(false).await?;
         self.commit_report(&journal, &report).await
     }
 }
+impl<A, O> ForkPreparer for FilesystemForkPreparer<A, O>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn parent_snapshot(&self) -> (&Authority, u64) {
+        (self.parent.authority(), self.parent.revision())
+    }
 
-use crate::executor::{stock_boundary, stock_string_copy};
+    fn prepare<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<ForkReport>> {
+        Box::pin(async move { self.prepare_inner(request).await })
+    }
+
+    fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>> {
+        Box::pin(async move {
+            self.authorize_request(&request)?;
+            let journal = self.journal_ref(&request)?;
+            match self.host.resolve(&journal).await {
+                Ok(_) => {}
+                Err(Error::NotFound(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            }
+            if !self.read_claim(&journal, &request).await? {
+                return Ok(None);
+            }
+            self.read_report(&journal, &request).await
+        })
+    }
+}
