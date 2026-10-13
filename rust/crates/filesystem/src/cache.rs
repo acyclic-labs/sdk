@@ -3,6 +3,8 @@
 //! This layer owns no authority. Every entry is keyed by a canonical typed
 //! object identity and may be discarded without changing filesystem results.
 
+#[cfg(all(test, feature = "memory"))]
+use crate::WorkBudget;
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
@@ -12,7 +14,7 @@ use crate::kernel::allocation::KernelAccounting;
 use crate::kernel::{Owned, allocation::KernelOwnedAllocation};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::materializer::{NativeAllocation, NativeMaterializationWork};
-use crate::performance::{WorkBudget, WorkCounters};
+use crate::performance::WorkCounters;
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
 };
@@ -115,15 +117,6 @@ enum RecencyKey {
     Decoded(DecodedCacheKey),
 }
 
-#[derive(Default)]
-struct MutableStats {
-    hits: u64,
-    decoded_hits: u64,
-    misses: u64,
-    coalesced_reads: u64,
-    evictions: u64,
-}
-
 struct CacheState {
     entries: BTreeMap<ObjectId, CacheEntry>,
     decoded: BTreeMap<DecodedCacheKey, DecodedCacheEntry>,
@@ -133,7 +126,11 @@ struct CacheState {
     resident_canonical_bytes: u64,
     resident_decoded_bytes: u64,
     clock: u64,
-    stats: MutableStats,
+    hits: u64,
+    decoded_hits: u64,
+    misses: u64,
+    coalesced_reads: u64,
+    evictions: u64,
 }
 
 impl Default for CacheState {
@@ -147,7 +144,11 @@ impl Default for CacheState {
             resident_canonical_bytes: 0,
             resident_decoded_bytes: 0,
             clock: 1,
-            stats: MutableStats::default(),
+            hits: 0,
+            decoded_hits: 0,
+            misses: 0,
+            coalesced_reads: 0,
+            evictions: 0,
         }
     }
 }
@@ -238,8 +239,22 @@ impl Flight {
                         .saturating_mul(2)
                         .max(1)
                         .min(usize::try_from(self.maximum_waiters).unwrap_or(usize::MAX));
-                    let mut replacement =
-                        allocate_vec(capacity, "immutable-object waiter allocation failed", work)?;
+                    let mut replacement = if let Some(work) = work {
+                        Owned::allocate(
+                            capacity,
+                            &mut KernelAccounting::native(work, work.cancellation()),
+                        )
+                        .map_err(crate::async_storage::object_error)?
+                    } else {
+                        let mut values = Vec::new();
+                        values.try_reserve_exact(capacity).map_err(|_| {
+                            ObjectStoreError::Rejected(
+                                "immutable-object waiter allocation failed".to_owned(),
+                            )
+                        })?;
+                        let bytes = (values.capacity() * size_of::<Waker>()) as u64;
+                        Owned::new(values, KernelOwnedAllocation::Standalone, bytes)
+                    };
                     let copy = work
                         .map(|work| {
                             work.reserve_work(crate::WorkCounters {
@@ -254,13 +269,10 @@ impl Flight {
                     // prior registrations. Free old storage before its guard.
                     drop(std::mem::replace(waiters, replacement));
                     if let Some(copy) = copy {
-                        {
-                            let copy = copy;
-                            copy.record_completed(crate::WorkCounters {
-                                bytes_copied: copied,
-                                ..crate::WorkCounters::UNCHARGED
-                            })
-                        }?;
+                        copy.record_completed(crate::WorkCounters {
+                            bytes_copied: copied,
+                            ..crate::WorkCounters::UNCHARGED
+                        })?;
                     }
                     if let Some(work) = work {
                         KernelAccounting::native(work, work.cancellation())
@@ -279,24 +291,20 @@ struct ActiveFlightGuard<'a, S> {
     store: &'a CachedObjectStore<S>,
     object_id: ObjectId,
     flight: Arc<Flight>,
-    finished: bool,
 }
 
 impl<S> ActiveFlightGuard<'_, S> {
-    fn finish(mut self, bytes: Option<OwnedBytes>) -> Result<(), ObjectStoreError> {
+    fn finish(self, bytes: Option<OwnedBytes>) -> Result<(), ObjectStoreError> {
         self.flight.finish(bytes);
         self.store.remove_flight(self.object_id, &self.flight)?;
-        self.finished = true;
         Ok(())
     }
 }
 
 impl<S> Drop for ActiveFlightGuard<'_, S> {
     fn drop(&mut self) {
-        if !self.finished {
-            self.flight.finish(None);
-            let _ = self.store.remove_flight(self.object_id, &self.flight);
-        }
+        self.flight.finish(None);
+        let _ = self.store.remove_flight(self.object_id, &self.flight);
     }
 }
 
@@ -316,27 +324,6 @@ struct BatchLeader {
     object_id: ObjectId,
     maximum_bytes: u64,
     flight: Arc<Flight>,
-}
-
-fn allocate_vec<T>(
-    count: usize,
-    failure: &'static str,
-    #[cfg(not(target_arch = "wasm32"))] native: Option<&NativeMaterializationWork>,
-) -> Result<Owned<Vec<T>>, ObjectStoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(native) = native {
-        return Owned::allocate(
-            count,
-            &mut KernelAccounting::native(native, native.cancellation()),
-        )
-        .map_err(crate::async_storage::object_error);
-    }
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(count)
-        .map_err(|_| ObjectStoreError::Rejected(failure.to_owned()))?;
-    let bytes = (values.capacity() * size_of::<T>()) as u64;
-    Ok(Owned::new(values, KernelOwnedAllocation::Standalone, bytes))
 }
 
 struct PreparedBatch {
@@ -398,11 +385,11 @@ impl<S> CachedObjectStore<S> {
     pub fn stats(&self) -> Result<ObjectCacheStats, ObjectStoreError> {
         let state = self.lock_state()?;
         Ok(ObjectCacheStats {
-            hits: state.stats.hits,
-            decoded_hits: state.stats.decoded_hits,
-            misses: state.stats.misses,
-            coalesced_reads: state.stats.coalesced_reads,
-            evictions: state.stats.evictions,
+            hits: state.hits,
+            decoded_hits: state.decoded_hits,
+            misses: state.misses,
+            coalesced_reads: state.coalesced_reads,
+            evictions: state.evictions,
             resident_entries: u64::try_from(
                 state.entries.len().saturating_add(state.decoded.len()),
             )
@@ -452,10 +439,10 @@ impl<S> CachedObjectStore<S> {
             state
                 .recency
                 .insert((tick, RecencyKey::Canonical(object_id)));
-            state.stats.hits = increment(state.stats.hits)?;
+            state.hits = increment(state.hits)?;
             return Ok(ReadPlan::Hit(bytes));
         }
-        state.stats.misses = increment(state.stats.misses)?;
+        state.misses = increment(state.misses)?;
         if let Some(flight) = state.flights.get(&object_id) {
             return Ok(ReadPlan::Follower(Arc::clone(flight)));
         }
@@ -492,7 +479,7 @@ impl<S> CachedObjectStore<S> {
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
         let Some(entry) = state.entries.get_mut(&object_id) else {
-            state.stats.misses = increment(state.stats.misses)?;
+            state.misses = increment(state.misses)?;
             return Ok(false);
         };
         let prior = entry.touched;
@@ -503,7 +490,7 @@ impl<S> CachedObjectStore<S> {
         state
             .recency
             .insert((tick, RecencyKey::Canonical(object_id)));
-        state.stats.hits = increment(state.stats.hits)?;
+        state.hits = increment(state.hits)?;
         Ok(true)
     }
 
@@ -564,8 +551,8 @@ impl<S> CachedObjectStore<S> {
         let value = entry.value.clone();
         state.recency.remove(&(prior, RecencyKey::Decoded(key)));
         state.recency.insert((tick, RecencyKey::Decoded(key)));
-        state.stats.hits = increment(state.stats.hits)?;
-        state.stats.decoded_hits = increment(state.stats.decoded_hits)?;
+        state.hits = increment(state.hits)?;
+        state.decoded_hits = increment(state.decoded_hits)?;
         Ok(Some(value))
     }
 
@@ -628,7 +615,7 @@ impl<S> CachedObjectStore<S> {
 
     fn record_coalesced(&self) -> Result<(), ObjectStoreError> {
         let mut state = self.lock_state()?;
-        state.stats.coalesced_reads = increment(state.stats.coalesced_reads)?;
+        state.coalesced_reads = increment(state.coalesced_reads)?;
         Ok(())
     }
 }
@@ -678,7 +665,7 @@ fn evict_oldest(state: &mut CacheState) -> Result<(), ObjectStoreError> {
         .resident_bytes
         .checked_sub(removed_bytes)
         .ok_or(ObjectStoreError::Corrupt)?;
-    state.stats.evictions = increment(state.stats.evictions)?;
+    state.evictions = increment(state.evictions)?;
     Ok(())
 }
 
@@ -732,7 +719,6 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             store: self,
             object_id,
             flight,
-            finished: false,
         };
         let read = match self.inner.read(object_id, maximum, work).await {
             Ok(read) => read,

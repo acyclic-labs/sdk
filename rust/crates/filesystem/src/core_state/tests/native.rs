@@ -78,9 +78,7 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
     let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     for expected in [true, false] {
         assert_eq!(
-            WorkspaceLineageStore::compare_and_swap_with_native_work(
-                &store,
-                id,
+            store.compare_lineage(id,
                 0,
                 paid_lineage(&value, &work, &cxl),
                 &work,
@@ -91,7 +89,7 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
             expected,
         );
         if expected {
-            let loaded = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cxl)
+            let loaded = store.load_lineage(id, &work, &cxl)
                 .await
                 .unwrap()
                 .unwrap();
@@ -101,7 +99,7 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
     }
     drop(store);
     let reopened = LocalCoreStateStore::new(directory.path());
-    let loaded = WorkspaceLineageStore::load_with_native_work(&reopened, id, &work, &cxl)
+    let loaded = reopened.load_lineage(id, &work, &cxl)
         .await
         .unwrap()
         .unwrap();
@@ -124,8 +122,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     let store = LocalCoreStateStore::new(directory.path().join("not-created"));
     let foreign = paid_lineage(&lineage(id), &other, &cxl);
     let before = work.receipt();
-    let error = WorkspaceLineageStore::compare_and_swap_with_native_work(
-        &store, id, 0, foreign, &work, &cxl,
+    let error = store.compare_lineage(id, 0, foreign, &work, &cxl,
     )
     .await
     .unwrap_err();
@@ -140,8 +137,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         lineage(id),
         work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap(),
     );
-    let error = WorkspaceLineageStore::compare_and_swap_with_native_work(
-        &store, id, 0, forged, &work, &cxl,
+    let error = store.compare_lineage(id, 0, forged, &work, &cxl,
     )
     .await
     .unwrap_err();
@@ -152,7 +148,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     assert!(!store.root().exists());
     cxl.cancel();
     let before = work.receipt();
-    let error = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cxl)
+    let error = store.load_lineage(id, &work, &cxl)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -254,9 +250,7 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
     let cxl = crate::CancellationToken::new();
     let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
     let work = original.native_volume_work(finite_budget()).unwrap();
-    let error = WorkspaceLineageStore::load_with_native_work(
-        &store,
-        WorkspaceId::from_bytes([0xd5; 16]),
+    let error = store.load_lineage(WorkspaceId::from_bytes([0xd5; 16]),
         &work,
         &cxl,
     )
