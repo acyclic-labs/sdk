@@ -364,13 +364,7 @@ pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
     if work.is_none() {
         return crate::contract::canonical_json_bytes(value);
     }
-    let maximum_bytes = maximum_bytes.min(work.as_deref().unwrap().remaining()?.bytes_encoded);
-    if maximum_bytes == 0
-        || (maximum_bytes == u64::MAX
-            && work
-                .as_deref()
-                .is_some_and(super::operations::original_native_decode_mode))
-    {
+    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
         return Err(super::guarded_boundary(
             work,
             crate::wire::ErrorCode::Invalid,
