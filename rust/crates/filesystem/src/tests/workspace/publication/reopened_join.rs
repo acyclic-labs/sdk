@@ -40,16 +40,13 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
         let plan = first
             .join_into(&main)
             .history(JoinHistory::Merge)
-            .plan()
-            .await?;
+            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
-            plan.apply(
-                ApplyOptions {
+            plan.apply(ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
-                crate::PublicationPermit::Unrestricted
-            )
+                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Applied(_)
         ));
@@ -71,16 +68,13 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
         let plan = second
             .join_into(&main)
             .history(JoinHistory::Merge)
-            .plan()
-            .await?;
+            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
-            plan.apply(
-                ApplyOptions {
+            plan.apply(ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
-                crate::PublicationPermit::Unrestricted
-            )
+                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Conflicted { .. }
         ));

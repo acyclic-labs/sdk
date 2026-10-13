@@ -23,15 +23,14 @@ where
                 .ok_or(MountSourceError::NotFound)?;
             candidate
                 .checkout
-                .set_attributes_by_id(
+                .set_attributes(
                     lookup.node.file_id,
                     metadata,
                     logical_bytes,
                     work,
                     cancellation,
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             self.checkout
                 .install_change(
                     candidate,
@@ -69,11 +68,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(work, cancellation).map_err(fs_error)?;
+            let mut checkout = observation.observer(work, cancellation)?;
             let value = checkout
                 .read_named_attribute(&path, &name, work, cancellation)
-                .await
-                .map_err(fs_error)?;
+                .await?;
             inputs
                 .carrier
                 .check(cancellation, Some(&self.cancellation))?;
@@ -105,7 +103,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(work, cancellation).map_err(fs_error)?;
+            let mut checkout = observation.observer(work, cancellation)?;
             let mut accounting =
                 crate::kernel::allocation::KernelAccounting::native(work, cancellation);
             let listing = checkout
@@ -116,8 +114,7 @@ where
                     &mut accounting,
                     cancellation,
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let page = inputs.attribute_page(&listing.0)?;
             drop(listing);
             drop(checkout);

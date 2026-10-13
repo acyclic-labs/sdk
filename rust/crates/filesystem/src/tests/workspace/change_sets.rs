@@ -52,7 +52,7 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
     workspace.write_text("/before", "body").await?;
     let middle = unbounded!(workspace, head())?;
     let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(transaction, rename("/before", "/after", false))?;
+    unbounded!(transaction, rename("/before", "/after", true))?;
     let TransactionCommit::Committed(end) = commit(&mut transaction).await? else {
         return Err("rename did not commit".into());
     };
@@ -92,7 +92,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
     let before = unbounded!(workspace, head())?;
 
     let mut changed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(changed, rename("/rename", "/renamed", false))?;
+    unbounded!(changed, rename("/rename", "/renamed", true))?;
     unbounded!(changed, remove("/remove"))?;
     unbounded!(changed, hard_link("/linked", "/nested/link"))?;
     unbounded!(

@@ -187,10 +187,7 @@ pub(crate) async fn read_records<P: StreamProvider>(
     if let Some(observer) = work.as_deref_mut() {
         observer.begin_call()?;
     }
-    Ok(client
-        .read(request)
-        .await
-        .map(ObservedRecords::Ordinary))
+    Ok(client.read(request).await.map(ObservedRecords::Ordinary))
 }
 
 /// Preserves the provider's NotFound result for the canonical CAS selector.
@@ -246,7 +243,9 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
                 drop(error);
                 Ok(None)
             }
-            Err(error) => Err(crate::store::operations::stream_error_with_work(error, work)),
+            Err(error) => Err(crate::store::operations::stream_error_with_work(
+                error, work,
+            )),
         };
     }
     if let Some(observer) = work.as_deref_mut() {
@@ -272,7 +271,12 @@ pub(crate) async fn one_record<P: StreamProvider>(
         Err(error) if error == acyclic_stream::StreamError::NotFound => {
             return Ok(None);
         }
-        Err(error) => return Err(crate::store::operations::stream_error_with_work(error, quota.work())),
+        Err(error) => {
+            return Err(crate::store::operations::stream_error_with_work(
+                error,
+                quota.work(),
+            ));
+        }
     };
     if let Some(io) = quota.work().as_deref() {
         io.check_cancellation()?;
@@ -306,4 +310,23 @@ pub(crate) async fn one_record<P: StreamProvider>(
     }
     quota.transfer();
     Ok(first)
+}
+
+pub(in crate::store) async fn publication_record<P: StreamProvider>(
+    client: &std::sync::Arc<P>,
+    stream: (StreamPath, u64),
+    from: u64,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<Option<ObservedRecord>> {
+    let (stream, held) = stream;
+    quota.adopt(held)?;
+    let received = one_record(client, &stream, from, quota.work()).await;
+    drop(stream);
+    quota.relinquish(held)?;
+    let record = received?;
+    let held = record
+        .as_ref()
+        .map_or(0, |record| sdk_record_retained_bytes(record, quota.work()));
+    quota.adopt(held)?;
+    Ok(record)
 }

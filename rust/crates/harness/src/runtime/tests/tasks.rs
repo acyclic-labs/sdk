@@ -63,7 +63,7 @@ async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected(
         output_content: None,
         model_steps: Arc::new((AtomicUsize::new(0), None)),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        native_metadata_source: None,
+        native_purpose: None,
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_custody: None,
     };

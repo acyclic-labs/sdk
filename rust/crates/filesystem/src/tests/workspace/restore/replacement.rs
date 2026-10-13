@@ -47,7 +47,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     let budget = selected_transaction_budget();
     let cancellation = CancellationToken::new();
     let rejected = workspace
-        .restore_selected_paths_from(
+        .restore_paths_from(
             &source,
             &paths,
             original.id(),
@@ -80,7 +80,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     let guard_cancellation = cancellation.clone();
     let original_id = original.id();
     let restored = workspace
-        .restore_selected_paths_from(
+        .restore_paths_from(
             &source,
             &paths,
             original.id(),
@@ -121,7 +121,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert!(
         unbounded!(workspace, list_directory("/hot/empty/nested", None, 1))?
-            .entries
+            .0.entries
             .is_empty()
     );
     assert_eq!(
@@ -188,7 +188,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
     let rejected = workspace
-        .restore_selected_paths_from(
+        .restore_paths_from(
             &source,
             &paths,
             original.id(),
@@ -220,7 +220,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     let guard_cancellation = cancellation.clone();
     let original_id = original.id();
     let restored = workspace
-        .restore_selected_paths_from(
+        .restore_paths_from(
             &source,
             &paths,
             original.id(),

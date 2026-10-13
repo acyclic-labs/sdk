@@ -10,7 +10,7 @@ mod project;
 use project::ProjectSourceReader;
 
 enum SourceReader<P, A, O> {
-    Caller(TaskContext),
+    Caller(Arc<TaskContext>),
     Project(ProjectSourceReader<P, A, O>),
 }
 
@@ -252,7 +252,7 @@ where
         let source = self.host.observe_admission(source).await?;
         let reader = self
             .harness
-            .durable_context(caller, caller_admission.operation_id)
+            .durable_context(caller, caller_admission.operation_id, None)
             .await?;
         let volumes = self.host.observe_volume_snapshots(source.task_id()).await?;
         Ok(TaskSourceInspection {

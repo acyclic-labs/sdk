@@ -665,12 +665,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
             .await
             .is_err()
     );
-    assert!(
-        checkout
-            .read_metadata_by_id(unknown, B, &cancel)
-            .await
-            .is_err()
-    );
+    assert!(checkout.read_metadata(unknown, B, &cancel).await.is_err());
     assert!(
         checkout
             .read_named_attribute(unknown, &attribute, B, &cancel)

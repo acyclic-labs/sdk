@@ -395,7 +395,7 @@ impl DurableContextProvider {
         context: &Context,
         max_messages: usize,
         summary: Option<ContextSummary>,
-        retention: CompactionRetention,
+        retention: &CompactionRetention,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Context, CompactionReference)> {
         let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
@@ -439,7 +439,7 @@ impl DurableContextProvider {
                         "compaction requires a durable summary; context cannot be silently dropped",
                     )
                 })?;
-                compaction::compact_context(context, max_messages, summary, &retention, work)
+                compaction::compact_context(context, max_messages, summary, retention, work)
             } else {
                 compaction::clone_context(context, None, work)
             }
@@ -450,7 +450,7 @@ impl DurableContextProvider {
                 source_digest,
                 maximum_messages,
                 summary,
-                retention,
+                retention: retention.copy(io)?,
             },
         ))
     }

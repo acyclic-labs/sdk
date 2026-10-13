@@ -97,14 +97,11 @@ impl ProjectionCore {
                     "FUSE invalidation previously failed",
                 ));
             }
-            let condition = if state.invalidation.is_pending(target) {
-                &self.invalidation
-            } else if target.is_some_and(|target| state.page_stores.precede(target)) {
-                &self.page_stored
-            } else {
+            if !state.invalidation.is_pending(target) {
                 return Ok(());
-            };
-            state = condition
+            }
+            state = self
+                .invalidation
                 .wait_timeout(state, Duration::from_millis(10))
                 .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?
                 .0;

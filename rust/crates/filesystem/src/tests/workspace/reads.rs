@@ -78,7 +78,7 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         OwnedBytes::from_static(b"a")
     );
 
-    let listing = unbounded!(workspace, head());
+    let listing = unbounded!(workspace, head())?;
     let first = unbounded!(listing, list_directory("/tree", None, 1))?.0;
     assert_eq!(first.entries.len(), 1);
     assert!(first.has_more);
@@ -150,7 +150,7 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
         .await
         .err()
         .ok_or_else(|| std::io::Error::other("pre-cancelled lookup must fail"))?;
-    assert_eq!(*cancelled_failure.work, crate::WorkCounters::default());
+    assert!(matches!(cancelled_failure.error, FsError::Cancelled(_)));
     let budget_failure = generation
         .lookup_paths(&[present], WorkBudget::default(), &CancellationToken::new())
         .await

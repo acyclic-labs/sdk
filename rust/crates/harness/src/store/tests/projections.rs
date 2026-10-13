@@ -317,20 +317,21 @@ fn forge_projection_payload(location: &mut Value, payload: &mut Vec<u8>, mode: u
         let mut forged: Value = crate::contract::json_from_slice(payload)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         forged["projection"]["lifecycle"] = json!("completed");
-        let digest = crate::executor::json::canonical_json_digest(&(
-            &forged["format_version"],
-            &forged["authority"],
-            &forged["revision"],
-            &forged["events"],
-            &forged["projection"],
-        ), u64::MAX, &mut None)?;
+        let digest = crate::executor::json::canonical_json_digest(
+            &(
+                &forged["format_version"],
+                &forged["authority"],
+                &forged["revision"],
+                &forged["events"],
+                &forged["projection"],
+            ),
+            u64::MAX,
+            &mut None,
+        )?;
         forged["state_digest"] = json!(digest);
         *payload = crate::contract::canonical_json_bytes(&forged)?;
-        location["digest"] = json!(*blake3::hash(payload).as_bytes());
         location["bytes"] = json!(payload.len());
-        location["chunks"] = json!([{
-            "digest": *blake3::hash(payload).as_bytes(), "bytes": payload.len()
-        }]);
+        location["chunks"] = json!([*blake3::hash(payload).as_bytes()]);
     } else if mode == 4 {
         location["bytes"] = json!(u64::MAX);
     } else if mode == 5 {
@@ -338,9 +339,9 @@ fn forge_projection_payload(location: &mut Value, payload: &mut Vec<u8>, mode: u
     } else if mode == 6 {
         location["chunks"] = json!([]);
     } else if mode == 7 {
-        location["chunks"][0]["bytes"] = json!(0);
+        location["bytes"] = json!(0);
     } else if mode == 8 {
-        location["chunks"][0]["bytes"] = json!(1);
+        location["bytes"] = json!(1);
     }
     Ok(())
 }
@@ -416,7 +417,7 @@ async fn copied_projection_client(
         .await?;
     let mut location: Value = crate::contract::json_from_slice(&index[0].value)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let digest: [u8; 32] = serde_json::from_value(location["chunks"][0]["digest"].clone())
+    let digest: [u8; 32] = serde_json::from_value(location["chunks"][0].clone())
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let chunk_path = format!(
         "harness/v3/projection-chunks/conversations/conversation-1/{}",
@@ -442,7 +443,7 @@ async fn copied_projection_client(
         let digest: [u8; 32] = serde_json::from_value(if mode == 6 {
             json!(*blake3::hash(&payload).as_bytes())
         } else {
-            location["chunks"][0]["digest"].clone()
+            location["chunks"][0].clone()
         })
         .map_err(|error| Error::Invalid(error.to_string()))?;
         acyclic_stream::Stream::new(

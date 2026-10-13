@@ -226,11 +226,11 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     for (mode, size) in [(0o100_640, None), (0o100_600, Some(12))] {
         metadata.posix_mode = MetadataField::Value(mode);
         checkout
-            .set_attributes_by_id(id, metadata, size, B, &cancel)
+            .set_attributes(id, metadata, size, B, &cancel)
             .await?;
         assert_eq!(
             checkout
-                .read_metadata_by_id(id, B, &cancel)
+                .read_metadata(id, B, &cancel)
                 .await?
                 .value
                 .posix_mode,
