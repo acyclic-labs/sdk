@@ -20,7 +20,7 @@ use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
-    FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime,
+    FilesystemInteractionHost, FilesystemContentPublisher, FilesystemTaskRuntime,
     MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
     MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND,
     TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
@@ -938,13 +938,13 @@ async fn worker_restart_with_options(
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
             );
-            let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+            let payloads = FilesystemContentPublisher::new(
                 filesystem.clone(),
                 &volume,
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 65_536, None,
-            )?);
+            )?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
             if with_policy && !reopened {
                 Box::pin(async {
@@ -2179,13 +2179,13 @@ async fn stock_restart_with_publication_fault(
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
         let stream = stream_provider.clone();
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             filesystem.clone(),
             &volume,
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             65_536, None,
-        )?);
+        )?;
         let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
@@ -2698,7 +2698,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),
             scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
+        let payloads = FilesystemContentPublisher::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
         let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),
             acyclic_harness::context::CompactionPolicy::Disabled);
         if phase == 0 {
