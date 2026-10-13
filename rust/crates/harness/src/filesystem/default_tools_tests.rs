@@ -220,7 +220,7 @@ async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Resu
         source_project: fixture.source.clone(),
         source_generation: fixture.source_generation.clone(),
         target_project: fixture.project.clone(),
-        expected_target_generation: fixture.host.generation_ref_id(inspected.target_head())?,
+        expected_target_generation: fixture.host.generation_ref_id(inspected.target_head(), None)?,
         authorized_source: None,
         notice: ConversationMessage {
             id: uuid::Uuid::from_bytes([30; 16]),

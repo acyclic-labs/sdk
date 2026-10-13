@@ -251,18 +251,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                         .await
                 }
                 None => {
-                    let result = match deadline {
-                        Some(deadline) => {
-                            self.provider
-                                .native_commit_before(request, deadline, meter.native_meter())
-                                .await
-                        }
-                        None => {
-                            self.provider
-                                .native_commit(request, meter.native_meter())
-                                .await
-                        }
-                    };
+                    let result = self
+                        .provider
+                        .native_commit(request, deadline, meter.native_meter())
+                        .await;
                     result.map(|result| result.map_err(AuthorityError::from))
                 }
             }

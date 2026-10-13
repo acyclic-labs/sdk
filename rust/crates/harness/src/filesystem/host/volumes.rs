@@ -16,85 +16,110 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         destination_grant.require(destination, VolumeOperation::Write, None)?;
         self.fork_volume_pinned(
             source,
+            source_grant,
             source_generation,
             destination,
             paths,
             idempotency_key,
+            None,
+            None,
         )
         .await
     }
 
     pub(in crate::filesystem) async fn fork_volume_pinned(
-        &self,
-        source: &VolumeRef,
-        source_generation: &GenerationRef,
-        child: &VolumeRef,
-        paths: Option<Vec<String>>,
-        idempotency_key: &IdempotencyKey,
+        &self, source: &VolumeRef, grant: &ContentGrant, selected: &GenerationRef, child: &VolumeRef,
+        paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
+        preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<WorkspaceObservation> {
-        source.validate(&mut None)?;
-        child.validate(&mut None)?;
-        self.validate_provider(source.provider())?;
-        self.validate_provider(child.provider())?;
-        if source == child {
-            return Err(Error::Invalid(
-                "volume fork requires a distinct destination".into(),
-            ));
-        }
-        let source_name = source.storage_name(&mut None)?;
-        let source_workspace = self
-            .open(&workspace_ref(self.provider.clone(), &source_name)?)
-            .await?;
-        let generation = self
-            .generation(&source_workspace, source_generation)
-            .await?;
-        self.retain_generation(
-            &workspace_ref(self.provider.clone(), &source_name)?,
-            source_generation,
-        )
-        .await?;
-        let child_name = child.storage_name(&mut None)?;
-        let options = ForkOptions::from_generation(generation, filesystem_key(idempotency_key));
-        let options = match paths {
-            Some(paths) => options.inherit_paths(paths),
-            None => options,
-        };
-        let mut guard = |_| {
-            std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                value: (),
-                work: acyclic_fs::WorkCounters::default(),
-            }))
-        };
-        let forked = source_workspace
-            .fork(
-                &child_name,
-                options,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-                &mut guard,
+        let host = self;
+
+    if io.is_some_and(|io| io.original_native_work().is_some()) && preparation.is_none() {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unauthorized,
+            "task-bound native fork requires its original issued creation guard",
+        ));
+    }
+    if let Some(task) = preparation {
+        task.verify(false, io)?.await?;
+    }
+    grant.require(source, VolumeOperation::Read, io)?;
+    let owned = if io.is_none() { Some(PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?) } else { None };
+    let io = io.or(owned.as_ref()).expect("work context");
+    source.validate(&mut Some(&mut io.history_io()))?;
+    child.validate(&mut Some(&mut io.history_io()))?;
+    if source.provider() != &host.provider || child.provider() != &host.provider || source == child
+    {
+        return Err(io.invalid("volume fork has a foreign or identical destination"));
+    }
+    let reference = fork_preparer_io::content_workspace(&host.provider, source, Some(io))?;
+    let workspace = host.open(&reference, Some(io)).await?;
+    let pinned = host.generation(&workspace, selected, Some(io)).await?;
+    fork_preparer_io::retain(&pinned, Some(io)).await?;
+    let name = fork_preparer_io::volume_storage_name(child, Some(io))?;
+    let operation = fork_preparer_io::operation_key(key, Some(io))?;
+    let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
+    let options = match paths {
+        Some(paths) => options.inherit_paths(paths),
+        None => options,
+    };
+    let forked = match preparation {
+        Some(task) => io.sdk(
+            workspace
+                .fork::<_, _, Error>(
+                    &name,
+                    options,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    io,
+                    io.cancellation(),
+                    task.as_ref(),
+                )
+                .await,
+        )?,
+        None => io.sdk(
+            workspace
+                .fork::<_, _, Error>(
+                    &name,
+                    options,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    io,
+                    io.cancellation(),
+                    &mut |_| {
+                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::default(),
+                        }))
+                    },
+                )
+                .await,
+        )?,
+    };
+    io.remaining()?;
+    let initial = io
+        .sdk(
+            forked
+                .operation_generation(operation, io, io.cancellation())
+                .await,
+        )?
+        .ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "fork creation has no durable original generation",
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| map_error(failure.error))?;
-        let child_workspace = workspace_ref(self.provider.clone(), &child_name)?;
-        let initial = forked
-            .operation_generation(
-                filesystem_key(idempotency_key),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| map_error(failure.error))?
-            .ok_or_else(|| Error::Storage("fork creation has no durable generation".into()))?;
-        let child_generation = self.generation_ref_id(initial.id())?;
-        self.retain_generation(&child_workspace, &child_generation)
-            .await?;
-        Ok(WorkspaceObservation {
-            workspace: child_workspace,
-            generation: child_generation,
-        })
+        })?;
+    fork_preparer_io::retain(&initial, Some(io)).await?;
+    let observed = WorkspaceObservation {
+        workspace: WorkspaceRef::new(host.provider.clone_with_io(io)?, name.into_bytes(), None)?,
+        generation: fork_preparer_io::generation_ref(&host.provider, initial.id(), Some(io))?,
+    };
+    if io.original_native_work().is_none()
+        && let Some(task) = preparation
+    {
+        task.verify(false, Some(io))?.await?;
+    }
+    Ok(observed)
     }
 
     /// Plans a destination-authorized volume import.
@@ -116,15 +141,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .open(&workspace_ref(
                 self.provider.clone(),
                 &source.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?;
         let destination_workspace = self
             .open(&workspace_ref(
                 self.provider.clone(),
                 &destination.storage_name(&mut None)?,
-            )?)
+            )?, None)
             .await?;
-        let source_generation = self.generation(&source_workspace, generation).await?;
+        let source_generation = self.generation(&source_workspace, generation, None).await?;
         let target = destination_workspace
             .head(
                 acyclic_fs::WorkBudget::UNBOUNDED,
@@ -164,7 +189,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| map_error(failure.error))?;
-        self.resolve(&workspace_ref(self.provider.clone(), &name)?)
+        self.resolve(&workspace_ref(self.provider.clone(), &name)?, None)
             .await
     }
 }

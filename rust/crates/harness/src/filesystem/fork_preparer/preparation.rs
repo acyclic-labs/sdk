@@ -106,47 +106,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             std::borrow::Cow::Owned(self.read_grant(source_project)?)
         };
         self.verify_task_lease(false).await?;
-        let private_observation = bounded_io::fork(
-            host,
-            source_private,
-            &private_grant,
-            private_generation,
-            &private,
-            Some(self.clone_paths(paths)?),
-            &private_key,
-            io,
-            task,
-        )
+        let private_observation = (host).fork_volume_pinned(source_private, &private_grant, private_generation, &private, Some(self.clone_paths(paths)?), &private_key, io, task)
         .await?;
         let controller = preparer.controller(io)?;
         let project_key = key("project")?;
         self.verify_task_lease(false).await?;
-        let child_project = bounded_io::fork(
-            host,
-            source_project,
-            &project_grant,
-            source_generation,
-            &policy.child_project_volume,
-            None,
-            &project_key,
-            io,
-            task,
-        )
+        let child_project = (host).fork_volume_pinned(source_project, &project_grant, source_generation, &policy.child_project_volume, None, &project_key, io, task)
         .await?;
         let (child_result_volume, child_result_generation) =
             if let Some(volume) = &policy.child_result_volume {
                 self.verify_task_lease(false).await?;
-                let result = bounded_io::fork(
-                    host,
-                    source_private,
-                    &private_grant,
-                    private_generation,
-                    volume,
-                    Some(Vec::new()),
-                    &key("result")?,
-                    io,
-                    task,
-                )
+                let result = (host).fork_volume_pinned(source_private, &private_grant, private_generation, volume, Some(Vec::new()), &key("result")?, io, task)
                 .await?;
                 (Some(volume.copy(&mut work)?), Some(result.generation))
             } else {
@@ -274,7 +244,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 ResourceRevision::SharedVolume(volume) if volume.provider() == &host.provider => {
                     self.read_grant(volume)?;
                     let reference = bounded_io::content_workspace(&host.provider, volume, io)?;
-                    bounded_io::resolve(host, &reference, io).await?;
+                    (host).resolve(&reference, io).await?;
                     for reader in std::iter::once(request.child_agent)
                         .chain(request.attached_agents.iter().copied())
                     {

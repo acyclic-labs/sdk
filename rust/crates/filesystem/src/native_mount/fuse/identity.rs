@@ -155,7 +155,7 @@ impl ProjectionState {
         for (inode, entry) in &self.by_inode {
             for binding in entry.bindings.iter() {
                 work.charge(Items.delta(1))?;
-                if fuse_has_prefix(&binding.path, prefix, work)? {
+                if has_prefix(&binding.path, prefix) {
                     let path = fuse_clone_path(&binding.path, work)?;
                     fuse_reserve(&mut affected, 1, work)?;
                     affected.push((*inode, path));

@@ -65,7 +65,13 @@ pub fn validate_resume_protocol(request: &wire::ResumeRequest) -> Result<()> {
 }
 
 fn validate_request_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
-    validate_protocol(protocol, &current_protocol(), Error::Invalid)
+    let expected = current_protocol();
+    validate_protocol(
+        protocol,
+        (&expected.version, &expected.descriptor_digest),
+        wire::ErrorCode::Invalid,
+        &None,
+    )
 }
 
 /// Decoded operation-control request shared by all server adapters.
@@ -179,7 +185,8 @@ fn decode_control(
 ) -> Result<OperationControlRequest> {
     let owner = decode_authority(
         owner.ok_or_else(|| Error::Invalid("operation owner is missing".into()))?,
-        Error::Invalid,
+        wire::ErrorCode::Invalid,
+        &None,
     )?;
     owner.stream_path(&mut None)?;
     let operation_id = OperationId::parse(operation_id)?;
@@ -312,7 +319,11 @@ mod tests {
             operation_id: OperationId::from_bytes([9; 16]).to_string(),
         });
         assert!(matches!(
-            validate_operation_status(&observe.operation_id, observe.owner.as_ref(), &mismatched_error),
+            validate_operation_status(
+                &observe.operation_id,
+                observe.owner.as_ref(),
+                &mismatched_error
+            ),
             Err(Error::Conflict(_))
         ));
 

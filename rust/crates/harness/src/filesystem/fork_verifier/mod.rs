@@ -52,11 +52,13 @@ impl<A, O> FilesystemForkVerifier<A, O> {
                     1,
                     WorkCounters::UNCHARGED,
                 )?;
-                Arc::get_mut(&mut binding)
+                let metadata = Arc::get_mut(&mut binding)
                     .expect("new verifier has no aliases")
                     ._native_metadata
                     .as_mut()
-                    .expect("native verifier owns its metadata")
+                    .expect("native verifier owns its metadata");
+                Arc::get_mut(metadata)
+                    .expect("new verifier metadata has no aliases")
                     .absorb(&mut header)
                     .map_err(|cause| Error::NativeWork {
                         cause,
@@ -368,7 +370,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                         std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64, 1, WorkCounters::UNCHARGED)?))
                 } else { (None, None) };
                 let reference = fork_preparer_io::content_workspace(&self.host.provider, &seed.child_private_volume, Some(&io))?;
-                let workspace = fork_preparer_io::open(&self.host, &reference, &io).await?;
+                let workspace = (&self.host).open(&reference, Some(&io)).await?;
                 if io.original_native_work().is_none() {
                     io.retain_owned(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)?;
                     io.allocation_attempt(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)?;

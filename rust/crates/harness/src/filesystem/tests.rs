@@ -113,7 +113,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let reference = workspace_ref(provider, "adapter-test")?;
-    let observed = host.resolve(&reference).await?;
+    let observed = host.resolve(&reference, None).await?;
     assert_eq!(
         observed.generation.as_resource().key(),
         expected.id().digest().into_bytes()
@@ -124,7 +124,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
         "adapter-test",
     )?;
     assert!(matches!(
-        host.resolve(&foreign).await,
+        host.resolve(&foreign, None).await,
         Err(Error::Invalid(_))
     ));
 
@@ -140,7 +140,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
         )
         .await?;
     assert_eq!(
-        host.read(&reference, Some(&updated), "/hello.txt", 16)
+        host.read(&reference, Some(&updated), "/hello.txt", 16, None)
             .await?,
         acyclic_stream::OwnedBytes::from_static(b"hello")
     );

@@ -108,8 +108,6 @@ use state::*;
 mod core;
 pub use core::NativeMountWorkScope;
 use core::*;
-mod errors;
-use errors::*;
 mod lookup;
 use lookup::*;
 mod session;
@@ -122,6 +120,12 @@ mod write;
 use write::*;
 mod xattr;
 use xattr::*;
+
+impl From<i32> for NativeMountError {
+    fn from(error: i32) -> Self {
+        Self::Io(std::io::Error::from_raw_os_error(error))
+    }
+}
 
 fn errno_on(span: &tracing::Span, error: i32) -> Errno {
     span.record("errno", error);

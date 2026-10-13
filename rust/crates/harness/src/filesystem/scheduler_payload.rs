@@ -98,9 +98,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             })?;
         }
         let retry = IdempotencyKey::new(retry)?;
-        let file = self.host.put_content_impl(&self.volume, &self.grant, &path, bytes,
-            "application/json", "result.json", self.maximum_bytes, &retry,
-            None, None, io, None, None).await?;
+        let file = self.host.put_content_impl(&self.volume, &self.grant, &path, bytes, "application/json", "result.json", self.maximum_bytes, &retry, None, None, io).await?;
         drop(retry);
         drop(path);
         drop(scratch_hold);

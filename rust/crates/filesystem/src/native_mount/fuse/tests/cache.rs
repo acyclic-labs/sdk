@@ -167,7 +167,7 @@ pub(super) fn kernel_forget_retires_only_an_inode_with_no_open_handle() -> Resul
                 true,
                 &fuse_fixture_work(),
             )
-            .map_err(native_callback_errno)
+            .map_err(|error| callback_errno(&error))
     };
     let forgotten = intern(&mut state, name("first"))?;
     state.release_lookup_reference(forgotten, 1);
@@ -301,7 +301,7 @@ pub(super) fn a_name_joins_its_node_whatever_link_count_its_facts_carry() -> Res
             true,
             &fuse_fixture_work(),
         )
-        .map_err(native_callback_errno)?;
+        .map_err(|error| callback_errno(&error))?;
     let second = state
         .intern_projected(
             crate::native_mount::fuse::FuseOwned::empty(name("b")),
@@ -310,7 +310,7 @@ pub(super) fn a_name_joins_its_node_whatever_link_count_its_facts_carry() -> Res
             true,
             &fuse_fixture_work(),
         )
-        .map_err(native_callback_errno)?;
+        .map_err(|error| callback_errno(&error))?;
     assert_eq!(first, second);
     Ok(())
 }
@@ -328,10 +328,10 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
             true,
             &fuse_fixture_work(),
         )
-        .map_err(native_callback_errno)?;
+        .map_err(|error| callback_errno(&error))?;
     state
         .remove_binding(old, &name("removed"), &fuse_fixture_work())
-        .map_err(native_callback_errno)?;
+        .map_err(|error| callback_errno(&error))?;
     state.forget_file(reused.node.file_id, old);
     let created = state
         .intern_projected(
@@ -341,7 +341,7 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
             true,
             &fuse_fixture_work(),
         )
-        .map_err(native_callback_errno)?;
+        .map_err(|error| callback_errno(&error))?;
     assert_ne!(created, old, "the new file gets a fresh inode");
     assert!(
         state.by_inode[&old].bindings.is_empty(),
@@ -606,7 +606,7 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
             false,
             &fuse_fixture_work(),
         )
-        .map_err(native_callback_errno)?;
+        .map_err(|error| callback_errno(&error))?;
     assert_ne!(enumerated, 0);
     assert_eq!(state.by_inode[&enumerated].lookup_references, 0);
 
@@ -618,7 +618,7 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
             true,
             &fuse_fixture_work(),
         )
-        .map_err(native_callback_errno)?;
+        .map_err(|error| callback_errno(&error))?;
     assert_eq!(looked_up, enumerated);
     assert_eq!(state.by_inode[&enumerated].lookup_references, 1);
 
@@ -635,7 +635,7 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
                 false,
                 &fuse_fixture_work()
             )
-            .map_err(native_callback_errno),
+            .map_err(|error| callback_errno(&error)),
         Err(libc::EOVERFLOW)
     );
     assert_eq!(state.next_inode, u64::MAX);

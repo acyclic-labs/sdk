@@ -9,31 +9,23 @@ use crate::{
     },
     core::AuthorityIssuer,
     resource_preparation::{
-        CreatedContentBinding,
-        CreatedResourceReceipt, ResourceCreationProofRef, ResourceCreationProvider,
-        ResourcePreparationRequest,
+        CreatedContentBinding, CreatedResourceReceipt, ResourceCreationProofRef,
+        ResourceCreationProvider, ResourcePreparationRequest,
     },
     resources::GenerationRef,
     runtime::ContentBindings,
 };
 use acyclic_fs::{CancellationToken, WorkCounters};
-mod access;
-mod allocation;
 mod authentication;
-mod lazy;
+mod provenance;
 mod provider;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests;
-use access::CreatedFilesystemAccess;
-pub use allocation::FilesystemRootBootstrapAllocation;
 use authentication::{AuthenticatedAllocation, authenticate};
+pub(in crate::filesystem) use provenance::CreatedProvenance;
 
 /// Trusted creation verifier with host-managed signing authority.
 pub struct FilesystemResourceCreationProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityIssuer,
-    #[cfg(not(target_arch = "wasm32"))]
-    roots: [std::sync::OnceLock<Arc<FilesystemRootBootstrapAllocation<A, O>>>; 2],
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -70,8 +62,6 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
             host,
             issuer,
             #[cfg(not(target_arch = "wasm32"))]
-            roots: std::array::from_fn(|_| std::sync::OnceLock::new()),
-            #[cfg(not(target_arch = "wasm32"))]
             native_custody,
         })
     }
@@ -96,82 +86,5 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
             ..Default::default()
         })?;
         Ok(Arc::new(self))
-    }
-    /// Binds this configured creator's protected original Root allocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn bind_root_bootstrap_allocation_with_native_work(
-        &self,
-        proof: Arc<FilesystemRootBootstrapAllocation<A, O>>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        let configured = {
-            let io = PreparationIo::from_native_work(work)?;
-            let verifier = self.issuer.verifier(&mut Some(&mut io.history_io()))?;
-            proof.creator == verifier
-        };
-        if !Arc::ptr_eq(&proof.host, &self.host)
-            || proof.owner() != self.issuer.audience()
-            || !configured
-            || !proof.matches_native_work(work)
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root allocation is not this configured creator's protected original",
-            });
-        }
-        let (slot, other) = match proof.request.volume.class() {
-            VolumeClass::Project => {
-                (&self.roots[0], self.roots[1].get())
-            }
-            VolumeClass::AgentPrivate => {
-                (&self.roots[1], self.roots[0].get())
-            }
-            VolumeClass::SessionShared => return Err(Error::Unauthorized("invalid Root volume class".into())),
-        };
-        let root = &proof.witness.0;
-        if other.is_some_and(|other| {
-            other.witness.0.original_task() != root.original_task()
-                || other.owner() != proof.owner()
-                || other.witness.0.agent() != root.agent()
-                || other.admission_digest != proof.admission_digest
-        }) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "configured Root allocations belong to different original admissions",
-            });
-        }
-        if let Err(proof) = slot.set(proof)
-            && !slot.get().is_some_and(|prior| Arc::ptr_eq(prior, &proof))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "configured original Root allocation changed",
-            });
-        }
-        Ok(())
-    }
-    /// Borrows both configured allocations without copying proof payloads.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn bound_root_bootstrap_allocations(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<[&Arc<FilesystemRootBootstrapAllocation<A, O>>; 2]> {
-        work.remaining()?;
-        let project = self.roots[0].get().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "original Root Project allocation is not bound",
-        })?;
-        let scratch = self.roots[1].get().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "original Root Scratch allocation is not bound",
-        })?;
-        if !project.matches_native_work(work) || !scratch.matches_native_work(work) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "original Root allocations belong to another materialization ledger",
-            });
-        }
-        Ok([project, scratch])
     }
 }

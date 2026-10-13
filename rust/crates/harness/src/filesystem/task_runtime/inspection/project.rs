@@ -29,10 +29,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         host.require_private_directory(&handle.authorization().project, handle.grant(), "", Some(&io))?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
         Self::verify_owner(&owner, &io).await?;
-        let workspace = bounded_io::open(&host, &reference, &io).await?;
+        let workspace = (&host).open(&reference, Some(&io)).await?;
         Self::verify_owner(&owner, &io).await?;
         io.retain_owned(workspace.name().as_str().len() as u64)?;
-        let generation = bounded_io::generation(&host, &workspace, &authorization.generation, &io).await?;
+        let generation = (&host).generation(&workspace, &authorization.generation, Some(&io)).await?;
         Self::verify_owner(&owner, &io).await?;
         Ok(Self { host, owner, handle, generation, limits, io,
             serial: tokio::sync::Mutex::new(()) })

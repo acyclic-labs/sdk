@@ -110,9 +110,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let workspace_ref =
             fork_preparer_io::content_workspace(&self.host.provider, volume, Some(io))?;
         let hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
-        let workspace = fork_preparer_io::open(&self.host, &workspace_ref, io).await?;
+        let workspace = (&self.host).open(&workspace_ref, Some(io)).await?;
         let generation =
-            fork_preparer_io::generation(&self.host, &workspace, reference, io).await?;
+            (&self.host).generation(&workspace, reference, Some(io)).await?;
         drop(workspace_ref);
         drop(hold);
         Ok(generation)
@@ -311,7 +311,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             Some(io),
                         )?;
                         let _hold = io.guard_owned(reference.logical_owned_bytes()?)?;
-                        fork_preparer_io::resolve(&self.host, &reference, Some(io)).await?;
+                        (&self.host).resolve(&reference, Some(io)).await?;
                     }
                     ResourceRevision::History(_) => {
                         return Err(crate::executor::stock_boundary(
@@ -349,7 +349,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             Some(io),
         )?;
         let _private = io.guard_owned(private.logical_owned_bytes()?)?;
-        let head = fork_preparer_io::resolve(&self.host, &private, Some(io))
+        let head = (&self.host).resolve(&private, Some(io))
             .await?
             .generation;
         let _head = io.guard_owned(head.logical_owned_bytes()?)?;
@@ -522,7 +522,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 return Err(io.invalid("child scratch changed outside inherited context staging"));
             }
         }
-        if fork_preparer_io::resolve(&self.host, &private, Some(io))
+        if (&self.host).resolve(&private, Some(io))
             .await?
             .generation
             != head

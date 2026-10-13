@@ -424,7 +424,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
                         .resolve(&crate::filesystem::workspace_ref(
                             storage.volume.provider().clone(),
                             &storage.volume.storage_name(&mut None)?,
-                        )?)
+                        )?, None)
                         .await?
                         .generation,
                     paths: Vec::new(),
@@ -456,12 +456,12 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
     assert!(preparer.prepare_for_task(&request, &Arc::new(quota_preparation), None).await.is_err());
     let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name(&mut None)?)?;
-    assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
+    assert!(matches!(storage.host.resolve(&child_private_workspace, None).await, Err(Error::NotFound(_))));
     let (cancelled_preparation, cancelled_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
     cancelled_invocation.0.cancel();
     assert!(preparer.prepare_for_task(&request, &Arc::new(cancelled_preparation), None).await.is_err());
-    assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
+    assert!(matches!(storage.host.resolve(&child_private_workspace, None).await, Err(Error::NotFound(_))));
     let (task_preparation, _successful_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
     let task_preparation = Arc::new(task_preparation);
@@ -1224,7 +1224,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             ForkSelection { required: true, revision: ResourceRevision::PrivateVolume {
                 volume: storage.volume.clone(),
                 generation: storage.host.resolve(&crate::filesystem::workspace_ref(
-                    storage.volume.provider().clone(), &storage.volume.storage_name(&mut None)?)?).await?.generation,
+                    storage.volume.provider().clone(), &storage.volume.storage_name(&mut None)?)?, None).await?.generation,
                 paths: Vec::new(),
             }},
             ForkSelection { required: true, revision: ResourceRevision::History(StreamRef::new(

@@ -373,7 +373,7 @@ fn value(
 
 #[derive(Default)]
 pub(super) struct Lexical {
-    items: u64,
+    pub(super) items: u64,
     pub(super) depth: u32,
     pub(super) string: bool,
     escape: bool,

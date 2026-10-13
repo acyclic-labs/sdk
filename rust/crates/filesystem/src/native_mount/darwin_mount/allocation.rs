@@ -124,15 +124,13 @@ pub(super) fn retained_file(
         return Ok((file, None));
     }
     let retained = (|| {
-        let custody = crate::demand::NativeMountAllocationCustody::new(&mut work.clone())?;
+        let custody = NativeMountAllocationCustody::new(&mut work.clone())?;
         work.with_original_leaf(|original| {
-            original.check().and_then(|()| {
-                custody
-                    .retain(bytes, original)
-                    .map_err(crate::DemandError::from)
-            })
+            original.check()?;
+            custody.retain(bytes, original)?;
+            Ok::<_, crate::demand::DemandError>(())
         })?;
-        Ok::<_, crate::native_mount::NativeMountStartupAdmissionError>(custody)
+        Ok::<_, NativeMountError>(custody)
     })();
     match retained {
         Ok(custody) => Ok((file, Some(custody))),

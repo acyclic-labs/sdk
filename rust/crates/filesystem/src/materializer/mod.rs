@@ -1,12 +1,12 @@
 //! Journaled pathwise application and crash recovery.
-use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, next_revision};
 use crate::{GenerationId, OperationId};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-const JOURNAL_VERSION: u32 = 3;
+const JOURNAL_VERSION: u32 = 4;
 /// Requires an absent endpoint during native preparation.
 #[cfg(not(target_arch = "wasm32"))]
 pub const NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX: &[u8] = b"acyclic.native.prepare-absent/v1\0";
@@ -16,9 +16,13 @@ pub use intent::*;
 mod types;
 pub use types::*;
 mod protocol;
+#[cfg(test)]
+use crate as sdk;
 pub use protocol::*;
+#[cfg(test)]
 mod memory;
-pub use memory::*;
+#[cfg(test)]
+use memory::Store;
 
 macro_rules! native_modules {
     ($($visibility:vis $name:ident;)*) => {$(
@@ -43,7 +47,6 @@ native_modules! {
     pub witness;
     pub metadata;
     pub directories;
-    pub(crate) directory_preparation;
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod reservation_meter;
@@ -57,6 +60,7 @@ mod runtime_meter;
 ))]
 native_modules! {
     preflight;
+    directory_preparation;
     pub publication;
     planning;
 }

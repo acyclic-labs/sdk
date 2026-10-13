@@ -165,7 +165,12 @@ impl<'a> PiControlHost<'a> {
             || context.scope().grants() != &admission.0.grants
             || context.scope().limits() != admission.0.limits
             || context.scope().run_limits() != admission.0.run_limits
-            || context.owned_task_fence()? != *fence
+            || context
+                .owned_task_binding(Some(
+                    &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                ))?
+                .1
+                != fence
         {
             return Err(denied(
                 "Pi control differs from its original admission or fence",

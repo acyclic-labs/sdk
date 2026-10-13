@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 use prost::Message as _;
 
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -12,14 +13,19 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
 pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Authority, Command)> {
     validate_protocol(
         envelope.protocol.as_ref(),
-        &protocol_identity(),
-        Error::Invalid,
+        (
+            EVENT_WIRE_VERSION,
+            blake3::hash(crate::FILE_DESCRIPTOR_SET).to_hex().as_str(),
+        ),
+        wire::ErrorCode::Invalid,
+        &None,
     )?;
     let authority = decode_authority(
         envelope
             .authority
             .ok_or_else(|| Error::Invalid("command authority is missing".into()))?,
-        Error::Invalid,
+        wire::ErrorCode::Invalid,
+        &None,
     )?;
     let operation = envelope
         .operation
@@ -47,7 +53,7 @@ pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Autho
         )?,
         causal_parent: envelope
             .causal_parent
-            .map(|reference| decode_reference(reference, Error::Invalid))
+            .map(|reference| decode_reference(reference, wire::ErrorCode::Invalid, &None))
             .transpose()?,
         action,
     };
