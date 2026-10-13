@@ -2,7 +2,8 @@
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::codec::{CanonicalDecodeError, ReadAllocationStep};
-use super::namespace_path::NamespacePathAccounting;
+use super::file_read::OriginalReadAccounting;
+use super::namespace_path::{finish_owned, observe_path};
 use super::namespace_path::{NamespacePathError, NamespacePathStep};
 use crate::foundation::{Digest, FileId};
 use crate::kernel::Child;

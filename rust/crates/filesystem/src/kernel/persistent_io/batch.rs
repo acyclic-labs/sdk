@@ -34,7 +34,7 @@ pub(crate) async fn read_pages_with_accounting<'a, S, F, I>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
     data_custody: Option<&'a crate::kernel::ProofDataCustody>,
-) -> Result<PageBatch<'a, S, F>, crate::FsError>
+) -> Result<PageBatch<'a, S, F>, FsError>
 where
     S: AsyncObjectStore,
     F: Format,
@@ -109,7 +109,7 @@ where
             accounting,
         )?;
         release_plan(plan, accounting)?;
-        return Err(accounted_leaf_error(invalid_batch_result()));
+        return Err(invalid_batch_result());
     }
     drop(std::mem::take(&mut plan.requests));
     release_read_allocation(plan.request_bytes, plan.request_allocation, accounting)?;
@@ -132,7 +132,7 @@ fn plan_page_batch<S, F, I>(
     pages: I,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<BatchPlan, crate::FsError>
+) -> Result<BatchPlan, FsError>
 where
     S: AsyncObjectStore,
     F: Format,
@@ -140,7 +140,7 @@ where
 {
     let count = pages.len();
     if count == 0 {
-        return Err(accounted_leaf_error(invalid_batch_result()));
+        return Err(invalid_batch_result());
     }
     accounting.check()?;
     let (sources, source_bytes, source_allocation) =
@@ -170,10 +170,7 @@ where
         for object_id in pages {
             let key = DecodedCacheKey::new::<Page<F>>(object_id, limits);
             accounting.check()?;
-            if let Some(value) = store
-                .decoded_cache_get(key)
-                .map_err(crate::kernel::file_read::read_store_error)?
-            {
+            if let Some(value) = store.decoded_cache_get(key).map_err(read_store_error)? {
                 plan.sources.push(BatchSource::Cached(value));
             } else {
                 plan.sources.push(BatchSource::Cold(object_id));
@@ -194,10 +191,7 @@ where
     }
 }
 
-fn release_plan(
-    plan: BatchPlan,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(), crate::FsError> {
+fn release_plan(plan: BatchPlan, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
     drop(plan.sources);
     drop(plan.requests);
     release_read_allocation(plan.source_bytes, plan.source_allocation, accounting)?;
@@ -207,7 +201,7 @@ fn release_plan(
 fn batch_container<T>(
     count: usize,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<(Vec<T>, u64, KernelOwnedAllocation), crate::FsError> {
+) -> Result<(Vec<T>, u64, KernelOwnedAllocation), FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     let reconcile_capacity = accounting.native_work().is_some();
     #[cfg(target_arch = "wasm32")]
@@ -222,7 +216,7 @@ fn batch_container<T>(
     if values.try_reserve_exact(count).is_err() {
         drop(values);
         release_read_allocation(bytes, allocation, accounting)?;
-        return Err(accounted_leaf_error(Error::AllocationFailed));
+        return Err(CanonicalDecodeError::AllocationFailed.into());
     }
     if reconcile_capacity {
         let actual = values
@@ -243,7 +237,7 @@ fn batch_container<T>(
 pub(super) fn batch_in_heap<'a, 'accounting, F: Future>(
     accounting: &'a mut KernelAccounting<'accounting>,
     create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
-) -> Result<ReadOwned<std::pin::Pin<Box<F>>>, crate::FsError> {
+) -> Result<ReadOwned<std::pin::Pin<Box<F>>>, FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     let custody = if accounting.native_work().is_some() {
         let bytes = usize_to_u64(size_of::<F>());
@@ -265,14 +259,11 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(OwnedPage<F>, KernelOwnedAllocation), crate::FsError> {
+    ) -> Result<(OwnedPage<F>, KernelOwnedAllocation), FsError> {
         let decoded = (|| {
             cancellation.check()?;
             accounting.check()?;
-            let source = self
-                .sources
-                .next()
-                .ok_or_else(|| accounted_leaf_error(invalid_batch_result()))?;
+            let source = self.sources.next().ok_or_else(|| invalid_batch_result())?;
             let object_id = match source {
                 BatchSource::Cached(value) => {
                     let page = OwnedPage {
@@ -280,7 +271,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
                             page: value
                                 .value
                                 .downcast::<Page<F>>()
-                                .map_err(|_| ObjectStoreError::Corrupt)?,
+                                .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?,
                             logical_bytes: value.logical_bytes,
                         },
                         logical_bytes: 0,
@@ -292,10 +283,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
                 }
                 BatchSource::Cold(object_id) => object_id,
             };
-            let read = self
-                .reads
-                .next()
-                .ok_or_else(|| accounted_leaf_error(invalid_batch_result()))?;
+            let read = self.reads.next().ok_or_else(|| invalid_batch_result())?;
             let retained = match self.read_allocation {
                 KernelOwnedAllocation::Standalone => retained_bytes(&read),
                 #[cfg(not(target_arch = "wasm32"))]
@@ -304,8 +292,8 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
             self.remaining_owned_bytes = self
                 .remaining_owned_bytes
                 .checked_sub(retained)
-                .ok_or_else(|| accounted_leaf_error(invalid_batch_result()))?;
-            let decoded = decode_read_with_accounting::<F>(&read, limits, accounting);
+                .ok_or_else(|| invalid_batch_result())?;
+            let decoded = decode_read_with_accounting::<F>(&read, limits, accounting, None);
             drop(read);
             if retained != 0 {
                 release_read_allocation(retained, KernelOwnedAllocation::Standalone, accounting)?;
@@ -328,7 +316,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         mut self,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<(), FsError> {
         let valid = self.reads.len() == 0 && self.sources.len() == 0;
         self.release_pending_with_accounting(accounting)?;
         cancellation.check()?;
@@ -336,7 +324,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         if valid {
             Ok(())
         } else {
-            Err(accounted_leaf_error(invalid_batch_result()))
+            Err(invalid_batch_result())
         }
     }
 
@@ -344,25 +332,20 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         mut self,
         accounting: &mut KernelAccounting<'_>,
         _cancellation: &CancellationToken,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<(), FsError> {
         self.release_pending_with_accounting(accounting)
     }
 
     fn release_pending_with_accounting(
         &mut self,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<(), FsError> {
         let allocations = match accounting {
             KernelAccounting::Standalone { allocations, .. } => Some(allocations),
             KernelAccounting::BorrowedStandalone { allocations, .. } => Some(&mut **allocations),
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => None,
         };
-        self.release_pending(allocations)
-            .map_err(accounted_leaf_error)
-    }
-
-    fn release_pending(&mut self, allocations: Option<&mut AllocationLedger>) -> Result<(), Error> {
         self.reads = Vec::new().into_iter();
         self.sources = Vec::new().into_iter();
         let source_allocation = std::mem::replace(
@@ -379,7 +362,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         let read_bytes = if matches!(read_allocation, KernelOwnedAllocation::Standalone) {
             self.read_container_bytes
                 .checked_add(self.remaining_owned_bytes)
-                .ok_or(Error::AllocationFailed)?
+                .ok_or(CanonicalDecodeError::AllocationFailed)?
         } else {
             0
         };
@@ -387,11 +370,13 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         drop(read_allocation);
         let bytes = source_bytes
             .checked_add(read_bytes)
-            .ok_or(Error::AllocationFailed)?;
+            .ok_or(CanonicalDecodeError::AllocationFailed)?;
         if bytes != 0 {
             allocations
-                .ok_or(AllocationError::ReleaseInvariant)?
-                .release(bytes)?;
+                .ok_or(AllocationError::ReleaseInvariant)
+                .map_err(allocation_error)?
+                .release(bytes)
+                .map_err(allocation_error)?;
         }
         self.source_bytes = 0;
         self.read_container_bytes = 0;
