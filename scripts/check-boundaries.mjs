@@ -25,12 +25,23 @@ const machinesPath = /(?:^|[\\/])(?:proto[\\/]machines|rust[\\/]crates[\\/]machi
 const forbiddenMachinesContent = /\b(?:vmm|fleet|scheduler|daemon|placement)\b|host_profile|guest_control|qualification_release/i;
 const failures = [];
 
+function hasCredentialLiteral(content) {
+  credentialLiteral.lastIndex = 0;
+  let match;
+  while ((match = credentialLiteral.exec(content)) !== null) {
+    credentialLiteral.lastIndex = match.index + 1;
+    const [, delimiter, value] = match;
+    if (delimiter !== "`" || !/(?<!\\)(?:\\\\)*\$\{/.test(value)) return true;
+  }
+  return false;
+}
+
 function inspect(path, content) {
   const relativePath = relative(root, path).replaceAll("\\", "/");
   if (forbiddenPath.test(relativePath)) failures.push(`${relativePath}: forbidden private path`);
   for (const pattern of forbiddenContent) if (pattern.test(content)) failures.push(`${relativePath}: ${pattern}`);
   const hasCredential = /\.(?:[cm]?[jt]sx?)$/.test(relativePath)
-    ? [...content.matchAll(credentialLiteral)].some(([, delimiter, value]) => delimiter !== "`" || !/(?<!\\)(?:\\\\)*\$\{/.test(value))
+    ? hasCredentialLiteral(content)
     : credentialAssignment.test(content);
   if (privateKey.test(content) || hasCredential) {
     const digest = createHash("sha256").update(content.replaceAll("\r\n", "\n")).digest("hex");

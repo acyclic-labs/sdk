@@ -77,6 +77,14 @@ test("backticks, quoted dollar/braces and authorization literals reject", t => {
   assert.equal(result.status, 1);
 });
 
+test("credential literals nested inside interpolated headers reject", t => {
+  const content = "const headers = { author" +
+    'ization: `Bearer ${getToken({ github_' + 'token: "unrecorded-secret" })}` };';
+  const result = scan(t, { "consumer.ts": content });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /credential outside a recorded fake-server fixture/);
+});
+
 test("headers computed from runtime credentials remain valid", t => {
   const result = scan(t, { "consumer.ts": "const headers = { author" + 'ization: `Bearer ${options.token}` };' });
   assert.equal(result.status, 0, result.stderr);
