@@ -29,11 +29,11 @@ pub use approval::ToolApprovalVerifier;
 mod registry;
 pub use registry::{Tool, ToolRegistry};
 mod codec;
-pub(crate) use codec::decode;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use codec::clone_value;
 #[cfg(feature = "filesystem")]
 pub(crate) use codec::tool_serde_diagnostic_label_bytes;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use codec::{clone_value, value};
+pub(crate) use codec::{decode, value};
 
 #[cfg(test)]
 mod tests;

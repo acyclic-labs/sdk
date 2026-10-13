@@ -101,8 +101,8 @@ if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task con
                 return futures::future::pending().await;
             }
             let (value, custody) =
-                crate::tool::value(&"original receipt", work.remaining()?.bytes_encoded, work)?;
-            Ok((Some(ToolResult { value }), custody))
+                crate::tool::value(&"original receipt", work.remaining()?.bytes_encoded, Some(work))?;
+            Ok((Some(ToolResult { value }), custody.expect("native tool result")))
         })
     }
 }
@@ -125,9 +125,8 @@ impl ToolProjection for PendingTool {
                     value: &result.value,
                 },
                 work.remaining()?.bytes_encoded,
-                work,
-            )
-            .map(|(value, custody)| (value, Some(custody)));
+                Some(work),
+            );
         }
         Ok((json!({"kind":"json","value":result.value}), None))
     }
