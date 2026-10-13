@@ -463,13 +463,15 @@ case "$lane" in
     background napi native_binding
     background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
+    background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join \
+      --no-run --target-dir "$target_dir-fork-join"
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
-    finish napi x86_64
+    finish napi x86_64 fork-join-build
     stream_binding
     client_bindings
     native_mount_tests
-    fork_join_conformance
+    CARGO_TARGET_DIR="$target_dir-fork-join" fork_join_conformance
     ;;
   *)
     echo "unknown qualification lane: $lane" >&2

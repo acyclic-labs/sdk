@@ -283,6 +283,21 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
   assert.equal(macos.artifact, "packages-macos");
   assert.equal(macos.artifact_path, "packages");
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  const macosBody = script.match(/^  macos\)\n([\s\S]*?)(?=^  \*\))/m)?.[1] ?? assert.fail("missing macOS lane");
+  const prepare = 'background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join';
+  const join = 'finish napi x86_64 fork-join-build';
+  const execute = 'CARGO_TARGET_DIR="$target_dir-fork-join" fork_join_conformance';
+  assert.ok(macosBody.includes(prepare));
+  assert.ok(macosBody.includes('--no-run --target-dir "$target_dir-fork-join"'));
+  assert.ok(macosBody.indexOf(prepare) < macosBody.indexOf("nextest --workspace --all-features --locked"));
+  assert.ok(macosBody.indexOf(join) > macosBody.indexOf("cargo test --workspace --all-features --locked --doc"));
+  assert.ok(macosBody.indexOf(execute) > macosBody.indexOf(join));
+  assert.ok(macosBody.indexOf(execute) > macosBody.indexOf("native_mount_tests"));
+  const fork = script.match(/^fork_join_conformance\(\) \{\n([\s\S]*?)^\}/m)?.[1] ?? assert.fail("missing fork/join selection");
+  assert.ok(fork.includes("cargo test -p acyclic-plugin --locked --test fork_join --"));
+  assert.ok(fork.includes("--ignored --test-threads=1 --skip support::"));
+  assert.doesNotMatch(fork, /--all-features|--no-run/);
   assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
   for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
