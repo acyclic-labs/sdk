@@ -93,7 +93,9 @@ touching no TypeScript, WASM-compiled Rust, or generated bindings skips the
 `typescript` lane. Every lane caps Cargo, CMake, Make, Rayon, and test parallelism at four
 processes. The macOS runner is Blacksmith's smallest six-vCPU image but still uses
 only four processes. Blacksmith's colocated dependency/tool cache and sccache make
-cold and warm runs fast; Cargo target directories are never cached. Only `main`
+cold and warm runs fast. Windows Rust caches dependency build artifacts in its
+workspace target directory, keyed by the toolchain, manifests and lockfiles;
+other lanes use sccache without caching Cargo targets. Only `main`
 saves compiler caches (main pushes run the core lanes; a manual run on `main`
 warms the full lanes), and every other run restores main's newest entry.
 Successful jobs and their declared outputs may be reused only for the identical
