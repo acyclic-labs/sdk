@@ -14,11 +14,7 @@ async fn restart_completes_from_every_forward_journal_boundary() {
             let operation = plan(u8::try_from(boundary).expect("small boundary"));
             let materializer = JournaledMaterializer::new(store.clone(), backend.clone());
             assert!(matches!(
-                materializer
-                    .apply(operation.clone(), &mut || async {
-                        Ok::<(), MaterializationError<_, _>>(())
-                    })
-                    .await,
+                materializer.apply(operation.clone(), &mut permit).await,
                 Err(MaterializationError::Store(_))
             ));
             drop(materializer);
@@ -43,7 +39,7 @@ async fn restart_completes_from_every_forward_journal_boundary() {
                 .recover(
                     operation.operation_id,
                     MaterializationRecovery::Complete,
-                    &mut || async { Ok::<(), MaterializationError<_, _>>(()) },
+                    &mut permit,
                 )
                 .await
                 .expect("restart recovery");
@@ -52,9 +48,7 @@ async fn restart_completes_from_every_forward_journal_boundary() {
             } else {
                 assert!(recovered.is_none());
                 restarted
-                    .apply(operation.clone(), &mut || async {
-                        Ok::<(), MaterializationError<_, _>>(())
-                    })
+                    .apply(operation.clone(), &mut permit)
                     .await
                     .expect("retry undurable intent")
             };
@@ -63,9 +57,7 @@ async fn restart_completes_from_every_forward_journal_boundary() {
             assert_eq!(backend.snapshot(), expected);
             assert_eq!(
                 restarted
-                    .apply(operation, &mut || async {
-                        Ok::<(), MaterializationError<_, _>>(())
-                    })
+                    .apply(operation, &mut permit)
                     .await
                     .expect("duplicate replay")
                     .phase,
@@ -88,11 +80,7 @@ async fn restart_rolls_back_every_partial_forward_boundary() {
             let operation = plan(u8::try_from(boundary + 0x10).expect("small boundary"));
             let materializer = JournaledMaterializer::new(store.clone(), backend.clone());
             assert!(matches!(
-                materializer
-                    .apply(operation.clone(), &mut || async {
-                        Ok::<(), MaterializationError<_, _>>(())
-                    })
-                    .await,
+                materializer.apply(operation.clone(), &mut permit).await,
                 Err(MaterializationError::Store(_))
             ));
             drop(materializer);
@@ -116,7 +104,7 @@ async fn restart_rolls_back_every_partial_forward_boundary() {
                 .recover(
                     operation.operation_id,
                     MaterializationRecovery::RollBack,
-                    &mut || async { Ok::<(), MaterializationError<_, _>>(()) },
+                    &mut permit,
                 )
                 .await
                 .expect("partial rollback recovery");
@@ -143,9 +131,7 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
             let backend = TreeBackend::source();
             let operation = plan(u8::try_from(boundary + 8).expect("small boundary"));
             JournaledMaterializer::new(store.clone(), backend.clone())
-                .apply(operation.clone(), &mut || async {
-                    Ok::<(), MaterializationError<_, _>>(())
-                })
+                .apply(operation.clone(), &mut permit)
                 .await
                 .expect("initial apply");
             assert_eq!(backend.snapshot(), target_tree());
@@ -156,7 +142,7 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
                     .recover(
                         operation.operation_id,
                         MaterializationRecovery::RollBack,
-                        &mut || async { Ok::<(), MaterializationError<_, _>>(()) }
+                        &mut permit
                     )
                     .await,
                 Err(MaterializationError::Store(_))
@@ -175,7 +161,7 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
                 .recover(
                     operation.operation_id,
                     MaterializationRecovery::RollBack,
-                    &mut || async { Ok::<(), MaterializationError<_, _>>(()) },
+                    &mut permit,
                 )
                 .await
                 .expect("restart rollback")
@@ -188,7 +174,7 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
                     .recover(
                         operation.operation_id,
                         MaterializationRecovery::RollBack,
-                        &mut || async { Ok::<(), MaterializationError<_, _>>(()) }
+                        &mut permit
                     )
                     .await
                     .expect("duplicate rollback")

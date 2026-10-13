@@ -293,7 +293,7 @@ pub async fn capture_watch_batch<
             release_capture_paths(lookup_paths, meter)?;
         } else {
             let lookup = checkout
-                .lookup_batch_no_follow(&lookup_paths, meter, &cancellation)
+                .lookup_batch_no_follow(&lookup_paths, meter, cancellation)
                 .await?;
 
             let lookup_paths_bytes =
@@ -311,7 +311,7 @@ pub async fn capture_watch_batch<
                     }?
                 {
                     let prior = checkout
-                        .lookup_no_follow(&prior_path, meter, &cancellation)
+                        .lookup_no_follow(&prior_path, meter, cancellation)
                         .await?;
                     record = prior.record;
                     capture_drop_path(prior_path, meter)?;

@@ -66,9 +66,9 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     for (wait, completes) in [(&cancelled, false), (&cancellation, true)] {
-        let result = startup
-            .owner_mut()
-            .stop_measured(WorkBudget::UNBOUNDED, wait);
+        let result = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, wait)
+            .map_err(|(error, _)| NativeMountError::from(error))
+            .and_then(|work| startup.owner_mut().stop_with_meter(&work));
         assert_eq!(result.is_ok(), completes);
         assert_eq!(startup.owner().cleanup_state().source_retained, !completes);
     }
@@ -99,9 +99,11 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let nested_scope = mount.begin_original_work(&io_work)?;
     let io_scope = nested_scope.try_clone_for_io()?;
     assert_eq!(mount.native_root_identity(), Some(identity));
-    let bytes = mount.source
+    let bytes = mount
+        .source
         .open_file(&MountPath::root().child(b"source.txt".to_vec()))?
-        .read_up_to_with_meter(0, 32, &io_work)?.bytes;
+        .read_up_to_with_meter(0, 32, &io_work)?
+        .bytes;
     drop(io_scope);
     drop(nested_scope);
     drop(original_scope);

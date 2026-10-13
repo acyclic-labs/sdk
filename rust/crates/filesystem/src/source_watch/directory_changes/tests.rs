@@ -1,6 +1,7 @@
 use super::*;
 use crate::source_watch::HostChangeSink;
 use crate::{CancellationToken, WorkBudget};
+use std::os::windows::io::AsHandle;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct Quiet;
@@ -35,8 +36,8 @@ fn driver(
     dir: &cap_std::fs::Dir,
     work: &mut impl SourceDemandReadWork,
 ) -> Result<NativeSourceWatch, DemandError> {
-    let delivery = Arc::new(Delivery::new_with_work(Arc::new(Quiet), work)?);
-    NativeSourceWatch::start_directory_driver(dir, delivery, true, work)
+    let delivery = Arc::new(Delivery::new(Arc::new(Quiet), work)?);
+    NativeSourceWatch::open_watch(dir.as_handle(), delivery, false, Some(true), false, work)
 }
 fn assert_retired(shared: &Shared) {
     assert!(!is_open(&shared.directory));
@@ -240,10 +241,17 @@ mod original {
         };
         let birth = birth(budget, &CancellationToken::new());
         let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
-        let delivery = Arc::new(Delivery::new_with_work(Arc::new(Quiet), &mut work)?);
+        let delivery = Arc::new(Delivery::new(Arc::new(Quiet), &mut work)?);
         let lifetime = Arc::downgrade(&delivery);
         assert!(matches!(
-            NativeSourceWatch::start_directory_driver(&held, delivery, true, &mut work),
+            NativeSourceWatch::open_watch(
+                held.as_handle(),
+                delivery,
+                false,
+                Some(true),
+                false,
+                &mut work
+            ),
             Err(DemandError::Work(_))
         ));
         assert!(lifetime.upgrade().is_none());
@@ -466,9 +474,14 @@ fn actual_callback_stop_keeps_the_owner_retryable_without_work() -> TestResult {
     });
     let cancellation = CancellationToken::new();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
-    let watch = Arc::new(NativeSourceWatch::start_directory_driver(
-        &held, delivery, true, &mut work,
+    let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
+    let watch = Arc::new(NativeSourceWatch::open_watch(
+        held.as_handle(),
+        delivery,
+        false,
+        Some(true),
+        false,
+        &mut work,
     )?);
     assert!(sink.watch.set(Arc::downgrade(&watch)).is_ok());
     std::fs::write(root.path().join("changed"), b"callback")?;

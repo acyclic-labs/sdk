@@ -63,7 +63,8 @@ pub(in crate::native_mount) fn detach_projection(
                     windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
                     windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
                     Some(packet.as_ptr().cast()),
-                    packet.len() as u32,
+                    u32::try_from(packet.len())
+                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
                     None,
                     0,
                     Some(&raw mut returned),
