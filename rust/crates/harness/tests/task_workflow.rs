@@ -4,6 +4,7 @@
     clippy::too_many_lines,
     reason = "durable recovery scenarios retain setup, fault injection and reopen assertions together"
 )]
+use acyclic_harness::runtime::InteractionResolver as _;
 use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
