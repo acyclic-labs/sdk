@@ -16,7 +16,7 @@ pub(crate) struct PiWritebackRoot {
     owner: Arc<TaskJournalOwner<LocalStream>>,
     allocation: crate::pi_root_allocation::PiRootAllocation,
     key: String,
-    write_guard: Arc<dyn acyclic_harness::runtime::NativeVolumePublicationGuard>,
+    write_guard: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
     _custody: NativeAllocation,
 }
 impl PiWritebackRoot {
@@ -52,10 +52,9 @@ impl PiWritebackRoot {
             .get(key)
             .ok_or_else(|| selected_unauthorized("writeback lost its project"))?;
         let write_guard = context
-            .volume_callback_guard_with_native_work(&owner, work)
+            .volume_callback_guard(&owner, work)
             .await?
-            .for_volume(&owner, volume, true, work)?
-            .1;
+            .for_volume(&owner, volume, true, work)?;
         let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
         let volume = volume.copy(&mut Some(&mut io))?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
@@ -133,7 +132,7 @@ impl PiWritebackRoot {
         }))
     }
     pub(crate) async fn verify(&self, work: &NativeMaterializationWork) -> Result<()> {
-        self.write_guard.check(work)?.await?;
+        self.write_guard.check_write(work)?.await?;
         let identity = self
             .provider
             .verify_created_source(&self.owner, &self.key, &self.allocation, work)
@@ -143,6 +142,7 @@ impl PiWritebackRoot {
                 "writeback changed its original native Root",
             ));
         }
-        self.write_guard.check(work)?.await
+        self.write_guard.check_write(work)?.await?;
+        Ok(())
     }
 }

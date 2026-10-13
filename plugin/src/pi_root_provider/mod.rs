@@ -94,18 +94,21 @@ impl PiRootHandle {
                 reason: "root index key custody differs from original source work",
             });
         }
+        let workspace =
+            workspace.into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            })?;
         let mut entry = work.claim(
-            (std::mem::size_of::<(String, Self)>()
-                + std::mem::size_of::<LocalLazyWorkspace>()
-                + 2 * std::mem::size_of::<usize>()) as u64,
-            1,
+            std::mem::size_of::<(String, Self)>() as u64,
+            0,
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         key.1.absorb(&mut entry)?;
         Ok((
             key.0,
             Self {
-                workspace: Arc::new(workspace),
+                workspace,
                 physical,
                 _custody: key.1,
             },

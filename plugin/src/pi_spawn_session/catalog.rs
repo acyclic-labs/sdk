@@ -155,7 +155,7 @@ impl PiSession {
         let host = self.runtime.runtime.task_host();
         for original in [&plan.preparation, &plan.request.child] {
             let admission = host
-                .observe_admission_with_native_work(original.task_id(), work)
+                .observe_admission_with_native_work(original.task_id(), work)?
                 .await?;
             if admission.0 != *original {
                 return Err(invalid(
@@ -164,7 +164,7 @@ impl PiSession {
             }
         }
         let outcome = host
-            .outcome_with_native_work(plan.preparation.task_id(), work)
+            .outcome_with_native_work(plan.preparation.task_id(), work)?
             .await?;
         let Some(Outcome::Succeeded(value)) = outcome.0 else {
             return Err(invalid(

@@ -1,112 +1,62 @@
 use super::*;
 
-compat_json!(
-    encode_merge_plan_json,
-    encode_merge_plan_payload,
-    "Encodes a merge-plan payload in the versioned compatibility envelope."
-);
-
-compat_json!(
-    decode_merge_plan_json,
-    decode_merge_plan_payload,
-    "Decodes a versioned merge-plan envelope to its canonical payload."
-);
-
-compat_json!(
-    encode_merge_candidate_json,
-    encode_merge_candidate_payload,
-    "Encodes a merge-candidate payload in the versioned compatibility envelope."
-);
-
-compat_json!(
-    decode_merge_candidate_json,
-    decode_merge_candidate_payload,
-    "Decodes a versioned merge-candidate envelope to its canonical payload."
-);
-
 /// One exact name binding generation change.
 #[napi(object)]
 pub struct NativeBindingChange {
-    /// Stable 16-byte parent-directory identity.
     pub directory_id: Buffer,
-    /// Exact changed logical name.
     pub name: NativePathComponent,
-    /// Binding before the change, absent for creation.
     pub before: Option<NativeTreeEntry>,
-    /// Binding after the change, absent for deletion.
     pub after: Option<NativeTreeEntry>,
 }
 
 /// One complete directory entry.
 #[napi(object)]
 pub struct NativeTreeEntry {
-    /// Exact logical entry name.
     pub name: NativePathComponent,
-    /// Stable 16-byte target file identity.
     pub file_id: Buffer,
-    /// Canonical target file-kind name.
     pub file_kind: FileKind,
 }
 
 /// Bounded generation diff result.
 #[napi(object)]
 pub struct NativeGenerationDiff {
-    /// Stable-file-record changes.
     pub files: Vec<NativeFileRecordChange>,
-    /// Exact directory-binding changes.
     pub bindings: Vec<NativeBindingChange>,
-    /// Whether the configured change bound truncated the result.
     pub truncated: bool,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One typed merge conflict.
 #[napi(object)]
 pub struct NativeMergeConflict {
-    /// `file` or `binding`.
     pub kind: String,
-    /// Conflicting stable file identity for a file conflict.
     pub file_id: Option<Buffer>,
-    /// Parent-directory identity for a binding conflict.
     pub directory_id: Option<Buffer>,
-    /// Exact logical name for a binding conflict.
     pub name: Option<NativePathComponent>,
 }
 
 /// Caller-selected immutable side for one exact merge conflict.
 #[napi(object)]
 pub struct NativeMergeSelection {
-    /// `file` or `binding`.
     pub kind: String,
-    /// Conflicting stable file identity for a file conflict.
     pub file_id: Option<Buffer>,
-    /// Parent-directory identity for a binding conflict.
     pub directory_id: Option<Buffer>,
-    /// Exact logical name for a binding conflict.
     pub name: Option<NativePathComponent>,
-    /// `base`, `ours`, or `theirs`.
     pub side: String,
 }
 
 /// Terminal merge preparation result.
 #[napi(object)]
 pub struct NativeMergePreparation {
-    /// `prepared` or `conflicted`.
     pub status: String,
-    /// Prepared two-parent generation identity on success.
     pub generation_id: Option<Buffer>,
-    /// Bounded exact conflicts when preparation cannot proceed.
     pub conflicts: Vec<NativeMergeConflict>,
-    /// Whether the conflict bound truncated the result.
     pub truncated: bool,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Prepares a bounded two-parent merge against the current authority head.
     #[napi]
     pub async fn prepare_merge(
         &self,

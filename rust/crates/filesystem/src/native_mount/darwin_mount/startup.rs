@@ -75,7 +75,7 @@ impl DriverSessionResources {
             pointers[2 * index + 2] = option.as_ptr() as usize;
         }
         let control = DarwinRecoveryControl {
-            prepared_direct: Some(DirectDetach::new(Arc::clone(&destination), work)?),
+            direct: Some(DirectDetach::new(Arc::clone(&destination), work)?),
             diskutil: Some(Diskutil::prepare(work)?),
             ..DarwinRecoveryControl::default()
         };

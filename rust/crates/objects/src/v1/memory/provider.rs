@@ -1,4 +1,4 @@
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use super::transaction::put_group_sizes;
 use super::*;
 
@@ -21,7 +21,7 @@ impl ObjectsProvider for MemoryObjects {
                 let Ok(mut state) = self.lock_state() else {
                     return vec![Err(Unavailable.into()); requests.len()];
                 };
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if self.journal.is_some() {
                     return self.put_durable_batch_locked(&mut state, requests);
                 }
@@ -149,7 +149,7 @@ impl ObjectsProvider for MemoryObjects {
                     }
                     {
                         let mut state = self.lock_state()?;
-                        #[cfg(feature = "local")]
+                        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                         if let Some(journal) = &self.journal {
                             // Prepare group failure owners before mutation or I/O.
                             let mut plans =

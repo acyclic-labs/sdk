@@ -75,24 +75,23 @@ impl PiControlHost<'_> {
         if !publication_work.shares_ledger(work) {
             return Err(denied("publication crossed the caller's work ledger"));
         }
-        let (mount_guard, destination_guard) = if let Some(live) = &live {
-            let guards = live
-                .context
-                .volume_callback_guard_with_native_work(&live.owner, &live.original_work)
-                .await?
-                .for_volume(&live.owner, volume, true, &publication_work)?;
-            (Some(guards.0), Some(guards.1))
+        let destination_guard = if let Some(live) = &live {
+            Some(
+                live.context
+                    .volume_callback_guard(&live.owner, &live.original_work)
+                    .await?
+                    .for_volume(&live.owner, volume, true, &publication_work)?,
+            )
         } else {
-            (None, None)
+            None
         };
         let caller_guard = context
-            .volume_callback_guard_with_native_work(owner, source._custody.0.work())
+            .volume_callback_guard(owner, source._custody.0.work())
             .await?
-            .for_volume(owner, volume, true, &publication_work)?
-            .1;
-        caller_guard.check(&publication_work)?.await?;
+            .for_volume(owner, volume, true, &publication_work)?;
+        caller_guard.check_write(&publication_work)?.await?;
         if let Some(guard) = &destination_guard {
-            guard.check(&publication_work)?.await?;
+            guard.check_write(&publication_work)?.await?;
         }
         let resuming = prior.is_some();
         let intent = if let Some(intent) = prior {
@@ -224,14 +223,10 @@ impl PiControlHost<'_> {
                         let original = original.clone();
                         let caller_guard = Arc::clone(&caller_guard);
                         let destination_guard = destination_guard.clone();
-                        let mount_guard = mount_guard.clone();
                         async move {
-                            if let Some(guard) = mount_guard {
-                                guard.check(&original)?.await?;
-                            }
-                            caller_guard.check(&original)?.await?;
+                            caller_guard.check_write(&original)?.await?;
                             if let Some(guard) = destination_guard {
-                                guard.check(&original)?.await?;
+                                guard.check_write(&original)?.await?;
                             }
                             Ok(())
                         }
@@ -249,9 +244,9 @@ impl PiControlHost<'_> {
                 result => result?,
             }
         };
-        caller_guard.check(&publication_work)?.await?;
+        caller_guard.check_write(&publication_work)?.await?;
         if let Some(guard) = &destination_guard {
-            guard.check(&publication_work)?.await?;
+            guard.check_write(&publication_work)?.await?;
         }
         owner.verify(false, &mut Some(&mut io)).await?;
         Ok(Some(imported))

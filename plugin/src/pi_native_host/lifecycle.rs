@@ -59,7 +59,7 @@ impl PiNativeCommandHost {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         drop(handles);
         if let Some(effect) = effect {
-            let outcome = effect.owner.outcome_with_native_work(work).await?;
+            let outcome = effect.owner.outcome_with_native_work(work)?.await?;
             if outcome.0.is_none() {
                 let workflow = self
                     .runtime

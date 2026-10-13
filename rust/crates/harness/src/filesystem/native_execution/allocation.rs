@@ -84,9 +84,8 @@ async fn open(
             NativeTreeMaterializationBackend::new(
                 root,
                 operation_directory,
-                Some(custody),
+                custody,
                 original,
-                false,
             )
         },
         Some((work.runtime_meter(), false)),

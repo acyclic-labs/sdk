@@ -40,17 +40,9 @@ pub(super) fn get(bucket: Option<wire::BucketRef>, key: &str) -> wire::GetObject
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-mod meter;
 mod model;
-#[cfg(not(target_arch = "wasm32"))]
-mod native;
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 mod transport;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) use meter::NativeTransportMeter;
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) use native::exercise_native_transport;
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 pub(super) use transport::{exercise_streaming, exercise_uploads};

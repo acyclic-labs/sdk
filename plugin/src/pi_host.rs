@@ -132,7 +132,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         if admission.0.task_id() != task
             || admission.0.task != *self.runtime.definition.identity()
@@ -167,7 +167,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence, Some(&PreparationIo::from_native_work(work)?))
             .await?
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
@@ -196,7 +196,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         if admission.0.task_id() != task {
             return Err(denied(

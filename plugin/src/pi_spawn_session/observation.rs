@@ -39,14 +39,14 @@ impl PiSession {
     ) -> Result<(Value, NativeAllocation)> {
         let host = self.runtime.runtime.task_host();
         let preparation = acyclic_harness::runtime::task_id_for_admission(operations.preparation);
-        let preparation_outcome = match host.outcome_with_native_work(preparation, work).await {
+        let preparation_outcome = match host.outcome_with_native_work(preparation, work)?.await {
             Ok(outcome) => Some(outcome),
             Err(Error::NotFound(_)) if !created => None,
             Err(error) => return Err(error),
         };
         let outcome = if created {
             Some(
-                host.outcome_with_native_work(commit.child.task_id, work)
+                host.outcome_with_native_work(commit.child.task_id, work)?
                     .await?,
             )
         } else {

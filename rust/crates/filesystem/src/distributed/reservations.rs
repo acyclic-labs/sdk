@@ -76,7 +76,7 @@ fn request(
 }
 
 fn digest(
-    request: &CommitRequest,
+    request: &mut CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<[u8; 32], AuthorityStoreError> {
     let mut bytes = (b"acyclic.stream.request.v1\0".len() + b"commit".len()) as u64;
@@ -110,7 +110,7 @@ fn digest(
         ..WorkCounters::UNCHARGED
     };
     work.admit(hashing)?;
-    let digest = acyclic_stream::request::commit_digest(request);
+    let digest = acyclic_stream::request::commit_digest(request)?;
     work.charge(hashing)?;
     Ok(digest)
 }
@@ -364,7 +364,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                         }
                     }
                 }
-                if digest(&candidate, work)? == observation.request_digest {
+                if digest(&mut candidate, work)? == observation.request_digest {
                     tails = Some((records, epochs));
                     break 'candidate;
                 }
@@ -550,7 +550,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     "publication reservation is no longer active",
                 ));
             };
-            let request = request(
+            let mut request = request(
                 reservation.authority_id,
                 None,
                 reservation.operation_id,
@@ -558,14 +558,15 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 None,
                 work,
             )?;
-            let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
-                unreachable!("release is one append");
-            };
             let end = reservation
                 .gate_tail
                 .checked_add(1)
                 .ok_or(crate::WorkError::Overflow)?;
-            let valid = digest(&request, work)? == observation.request_digest
+            let request_digest = digest(&mut request, work)?;
+            let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
+                unreachable!("release is one append");
+            };
+            let valid = request_digest == observation.request_digest
                 && matches!(envelope.mutations.as_slice(), [acyclic_stream::CommittedMutation::Append(append)] if &append.path == gate
                     && append.start == reservation.gate_tail && append.end == end && append.tail == end
                     && matches!(append.records.as_slice(), [record] if record.sequence == reservation.gate_tail

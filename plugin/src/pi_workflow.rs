@@ -27,7 +27,9 @@ impl PiControlHost<'_> {
         )
         .await?;
         let (recovered, custody) = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+            );
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -113,7 +115,9 @@ impl PiControlHost<'_> {
         let effect = acyclic_harness::effect_host::task_effect_id(
             task,
             pi_root_inputs::preparation_operation(task, &self.work)?,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+            )),
         )?;
         provider
             .observe_allocation_with_native_work(
@@ -294,10 +298,21 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner_with_native_work(task, &fence, work)
+                .journal_owner(
+                    task,
+                    &fence,
+                    Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                        work,
+                    )?),
+                )
                 .await?;
             journal_owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    )),
+                )
                 .await?;
             let expected = pi_root_provider::guarded_pi_value(
                 &preparation.plan,
@@ -314,8 +329,8 @@ impl PiControlHost<'_> {
             let journal_owner = journal_owner.into_native_shared(work)?;
             let content = acyclic_harness::runtime::content_residency_verifier(
                 Arc::clone(&context),
-                journal_owner.clone(),
-                Some(&PreparationIo::from_native_work(work)?),
+                Arc::clone(&journal_owner),
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
             )?;
             let authority = owner.effect_authority_with_native_work(work)?;
             let provider = pi_root_provider::root_provider(
@@ -366,10 +381,21 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner_with_native_work(task, &fence, work)
+                .journal_owner(
+                    task,
+                    &fence,
+                    Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                        work,
+                    )?),
+                )
                 .await?;
             journal_owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                    )),
+                )
                 .await?;
             pi_root_provider::bind_root_output_context_with_native_work(
                 context,

@@ -102,31 +102,24 @@ pub enum ContentTimes {
     Stamp(i64),
 }
 
-pub(crate) enum ContentOperation<F> {
-    File(FileMutation),
-    CloneFrom {
-        source: F,
-        source_offset: u64,
-        offset: u64,
-        length: u64,
-    },
-}
-
-/// How a content change names the file whose current metadata it stamps.
 pub(crate) enum ContentAddress<'a> {
     Path(&'a NamespacePath),
     File(FileId),
 }
 
-/// A way to address the regular file one content change applies to.
 pub(crate) trait ContentFile: Sized {
     fn address(&self) -> ContentAddress<'_>;
-    fn mutation(self, operation: ContentOperation<Self>) -> Mutation;
-    fn clone_content_with_accounting(
-        &self,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<Owned<Self>, FsError>;
+}
+
+impl ContentFile for NamespacePath {
+    fn address(&self) -> ContentAddress<'_> {
+        ContentAddress::Path(self)
+    }
+}
+impl ContentFile for FileId {
+    fn address(&self) -> ContentAddress<'_> {
+        ContentAddress::File(*self)
+    }
 }
 
 pub(super) fn content_input_path_bytes<F: ContentFile>(
@@ -143,116 +136,4 @@ pub(super) fn content_input_path_bytes<F: ContentFile>(
     owned(&input.0)
         .checked_add(source)
         .ok_or_else(|| WorkError::Overflow.into())
-}
-
-impl ContentFile for NamespacePath {
-    fn address(&self) -> ContentAddress<'_> {
-        ContentAddress::Path(self)
-    }
-
-    fn clone_content_with_accounting(
-        &self,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<Owned<Self>, FsError> {
-        let (path, allocation) = self.clone_with_accounting(accounting, cancellation)?;
-        let bytes = path.retained_bytes();
-        Ok(Owned::new(path, allocation, bytes))
-    }
-    fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
-        let path = self;
-        match operation {
-            ContentOperation::CloneFrom {
-                source,
-                source_offset,
-                offset,
-                length,
-            } => Mutation::CloneRange {
-                source,
-                source_offset,
-                destination: path,
-                destination_offset: offset,
-                length,
-            },
-            ContentOperation::File(mutation) => match mutation {
-                FileMutation::ReplaceRecord { record } => Mutation::Restore { path, record },
-                FileMutation::ValidateRegular => Mutation::ValidateRegular { path },
-                FileMutation::Write {
-                    offset,
-                    length,
-                    content,
-                    content_offset,
-                } => Mutation::Write {
-                    path,
-                    offset,
-                    length,
-                    content,
-                    content_offset,
-                },
-                FileMutation::Resize { logical_bytes } => Mutation::Resize {
-                    path,
-                    logical_bytes,
-                },
-                FileMutation::ZeroRange {
-                    offset,
-                    length,
-                    allocated,
-                    extend,
-                } => Mutation::ZeroRange {
-                    path,
-                    offset,
-                    length,
-                    allocated,
-                    extend,
-                },
-                FileMutation::Preallocate {
-                    offset,
-                    length,
-                    keep_size,
-                } => Mutation::Preallocate {
-                    path,
-                    offset,
-                    length,
-                    keep_size,
-                },
-                FileMutation::SetMetadata { metadata } => Mutation::SetMetadata { path, metadata },
-            },
-        }
-    }
-}
-
-impl ContentFile for FileId {
-    fn address(&self) -> ContentAddress<'_> {
-        ContentAddress::File(*self)
-    }
-
-    fn clone_content_with_accounting(
-        &self,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<Owned<Self>, FsError> {
-        cancellation.check()?;
-        let allocation = accounting.claim_owned(0, 0)?;
-        Ok(Owned::new(*self, allocation, 0))
-    }
-    fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
-        match operation {
-            ContentOperation::CloneFrom {
-                source,
-                source_offset,
-                offset,
-                length,
-            } => Mutation::CloneFileRange {
-                source_file_id: source,
-                source_offset,
-                destination_file_id: self,
-                destination_offset: offset,
-                length,
-            },
-            ContentOperation::File(mutation) => Mutation::File {
-                file_id: self,
-                mutation,
-            },
-        }
-    }
 }

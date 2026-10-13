@@ -152,13 +152,7 @@ where
             #[cfg(target_arch = "wasm32")]
             let binding_io = io;
             self.authorize(reference, io, binding_io).await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let bytes = match io.and_then(crate::executor::PreparationIo::original_native_work) {
-                Some(work) => context.read_file_with_native_work(reference, work).await?,
-                None => context.read_file(reference).await?,
-            };
-            #[cfg(target_arch = "wasm32")]
-            let bytes = context.read_file(reference).await?;
+            let bytes = context.read_file(reference, io).await?;
             self.authorize(reference, io, binding_io).await?;
             Ok(bytes)
         })
@@ -181,30 +175,30 @@ impl TaskContext {
             .or(self.harness.content.as_ref())
     }
 
-    /// Reads one immutable file through the owner's authenticated provider.
-    pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
+    /// Reads an immutable file under this task's scope and caller IO limits.
+    pub async fn read_file(
+        &self,
+        file: &FileRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
             file,
             &self.scope,
-            None,
+            io,
         )
         .await
     }
 
-    /// Reads through the original bound provider on the caller's native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn read_file_with_native_work(
-        &self,
-        file: &FileRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    /// Reads an immutable artifact through its authenticated provider.
+    pub async fn read_artifact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(
-            self.content_binding(Some(file.volume())),
+            self.scope
+                .created_content(Some(file.volume()))
+                .or(self.harness.artifacts.as_ref()),
             file,
             &self.scope,
-            Some(&io),
+            None,
         )
         .await
     }
@@ -228,20 +222,7 @@ impl TaskContext {
         })
     }
 
-    /// Resolves an immutable artifact without coupling its provider to the workspace/content binding.
-    pub async fn read_artifact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_bound_file(
-            self.scope
-                .created_content(Some(file.volume()))
-                .or(self.harness.artifacts.as_ref()),
-            file,
-            &self.scope,
-            None,
-        )
-        .await
-    }
-
-    /// Discovers a private owner directory without a prior `FileRef`.
+    /// Lists one authenticated private directory page.
     pub async fn list_private_directory(
         &self,
         volume: &VolumeRef,
@@ -295,7 +276,7 @@ impl TaskContext {
         Ok(page)
     }
 
-    /// Resolves the current file at a named private path into verified pinned bytes; the returned `FileRef` can later be shared independently.
+    /// Reads and verifies a pinned file at a private path.
     pub async fn read_private_path(
         &self,
         volume: &VolumeRef,
@@ -417,22 +398,40 @@ impl TaskContext {
         Ok(bytes)
     }
 
-    /// Observes the original once-publication, never a refreshed source/head.
+    /// Observes the original immutable publication under caller IO limits.
     pub async fn observe_staged_file_once(
         &self,
         operation_id: OperationId,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Option<FileRef>> {
-        let writer = self.bound_content_writer(self.content_binding(None), &self.scope, io)?;
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.observe_bound_file_once(operation_id, io, &self.scope)
+            .await
+    }
+
+    /// Observes the original once-publication, never a refreshed source/head.
+    pub(super) async fn observe_bound_file_once(
+        &self,
+        operation_id: OperationId,
+        io: Option<&crate::executor::PreparationIo>,
+        scope: &RuntimeScope,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let writer = self.bound_content_writer(self.content_binding(None), scope, io)?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
         let (file, hold) = writer
-            .observe_staged_once(operation_id, self.scope.limits.file_bytes, io)?
+            .observe_staged_once(operation_id, scope.limits.file_bytes, io)?
             .await?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(not(feature = "filesystem"))]
+        let retained = 0;
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
+        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained();
         }
@@ -445,81 +444,13 @@ impl TaskContext {
                 .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
             #[cfg(not(feature = "filesystem"))]
             let mut work = None;
-            self.scope.limits.validate_file(file, &mut work)?;
+            scope.limits.validate_file(file, &mut work)?;
             if file.volume() != writer.volume() {
                 return Err(Error::Storage(
                     "original publisher receipt belongs to another volume".into(),
                 ));
             }
         }
-        Ok(file)
-    }
-
-    #[cfg(feature = "filesystem")]
-    /// Observes a once-publication under the supplied bounds.
-    pub async fn observe_staged_file_once_measured(
-        &self,
-        operation_id: OperationId,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error> {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = async {
-            let writer =
-                self.bound_content_writer(self.content_binding(None), &self.scope, Some(&io))?;
-            let (file, hold) = writer
-                .observe_staged_once(operation_id, self.scope.limits.file_bytes, Some(&io))?
-                .await?;
-            if let Some(hold) = hold {
-                hold.into_retained();
-            }
-            if let Some(file) = &file {
-                io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
-                self.scope.limits.validate_file(file, &mut None)?;
-                if file.volume() != writer.volume() {
-                    return Err(Error::Storage(
-                        "original publisher receipt belongs to another volume".into(),
-                    ));
-                }
-            }
-            Ok(file)
-        }
-        .await;
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt {
-                value,
-                work: io.receipt(),
-            }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
-
-    /// Reads through the exact original task scope and owner-backed reader.
-    #[cfg(feature = "filesystem")]
-    pub async fn read_file_measured(
-        &self,
-        file: &FileRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>
-    {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = self
-            .read_bound_file(
-                self.content_binding(Some(file.volume())),
-                file,
-                &self.scope,
-                Some(&io),
-            )
-            .await;
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt {
-                value,
-                work: io.receipt(),
-            }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
+        Ok((file, retained))
     }
 }

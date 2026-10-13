@@ -252,7 +252,7 @@ impl PiSession {
                     .runtime
                     .runtime
                     .task_host()
-                    .observe_admission_with_native_work(plan.preparation.task_id(), &work)
+                    .observe_admission_with_native_work(plan.preparation.task_id(), &work)?
                     .await?;
                 if admission.0 != plan.preparation {
                     return Err(invalid("Pi original preparation admission was substituted"));

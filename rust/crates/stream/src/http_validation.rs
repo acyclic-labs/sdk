@@ -1,19 +1,18 @@
 //! Pure validation for hosted Stream HTTP response payloads.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value};
 
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
-pub(crate) fn object(value: &Value) -> Result<&Map<String, Value>> {
+fn object(value: &Value) -> Result<&Map<String, Value>> {
     value.as_object().ok_or("expected object")
 }
 
-pub(crate) fn field<'a>(item: &'a Map<String, Value>, name: &str) -> Result<&'a Value> {
+fn field<'a>(item: &'a Map<String, Value>, name: &str) -> Result<&'a Value> {
     item.get(name).ok_or("missing field")
 }
 
-pub(crate) fn string(value: &Value) -> Result<&str> {
+fn string(value: &Value) -> Result<&str> {
     value
         .as_str()
         .filter(|value| !value.is_empty())
@@ -24,7 +23,7 @@ fn encoded_bytes(value: &Value) -> Result<&str> {
     value.as_str().ok_or("expected base64 string")
 }
 
-pub(crate) fn u64_string(value: &Value) -> Result<u64> {
+fn u64_string(value: &Value) -> Result<u64> {
     let value = string(value)?;
     if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
         || (value.len() > 1 && value.starts_with('0'))
@@ -34,11 +33,11 @@ pub(crate) fn u64_string(value: &Value) -> Result<u64> {
     value.parse().map_err(|_| "expected decimal uint64 string")
 }
 
-pub(crate) fn boolean(value: &Value) -> Result<bool> {
+fn boolean(value: &Value) -> Result<bool> {
     value.as_bool().ok_or("expected boolean")
 }
 
-pub(crate) fn array(value: &Value) -> Result<&Vec<Value>> {
+fn array(value: &Value) -> Result<&Vec<Value>> {
     value.as_array().ok_or("expected array")
 }
 
@@ -50,10 +49,47 @@ fn path(value: &Value) -> Result {
 }
 
 pub(crate) fn decode_base64(value: &str) -> Option<Vec<u8>> {
-    STANDARD.decode(value).ok()
+    if !value.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut output = Vec::with_capacity(value.len() / 4 * 3);
+    let bytes = value.as_bytes();
+    let (chunks, _) = bytes.as_chunks::<4>();
+    for (index, &[a_byte, b_byte, c_byte, d_byte]) in chunks.iter().enumerate() {
+        let a = sextet(a_byte)?;
+        let b = sextet(b_byte)?;
+        let c = if c_byte == b'=' { 0 } else { sextet(c_byte)? };
+        let d = if d_byte == b'=' { 0 } else { sextet(d_byte)? };
+        if c_byte == b'=' {
+            if d_byte != b'=' || b & 0x0f != 0 || index + 1 != bytes.len() / 4 {
+                return None;
+            }
+        } else if d_byte == b'=' && (c & 0x03 != 0 || index + 1 != bytes.len() / 4) {
+            return None;
+        }
+        output.push(a << 2 | b >> 4);
+        if c_byte != b'=' {
+            output.push(b << 4 | c >> 2);
+        }
+        if d_byte != b'=' {
+            output.push(c << 6 | d);
+        }
+    }
+    Some(output)
 }
 
-pub(crate) fn bytes(value: &Value) -> Result<Vec<u8>> {
+fn sextet(value: u8) -> Option<u8> {
+    match value {
+        b'A'..=b'Z' => Some(value - b'A'),
+        b'a'..=b'z' => Some(value - b'a' + 26),
+        b'0'..=b'9' => Some(value - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn bytes(value: &Value) -> Result<Vec<u8>> {
     decode_base64(encoded_bytes(value)?).ok_or("expected base64")
 }
 
@@ -264,15 +300,11 @@ fn validate_idempotency(value: &Value) -> Result {
     }
 }
 
-pub(crate) fn validate(route: &str, value: &Value) -> Result {
+pub fn validate(route: &str, value: &Value) -> Result {
     match crate::HTTP_RESPONSE_CONTRACT
         .iter()
         .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
     {
-        Some("empty") => {
-            object(value)?;
-            Ok(())
-        }
         Some("sequence") => {
             u64_string(value)?;
             Ok(())
@@ -314,19 +346,6 @@ pub(crate) fn validate(route: &str, value: &Value) -> Result {
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
-
-    #[test]
-    fn hosted_delivery_ack_requires_an_object_response() {
-        assert!(super::validate("delivery/acknowledge", &serde_json::json!({})).is_ok());
-        for invalid in [
-            Value::Null,
-            serde_json::json!([]),
-            serde_json::json!(true),
-            serde_json::json!(""),
-        ] {
-            assert!(super::validate("delivery/acknowledge", &invalid).is_err());
-        }
-    }
 
     #[test]
     fn base64_padding_only_terminates_the_last_quartet() {

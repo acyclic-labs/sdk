@@ -3,50 +3,37 @@ use super::*;
 /// One canonical directory entry.
 #[napi(object)]
 pub struct NativeDirectoryEntry {
-    /// Portable UTF-8 name bytes.
     pub name: Buffer,
-    /// Stable file identity.
     pub file_id: Buffer,
-    /// Canonical file kind.
     pub file_kind: FileKind,
 }
 
 /// One bounded authenticated directory cursor page.
 #[napi(object)]
 pub struct NativeDirectoryPage {
-    /// Ordered entries strictly after the cursor.
     pub entries: Vec<NativeDirectoryEntry>,
-    /// Whether another page exists.
     pub has_more: bool,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One directory binding paired with its complete record and metadata.
 #[napi(object)]
 pub struct NativeDirectoryRecordEntry {
-    /// Exact canonical name bytes.
     pub name: Buffer,
-    /// Complete path-independent child record.
     pub record: NativeFileRecord,
-    /// Complete canonical metadata bytes referenced by the record.
     pub metadata_canonical_bytes: Buffer,
 }
 
 /// One page-efficient directory record enumeration receipt.
 #[napi(object)]
 pub struct NativeDirectoryRecordPage {
-    /// Ordered records strictly after the supplied cursor.
     pub entries: Vec<NativeDirectoryRecordEntry>,
-    /// Whether another page exists.
     pub has_more: bool,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Returns one bounded ordered directory page.
     #[napi]
     pub async fn list_directory(
         &self,
@@ -84,7 +71,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Returns a bounded ordered directory page containing complete file
     #[napi]
     pub async fn list_directory_records(
         &self,

@@ -41,14 +41,6 @@ impl NativeDemandCarrier<'_> {
         })
     }
 
-    pub(super) fn reborrow(&mut self) -> NativeDemandCarrier<'_> {
-        match self {
-            Self::Borrowed(work) => NativeDemandCarrier::Borrowed(work),
-            Self::Shared(meter) => NativeDemandCarrier::Shared(meter),
-            Self::Native(work) => NativeDemandCarrier::Native(work),
-        }
-    }
-
     pub(super) fn new_custody(
         &mut self,
     ) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {

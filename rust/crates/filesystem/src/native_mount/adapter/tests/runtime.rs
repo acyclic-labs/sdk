@@ -68,14 +68,6 @@ impl AsyncObjectStore for MetadataRefusingObjects {
         self.admit(object_id)?;
         self.inner.put(object_id, bytes, context).await
     }
-    async fn put_hashed(
-        &self,
-        object: crate::storage::HashedObject,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        self.admit(object.object_id())?;
-        self.inner.put_hashed(object, context).await
-    }
     async fn put_many(
         &self,
         writes: &[crate::storage::ObjectWrite],
@@ -85,16 +77,6 @@ impl AsyncObjectStore for MetadataRefusingObjects {
             self.admit(write.object_id)?;
         }
         self.inner.put_many(writes, context).await
-    }
-    async fn put_many_hashed(
-        &self,
-        objects: &[crate::storage::HashedObject],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        for object in objects {
-            self.admit(object.object_id())?;
-        }
-        self.inner.put_many_hashed(objects, context).await
     }
     async fn read(
         &self,
@@ -193,52 +175,19 @@ async fn in_place_callback_outlasts_its_callers_cooperative_budget()
 }
 
 #[test]
-fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    let abandoned = native_test_path("abandoned.bin");
-    let kept = native_test_path("kept.bin");
-    let work = capture_meter(boundary_budget(), &source.cancellation)?;
-    let create = |path| AuthoredMutation::CreateFile {
-        path,
-        metadata: metadata(),
-        bytes: acyclic_stream::OwnedBytes::new(),
-    };
-    source.runtime.wait(|| async {
-        // While another holder keeps the checkout, one caller queues its
-        // change and gives up waiting, as a callback deadline does.
-        let held = source.checkout.lock().await;
-        let gave_up = tokio::time::timeout(
-            Duration::from_millis(20),
-            source.create(&abandoned, &work, create),
-        )
-        .await;
-        assert!(gave_up.is_err(), "the checkout was held");
-        drop(held);
-        source.create(&kept, &work, create).await
-    })?;
-    assert!(source.lookup(&kept)?.is_some());
-    assert!(
-        source.lookup(&abandoned)?.is_none(),
-        "a change its caller saw fail applied later"
-    );
-    Ok(())
-}
-
-#[test]
-fn abandoning_a_blocked_caller_leaves_other_callers_live() -> Result<(), Box<dyn std::error::Error>>
-{
+fn abandoning_a_blocked_change_never_applies_and_leaves_other_callers_live()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Portable)?);
-    let abandoned = native_test_path("drainer.bin");
-    let kept = native_test_path("waiter.bin");
-    let work = capture_meter(boundary_budget(), &source.cancellation)?;
+    let abandoned = native_test_path("abandoned");
+    let kept = native_test_path("kept");
+    let work = capture_meter(boundary_budget(), source.cancellation())?;
     let create = |path| AuthoredMutation::CreateFile {
         path,
         metadata: metadata(),
-        bytes: acyclic_stream::OwnedBytes::new(),
+        bytes: OwnedBytes::new(),
     };
     source.runtime.wait(|| async {
         let held = source.checkout.lock().await;
-        // Both callers wait for the same held checkout.
         let mut drainer = Box::pin(source.create(&abandoned, &work, create));
         assert!(futures::poll!(drainer.as_mut()).is_pending());
         let waiter_source = Arc::clone(&source);
@@ -249,8 +198,11 @@ fn abandoning_a_blocked_caller_leaves_other_callers_live() -> Result<(), Box<dyn
                 .create(&waiter_path, &waiter_work, create)
                 .await
         });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        // Abandoning the first caller must not stop the second.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), drainer.as_mut())
+                .await
+                .is_err()
+        );
         drop(drainer);
         drop(held);
         tokio::time::timeout(Duration::from_secs(5), waiter)

@@ -47,33 +47,6 @@ pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     }
 }
 
-pub(in crate::executor) fn stock_native_failure(error: &Error) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        return error.is_native_failure();
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = error;
-        false
-    }
-}
-
-pub(in crate::executor) fn stock_model_call(
-    parent: OperationId,
-    step: u32,
-    call: String,
-    name: String,
-    arguments: Value,
-    io: Option<&PreparationIo>,
-) -> Result<ToolInvocation> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return ToolInvocation::for_model_call(parent, step, call, name, arguments, Some(work));
-    }
-    ToolInvocation::for_model_call(parent, step, call, name, arguments, None)
-}
-
 pub(in crate::executor) fn stock_tool_lookup<'a>(
     registry: &'a ToolRegistry,
     name: &str,
@@ -91,20 +64,6 @@ pub(in crate::executor) fn stock_tool_lookup<'a>(
     registry
         .get(name, None, io)?
         .ok_or_else(|| Error::NotFound(format!("tool {name}")))
-}
-
-pub(in crate::executor) fn stock_tool_support(
-    tool: &crate::tool::Tool,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        tool.executor.supports_native_execution(work)?;
-        tool.projection.supports_native_projection(Some(work))?;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = (tool, io);
-    Ok(())
 }
 
 pub(in crate::executor) fn stock_authorize_tool(
@@ -242,7 +201,7 @@ pub(in crate::executor) fn stock_task_interaction_id(
     if let Some(io) = io {
         io.preflight(hashed)?;
     }
-    let id = crate::durable_host::task_interaction_id(task, operation);
+    let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.spent(hashed)?;
@@ -371,7 +330,7 @@ pub(in crate::executor) async fn stock_tool_rejection(
     kind: ToolFailureKind,
     error: Error,
 ) -> Result<ExecutionProgress<()>> {
-    if stock_native_failure(&error) {
+    if error.is_native_failure() {
         return Err(error);
     }
     session

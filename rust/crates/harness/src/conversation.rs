@@ -1556,7 +1556,7 @@ impl ConversationMessage {
         let content = self.content.clone_in_quota(quota)?;
         let attachments = match &self.attachments {
             ReferencedAttachments::Inline { items } => {
-                let items = crate::core::copy_iter(items.len(), items.iter(), quota, |item, quota| {
+                let items = crate::core::copy_vector(items, quota, |item, quota| {
                     let file = item.file.clone_in_quota(quota)?;
                     let label = item.label.as_deref().map(|label|
                         crate::core::copy_text(label, quota)).transpose()?;

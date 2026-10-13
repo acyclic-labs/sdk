@@ -842,3 +842,31 @@ mod recovery;
 mod replay;
 mod tools_1;
 mod tools_2;
+fn echo_tools(
+    executor: Arc<dyn crate::tool::ToolExecutor>,
+    input_schema: Value,
+    output_schema: Value,
+    projection_schema: Value,
+) -> Result<ToolRegistry> {
+    let mut tools = ToolRegistry::default();
+    tools.register(
+        (
+            crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(),
+                    revision: "1".into(),
+                    description: "Echo".into(),
+                    input_schema,
+                    output_schema,
+                    projection_schema,
+                },
+                executor,
+                projection: Arc::new(Projection),
+            },
+            None,
+        ),
+        &mut None,
+        None,
+    )?;
+    Ok(tools)
+}

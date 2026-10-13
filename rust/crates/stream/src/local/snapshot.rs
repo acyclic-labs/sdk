@@ -1,43 +1,32 @@
-use super::*;
-
-pub(super) struct Snapshot {
-    pub(super) epoch: u64,
-    pub(super) state: Vec<u8>,
+struct Snapshot {
+    epoch: u64,
+    state: Vec<u8>,
 }
 
-pub(super) fn encode_snapshot(
+fn snapshot_checksum(body: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"acyclic-stream-local-snapshot-v1\0");
+    hasher.update(body);
+    hasher.finalize().into()
+}
+
+fn encode_snapshot(
     limits: LocalStreamLimits,
     epoch: u64,
     state: &[u8],
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> Result<NativeStreamOutput<Vec<u8>>, LocalStreamError> {
-    let capacity = SNAPSHOT_HEADER_BYTES
-        .checked_add(state.len())
-        .and_then(|length| length.checked_add(32))
-        .ok_or(LocalStreamError::InvalidLimits)?;
-    let mut encoded = crate::memory::vec(meter, capacity)?;
-    if let Some(meter) = meter {
-        meter.admit_codec(capacity as u64, capacity as u64, 0)?;
-    }
-    encoded.value.extend_from_slice(SNAPSHOT_MAGIC);
-    encoded.value.extend_from_slice(&encode_limits(limits)?);
-    encoded.value.extend_from_slice(&epoch.to_le_bytes());
-    encoded.value.extend_from_slice(state);
-    if let Some(meter) = meter {
-        meter.record_codec(encoded.value.len() as u64, encoded.value.len() as u64, 0)?;
-        meter.check()?;
-    }
-    let checksum = checksum(SNAPSHOT_DOMAIN, &[&encoded.value], meter, None)?;
-    encoded.value.extend_from_slice(&checksum);
-    if let Some(meter) = meter {
-        meter.record_codec(32, 32, 0)?;
-        meter.check()?;
-    }
+) -> Result<Vec<u8>, LocalStreamError> {
+    let mut encoded = Vec::with_capacity(SNAPSHOT_HEADER_BYTES + state.len() + 32);
+    encoded.extend_from_slice(SNAPSHOT_MAGIC);
+    encoded.extend_from_slice(&encode_limits(limits)?);
+    encoded.extend_from_slice(&epoch.to_le_bytes());
+    encoded.extend_from_slice(state);
+    let checksum = snapshot_checksum(&encoded);
+    encoded.extend_from_slice(&checksum);
     Ok(encoded)
 }
 
-/// The snapshot below `root`, if one was installed.
-pub(super) fn read_snapshot(
+/// The snapshot below `root`, if one was installed. It is written whole
+fn read_snapshot(
     root: &Path,
     limits: LocalStreamLimits,
 ) -> Result<Option<Snapshot>, LocalStreamError> {
@@ -46,10 +35,10 @@ pub(super) fn read_snapshot(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let (body, expected_checksum) = encoded
+    let (body, checksum) = encoded
         .split_last_chunk::<32>()
         .ok_or(LocalStreamError::Corrupt)?;
-    if checksum(SNAPSHOT_DOMAIN, &[body], None, None)? != *expected_checksum {
+    if snapshot_checksum(body) != *checksum {
         return Err(LocalStreamError::Corrupt);
     }
     let rest = body

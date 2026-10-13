@@ -37,13 +37,13 @@ impl MemoryObjects {
                             .downcast_ref::<wire::ObjectInfo>()
                             .cloned()
                             .map(Into::into),
-                        #[cfg(feature = "local")]
+                        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                         kind: persistence::response_kind::<R>()?,
                     },
                 ))
             },
             |before, next| {
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
                         journal.validate_bodies(next)?;
@@ -53,7 +53,7 @@ impl MemoryObjects {
                             .map_err(persistence::service_error)?;
                     }
                 }
-                #[cfg(not(feature = "local"))]
+                #[cfg(not(all(feature = "local", not(target_arch = "wasm32"))))]
                 let _ = (before, next);
                 Ok(())
             },
@@ -70,7 +70,7 @@ impl MemoryObjects {
         receipt: impl FnOnce(&R, &wire::MutationIdentity) -> Result<(SharedInfo<String>, Receipt), E>,
         commit: impl FnOnce(&State, &mut State) -> Result<(), E>,
     ) -> Result<R, E> {
-        #[cfg(feature = "local")]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if let Some(journal) = &self.journal {
             journal.check()?;
         }
@@ -110,7 +110,7 @@ impl MemoryObjects {
         Ok(response)
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(super) fn put_durable_batch_locked(
         &self,
         state: &mut State,
@@ -249,14 +249,14 @@ impl MemoryObjects {
                         digest,
                         response: encoded,
                         put_info: Some(response.1.clone()),
-                        #[cfg(feature = "local")]
+                        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                         kind: persistence::response_kind::<wire::ObjectInfo>()?,
                     },
                 ))
             },
             |before, next| {
                 meter.check()?;
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
                         journal.validate_bodies(next)?;
@@ -264,7 +264,7 @@ impl MemoryObjects {
                         journal.commit(before, next, Some(Arc::clone(meter)))?;
                     }
                 }
-                #[cfg(not(feature = "local"))]
+                #[cfg(not(all(feature = "local", not(target_arch = "wasm32"))))]
                 let _ = (before, next);
                 if self.native_table_backend() {
                     meter.admit_write(0)?;
@@ -276,18 +276,18 @@ impl MemoryObjects {
     }
 
     pub(super) fn native_table_backend(&self) -> bool {
-        #[cfg(feature = "local")]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         {
             self.journal.is_none()
         }
-        #[cfg(not(feature = "local"))]
+        #[cfg(not(all(feature = "local", not(target_arch = "wasm32"))))]
         {
             true
         }
     }
 }
 
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) fn put_group_sizes(
     requests: &[(wire::PutObjectHeader, OwnedBytes)],
 ) -> impl Iterator<Item = usize> + '_ {

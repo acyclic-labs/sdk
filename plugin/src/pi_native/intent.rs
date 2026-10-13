@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 /// Seeded immutable input consumed only through the actual created child's TaskContext.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -28,7 +29,9 @@ impl PiNativeLaunchIntent {
                 "Pi launch input requires its actual durable child content binding",
             ));
         }
-        let bytes = context.read_file_with_native_work(reference, work).await?;
+        let bytes = context
+            .read_file(reference, Some(&PreparationIo::from_native_work(work)?))
+            .await?;
         let maximum = context
             .scope()
             .limits()
@@ -122,16 +125,18 @@ impl PiNativeLaunchIntent {
                 "Pi session publication requires its admitted child",
             ));
         }
-        context
-            .stage_file_once_with_native_work(
+        let io = PreparationIo::from_native_work(work)?;
+        let (file, retained) = context
+            .stage_file_once(
                 operation,
                 &self.session_path,
                 self.session_bytes.as_bytes(),
                 "application/x-ndjson",
                 "Pi child session",
-                work,
+                Some(&io),
             )
-            .await
+            .await?;
+        Ok((file, io.take_native_custody(retained)?))
     }
 }
 
@@ -233,11 +238,12 @@ async fn stage_context_artifact(
     let length = writer.position() as usize;
     let path = std::str::from_utf8(&buffer[..length])
         .map_err(|_| invalid("Pi native artifact locator is not UTF-8"))?;
-    let result = context
-        .stage_file_once_with_native_work(operation, path, &encoded.0, media_type, role, work)
-        .await;
+    let io = PreparationIo::from_native_work(work)?;
+    let (file, retained) = context
+        .stage_file_once(operation, path, &encoded.0, media_type, role, Some(&io))
+        .await?;
     drop(encoded);
-    result
+    Ok((file, io.take_native_custody(retained)?))
 }
 
 fn native_artifact_operation(
@@ -321,7 +327,13 @@ pub(crate) async fn approve_command(
     let digest = request
         .0
         .approval_digest_with_native_work(owner.task_id(), command, work)?;
-    let approval = task_interaction_id(owner.task_id(), command);
+    let approval = task_interaction_id(
+        owner.task_id(),
+        command,
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            PreparationIo::from_native_work(work)?,
+        )),
+    )?;
     let title = native_fixed_text(format_args!(
         "Run pinned Pi child {}",
         binding.native_session_id

@@ -20,6 +20,10 @@ use std::collections::BTreeMap;
 
 type References = BTreeMap<[u8; 32], FileRef>;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "summary_fork/tests.rs"]
+mod tests;
+
 pub(super) fn summary_keys(
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
@@ -76,7 +80,9 @@ pub(super) fn split_references<'a>(
         match selected.entry(key) {
             std::collections::btree_map::Entry::Vacant(entry) => {
                 crate::model::charge_items(io, 1)?;
-                if let Some(io) = io { io.retain_owned(std::mem::size_of::<([u8; 32], &FileRef)>() as u64)?; }
+                if let Some(io) = io {
+                    io.retain_owned(std::mem::size_of::<([u8; 32], &FileRef)>() as u64)?;
+                }
                 entry.insert(file);
             }
             std::collections::btree_map::Entry::Occupied(_) => crate::model::charge_items(io, 1)?,
@@ -98,7 +104,12 @@ fn rewritten_context(
         if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(file, u64::MAX, work)
         })?) {
-            *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
+            let retired_bytes = io.map(|_| file.logical_owned_bytes()).transpose()?;
+            let copy = crate::executor::with_history_io(io, |work| copy.copy(work))?;
+            drop(std::mem::replace(file, copy));
+            if let (Some(io), Some(bytes)) = (io, retired_bytes) {
+                io.release(bytes)?;
+            }
         }
         Ok(())
     }
@@ -162,7 +173,9 @@ fn copy_references(
     let mut copies = BTreeMap::new();
     for (key, source) in payloads {
         crate::model::charge_items(io, 1)?;
-        if let Some(io) = io { io.retain_owned(std::mem::size_of::<([u8; 32], FileRef)>() as u64)?; }
+        if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
+        }
         let encoded = fork_preparer_io::hex_key(key, io)?;
         let path = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(
@@ -228,10 +241,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     mutations: &[WorkspaceMutation],
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
-    preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
-    #[cfg(not(target_arch = "wasm32"))] native_creation_guard: Option<
-        &std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>,
-    >,
+    preparation: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<GenerationRef> {
     let generation = fork_preparer_io::apply_generation_task_guarded(
         controller.host,
@@ -240,9 +250,9 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         mutations,
         key,
         io,
-        preparation,
+        preparation.map(std::sync::Arc::as_ref),
         #[cfg(not(target_arch = "wasm32"))]
-        native_creation_guard,
+        preparation,
     )
     .await?;
     fork_preparer_io::retain(&generation, io).await?;
@@ -282,24 +292,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         key: &IdempotencyKey,
         resolver: &dyn ContentResidencyVerifier,
         io: Option<&PreparationIo>,
-        preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
-        #[cfg(not(target_arch = "wasm32"))] native_creation_guard: Option<
-            &std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>,
-        >,
+        preparation: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<(SummaryForkCapture, GenerationRef)> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = io.and_then(PreparationIo::original_native_work);
-        #[cfg(not(target_arch = "wasm32"))]
-        match native {
-            Some(work) => native_creation_guard.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native summary publication requires its original issued creation guard",
-            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?,
-            None => if let Some(preparation) = preparation { preparation.verify(false, io)?.await?; },
-        }
-        #[cfg(target_arch = "wasm32")]
-        if let Some(preparation) = preparation {
-            preparation.verify(false, io)?.await?;
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            let temporary = io
+                .and_then(PreparationIo::original_native_work)
+                .map(PreparationIo::from_native_work)
+                .transpose()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if temporary.is_some() && preparation.is_none() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native summary publication requires its original issued creation guard",
+                });
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let io = temporary.as_ref().or(io);
+            if let Some(preparation) = preparation {
+                preparation.verify(false, io)?.await?;
+            }
         }
         if let Some(io) = io {
             let capability = io.capability(&self.project, "volume:read:")?;
@@ -520,8 +532,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 &keys[0],
                 io,
                 preparation,
-                #[cfg(not(target_arch = "wasm32"))]
-                native_creation_guard,
             )
             .await?
         };
@@ -561,8 +571,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     &keys[1],
                     io,
                     preparation,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    native_creation_guard,
                 )
                 .await?
             }

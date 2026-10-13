@@ -31,11 +31,9 @@ pub(crate) fn set_extended_attributes<W: NativeHostWork<Error = DemandError>>(
             ..WorkCounters::UNCHARGED
         })?;
         pinned[..prefix.len()].copy_from_slice(prefix);
-        let mut number = fd;
-        for index in (prefix.len()..length).rev() {
-            pinned[index] = b'0' + (number % 10) as u8;
-            number /= 10;
-        }
+        let number = rustix::path::DecInt::new(fd);
+        work.started_io(copy_work(digits as u64))?;
+        pinned[prefix.len()..length].copy_from_slice(number.as_bytes());
         let pinned = std::ffi::CStr::from_bytes_with_nul(&pinned[..=length])
             .map_err(|_| NativeMetadataError("named_attributes"))?;
         pinned
@@ -135,131 +133,33 @@ pub(crate) fn set_extended_attributes<W: NativeHostWork<Error = DemandError>>(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
+#[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
 pub(crate) fn apply_linux_metadata<W: NativeHostWork<Error = DemandError>>(
     file: &File,
     metadata: crate::kernel::FileMetadata,
     work: &mut W,
 ) -> Result<(), DemandError> {
-    use crate::kernel::MetadataField;
-    let mut observed = fstat(file.as_raw_fd(), work)?;
-    validate_linux_metadata(observed, metadata, work)?;
-    let requested_uid = match metadata.posix_uid {
-        MetadataField::Value(uid) if uid != observed.st_uid => uid,
-        _ => libc::uid_t::MAX,
-    };
-    let requested_gid = match metadata.posix_gid {
-        MetadataField::Value(gid) if gid != observed.st_gid => gid,
-        _ => libc::gid_t::MAX,
-    };
-    if requested_uid != libc::uid_t::MAX || requested_gid != libc::gid_t::MAX {
-        work.started_io(WRITE)?;
-        // SAFETY: AT_EMPTY_PATH acts on the pinned inode, including a final symlink.
-        if unsafe {
-            libc::fchownat(
-                file.as_raw_fd(),
-                c"".as_ptr(),
-                requested_uid,
-                requested_gid,
-                libc::AT_EMPTY_PATH,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error().into());
+    use crate::kernel::{FileMetadata, MetadataField};
+    let fd = file.as_raw_fd();
+    let mut observed = fstat(fd, work)?;
+    if !matches!(
+        metadata,
+        FileMetadata {
+            windows_attributes: MetadataField::Unavailable,
+            posix_flags: MetadataField::Unavailable,
+            named_attributes: MetadataField::Unavailable,
+            acl: MetadataField::Unavailable,
+            security_descriptor: MetadataField::Unavailable,
+            created_ns: MetadataField::Unavailable,
+            changed_ns: MetadataField::Unavailable,
+            ..
         }
-        observed = fstat(file.as_raw_fd(), work)?;
+    ) {
+        return Err(NativeMetadataError("unsupported Linux metadata").into());
     }
-    if let MetadataField::Value(mode) = metadata.posix_mode {
-        let desired = mode & 0o7777;
-        if desired != observed.st_mode & 0o7777 {
-            work.started_io(WRITE)?;
-            // SAFETY: fchmodat2 with AT_EMPTY_PATH acts only on the held inode.
-            if unsafe {
-                libc::syscall(
-                    LINUX_FCHMODAT2_SYSCALL,
-                    file.as_raw_fd(),
-                    c"".as_ptr(),
-                    desired,
-                    libc::AT_EMPTY_PATH,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error().into());
-            }
-            observed = fstat(file.as_raw_fd(), work)?;
-        }
+    if metadata == FileMetadata::default() {
+        return Ok(());
     }
-    if matches!(metadata.modified_ns, MetadataField::Value(_))
-        || matches!(metadata.accessed_ns, MetadataField::Value(_))
-    {
-        let times = [
-            linux_time_spec(metadata.accessed_ns)?,
-            linux_time_spec(metadata.modified_ns)?,
-        ];
-        work.started_io(WRITE)?;
-        // SAFETY: AT_EMPTY_PATH targets the held inode and the timespecs remain live until the syscall returns.
-        if unsafe {
-            libc::utimensat(
-                file.as_raw_fd(),
-                c"".as_ptr(),
-                times.as_ptr(),
-                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error().into());
-        }
-        observed = fstat(file.as_raw_fd(), work)?;
-    }
-    verify_linux_metadata(observed, metadata).map_err(Into::into)
-}
-
-#[cfg(target_os = "linux")]
-#[cfg(target_arch = "aarch64")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) const LINUX_FCHMODAT2_SYSCALL: libc::c_long = 452;
-
-#[cfg(target_os = "linux")]
-#[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;
-
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn validate_linux_metadata<W: NativeHostWork<Error = DemandError>>(
-    observed: libc::stat,
-    metadata: crate::kernel::FileMetadata,
-    work: &mut W,
-) -> Result<(), DemandError> {
-    use crate::kernel::MetadataField;
-    reject_metadata(&[
-        (
-            matches!(metadata.windows_attributes, MetadataField::Value(_)),
-            "windows_attributes",
-        ),
-        (
-            matches!(metadata.posix_flags, MetadataField::Value(_)),
-            "posix_flags",
-        ),
-        (
-            matches!(metadata.named_attributes, MetadataField::Value(_)),
-            "named_attributes",
-        ),
-        (matches!(metadata.acl, MetadataField::Value(_)), "acl"),
-        (
-            matches!(metadata.security_descriptor, MetadataField::Value(_)),
-            "security_descriptor",
-        ),
-        (
-            matches!(metadata.created_ns, MetadataField::Value(_)),
-            "created_ns",
-        ),
-        (
-            matches!(metadata.changed_ns, MetadataField::Value(_)),
-            "changed_ns",
-        ),
-    ])?;
     if let MetadataField::Value(mode) = metadata.posix_mode {
         let kind = mode & libc::S_IFMT;
         if kind != 0 && kind != observed.st_mode & libc::S_IFMT {
@@ -269,98 +169,117 @@ pub(super) fn validate_linux_metadata<W: NativeHostWork<Error = DemandError>>(
             if observed.st_mode & libc::S_IFMT == libc::S_IFLNK {
                 return Err(NativeMetadataError("posix_mode symlink").into());
             }
-            linux_require_fchmodat2(work)?;
+            work.started_io(WRITE)?;
+            // SAFETY: a non-mutating capability probe uses descriptor -1 and an empty name.
+            let result = unsafe {
+                libc::syscall(
+                    LINUX_FCHMODAT2_SYSCALL,
+                    -1,
+                    c"".as_ptr(),
+                    0,
+                    libc::AT_EMPTY_PATH,
+                )
+            };
+            if result == 0 {
+                return Err(NativeMetadataError("fchmodat2 probe").into());
+            }
+            match io::Error::last_os_error().raw_os_error() {
+                Some(libc::EBADF) => (),
+                Some(libc::ENOSYS | libc::EINVAL) => {
+                    return Err(NativeMetadataError("fchmodat2 AT_EMPTY_PATH").into());
+                }
+                _ => return Err(io::Error::last_os_error().into()),
+            }
+        }
+    }
+    let uid = match metadata.posix_uid {
+        MetadataField::Value(value) if value != observed.st_uid => value,
+        _ => libc::uid_t::MAX,
+    };
+    let gid = match metadata.posix_gid {
+        MetadataField::Value(value) if value != observed.st_gid => value,
+        _ => libc::gid_t::MAX,
+    };
+    if uid != libc::uid_t::MAX || gid != libc::gid_t::MAX {
+        // SAFETY: AT_EMPTY_PATH acts on the held inode, including a final symlink.
+        unix_mutation(work, || unsafe {
+            libc::fchownat(fd, c"".as_ptr(), uid, gid, libc::AT_EMPTY_PATH)
+        })?;
+        observed = fstat(fd, work)?;
+    }
+    if let MetadataField::Value(mode) = metadata.posix_mode {
+        if mode & 0o7777 != observed.st_mode & 0o7777 {
+            // SAFETY: fchmodat2 with AT_EMPTY_PATH acts only on the held inode.
+            unix_mutation(work, || unsafe {
+                (libc::syscall(
+                    LINUX_FCHMODAT2_SYSCALL,
+                    fd,
+                    c"".as_ptr(),
+                    mode & 0o7777,
+                    libc::AT_EMPTY_PATH,
+                )) as libc::c_int
+            })?;
+        }
+    }
+    if matches!(metadata.accessed_ns, MetadataField::Value(_))
+        || matches!(metadata.modified_ns, MetadataField::Value(_))
+    {
+        let times = [
+            unix_metadata_timespec(metadata.accessed_ns)?,
+            unix_metadata_timespec(metadata.modified_ns)?,
+        ];
+        // SAFETY: the held inode and two initialized timespecs remain live for the call.
+        unix_mutation(work, || unsafe {
+            libc::utimensat(
+                fd,
+                c"".as_ptr(),
+                times.as_ptr(),
+                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            )
+        })?;
+    }
+    observed = fstat(fd, work)?;
+    for (requested, actual) in [
+        (metadata.posix_uid, observed.st_uid),
+        (metadata.posix_gid, observed.st_gid),
+    ] {
+        if matches!(requested, MetadataField::Value(value) if value != actual) {
+            return Err(NativeMetadataError("ownership readback").into());
+        }
+    }
+    if matches!(metadata.posix_mode, MetadataField::Value(value) if value & 0o7777 != observed.st_mode & 0o7777)
+    {
+        return Err(NativeMetadataError("mode readback").into());
+    }
+    for (requested, seconds, nanos) in [
+        (
+            metadata.accessed_ns,
+            observed.st_atime,
+            observed.st_atime_nsec,
+        ),
+        (
+            metadata.modified_ns,
+            observed.st_mtime,
+            observed.st_mtime_nsec,
+        ),
+    ] {
+        if matches!(requested, MetadataField::Value(value) if unix_metadata_nanos(seconds, nanos) != Some(value))
+        {
+            return Err(NativeMetadataError("timestamp readback").into());
         }
     }
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn linux_require_fchmodat2<W: NativeHostWork<Error = DemandError>>(
-    work: &mut W,
-) -> Result<(), DemandError> {
-    work.started_io(WRITE)?;
-    let result = unsafe {
-        libc::syscall(
-            LINUX_FCHMODAT2_SYSCALL,
-            -1,
-            c"".as_ptr(),
-            0,
-            libc::AT_EMPTY_PATH,
-        )
-    };
-    if result == 0 {
-        return Err(NativeMetadataError("fchmodat2 probe").into());
-    }
-    match io::Error::last_os_error().raw_os_error() {
-        Some(libc::EBADF) => Ok(()),
-        Some(libc::ENOSYS | libc::EINVAL) => {
-            Err(NativeMetadataError("fchmodat2 AT_EMPTY_PATH").into())
-        }
-        _ => Err(io::Error::last_os_error().into()),
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn verify_linux_metadata(
-    observed: libc::stat,
-    metadata: crate::kernel::FileMetadata,
-) -> Result<(), NativeMetadataError> {
-    use crate::kernel::MetadataField;
-    if let MetadataField::Value(uid) = metadata.posix_uid
-        && observed.st_uid != uid
-    {
-        return Err(NativeMetadataError("posix_uid"));
-    }
-    if let MetadataField::Value(gid) = metadata.posix_gid
-        && observed.st_gid != gid
-    {
-        return Err(NativeMetadataError("posix_gid"));
-    }
-    if let MetadataField::Value(mode) = metadata.posix_mode
-        && observed.st_mode & 0o7777 != mode & 0o7777
-    {
-        return Err(NativeMetadataError("posix_mode"));
-    }
-    if let MetadataField::Value(ns) = metadata.accessed_ns
-        && linux_observed_ns(observed.st_atime, observed.st_atime_nsec)? != ns
-    {
-        return Err(NativeMetadataError("accessed_ns"));
-    }
-    if let MetadataField::Value(ns) = metadata.modified_ns
-        && linux_observed_ns(observed.st_mtime, observed.st_mtime_nsec)? != ns
-    {
-        return Err(NativeMetadataError("modified_ns"));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn linux_time_spec(
-    field: crate::kernel::MetadataField<i64>,
-) -> Result<libc::timespec, NativeMetadataError> {
-    let crate::kernel::MetadataField::Value(ns) = field else {
-        return Ok(libc::timespec {
-            tv_sec: 0,
-            tv_nsec: libc::UTIME_OMIT,
-        });
-    };
-    Ok(libc::timespec {
-        tv_sec: libc::time_t::try_from(ns.div_euclid(1_000_000_000))
-            .map_err(|_| NativeMetadataError("timestamp range"))?,
-        tv_nsec: libc::c_long::try_from(ns.rem_euclid(1_000_000_000))
-            .map_err(|_| NativeMetadataError("timestamp range"))?,
-    })
-}
-
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn linux_observed_ns(seconds: i64, nanos: i64) -> Result<i64, NativeMetadataError> {
-    seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|whole| whole.checked_add(nanos))
-        .ok_or(NativeMetadataError("timestamp range"))
-}
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "aarch64",
+    any(feature = "native-mount", test)
+))]
+pub(super) const LINUX_FCHMODAT2_SYSCALL: libc::c_long = 452;
+#[cfg(all(
+    target_os = "linux",
+    not(target_arch = "aarch64"),
+    any(feature = "native-mount", test)
+))]
+pub(super) const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;

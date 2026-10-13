@@ -102,7 +102,12 @@ impl PiNativeRoot {
                 )),
             )?;
         }
-        let bytes = shared.read_file_with_native_work(session, meter).await?;
+        let bytes = shared
+            .read_file(
+                session,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?),
+            )
+            .await?;
         if bytes.as_ref() != intent.session_bytes.as_bytes() {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -290,9 +295,7 @@ impl PiNativeRoot {
                 "Pi original native allocation was replaced".into(),
             ));
         }
-        let callback_guard = shared
-            .volume_callback_guard_with_native_work(owner, meter)
-            .await?;
+        let callback_guard = shared.volume_callback_guard(owner, meter).await?;
         let actual = filesystem
             .open_volume_with_native_work(volume, original_volume_work)
             .await?;
@@ -314,9 +317,8 @@ impl PiNativeRoot {
                 acyclic_fs::MountOptions::read_only()
             }
             .publication(acyclic_fs::MountPublication::Manual);
-            let source_guard = callback_guard
-                .for_volume(owner, volume, writable, original_volume_work)?
-                .0;
+            let source_guard =
+                callback_guard.for_volume(owner, volume, writable, original_volume_work)?;
             let mut allocation = original_volume_work.claim(
                 std::mem::size_of::<crate::LocalSingleMount>() as u64,
                 1,
