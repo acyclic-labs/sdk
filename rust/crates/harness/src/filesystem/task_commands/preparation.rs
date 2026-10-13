@@ -13,7 +13,7 @@ where
     pub(super) async fn prepare_fork_command(
         &self,
         task: TaskId,
-        context: &WorkerContext,
+        context: &Arc<TaskContext>,
         fence: &LeaseFence,
         command: &WorkflowCommand,
         payload: Value,
@@ -36,17 +36,10 @@ where
         let preparation: Arc<TaskResourcePreparation> = 'preparation: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                let WorkerContext::Native(shared) = context else {
-                    return Err(boundary(
-                        io,
-                        ErrorCode::Unauthorized,
-                        "native fork requires its original shared context",
-                    ));
-                };
                 if reconciliation_only {
                     let Some(preparation) = self
                         .runtime
-                        .readonly_fork_preparation_with_native_work(task, shared, &request, work)
+                        .readonly_fork_preparation_with_native_work(task, context, &request, work)
                         .await?
                     else {
                         return Ok(TaskCommandProgress::Indeterminate);
@@ -82,35 +75,21 @@ where
             }
             Arc::new(preparation)
         };
-        let fork: crate::fork::ForkRequest =
-            match io {
-                Some(io) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    io.check_json_byte_bound(
-                        &preparation.request().payload,
-                        acyclic_stream::MAX_RECORD_BYTES as u64,
-                    )?;
-                    crate::filesystem::retain_decoded(io.value_decode_preparation(
-                        &preparation.request().payload,
-                        ErrorCode::Storage,
-                    )?)
-                }
-                None => mail::decode_command(preparation.request().payload.clone(), None)?,
-            };
-        let preparer = 'preparer: {
-            if io.is_none()
-                && let Some(preparer) = &self.fork_preparer
-            {
-                break 'preparer Arc::clone(preparer);
+        let source = if io.is_none() && self.fork_preparer.is_some() {
+            super::super::RetainedSourceBinding {
+                preparer: Arc::clone(self.fork_preparer.as_ref().expect("selected preparer")),
+                request: mail::decode_command(preparation.request().payload.clone(), None)?,
             }
-            let source = self.runtime.recursive_source().ok_or_else(|| {
-                boundary(
-                    io,
-                    ErrorCode::Unsupported,
-                    "fork preparation source is not configured",
-                )
-            })?;
-            let retained = source
+        } else {
+            self.runtime
+                .recursive_source()
+                .ok_or_else(|| {
+                    boundary(
+                        io,
+                        ErrorCode::Unsupported,
+                        "fork preparation source is not configured",
+                    )
+                })?
                 .preparation(
                     context,
                     &preparation,
@@ -118,16 +97,12 @@ where
                     reconciliation_only,
                     io,
                 )
-                .await?;
-            if retained.request != fork {
-                return Err(boundary(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "resolved fork source differs from original request",
-                ));
-            }
-            retained.preparer
+                .await?
         };
+        let super::super::RetainedSourceBinding {
+            preparer,
+            request: fork,
+        } = source;
         let report = 'report: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
@@ -256,7 +231,11 @@ where
     ) -> Result<TaskCommandProgress> {
         if command.kind == TASK_ADMIT_COMMAND_KIND {
             let input: TaskAdmitCommand = mail::decode_command(payload, io)?;
-            let operation = child_operation(task, command.operation_id, io)?;
+            let operation = super::super::recursive::derive_operation(
+                b"harness/v2/task-child\0",
+                &[task.into_bytes(), command.operation_id.into_bytes()],
+                io,
+            )?;
             let admission = 'admission: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
@@ -329,7 +308,14 @@ where
         admission: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<Option<Outcome<Value>>> {
-        let child = TaskId::from_bytes(child_operation(task, admission, io)?.into_bytes());
+        let child = TaskId::from_bytes(
+            super::super::recursive::derive_operation(
+                b"harness/v2/task-child\0",
+                &[task.into_bytes(), admission.into_bytes()],
+                io,
+            )?
+            .into_bytes(),
+        );
         if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
             return Err(boundary(
                 io,
