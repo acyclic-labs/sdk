@@ -272,15 +272,14 @@ impl PiSession {
                 .ok_or_else(|| invalid("Pi created root disappeared"))?;
             drop(
                 WorkspaceGraph::new(self.resources.store.clone())
-                    .register_root_with_native_work(
-                        handle.workspace.workspace(),
-                        work,
-                        work.cancellation(),
-                    )
+                    .register_root(handle.workspace.workspace())
                     .await
-                    .map_err(|(source, custody)| match source {
+                    .map_err(|source| match source {
                         acyclic_fs::WorkspaceLineageError::Workspace(source) => {
-                            RootError::NativeWorkspace { source, custody }
+                            RootError::NativeWorkspace {
+                                source,
+                                custody: None,
+                            }
                         }
                         source => RootError::Storage(display(source)),
                     })?,
@@ -308,18 +307,16 @@ impl PiSession {
         }
         drop(
             WorkspaceContextRegistry::new(self.resources.store.clone())
-                .register_root_with_native_work(
+                .register_root(
                     WorkspaceContextId::from_bytes(self.state.root_context_id),
-                    context,
-                    work,
-                    work.cancellation(),
+                    context.0,
                 )
                 .await
-                .map_err(|(source, custody)| match source {
+                .map_err(|source| match source {
                     acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => {
                         RootError::NativeFilesystem {
-                            source: Box::new(source),
-                            custody,
+                            source,
+                            custody: None,
                         }
                     }
                     source => RootError::Storage(display(source)),

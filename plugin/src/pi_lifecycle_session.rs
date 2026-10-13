@@ -283,7 +283,7 @@ impl PiSession {
         while !remaining.is_empty() {
             let before = remaining.len();
             let mut index = 0;
-            while let Some(&task) = remaining.get(index) {
+            while let Some(task) = remaining.get(index).copied() {
                 let (route, parent, plan) = plans
                     .get(&task)
                     .ok_or_else(|| invalid("Pi recovery task lost its original fork plan"))?;

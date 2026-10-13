@@ -261,10 +261,11 @@ fn concurrent_initialization_publishes_one_owner() {
             })
             .map(|handle| handle.join().unwrap())
     });
-    assert_ne!(accepted.pointer("/0").unwrap(), accepted[1]);
+    let [first, second] = accepted;
+    assert_ne!(first, second);
     assert!(
         PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap()
-            == *owners.get(usize::from(*accepted.get(1).unwrap())).unwrap()
+            == *owners.get(usize::from(second)).unwrap()
     );
 }
 
