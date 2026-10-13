@@ -1,5 +1,46 @@
 use super::*;
 
+#[tokio::test]
+async fn snapshot_validation_requires_available_indexes_and_generation() {
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        "root",
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    root.validate_snapshot(cut, accounting!()).await.unwrap();
+    for (generation, overlay, shadows) in [
+        (
+            cut.authored_generation,
+            LazyOverlayId::from_bytes([0xa1; 32]),
+            cut.shadows,
+        ),
+        (
+            cut.authored_generation,
+            cut.overlay,
+            LazyShadowId::from_bytes([0xa2; 32]),
+        ),
+        (
+            crate::GenerationId::new(crate::Digest::from_bytes([0xa3; 32])),
+            cut.overlay,
+            cut.shadows,
+        ),
+    ] {
+        let missing =
+            LazySnapshotRef::new(cut.workspace_id, generation, cut.source, overlay, shadows);
+        assert!(
+            root.validate_snapshot(missing, accounting!())
+                .await
+                .is_err()
+        );
+        assert_eq!(root.snapshot(accounting!()).await.unwrap(), cut);
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn frozen_views_and_write_replay_keep_the_original_generation() {

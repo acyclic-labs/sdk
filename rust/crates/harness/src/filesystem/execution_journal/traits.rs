@@ -298,48 +298,42 @@ where
     fn open_interaction<'a>(
         &'a self,
         id: InteractionId,
-        interaction: Interaction,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.open_interaction_with_io(id, &interaction, None).await })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn open_interaction_with_native_work<'a>(
-        &'a self,
-        id: InteractionId,
         interaction: &'a Interaction,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.open_interaction_with_io(id, interaction, Some(&io))
-                .await
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            let temporary = io.and_then(PreparationIo::original_native_work).map(PreparationIo::from_native_work).transpose()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let active = temporary.as_ref().or(io);
+            #[cfg(target_arch = "wasm32")]
+            let active = io;
+            self.open_interaction_with_io(id, interaction, active).await
         })
     }
 
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
-    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
-        Box::pin(self.interaction_outcome_with_io(id, None))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn interaction_outcome_with_native_work<'a>(
-        &'a self,
-        id: InteractionId,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (Option<InteractionOutcome>, acyclic_fs::NativeAllocation)>,
-    > {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let outcome = self.interaction_outcome_with_io(id, Some(&io)).await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((outcome, custody))
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            let temporary = io.and_then(PreparationIo::original_native_work).map(PreparationIo::from_native_work).transpose()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let active = temporary.as_ref().or(io);
+            #[cfg(target_arch = "wasm32")]
+            let active = io;
+            let outcome = self.interaction_outcome_with_io(id, active).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(temporary) = temporary {
+                let retained = temporary.owned_bytes()?;
+                io.expect("native parent IO").absorb_native_custody(temporary.into_native_custody(retained)?)?;
+            }
+            Ok(outcome)
         })
     }
+
 }
 
 use crate::executor::{stock_boundary};

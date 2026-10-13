@@ -21,11 +21,11 @@ impl crate::filesystem::UploadRecord for Value {
     fn diagnostic_label_bytes() -> u64 {
         0
     }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::Root
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::Root
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        crate::contract::json_value_logical_owned_bytes(self)
+        crate::executor::json::json_value_logical_owned_bytes(self)
     }
 }
 use std::sync::Arc;

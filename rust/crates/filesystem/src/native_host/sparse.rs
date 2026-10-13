@@ -171,7 +171,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     };
     const CLONE_CHUNK: u64 = 1024 * 1024 * 1024;
     for alignment in [4 * 1024, 64 * 1024] {
-        work.charge(ITEM)?;
+        work.started_io(ITEM)?;
         let cloned: Result<(), DemandError> = (|| {
             let clone_length = length / alignment * alignment;
             if clone_length == 0 {
@@ -181,7 +181,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
                 )
                 .into());
             }
-            work.charge(WRITE)?;
+            work.started_io(WRITE)?;
             // SAFETY: live synchronous target handle; this control has no buffers.
             unsafe {
                 DeviceIoControl(
@@ -199,7 +199,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
             truncate_file(target, length, work)?;
             let mut offset = 0;
             while offset < clone_length {
-                work.charge(ITEM)?;
+                work.started_io(ITEM)?;
                 let count = (clone_length - offset).min(CLONE_CHUNK);
                 let duplicate = DUPLICATE_EXTENTS_DATA {
                     FileHandle: HANDLE(source.as_raw_handle()),
@@ -209,7 +209,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
                         .map_err(|_| crate::WorkError::Overflow)?,
                     ByteCount: i64::try_from(count).map_err(|_| crate::WorkError::Overflow)?,
                 };
-                work.charge(WRITE)?;
+                work.started_io(WRITE)?;
                 // SAFETY: both held handles and complete fixed-size input remain live.
                 unsafe {
                     DeviceIoControl(
@@ -234,7 +234,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
                 let result: Result<(), DemandError> = (|| {
                     let mut buffer = [0_u8; 64 * 1024];
                     for range in &ranges {
-                        work.charge(ITEM)?;
+                        work.started_io(ITEM)?;
                         let size = usize::try_from(range.length)
                             .map_err(|_| crate::WorkError::Overflow)?;
                         let buffer = buffer.get_mut(..size).ok_or(DemandError::InvalidRequest)?;
@@ -300,97 +300,47 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     buffer: &mut [u8],
     work: &mut W,
 ) -> Result<(), DemandError> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Wdk::Storage::FileSystem::{NtReadFile, NtWriteFile};
-    use windows::Win32::Foundation::HANDLE;
-    let mut consumed = 0usize;
+    use std::os::windows::fs::FileExt as _;
+    let mut consumed = 0;
     while consumed < buffer.len() {
-        let length = buffer.len() - consumed;
+        let remaining = &mut buffer[consumed..];
         work.admit(WorkCounters {
-            source_bytes_read: length as u64,
+            source_bytes_read: remaining.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
         work.started_io(READ)?;
-        let position = i64::try_from(
+        match source.seek_read(
+            remaining,
             offset
                 .checked_add(consumed as u64)
                 .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
-        let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        // SAFETY: synchronous held handle and writable admitted tail slice.
-        let status = unsafe {
-            NtReadFile(
-                HANDLE(source.as_raw_handle()),
-                None,
-                None,
-                None,
-                &raw mut block,
-                buffer[consumed..].as_mut_ptr().cast(),
-                length as u32,
-                Some(&position),
-                None,
-            )
-        };
-        if status.is_err() {
-            return Err(status_error(status).into());
+        ) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()),
+            Ok(count) => {
+                work.record(WorkCounters {
+                    source_bytes_read: count as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                consumed += count;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => (),
+            Err(error) => return Err(error.into()),
         }
-        let count = block.Information;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "clone source tail shortened",
-            )
-            .into());
-        }
-        if count > length {
-            return Err(DemandError::InvalidRequest);
-        }
-        work.record(WorkCounters {
-            source_bytes_read: count as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        consumed += count;
     }
-    let mut consumed = 0usize;
+    let mut consumed = 0;
     while consumed < buffer.len() {
-        work.charge(WRITE)?;
-        let position = i64::try_from(
+        work.started_io(WRITE)?;
+        match target.seek_write(
+            &buffer[consumed..],
             offset
                 .checked_add(consumed as u64)
                 .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
-        let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        // SAFETY: synchronous held handle and initialized tail slice remain live.
-        let status = unsafe {
-            NtWriteFile(
-                HANDLE(target.as_raw_handle()),
-                None,
-                None,
-                None,
-                &raw mut block,
-                buffer[consumed..].as_ptr().cast(),
-                (buffer.len() - consumed) as u32,
-                Some(&position),
-                None,
-            )
-        };
-        if status.is_err() {
-            return Err(status_error(status).into());
+        ) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
+            Ok(count) => consumed += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => (),
+            Err(error) => return Err(error.into()),
         }
-        let count = block.Information;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "clone tail write made no progress",
-            )
-            .into());
-        }
-        if count > buffer.len() - consumed {
-            return Err(DemandError::InvalidRequest);
-        }
-        consumed += count;
     }
     Ok(())
 }

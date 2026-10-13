@@ -21,36 +21,25 @@ pub struct NativeJoinPlan {
 /// Exact bounded join planning options.
 #[napi(object)]
 pub struct NativeJoinOptions {
-    /// `merge`, `rebase`, `squash`, or `cherry-pick`.
     pub history: String,
-    /// Maximum lineage generations examined while finding an ancestor.
     pub maximum_generations: NapiU32,
-    /// Maximum semantic changes admitted by the plan.
     pub maximum_changes: NapiU32,
-    /// Maximum exact conflicts returned by application.
     pub maximum_conflicts: NapiU32,
-    /// Optional caller-pinned source generation.
     pub source_generation: Option<Buffer>,
-    /// Optional exact target CAS precondition.
     pub target_generation: Option<Buffer>,
 }
 
 /// Terminal result of applying one immutable join plan.
 #[napi(object)]
 pub struct NativeJoinResult {
-    /// `applied`, `already-applied`, `no-changes`, `stale-target`, `conflicted`,
     pub status: String,
-    /// Exact target generation for generation-bearing outcomes.
     pub generation_id: Option<Buffer>,
-    /// Stable path-independent conflict regions.
     pub conflicts: Vec<NativeMergeConflict>,
-    /// Whether additional conflicts exceeded the retained result bound.
     pub truncated: bool,
 }
 
 #[napi]
 impl NativeChangeSet {
-    /// Exact immutable base endpoint.
     #[must_use]
     #[napi(getter)]
     pub fn from(&self) -> NativeGeneration {
@@ -59,7 +48,6 @@ impl NativeChangeSet {
         }
     }
 
-    /// Exact immutable resulting endpoint.
     #[must_use]
     #[napi(getter)]
     pub fn to(&self) -> NativeGeneration {
@@ -68,13 +56,11 @@ impl NativeChangeSet {
         }
     }
 
-    /// Stable path-independent records and namespace binding changes.
     #[napi]
     pub fn changes(&self) -> Result<NativeGenerationDiff> {
         encode_generation_diff(self.inner.changes().clone(), self.inner.work())
     }
 
-    /// Composes contiguous immutable deltas by diffing their outer endpoints.
     #[napi]
     pub async fn compose(
         &self,
@@ -82,32 +68,28 @@ impl NativeChangeSet {
         maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
         let maximum_changes = maximum_changes.into_inner();
-
-        self.inner
-            .compose(&next.inner, maximum_changes)
-            .await
-            .map(|inner| NativeChangeSet { inner })
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            compose(&next.inner, maximum_changes)
+        ))
+        .map(|inner| NativeChangeSet { inner })
     }
 }
 
 #[napi]
 impl NativeJoinPlan {
-    /// Target generation observed while planning.
     #[must_use]
     #[napi(getter, js_name = targetHead)]
     pub fn target_head(&self) -> Buffer {
         Buffer::from(self.inner.target_head().digest().into_bytes().to_vec())
     }
 
-    /// Exact discovered common ancestor.
     #[must_use]
     #[napi(getter, js_name = commonAncestor)]
     pub fn common_ancestor(&self) -> Buffer {
         Buffer::from(self.inner.common_ancestor().digest().into_bytes().to_vec())
     }
 
-    /// Applies this immutable plan through one exact target-head CAS.
     #[napi]
     pub async fn apply(
         &self,
@@ -132,7 +114,6 @@ impl NativeJoinPlan {
             .map_err(napi_error)
     }
 
-    /// Applies an exact complete set of declarative conflict side selections.
     #[napi(js_name = applySides)]
     pub async fn apply_sides(
         &self,
@@ -179,29 +160,22 @@ impl NativeJoinPlan {
 
 #[napi]
 #[allow(
-    missing_docs,
-    reason = "the read_range, stat, list_directory, read_symbolic_link, and plan_extents bindings forward to the documented acyclic-fs methods of the same name"
-)]
-#[allow(
     clippy::missing_errors_doc,
     reason = "every method returns napi::Result, which reaches JavaScript as a thrown exception"
 )]
 impl NativeGeneration {
-    /// Content-addressed generation identity.
     #[must_use]
     #[napi(getter)]
     pub fn id(&self) -> Buffer {
         Buffer::from(self.inner.id().digest().into_bytes().to_vec())
     }
 
-    /// Owning opaque workspace identity.
     #[must_use]
     #[napi(getter, js_name = workspaceId)]
     pub fn workspace_id(&self) -> Buffer {
         Buffer::from(self.inner.workspace_id().into_bytes().to_vec())
     }
 
-    /// Reads one complete file from this exact immutable state.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
         sdk_value!(Box::pin(unbounded_future!(
@@ -277,7 +251,6 @@ impl NativeGeneration {
         .map_err(napi_error)
     }
 
-    /// Retains this exact generation under one opaque identity.
     #[napi]
     pub async fn pin(&self, identity: String) -> Result<NativeGeneration> {
         sdk_value!(unbounded_future!(self.inner, pin(identity)))

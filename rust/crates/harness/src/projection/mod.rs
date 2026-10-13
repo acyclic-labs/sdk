@@ -60,38 +60,27 @@ impl SelectedModelContext {
         input: &ModelContent,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        let last = self.messages.last().filter(|last| {
+            self.messages.len() == self.selection.message_ids.len() && last.role == ModelRole::User
+        });
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = io.and_then(PreparationIo::original_native_work);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native {
-            work.remaining().map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        }
-        let mut matches = false;
-        if let Some(last) = self.messages.last().filter(|last| {
-            self.messages.len() == self.selection.message_ids.len() && last.role == ModelRole::User
-        }) {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = native {
+            work.remaining()?;
+            if last.is_some() {
                 work.charge(acyclic_fs::WorkCounters {
                     items_examined: 1,
                     ..Default::default()
-                })
-                .map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
                 })?;
             }
-            matches = &last.content == input;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = native {
-                work.remaining().map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
-            }
+        }
+        let matches = last.is_some_and(|last| &last.content == input);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if last.is_some()
+            && let Some(work) = native
+        {
+            work.remaining()?;
         }
         if matches {
             Ok(())
@@ -139,17 +128,13 @@ pub async fn select_model_context(
         })?;
         let (role, content) = match message.kind {
             MessageKind::ToolCall => {
-                let call =
+                let (call_id, name, arguments) =
                     artifacts::read_invocation(resolver, &message.content, limits.render_bytes, io)
                         .await?;
                 with_history_io(io, |work| {
-                    crate::tool::ToolInvocation::validate_identity(
-                        &call.call_id,
-                        Some(&call.name),
-                        work,
-                    )
+                    crate::tool::ToolInvocation::validate_identity(&call_id, Some(&name), work)
                 })?;
-                if message.tool_call_id.as_deref() != Some(call.call_id.as_str()) {
+                if message.tool_call_id.as_deref() != Some(call_id.as_str()) {
                     return Err(stock_boundary(
                         io,
                         Invalid,
@@ -159,23 +144,17 @@ pub async fn select_model_context(
                 (
                     ModelRole::Assistant,
                     ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id: call.call_id,
-                        name: call.name,
-                        arguments: call.arguments,
+                        call_id,
+                        name,
+                        arguments,
                     }),
                 )
             }
             MessageKind::ToolResult => {
-                if message.content.descriptor().media_type() != "application/json" {
-                    return Err(stock_boundary(
-                        io,
-                        Invalid,
-                        "tool result artifact type is invalid",
-                    ));
-                }
-                let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
-                    stock_boundary(io, Invalid, "tool result lacks call identity")
-                })?;
+                let call_id = message
+                    .tool_call_id
+                    .as_deref()
+                    .expect("validated tool result identity");
                 let mut linked = None;
                 if let Some(reply) = message.reply_to {
                     for (id, projected) in selection.message_ids[..messages.len()]
@@ -191,12 +170,7 @@ pub async fn select_model_context(
                     }
                 }
                 let Some(ModelMessage {
-                    content:
-                        ModelContent::Part(ModelContentPart::ToolCall {
-                            call_id: linked_call_id,
-                            name,
-                            ..
-                        }),
+                    content: ModelContent::Part(ModelContentPart::ToolCall { name, .. }),
                     ..
                 }) = linked
                 else {
@@ -206,13 +180,6 @@ pub async fn select_model_context(
                         "selected tool result lacks its call",
                     ));
                 };
-                if linked_call_id != call_id {
-                    return Err(stock_boundary(
-                        io,
-                        Invalid,
-                        "selected tool result lacks its call",
-                    ));
-                }
                 let _hold;
                 let (items, hold) =
                     attachments::resolve(message, resolver, limits.attachments, io).await?;

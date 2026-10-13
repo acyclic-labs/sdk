@@ -29,4 +29,4 @@ pub use capture::DiscoveredContext;
 use capture::{DiscoveryWork, child};
 use skills::discovery_error;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use skills::{bound_skill_values, discovery_work_error, skill_text_native};
+use skills::skill_text_native;

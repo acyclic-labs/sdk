@@ -27,7 +27,7 @@ impl RecordPaths<'_> {
         if let Some(allocation) = &self.allocation {
             let work = allocation.work();
             let root = crate::native_host::HostRoot::open(&self.directory, &mut &*work)?;
-            let directory = root.open_dir_held(Path::new(""), &mut &*work)?;
+            let directory = { #[cfg(unix)] { root.open_dir_held(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| root.open_dir_held(path, work)) } }?;
             crate::native_host::sync_directory_held(&directory, &mut &*work)?;
         } else {
             sync_directory(&self.directory)?;
@@ -80,13 +80,7 @@ impl RecordPaths<'_> {
                 "journal destination has no leaf",
             )
         })?;
-        crate::native_host::rename_no_replace_held(
-            &parent,
-            Path::new(source),
-            &parent,
-            Path::new(target),
-            &mut &*work,
-        )?;
+        { #[cfg(unix)] { crate::native_host::rename_held(&parent, Path::new(source), &parent, Path::new(target), acyclic_native_runtime::RenameMode::NoReplace, None, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(source), &mut &*work, |name, work| crate::native_host::with_wide_path(Path::new(target), work, |target, work| crate::native_host::rename_held(&parent, name, &parent, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) } }?;
         Ok(())
     }
 
@@ -376,11 +370,6 @@ pub(super) fn write_journaled<T: Serialize>(
         .allocation
         .as_ref()
         .map(|allocation| allocation.work());
-    let bytes = if work.is_none() {
-        Some(serde_json::to_vec(value)?)
-    } else {
-        None
-    };
     let file = match work {
         Some(work) => {
             let file = materialization_open_options(
@@ -402,10 +391,7 @@ pub(super) fn write_journaled<T: Serialize>(
         work,
         encoded: true,
     };
-    match bytes {
-        Some(bytes) => temporary.write_all(&bytes)?,
-        None => serde_json::to_writer(&mut temporary, value)?,
-    }
+    serde_json::to_writer(&mut temporary, value)?;
     match work {
         Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
         None => temporary.file.sync_all()?,

@@ -219,11 +219,6 @@ impl Flight {
         }
     }
 
-    #[cfg(test)]
-    fn poll(&self, context: &Context<'_>) -> Poll<Result<Option<OwnedBytes>, ObjectStoreError>> {
-        self.poll_with_context(context, #[cfg(not(target_arch = "wasm32"))] None)
-    }
-
     fn poll_with_context(
         &self,
         context: &Context<'_>,

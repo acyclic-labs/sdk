@@ -6,13 +6,15 @@ use crate::{
 };
 
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitRequest, CommittedEnvelope, CommittedMutation,
-    IdempotencyKey, OwnedBytes, Record, StreamPath, StreamProvider,
+    CommitCondition, CommittedEnvelope, CommittedMutation, IdempotencyKey, OwnedBytes, Record,
+    StreamPath, StreamProvider,
 };
+
+#[cfg(test)]
+use acyclic_stream::{CommitMutation, CommitRequest};
 
 use serde::{Deserialize, Serialize};
 
-use crate::distributed::{SdkCallError, sdk_error, sdk_source};
 
 mod codec;
 pub(crate) use codec::*;

@@ -21,7 +21,11 @@ impl McpStdioExchange {
         let result = (|| {
             self.check_work(work)?;
             if self.failed {
-                return Err(rejection(work, "MCP stdio exchange already failed"));
+                return Err(error(
+                    work,
+                    ErrorCode::Invalid,
+                    "MCP stdio exchange already failed",
+                ));
             }
             self.consume(bytes, work)
         })();
@@ -39,14 +43,24 @@ impl McpStdioExchange {
         match (&self.custody, work) {
             (None, None) => {}
             (Some(guard), Some(work)) => {
-                checkpoint(Some(work))?;
+                charge(Some(work), 0, 0, 0)?;
                 if !guard.work().shares_allocation_context(work) {
-                    return Err(rejection(Some(work), "MCP stdio original ledger mismatch"));
+                    return Err(error(
+                        Some(work),
+                        ErrorCode::Invalid,
+                        "MCP stdio original ledger mismatch",
+                    ));
                 }
             }
-            _ => return Err(rejection(work, "MCP stdio accounting mode mismatch")),
+            _ => {
+                return Err(error(
+                    work,
+                    ErrorCode::Invalid,
+                    "MCP stdio accounting mode mismatch",
+                ));
+            }
         }
-        checkpoint(work)
+        charge(work, 0, 0, 0)
     }
 
     fn consume(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<(Vec<u8>, NativeCustody)> {
@@ -54,16 +68,22 @@ impl McpStdioExchange {
             .received
             .checked_add(bytes.len())
             .filter(|total| *total <= self.maximum_bytes)
-            .ok_or_else(|| rejection(work, "MCP stdio stdout exceeds admitted bound"))?;
+            .ok_or_else(|| {
+                error(
+                    work,
+                    ErrorCode::Invalid,
+                    "MCP stdio stdout exceeds admitted bound",
+                )
+            })?;
         let mut writes = (Vec::new(), None);
         let mut scanned = self.line.len();
-        copy_work(work, bytes.len())?;
+        charge(work, 0, 0, bytes.len() as u64)?;
         self.line.extend_from_slice(bytes);
         self.received = received;
         loop {
             let mut end = None;
             for (offset, byte) in self.line[scanned..].iter().enumerate() {
-                scan_work(work)?;
+                charge(work, 1, 1, 0)?;
                 if *byte == b'\n' {
                     end = Some(scanned + offset);
                     break;
@@ -73,8 +93,7 @@ impl McpStdioExchange {
             let body = &self.line[..end];
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
-            let mut frame_custody = frame_admission(body, self.maximum_bytes, work)?;
-            let message = decode_value(body, work, &mut frame_custody)?;
+            let (message, mut frame_custody) = decode_value(body, self.maximum_bytes, work)?;
             self.line.advance(end + 1);
             scanned = 0;
             if message.get("id").is_none() {
@@ -98,12 +117,13 @@ impl McpStdioExchange {
                                 acyclic_fs::WorkError::Overflow,
                             ),
                         )?)
-                        .map_err(native_error)?;
+                        .map_err(Error::from)?;
                 }
                 self.result = Some((value, frame_custody));
             } else {
-                return Err(rejection(
+                return Err(error(
                     work,
+                    ErrorCode::Invalid,
                     "unexpected MCP stdio response after completion",
                 ));
             }
@@ -115,7 +135,7 @@ impl McpStdioExchange {
     pub fn finish(mut self) -> Result<(Value, NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &self.custody {
-            checkpoint(Some(custody.work()))?;
+            charge(Some(custody.work()), 0, 0, 0)?;
         }
         if !self.line.is_empty() {
             return Err(Error::Indeterminate(self.operation));
@@ -125,7 +145,11 @@ impl McpStdioExchange {
             .take()
             .ok_or(Error::Indeterminate(self.operation))?;
         if self.custody.is_some() && custody.is_none() {
-            return Err(rejection(None, "missing MCP result custody"));
+            return Err(error(
+                None,
+                ErrorCode::Invalid,
+                "missing MCP result custody",
+            ));
         }
         Ok((value, custody))
     }

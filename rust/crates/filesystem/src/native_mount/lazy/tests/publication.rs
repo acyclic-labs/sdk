@@ -59,10 +59,7 @@ async fn an_advance_records_only_a_moved_head_or_source() -> Result<(), Box<dyn 
         "an advance that moved nothing keeps every binding"
     );
 
-    demand.invalidate(&mut crate::demand::DemandWork::new(
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))?;
+    demand.invalidate();
     view.advance_to_head_async().await?;
     assert!(
         changes().map_err(|_| "poisoned observer")? > 0,
@@ -376,7 +373,18 @@ async fn promotion_and_attribute_reads_leave_cached_lookups_current()
     let stamp = view.view_stamp().ok_or("lazy view has no stamp")?;
 
     // Reading attributes of a source file answers from the source.
-    assert_eq!(view.read_attribute(&file, b"user.absent")?, None);
+    assert!(
+        view.read_attribute(
+            &file,
+            b"user.absent",
+            &crate::NativeMaterializationWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .map_err(|(error, _)| error)?
+        )?
+        .is_none()
+    );
     assert!(view.list_attributes(&file, None, 8)?.names.is_empty());
     assert!(view.authored.lookup(&file)?.is_none());
 

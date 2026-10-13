@@ -685,7 +685,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     assert!(matches!(repeated_remove.error, FsError::NotFound));
 
     assert!(
-        (checkout.list_directory(&file, std::ops::Bound::Unbounded, 8, B, &cancellation))
+        (checkout.list_directory(&file, None, 8, B, &cancellation))
             .await
             .is_err()
     );

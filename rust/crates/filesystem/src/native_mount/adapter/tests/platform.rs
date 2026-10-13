@@ -390,51 +390,50 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
         return run_unix_mount_cross_process_worker();
     }
     let temporary = tempfile::tempdir()?;
-    let mount_a = temporary.path().join("mount-a");
-    let mount_b = temporary.path().join("mount-b");
-    std::fs::create_dir(&mount_a)?;
-    std::fs::create_dir(&mount_b)?;
-    let ready_a = temporary.path().join("ready-a");
-    let ready_b = temporary.path().join("ready-b");
+    let mounts = ["a", "b"].map(|id| {
+        (
+            id,
+            temporary.path().join(format!("mount-{id}")),
+            temporary.path().join(format!("ready-{id}")),
+        )
+    });
     let release = temporary.path().join("release");
     let executable = std::env::current_exe()?;
     let worker =
         "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
-    let mut child_a = acyclic_native_runtime::ProcessTree::spawn(
-        std::process::Command::new(&executable)
-            .args(["--ignored", "--exact", worker, "--test-threads=1"])
-            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
-            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_a)
-            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
-            .env("ACYCLIC_FS_UNIX_CHILD_ID", "a"),
-    )?;
-    let mut child_b = acyclic_native_runtime::ProcessTree::spawn(
-        std::process::Command::new(&executable)
-            .args(["--ignored", "--exact", worker, "--test-threads=1"])
-            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)
-            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_b)
-            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
-            .env("ACYCLIC_FS_UNIX_CHILD_ID", "b"),
-    )?;
-
+    let mut children = Vec::new();
+    for (id, mount, ready) in &mounts {
+        std::fs::create_dir(mount)?;
+        children.push(acyclic_native_runtime::ProcessTree::spawn(
+            std::process::Command::new(&executable)
+                .args(["--ignored", "--exact", worker, "--test-threads=1"])
+                .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", mount)
+                .env("ACYCLIC_FS_UNIX_CHILD_READY", ready)
+                .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
+                .env("ACYCLIC_FS_UNIX_CHILD_ID", id),
+        )?);
+    }
     let validation = (|| -> Result<(), Box<dyn std::error::Error>> {
-        wait_for_path(&ready_a, std::time::Duration::from_secs(10))?;
-        wait_for_path(&ready_b, std::time::Duration::from_secs(10))?;
-        assert_eq!(std::fs::read(mount_a.join("a.txt"))?, b"a");
-        assert_eq!(std::fs::read(mount_b.join("b.txt"))?, b"b");
-        assert!(!mount_a.join("b.txt").exists());
-        assert!(!mount_b.join("a.txt").exists());
+        for (id, mount, ready) in &mounts {
+            wait_for_path(ready, Duration::from_secs(10))?;
+            assert_eq!(
+                std::fs::read(mount.join(format!("{id}.txt")))?,
+                id.as_bytes()
+            );
+            let other = if *id == "a" { "b" } else { "a" };
+            assert!(!mount.join(format!("{other}.txt")).exists());
+        }
         Ok(())
     })();
     std::fs::write(&release, b"release")?;
-    let status_a = wait_for_child(&mut child_a, std::time::Duration::from_secs(10))?;
-    let status_b = wait_for_child(&mut child_b, std::time::Duration::from_secs(10))?;
+    let statuses = children
+        .iter_mut()
+        .map(|child| wait_for_child(child, Duration::from_secs(10)))
+        .collect::<Result<Vec<_>, _>>()?;
     validation?;
-    assert!(status_a.success(), "first mount process failed: {status_a}");
-    assert!(
-        status_b.success(),
-        "second mount process failed: {status_b}"
-    );
+    for status in statuses {
+        assert!(status.success(), "mount process failed: {status}");
+    }
     Ok(())
 }
 
@@ -463,60 +462,62 @@ fn wait_for_child(
     Ok(result?)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn posix_mount_path_preserves_non_utf8_components() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Posix)?;
-    let (initial, pending) = checkout_state(&source);
-    assert!(!pending);
-    let name = vec![b'r', 0xff, b'w'];
+fn native_name_encoding_and_capture_cases() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "windows")]
+    let (profile, name, exact_metadata) = (
+        FilesystemProfile::Windows,
+        "exact-α-😀"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+        FileMetadata {
+            windows_attributes: crate::kernel::MetadataField::Value(0x20),
+            created_ns: crate::kernel::MetadataField::Value(1_234_500),
+            modified_ns: crate::kernel::MetadataField::Value(2_345_600),
+            ..metadata()
+        },
+    );
+    #[cfg(unix)]
+    let (profile, name, exact_metadata) =
+        (FilesystemProfile::Posix, vec![b'r', 0xff, b'w'], metadata());
+    let source = source(profile)?;
+    let work = capture_meter(boundary_budget(), source.cancellation())?;
     let path = MountPath::root().child(name.clone());
-    let created = boundary(source.cancellation(), |work| {
-        source.create_file(&path, metadata(), None, work)
-    })?;
+    let created = source.create_file(&path, exact_metadata, None, &work)?;
     assert_eq!(source.lookup(&path)?, Some(created));
-    boundary(source.cancellation(), |work| {
-        source.write_attribute(
-            &path,
-            b"user.acyclic",
-            crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"native-xattr").into(), 0),
-            MountAttributeWriteMode::Create,
-            work,
-        )
-    })?;
-    assert_eq!(
-        boundary(source.cancellation(), |work| source.read_attribute(
-            &path,
-            b"user.acyclic",
-            work
-        ))?
-        .map(|value| value.bytes)
-        .as_deref(),
-        Some(b"native-xattr".as_slice())
-    );
-    let attributes = source.list_attributes(&path, None, 8)?;
-    assert_eq!(attributes.names, vec![b"user.acyclic".to_vec()]);
-    assert_eq!(attributes.next_cursor, None);
-    boundary(source.cancellation(), |work| {
-        source.remove_attribute(&path, b"user.acyclic", work)
-    })?;
-    assert!(
-        boundary(source.cancellation(), |work| source.read_attribute(
-            &path,
-            b"user.acyclic",
-            work
-        ))?
-        .is_none()
-    );
+    source.flush(&work)?;
     let page = source.read_directory(&MountPath::root(), None, 8)?;
-    assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].name, name);
-    assert!(checkout_state(&source).1);
-    boundary(source.cancellation(), |work| source.flush(work))?;
-    boundary(source.cancellation(), |work| source.flush(work))?;
-    let (published, pending) = checkout_state(&source);
-    assert_ne!(published, initial);
-    assert!(!pending);
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|entry| (&entry.name, entry.metadata))
+            .collect::<Vec<_>>(),
+        vec![(&name, exact_metadata)]
+    );
+    let host = tempfile::tempdir()?;
+    #[cfg(target_os = "windows")]
+    let (host_name, captured_name) = (
+        std::ffi::OsString::from("captured-β.bin"),
+        "captured-β.bin"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect(),
+    );
+    #[cfg(unix)]
+    let (host_name, captured_name) = {
+        use std::os::unix::ffi::OsStringExt;
+        let name = vec![b'c', 0xfe, b'p'];
+        (std::ffi::OsString::from_vec(name.clone()), name)
+    };
+    let host_path = host.path().join(host_name);
+    let captured = MountPath::root().child(captured_name);
+    std::fs::write(&host_path, b"captured")?;
+    source.capture_host_path(host.path(), &captured)?;
+    assert_eq!(source.read_range(&captured, 0, 8)?.as_ref(), b"captured");
+    std::fs::remove_file(host_path)?;
+    source.capture_host_path(host.path(), &captured)?;
+    assert_eq!(source.lookup(&captured)?, None);
     Ok(())
 }
 
@@ -588,27 +589,5 @@ fn preexisting_entry_survives_published_link_unlink_and_recreate_cycles()
         ]
     );
     assert_eq!(page.next_cursor, None);
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn host_capture_preserves_non_utf8_names() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Posix)?;
-    let host = tempfile::tempdir()?;
-    let captured_name = vec![b'c', 0xfe, b'p'];
-    let host_path = host
-        .path()
-        .join(std::ffi::OsString::from_vec(captured_name.clone()));
-    std::fs::write(&host_path, b"captured")?;
-    let captured_path = MountPath::root().child(captured_name);
-    source.capture_host_path(host.path(), &captured_path)?;
-    assert_eq!(
-        source.read_range(&captured_path, 0, 8)?.as_ref(),
-        b"captured"
-    );
-    std::fs::remove_file(host_path)?;
-    source.capture_host_path(host.path(), &captured_path)?;
-    assert_eq!(source.lookup(&captured_path)?, None);
     Ok(())
 }

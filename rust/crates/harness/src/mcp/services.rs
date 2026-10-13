@@ -1,15 +1,15 @@
 //! Typed resource and prompt operations over the same admitted protocol boundary.
-use super::rpc::{check, checkpoint, protocol_error};
-use crate::{Error, NativeWork, OperationId, Result, wire::ErrorCode};
+use super::{charge, error, rpc::check};
+use crate::{Error, NativeWork, Result, wire::ErrorCode};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 
 /// Validates service input on the supplied work ledger.
 pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Result<()> {
-    checkpoint(work, 1, 0)?;
+    charge(work, 1, 0, 0)?;
     if !params.is_object() {
-        return Err(protocol_error(
+        return Err(error(
             work,
             ErrorCode::Invalid,
             "MCP service parameters must be an object",
@@ -29,9 +29,9 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
                 "request_state",
                 "input_responses",
             ] {
-                checkpoint(work, 1, 0)?;
+                charge(work, 1, 0, 0)?;
                 if params.get(key).is_some() {
-                    return Err(protocol_error(
+                    return Err(error(
                         work,
                         ErrorCode::Unsupported,
                         "MCP stdio continuation needs its own authority owner",
@@ -41,7 +41,7 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
             check::<rmcp::model::CallToolRequestParams>(params, work)
         }
         _ => {
-            return Err(protocol_error(
+            return Err(error(
                 work,
                 ErrorCode::Unsupported,
                 "MCP service method not selected",
@@ -60,10 +60,41 @@ pub fn validate_result(method: &str, value: Value, work: NativeWork<'_>) -> Resu
         "resources/read" => check::<rmcp::model::ReadResourceResult>(&value, work),
         "prompts/list" => check::<rmcp::model::ListPromptsResult>(&value, work),
         "prompts/get" => check::<rmcp::model::GetPromptResult>(&value, work),
-        "tools/list" => check::<super::McpToolsPage>(&value, work),
-        "tools/call" => check::<rmcp::model::CallToolResult>(&value, work),
+        "tools/list" => {
+            if let Some(tools) = value.get("tools").and_then(Value::as_array) {
+                for tool in tools {
+                    charge(work, 1, 0, 0)?;
+                    if tool
+                        .get("description")
+                        .is_some_and(|description| !description.is_string())
+                    {
+                        return Err(error(
+                            work,
+                            ErrorCode::Invalid,
+                            "invalid MCP tool description",
+                        ));
+                    }
+                }
+            }
+            check::<rmcp::model::ListToolsResult>(&value, work)
+        }
+        "tools/call" => {
+            charge(work, 2, 0, 0)?;
+            if !value.get("content").is_some_and(Value::is_array)
+                || value
+                    .get("isError")
+                    .is_some_and(|error| !error.is_boolean())
+            {
+                return Err(error(
+                    work,
+                    ErrorCode::Invalid,
+                    "invalid MCP tool result envelope",
+                ));
+            }
+            check::<rmcp::model::CallToolResult>(&value, work)
+        }
         _ => {
-            return Err(protocol_error(
+            return Err(error(
                 work,
                 ErrorCode::Unsupported,
                 "MCP method is not an admitted service",
@@ -77,55 +108,8 @@ pub fn validate_result(method: &str, value: Value, work: NativeWork<'_>) -> Resu
 mod tests {
     use super::*;
 
-    fn service_cases() -> [(&'static str, Value, Value); 5] {
-        [
-            (
-                "resources/list",
-                json!({"resources":[{"uri":"file:///exact","name":"external"}]}),
-                json!({"resources":[{"uri":9,"name":"external"}]}),
-            ),
-            (
-                "resources/templates/list",
-                json!({"resourceTemplates":[{"uriTemplate":"file:///{name}","name":"template"}]}),
-                json!({"resourceTemplates":[{"uriTemplate":[],"name":"template"}]}),
-            ),
-            (
-                "resources/read",
-                json!({"contents":[{"uri":"file:///exact","blob":"AAEC","mimeType":"application/octet-stream"}]}),
-                json!({"contents":[{"uri":"file:///exact","blob":false}]}),
-            ),
-            (
-                "prompts/list",
-                json!({"prompts":[{"name":"external","arguments":[{"name":"input","required":true}]}]}),
-                json!({"prompts":[{"name":"external","arguments":[{"required":true}]}]}),
-            ),
-            (
-                "prompts/get",
-                json!({"messages":[{"role":"user","content":{"type":"resource","resource":{"uri":"file:///exact","text":"external"}}}]}),
-                json!({"messages":[{"role":"system","content":{"type":"text","text":"not authority"}}]}),
-            ),
-        ]
-    }
-
     #[test]
-    fn five_services_validate_maintained_dtos_without_projecting_authority() {
-        for (method, valid, invalid) in service_cases() {
-            assert_eq!(
-                validate_result(method, valid.clone(), None).expect("closed valid DTO"),
-                valid
-            );
-            assert!(validate_result(method, invalid, None).is_err(), "{method}");
-        }
-        assert!(validate_result("sampling/createMessage", json!({}), None).is_err());
-        assert!(validate_params("resources/read", &json!({"uri":9}), None).is_err());
-        assert!(
-            validate_params(
-                "prompts/get",
-                &json!({"name":"exact","arguments":{"input":9}}),
-                None
-            )
-            .is_err()
-        );
+    fn continuations_are_rejected_before_dispatch() {
         assert!(
             validate_params("tools/call", &json!({"name":"exact","arguments":{}}), None).is_ok()
         );

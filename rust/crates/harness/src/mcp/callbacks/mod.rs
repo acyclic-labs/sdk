@@ -102,7 +102,7 @@ impl McpCallbackRequest {
                     rmcp::model::ElicitRequestParams::deserialize(params)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
                 if let Some(schema) = params.get("requestedSchema") {
-                    crate::contract::compile_json_schema(schema, "MCP elicitation", &mut None)?;
+                    crate::executor::compile_json_schema(schema, "MCP elicitation", &mut None)?;
                 }
                 Ok(())
             }
@@ -110,7 +110,7 @@ impl McpCallbackRequest {
                 "MCP callback is not enabled by pinned policy".into(),
             )),
         }?;
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &(
                 "harness/mcp-callback/v1",
                 self.parent,
@@ -152,7 +152,7 @@ impl McpCallbackRequest {
                         .result
                         .get("content")
                         .ok_or_else(|| Error::Invalid("accepted MCP form has no content".into()))?;
-                    crate::contract::validate_json_schema_value(
+                    crate::executor::validate_json_schema_value(
                         schema,
                         content,
                         "MCP elicitation answer",
@@ -166,18 +166,6 @@ impl McpCallbackRequest {
             )),
         }
     }
-}
-
-/// Explicit host selection for ordinary sampling input and media admission.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpSamplingPolicy {
-    /// Exact host input used only when the remote transcript does not end in a user message.
-    pub continuation: ModelContent,
-    /// Opt-in image processing contract; absent means images are unsupported.
-    pub image: Option<NativeMediaPolicy>,
-    /// Opt-in audio duration/work/byte contract; absent means audio is unsupported.
-    pub audio: Option<NativeMediaPolicy>,
 }
 
 mod runtime;

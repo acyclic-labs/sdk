@@ -22,8 +22,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         machines: MachineRegistry,
         clock: Arc<dyn UnixMillisClock>,
     ) -> Result<Self> {
-        verifier.verify_audience(&owner)?;
-        verifier.verify(&owner_scope)?;
+        verifier.verify_audience(&owner, &mut None)?;
+        verifier.verify(&owner_scope, &mut None)?;
         for capability in [
             capability::OPERATION_DECLARE,
             capability::OPERATION_OBSERVE,
@@ -61,7 +61,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Requires these immutable shared ceilings for every root admitted by this
     /// host. Root admission publishes its declaration and configuration together.
     pub fn with_session_limits(mut self, limits: crate::scheduler::SessionLimits) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         self.session_limits = Some(limits);
         Ok(self)
     }
@@ -94,17 +94,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let output_schema = admission.output_schema.clone();
         let parent = admission.parent;
         let scope = RuntimeScope::new(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?
+            .with_run_limits(admission.run_limits, &mut None)?
             .with_replayed_extensions(admission.extensions.clone())?;
         self.root_scope
             .narrow(scope.grants().clone(), scope.limits())?
-            .with_run_limits(scope.run_limits())?;
+            .with_run_limits(scope.run_limits(), &mut None)?;
         self.validate_parent_scope(parent, &scope).await?;
         if parent.is_some() {
             require_descendant_grant(scope.grants(), &identity)?;
         }
         if let Some(extensions) = scope.extensions() {
-            extensions.validate()?;
+            extensions.validate(&mut None)?;
         }
         if scope.extensions() != self.root_scope.extensions() {
             return Err(Error::Conflict(
@@ -115,7 +115,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if machine.name != identity.name
             || machine.version != identity.version
             || machine.digest == [0; 32]
-            || self.machines.resolve(&machine).is_none()
+            || self.machines.resolve(&machine, &mut None)?.is_none()
         {
             return Err(Error::Invalid(
                 "task and machine identities disagree".into(),
@@ -127,8 +127,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&admission.input_schema),
             &output_schema,
             Some(&admission.input),
+            &mut None,
         )?;
-        admission.validate()?;
+        admission.validate(&mut None)?;
         let canonical = admission.canonical_value();
         let bytes = crate::contract::canonical_json_bytes(&canonical)?;
         if bytes.len() as u64 > scope.limits().file_bytes {
@@ -138,15 +139,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let key = format!("task-admission:{operation_id}");
         let (state, owner_scope) =
-            if let Some(retained) = self.retained_declaration(operation_id).await? {
-                if self.read_admission_json(&retained.state).await? != canonical {
+            if let Some(retained) = self.retained_declaration(operation_id, &mut None).await? {
+                if self.read_json(&retained.state, None).await? != canonical {
                     return Err(Error::Conflict("task admission changed on retry".into()));
                 }
                 (retained.state, retained.owner_scope)
             } else {
-                let state = self.payloads.stage(operation_id, &key, &bytes).await?;
-                state.descriptor().verify(&bytes)?;
-                if self.read_json(&state).await? != canonical {
+                let state = self
+                    .payloads
+                    .stage(operation_id, &key, &bytes, None)?
+                    .await?;
+                state.descriptor().verify(&bytes, &mut None)?;
+                if self.read_json(&state, None).await? != canonical {
                     return Err(Error::Storage(
                         "staged task admission changed before publication".into(),
                     ));
@@ -236,7 +240,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
-        validate_policy_identity(&policy.identity())?;
+        validate_policy_identity(&policy.identity(), None)?;
         self.policy = Some(policy);
         Ok(self)
     }
@@ -248,16 +252,34 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self
     }
 
-    pub(super) async fn read_json(&self, reference: &FileRef) -> Result<Value> {
-        reference.validate()?;
+    pub(super) async fn read_json(
+        &self,
+        reference: &FileRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Value> {
+        let mut history = io.map(|io| io.history_io());
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        reference.validate(&mut work)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("durable task payload is not JSON".into()));
         }
-        let bytes = self.reader.read(reference).await?;
-        reference.descriptor().verify(&bytes)?;
-        let value: Value = crate::contract::json_from_slice(&bytes)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        if crate::contract::canonical_json_bytes(&value)? != bytes {
+        let bytes = self
+            .reader
+            .read(reference, reference.descriptor().byte_length(), io)?
+            .await?;
+        reference.descriptor().verify(&bytes, &mut work)?;
+        let value: Value = match io {
+            Some(io) => io.decode_json(&bytes)?,
+            None => crate::contract::json_from_slice(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        let canonical = match io {
+            Some(io) => io.encode(&value, reference.descriptor().byte_length(), true)?,
+            None => OwnedBytes::from(crate::contract::canonical_json_bytes(&value)?),
+        };
+        if canonical.as_ref() != bytes.as_ref() {
             return Err(Error::Invalid(
                 "durable task payload is not canonical JSON".into(),
             ));
@@ -267,118 +289,40 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     pub(super) async fn retained_declaration(
         &self,
-        operation_id: OperationId,
+        operation: OperationId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<OperationSpec>> {
-        let declaration_key = IdempotencyKey::new(format!("task-admission:{operation_id}"))?;
+        let text =
+            crate::executor::preparation_format(format_args!("task-admission:{operation}"), work)?;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, text.capacity() as u64);
+        let key = IdempotencyKey::new(text)?;
         let indexed = crate::distributed::observe_declaration(
             &self.stream,
             &self.owner,
             &self.owner_scope,
             &self.verifier,
-            operation_id,
-            &declaration_key,
+            operation,
+            &key,
+            quota.work(),
         )
         .await?;
+        drop(key);
         if indexed.is_some() {
             return Ok(indexed);
         }
-        {
-            // Missing/legacy locations are not evidence of missing admission.
-            // Bootstrap through the existing authoritative reducer, then use
-            // its verified declaration. This fallback remains a mutable read.
-            let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh().await?;
-            match coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-            ) {
-                Ok(operation) => Ok(Some(operation.spec)),
-                Err(Error::NotFound(_)) => Ok(None),
-                Err(error) => Err(error),
-            }
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh(quota.work()).await?;
+        match coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation,
+            quota.work(),
+        ) {
+            Ok(operation) => Ok(Some(operation.spec.clone_with_work(quota.work())?)),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
         }
-    }
-
-    pub(super) async fn read_admission_json(&self, reference: &FileRef) -> Result<Value> {
-        self.read_json(reference)
-            .await
-            .map_err(|error| match error {
-                Error::NotFound(_) => {
-                    Error::Storage("committed task admission content is missing".into())
-                }
-                other => other,
-            })
-    }
-
-    pub(super) async fn admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
-        let spec = self
-            .retained_declaration(operation_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("task admission".into()))?;
-        if let Some(limits) = self.session_limits {
-            let mut coordinator = self.coordinator.lock().await;
-            // Session configuration and parent links are immutable. A cached
-            // hierarchy can check these pinned ceilings without refreshing
-            // unrelated lifecycle events; unknown descendants still bootstrap.
-            let retained = match coordinator.scheduler().session_limits(operation_id) {
-                Err(Error::NotFound(_)) => {
-                    coordinator.refresh().await?;
-                    coordinator.scheduler().session_limits(operation_id)?
-                }
-                other => other?,
-            };
-            if retained != limits {
-                return Err(Error::Conflict(
-                    "retained session ceilings differ from owner bindings".into(),
-                ));
-            }
-        }
-        let value = self.read_admission_json(&spec.state).await?;
-        let admission = TaskAdmissionRecord::from_canonical_value(value)?;
-        if admission.policy != self.policy.as_ref().map(|policy| policy.identity()) {
-            return Err(Error::Conflict(
-                "durable task policy differs from its admission".into(),
-            ));
-        }
-        if let Some(extensions) = &admission.extensions {
-            extensions.validate()?;
-        }
-        if admission.extensions.as_ref() != self.root_scope.extensions() {
-            return Err(Error::Conflict(
-                "retained task extensions differ from owner bindings".into(),
-            ));
-        }
-        self.root_scope
-            .narrow(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?;
-        if admission.operation_id != operation_id
-            || admission.task.name != spec.entrypoint.name
-            || admission.task.version != spec.entrypoint.version
-            || admission.task.digest != spec.entrypoint.digest
-            || admission.output_schema != spec.entrypoint.result_schema
-            || spec.parent
-                != admission.parent.map(|parent| ParentLink {
-                    operation_id: OperationId::from_bytes(parent.into_bytes()),
-                    slot: operation_id.to_string(),
-                })
-            || admission.machine.name != admission.task.name
-            || admission.machine.version != admission.task.version
-            || self.machines.resolve(&admission.machine).is_none()
-        {
-            return Err(Error::Conflict(
-                "durable task admission disagrees with its declaration".into(),
-            ));
-        }
-        self.tasks.validate_durable_admission(
-            &admission.task,
-            &admission.machine,
-            Some(&admission.input_schema),
-            &admission.output_schema,
-            Some(&admission.input),
-        )?;
-        Ok(admission)
     }
 
     pub(super) async fn validate_parent_scope(
@@ -388,12 +332,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         if let Some(parent) = parent {
             let admitted = self
-                .admission(OperationId::from_bytes(parent.into_bytes()))
+                .admission(OperationId::from_bytes(parent.into_bytes()), None)
                 .await?;
             RuntimeScope::new(admitted.grants, admitted.limits)?
-                .with_run_limits(admitted.run_limits)?
+                .with_run_limits(admitted.run_limits, &mut None)?
                 .narrow(scope.grants().clone(), scope.limits())?
-                .with_run_limits(scope.run_limits())?;
+                .with_run_limits(scope.run_limits(), &mut None)?;
         }
         Ok(())
     }

@@ -90,7 +90,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_process::{
-    NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider,
+    NativeProcessAuthority, NativeProcessProvider,
     NativeProcessPublishedVolume, NativeProcessReceipt,
 };
 mod native_capture_bounds;
@@ -121,15 +121,10 @@ pub use default_tools::{
 pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationReceipt,
-    NativePreparationRoot, NativeProcessView, NativePublicationCleanup, NativePublicationFailure,
-    NativePublicationReservationFailure, NativeRecordedPreparation, NativeRootOutputSource,
-    NativeTaskViewDrainReceipt, NativeTaskWorkingView, NativeViewPublicationError,
-    NativeViewPublicationReceipt, NativeVolumeView, copy_native_mapping_with_work,
-    observe_preparation,
+    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationRoot, NativeRecordedPreparation, NativeRootOutputSource,
+    NativeTaskWorkingView, NativeViewPublicationError,
+    NativeVolumeView, observe_preparation,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use recursive::restore_recursive_fork_source_with_native_work;
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,
@@ -403,7 +398,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             let indexed = match io {
                 Some(io) => {
-                    let indexed_path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{metadata_path}"), work))?;
+                    let indexed_path = crate::executor::with_history_io(Some(io), |work| crate::executor::preparation_format(format_args!("/{metadata_path}"), work))?;
                     read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, Some(io))
                         .await?
                 }
@@ -453,7 +448,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Ok(reference);
         }
         let absolute =
-            crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{}", provisional.path()), work))?;
+            crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{}", provisional.path()), work))?;
         let mut mutations = crate::model::vec_with_capacity(6, io)?;
         if let Some((parent, _)) = absolute.rsplit_once('/')
             && !parent.is_empty()
@@ -474,11 +469,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             path: stock_string_copy("/.system/harness-file-metadata", io)?,
         });
         mutations.push(WorkspaceMutation::PutFile {
-            path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{metadata_path}"), work))?,
+            path: crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{metadata_path}"), work))?,
             bytes: metadata_bytes,
         });
         mutations.push(WorkspaceMutation::PutFile {
-            path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{receipt_path}"), work))?,
+            path: crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{receipt_path}"), work))?,
             bytes: receipt_bytes,
         });
         let publication = async {

@@ -1,6 +1,6 @@
 //! Ownership bounds for closed harness DTOs.
 use super::*;
-use crate::contract::{JsonValueSchema as Schema, JsonValueShape};
+use crate::executor::json::{JsonValueSchema as Schema, JsonValueShape};
 use std::mem::size_of;
 
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
@@ -8,7 +8,7 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
         preparation_slot_bytes::<Self>()
     }
     fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
+        crate::executor::json::preparation_serde_diagnostic_label_bytes()
     }
     fn json_value_schema() -> Schema {
         Schema::None
@@ -21,11 +21,11 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
     ) -> Result<u64> {
         let value = if Self::json_value_schema() == Schema::None {
             scratch
-                .checked_add(crate::contract::sdk_json_diagnostic_bytes())
+                .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
                 .ok_or_else(|| decode_allowance_error("preparation codec base overflow", code))?
         } else {
             scratch.max(
-                crate::contract::json_value_decode_owned_bytes(shape)
+                crate::executor::json::json_value_decode_owned_bytes(shape)
                     .map_err(|error| decode_allowance_with_code(error, code))?,
             )
         };
@@ -55,7 +55,7 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
 pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
     fn logical_owned_bytes(&self) -> Result<u64>;
     fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
+        crate::executor::json::preparation_serde_diagnostic_label_bytes()
     }
     fn json_value_schema() -> Schema {
         Schema::None

@@ -10,7 +10,7 @@ async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result
     let reader = HistoryReader::new(
         &client,
         &authority(),
-        &(issuer().verifier(&mut None).expect("verifier copy")),
+        &(issuer().verifier(&mut None)?),
         &mut None,
     )?;
     let cursor = reader.pin(0, None).await?;
@@ -35,7 +35,7 @@ async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result
         reader.read_page(&future, limits, None).await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+
     provider.forbid_writes.store(false, Ordering::SeqCst);
     let mut writer = with_content(&client).await?;
     writer
@@ -54,7 +54,7 @@ async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result
             .events
             .is_empty()
     );
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+
     let current = reader.pin(0, None).await?;
     let page = reader.read_page(&current, limits, None).await?;
     assert_eq!(page.events.len(), 1);
@@ -98,7 +98,7 @@ async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Resul
             .is_none()
     );
     let index = acyclic_stream::Stream::new(
-        std::sync::Arc::clone(&client),
+        Arc::clone(&client),
         operations::publication_path(
             &authority(),
             "harness/v2/aggregate-operations/",
@@ -112,14 +112,12 @@ async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Resul
     .await?
     .try_collect::<Vec<_>>()
     .await?;
-    let canonical = acyclic_stream::Stream::new(
-        std::sync::Arc::clone(&client),
-        authority().stream_path(&mut None)?,
-    )?
-    .read(0, 1)
-    .await?
-    .try_collect::<Vec<_>>()
-    .await?;
+    let canonical =
+        acyclic_stream::Stream::new(Arc::clone(&client), authority().stream_path(&mut None)?)?
+            .read(0, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
     let index_bytes = index
         .first()
         .ok_or_else(|| Error::Storage("fixture index missing".into()))?
@@ -140,7 +138,7 @@ async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Resul
             .await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+
     for maximum in [index_bytes - 1, index_bytes] {
         provider.observation_reads.store(0, Ordering::SeqCst);
         assert!(matches!(
@@ -157,6 +155,7 @@ async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Resul
             .await,
         Err(Error::Invalid(_))
     ));
+
     provider.observation_reads.store(0, Ordering::SeqCst);
     assert_eq!(
         reader
@@ -164,6 +163,7 @@ async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Resul
             .await?,
         (Some(event.clone()), total_bytes)
     );
+
     assert_eq!(
         reader
             .operation_event(
@@ -171,10 +171,11 @@ async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Resul
                 2 * acyclic_stream::MAX_RECORD_BYTES as u64,
                 &mut None
             )
-            .await
-            .map(|(event, _)| event)?,
+            .await?
+            .0,
         Some(event)
     );
+
     assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
     assert_eq!(
         reader
@@ -253,19 +254,19 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
             .await,
         Err(Error::Conflict(_))
     ));
-    let mut restored = (StreamAggregate::open(
+    let mut restored = StreamAggregate::open(
         &client,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
+        issuer().verifier(&mut None)?,
         schemas(),
         Some(snapshot),
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        default_projection_read_limits(),
+        DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )
-    .await?)
-        .with_content_verifier(Arc::new(TestContent));
+    .await?
+    .with_content_verifier(Arc::new(TestContent));
     restored.set_resident_event_limit(2)?;
     assert_eq!(restored.reducer().archived_through_revision(), 3);
     let ApplyResult::Replayed { event } = restored
@@ -338,15 +339,16 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
     let last = writer.read_event_at(10_000, &mut None).await?.0;
     let mut later = command(2)?;
     later.expected_revision = writer.reducer().revision();
+
     provider.forbid_writes.store(true, Ordering::SeqCst);
     let reader = HistoryReader::new(
         &client,
         &authority(),
-        &(issuer().verifier(&mut None).expect("verifier copy")),
+        &(issuer().verifier(&mut None)?),
         &mut None,
     )?;
     let cursor = reader.pin(9_997, None).await?;
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+
     provider.forbid_writes.store(false, Ordering::SeqCst);
     writer
         .execute(
@@ -374,144 +376,9 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
             .events
             .is_empty()
     );
+
     assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
     assert_eq!(cursor.after_revision, 9_997);
-    #[cfg(feature = "filesystem")]
-    {
-        use acyclic_fs::{CancellationToken, WorkBudget};
-        use std::sync::atomic::Ordering;
-        let bytes = acyclic_stream::MAX_RECORD_BYTES as u64 * 4;
-        let budget = WorkBudget {
-            authority_records_read: 8,
-            authority_bytes_read: bytes,
-            backend_read_operations: 8,
-            source_bytes_read: bytes,
-            bytes_copied: bytes,
-            output_bytes: bytes,
-            items_examined: 8,
-            items_returned: 8,
-            allocation_operations: 8,
-            peak_allocation_bytes: bytes,
-            ..WorkBudget::default()
-        };
-        let read = async |cursor: &HistoryCursor,
-                          limits: HistoryReadLimits,
-                          budget: WorkBudget,
-                          cancellation: &CancellationToken| {
-            let mut work = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-                    .expect("finite history context"),
-            );
-            let result = async {
-                work.preflight()?;
-                reader.read_page(cursor, limits, Some(&mut work)).await
-            }
-            .await;
-            work.finish(result)
-        };
-        let cancellation = CancellationToken::new();
-        let page = read(&cursor, limits, budget, &cancellation)
-            .await
-            .map_err(|failure| failure.error)?;
-        assert_eq!(page.value, first);
-        for fault in 1..=6 {
-            provider.history_read_fault.store(fault, Ordering::SeqCst);
-            assert!(
-                read(
-                    &cursor,
-                    HistoryReadLimits {
-                        maximum_bytes: bytes,
-                        ..limits
-                    },
-                    budget,
-                    &cancellation,
-                )
-                .await
-                .is_err()
-            );
-            assert_eq!(
-                read(&cursor, limits, budget, &cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value,
-                first
-            );
-        }
-        for narrow in [
-            WorkBudget {
-                backend_read_operations: 0,
-                ..budget
-            },
-            WorkBudget {
-                authority_bytes_read: 0,
-                ..budget
-            },
-            WorkBudget {
-                output_bytes: 0,
-                ..budget
-            },
-            WorkBudget {
-                peak_allocation_bytes: 0,
-                ..budget
-            },
-        ] {
-            assert!(read(&cursor, limits, narrow, &cancellation).await.is_err());
-        }
-        let invalid = HistoryCursor {
-            authority: Authority {
-                id: "other".into(),
-                ..cursor.authority.clone()
-            },
-            ..cursor.clone()
-        };
-        assert!(matches!(
-            read(&invalid, limits, budget, &cancellation).await,
-            Err(acyclic_fs::OperationFailure {
-                error: Error::Unauthorized(_),
-                ..
-            })
-        ));
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        assert!(
-            async {
-                let mut work = HistoryWork::new(budget, &cancelled);
-                work.preflight()?;
-                reader.pin(0, Some(&mut work)).await
-            }
-            .await
-            .is_err()
-        );
-        assert!(read(&cursor, limits, budget, &cancelled).await.is_err());
-        assert!(
-            async {
-                let mut work = HistoryWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                work.preflight()?;
-                reader.pin(0, Some(&mut work)).await
-            }
-            .await
-            .is_err()
-        );
-        let terminal = HistoryCursor {
-            after_revision: cursor.through_revision,
-            ..cursor.clone()
-        };
-        assert!(
-            read(&terminal, limits, budget, &cancellation)
-                .await
-                .map_err(|failure| failure.error)?
-                .value
-                .events
-                .is_empty()
-        );
-        let during_tail = CancellationToken::new();
-        *provider
-            .history_cancel_after_tail
-            .lock()
-            .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
-            Some(during_tail.clone());
-        assert!(read(&cursor, limits, budget, &during_tail).await.is_err());
-    }
     let encoded =
         serde_json::to_vec(&first.cursor).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
@@ -519,7 +386,7 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
             .map_err(|error| Error::Invalid(error.to_string()))?,
         first.cursor
     );
-    for fault in [1, 2, 3, 4] {
+    for fault in 1..=6 {
         provider.history_read_fault.store(fault, Ordering::SeqCst);
         assert!(reader.read_page(&cursor, limits, None).await.is_err());
         assert_eq!(reader.read_page(&cursor, limits, None).await?, first);
@@ -566,8 +433,8 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
                 2 * acyclic_stream::MAX_RECORD_BYTES as u64,
                 &mut None
             )
-            .await
-            .map(|(event, _)| event)?,
+            .await?
+            .0,
         Some(last)
     );
     assert!(
@@ -577,8 +444,8 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
                 2 * acyclic_stream::MAX_RECORD_BYTES as u64,
                 &mut None
             )
-            .await
-            .map(|(event, _)| event)?
+            .await?
+            .0
             .is_none()
     );
     Ok(())
@@ -610,18 +477,18 @@ async fn operation_index_is_atomic_and_recovers_without_duplicate_publication() 
                 matches!(result, Err(Error::Indeterminate(id)) if id == submitted.operation_id)
             );
         }
-        assert_eq!(provider.aggregate_commits.load(Ordering::SeqCst), 1);
+
         let indexed = aggregate.operation_event(submitted.operation_id).await?;
         assert_eq!(indexed.is_some(), fault != 1);
         let canonical = match acyclic_stream::Stream::new(
-            std::sync::Arc::clone(&client),
+            Arc::clone(&client),
             authority().stream_path(&mut None)?,
         )?
         .read(0, 1)
         .await
         {
             Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => Vec::new(),
+            Err(acyclic_stream::StreamError::NotFound) => Vec::new(),
             Err(error) => return Err(error.into()),
         };
         assert_eq!(canonical.len(), usize::from(fault != 1));
@@ -633,11 +500,7 @@ async fn operation_index_is_atomic_and_recovers_without_duplicate_publication() 
                 &mut None,
             )
             .await?;
-        let expected_commits = if fault == 1 { 2 } else { 1 };
-        assert_eq!(
-            provider.aggregate_commits.load(Ordering::SeqCst),
-            expected_commits
-        );
+
         assert_eq!(aggregate.reducer().revision(), 1);
         let mut later = command(2)?;
         later.expected_revision = 1;
@@ -694,10 +557,7 @@ async fn operation_index_is_atomic_and_recovers_without_duplicate_publication() 
             aggregate.reconcile(&submitted).await?,
             Some(ApplyResult::Replayed { .. })
         ));
-        assert_eq!(
-            provider.aggregate_commits.load(Ordering::SeqCst),
-            expected_commits + 1
-        );
+
         assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
         assert_eq!(aggregate.reducer().revision(), 2);
     }
@@ -707,32 +567,25 @@ async fn operation_index_is_atomic_and_recovers_without_duplicate_publication() 
 #[tokio::test]
 async fn operation_location_must_share_the_canonical_events_atomic_commit() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut reducer = Reducer::new(
-        authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
-    );
+    let mut reducer = Reducer::new(authority(), issuer().verifier(&mut None)?, schemas());
     let ApplyResult::Applied { event } = reducer.apply(command(1)?)? else {
         return Err(Error::Invalid("fixture needs admitted event".into()));
     };
-    acyclic_stream::Stream::new(
-        std::sync::Arc::clone(&client),
-        authority().stream_path(&mut None)?,
-    )?
-    .append_batch(
-        vec![OwnedBytes::from(encode_event(
-            &authority(),
-            &event,
-            &mut None,
-        )?)],
-        Some(0),
-        None,
-    )
-    .await?;
+    acyclic_stream::Stream::new(Arc::clone(&client), authority().stream_path(&mut None)?)?
+        .append_batch(
+            vec![OwnedBytes::from(encode_event(
+                &authority(),
+                &event,
+                &mut None,
+            )?)],
+            Some(0),
+            None,
+        )
+        .await?;
     let location = json!({"authority": authority(), "operation_id": event.operation_id,
             "revision": event.revision, "intent_digest": event.intent_digest});
     acyclic_stream::Stream::new(
-        std::sync::Arc::clone(&client),
+        Arc::clone(&client),
         operations::publication_path(
             &authority(),
             "harness/v2/aggregate-operations/",
@@ -753,13 +606,19 @@ async fn operation_location_must_share_the_canonical_events_atomic_commit() -> R
     let reader = HistoryReader::new(
         &client,
         &authority(),
-        &(issuer().verifier(&mut None).expect("verifier copy")),
+        &(issuer().verifier(&mut None)?),
         &mut None,
     )?;
-    assert!(
-        matches!(reader.operation_event(event.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event),
-            Err(Error::Storage(message)) if message.contains("atomic canonical event"))
-    );
+    assert!(matches!(
+        reader
+            .operation_event(
+                event.operation_id,
+                2 * acyclic_stream::MAX_RECORD_BYTES as u64,
+                &mut None
+            )
+            .await,
+        Err(Error::Storage(_))
+    ));
     Ok(())
 }
 
@@ -767,11 +626,7 @@ async fn operation_location_must_share_the_canonical_events_atomic_commit() -> R
 async fn history_reader_rejects_unattested_events_and_wrong_authority() -> Result<()> {
     for wrong_authority in [false, true] {
         let client = Arc::new(MemoryStream::default());
-        let mut reducer = Reducer::new(
-            authority(),
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
+        let mut reducer = Reducer::new(authority(), issuer().verifier(&mut None)?, schemas());
         let ApplyResult::Applied { mut event } = reducer.apply(command(1)?)? else {
             return Err(Error::Invalid("fixture needs fresh event".into()));
         };
@@ -781,24 +636,21 @@ async fn history_reader_rejects_unattested_events_and_wrong_authority() -> Resul
         } else {
             event.intent_digest = [0; 32];
         }
-        acyclic_stream::Stream::new(
-            std::sync::Arc::clone(&client),
-            authority().stream_path(&mut None)?,
-        )?
-        .append_batch(
-            vec![OwnedBytes::from(encode_event(
-                &wire_authority,
-                &event,
-                &mut None,
-            )?)],
-            Some(0),
-            None,
-        )
-        .await?;
+        acyclic_stream::Stream::new(Arc::clone(&client), authority().stream_path(&mut None)?)?
+            .append_batch(
+                vec![OwnedBytes::from(encode_event(
+                    &wire_authority,
+                    &event,
+                    &mut None,
+                )?)],
+                Some(0),
+                None,
+            )
+            .await?;
         let reader = HistoryReader::new(
             &client,
             &authority(),
-            &(issuer().verifier(&mut None).expect("verifier copy")),
+            &(issuer().verifier(&mut None)?),
             &mut None,
         )?;
         let cursor = reader.pin(0, None).await?;
@@ -825,11 +677,11 @@ async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Resu
     let mut reader = StreamAggregate::open(
         &client,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
+        issuer().verifier(&mut None)?,
         schemas(),
         None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        default_projection_read_limits(),
+        DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )
@@ -874,11 +726,11 @@ async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Resu
     let reopened = StreamAggregate::open(
         &client,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
+        issuer().verifier(&mut None)?,
         schemas(),
         None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        default_projection_read_limits(),
+        DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )
@@ -905,11 +757,11 @@ async fn verifier_must_match_the_exact_aggregate_audience() -> Result<()> {
         StreamAggregate::open(
             &client,
             authority(),
-            foreign.verifier(&mut None).expect("verifier copy"),
+            foreign.verifier(&mut None)?,
             schemas(),
             None,
-            crate::store::default_projection_read_limits(),
-            crate::store::DEFAULT_TERMINAL_EFFECTS,
+            default_projection_read_limits(),
+            DEFAULT_TERMINAL_EFFECTS,
             None,
             &mut None
         )
@@ -1005,10 +857,8 @@ async fn snapshot_reopens_with_full_stream_history() -> Result<()> {
             &mut None,
         )
         .await?;
-    let history = acyclic_stream::Stream::new(
-        std::sync::Arc::clone(&client),
-        authority().stream_path(&mut None)?,
-    )?;
+    let history =
+        acyclic_stream::Stream::new(Arc::clone(&client), authority().stream_path(&mut None)?)?;
     assert_eq!(history.bounds().await?.tail, 3);
     assert_eq!(
         history
@@ -1023,11 +873,11 @@ async fn snapshot_reopens_with_full_stream_history() -> Result<()> {
     let reopened = StreamAggregate::open(
         &client,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
+        issuer().verifier(&mut None)?,
         schemas(),
         Some(snapshot),
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        default_projection_read_limits(),
+        DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )

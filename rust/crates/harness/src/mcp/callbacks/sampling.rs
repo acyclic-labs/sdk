@@ -26,7 +26,9 @@ pub(super) async fn sampling_messages(
     max_tokens: u32,
     context: &ToolContext,
     operation: OperationId,
-    policy: &McpSamplingPolicy,
+    continuation: &ModelContent,
+    image: Option<&NativeMediaPolicy>,
+    audio: Option<&NativeMediaPolicy>,
 ) -> Result<(ModelContent, Vec<ModelMessage>)> {
     if max_tokens == 0 {
         return Err(Error::Invalid("MCP sampling token bound is zero".into()));
@@ -68,12 +70,7 @@ pub(super) async fn sampling_messages(
                         .into(),
                 },
                 Some(kind @ ("image" | "audio")) => {
-                    let media = if kind == "image" {
-                        &policy.image
-                    } else {
-                        &policy.audio
-                    };
-                    let media = media.as_ref().ok_or_else(|| {
+                    let media = if kind == "image" { image } else { audio }.ok_or_else(|| {
                         Error::Unsupported(
                             "MCP sampling media was not selected by this host".into(),
                         )
@@ -107,7 +104,7 @@ pub(super) async fn sampling_messages(
                         .get("mimeType")
                         .and_then(Value::as_str)
                         .ok_or_else(|| Error::Invalid("MCP media MIME type absent".into()))?;
-                    let digest = crate::contract::canonical_json_digest(
+                    let digest = crate::executor::json::canonical_json_digest(
                         &(
                             "harness/mcp-sampling-media/v1",
                             operation,
@@ -123,14 +120,7 @@ pub(super) async fn sampling_messages(
                     }
                     let path = format!("mcp/{operation}/sampling/{message_index}-{block_index}");
                     let file = context
-                        .stage_file_once(
-                            OperationId::from_bytes(identity),
-                            &path,
-                            &bytes,
-                            mime,
-                            "MCP sampling media",
-                        )
-                        .await?;
+                        .stage_file_once(OperationId::from_bytes(identity), &path, &bytes, mime, "MCP sampling media", None).await.map(|(file, _)| file)?;
                     media.validate(&file, context.scope().limits(), &mut None)?;
                     ModelContentPart::File {
                         file,
@@ -159,6 +149,6 @@ pub(super) async fn sampling_messages(
             .ok_or_else(|| Error::Invalid("MCP sampling input disappeared".into()))?;
         Ok((last.content, messages))
     } else {
-        Ok((policy.continuation.clone(), messages))
+        Ok((continuation.clone(), messages))
     }
 }

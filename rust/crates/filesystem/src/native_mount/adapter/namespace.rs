@@ -57,13 +57,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut inputs = InputBuffers::new(&mut carrier)?;
         self.namespace_inputs(path, &mut inputs)
     }
-
-    fn logical_name(&self, bytes: &[u8]) -> Result<LogicalName, MountSourceError> {
-        let mut work = crate::demand::DemandWork::new(boundary_budget(), &self.cancellation);
-        let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
-        let mut inputs = InputBuffers::new(&mut carrier)?;
-        native_name(bytes, self.profile, self.limits, &mut inputs)
-    }
 }
 fn profile_is_native(profile: FilesystemProfile) -> bool {
     match std::env::consts::OS {

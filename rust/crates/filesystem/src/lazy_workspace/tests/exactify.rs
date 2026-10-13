@@ -174,8 +174,8 @@ async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
     {
         let staged = tempfile::tempdir().unwrap();
         exact
-            .materialize_path(
-                "/hot",
+            .materialize(
+                std::iter::once("/hot"),
                 &crate::MaterializeOptions::native(staged.path()),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),

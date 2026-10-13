@@ -59,13 +59,13 @@ async fn read_record<P: StreamProvider>(
             Ok(bounds) => bounds,
             Err(error)
                 if matches!(
-                    crate::distributed::sdk_source(&error),
+                    &error,
                     acyclic_stream::StreamError::NotFound
                 ) =>
             {
                 return Ok(None);
             }
-            Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
+            Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &observer)),
         };
     let Some(sequence) = bounds.tail.checked_sub(1) else {
         return Ok(None);
@@ -74,7 +74,7 @@ async fn read_record<P: StreamProvider>(
     let mut records =
         crate::store::operations::read_records(client, stream.0.path(), sequence, 1, &mut observer)
             .await?
-            .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
+            .map_err(|error| crate::store::operations::stream_error_with_work(error, &observer))?;
     let record = records.next(&mut observer).await?.ok_or_else(invalid)?;
     if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
         return Err(invalid());
@@ -84,7 +84,7 @@ async fn read_record<P: StreamProvider>(
         &record.value,
         crate::wire::ErrorCode::Storage,
     )?)?;
-    custody.substitute(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
+    custody.resize(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
     if record.sequence != sequence
         || journal.revision != bounds.tail
         || !journal.is_valid_for(operation)
@@ -179,7 +179,7 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
             || !replacement
                 .custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(&self.work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(&self.work))
         {
             return Err(invalid());
         }

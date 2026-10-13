@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let mut source = self.mutation_path(source, &mut accounting, cancellation)?;
+            let source = self.mutation_path(source, &mut accounting, cancellation)?;
             let destination = self.mutation_path(destination, &mut accounting, cancellation)?;
             let record = self
                 .checkout

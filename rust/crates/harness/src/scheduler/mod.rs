@@ -89,7 +89,7 @@ impl Scheduler {
 fn observe(work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
     Ok(())
 }

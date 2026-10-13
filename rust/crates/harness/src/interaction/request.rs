@@ -157,7 +157,7 @@ impl Interaction {
                 let mut ids = BTreeSet::new();
                 for option in options {
                     if let Some(observer) = custody.work().as_deref_mut() {
-                        observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+                        observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                             bytes: 0,
                             items: 1,
                         })?;
@@ -225,7 +225,7 @@ impl Interaction {
                     ..
                 },
                 InteractionResponse::Form { value },
-            ) => crate::contract::validate_json_schema_value(response_schema, value, "interaction response", work),
+            ) => crate::executor::validate_json_schema_value(response_schema, value, "interaction response", work),
             (
                 Self::Choice {
                     options,
@@ -250,7 +250,7 @@ impl Interaction {
                 };
                 let mut custody = crate::wire_codec::CodecQuota::new(work, slots)?;
                 if let Some(observer) = custody.work().as_deref_mut() {
-                    observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+                    observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                         bytes: 0,
                         items: option_ids.len() as u64,
                     })?;
@@ -285,7 +285,7 @@ fn validate_schema(
     schema: &Value,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    crate::contract::compile_json_schema(schema, "interaction", work).map(drop)
+    crate::executor::compile_json_schema(schema, "interaction", work).map(drop)
 }
 
 fn nonempty(

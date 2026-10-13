@@ -128,7 +128,6 @@ fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
     CheckoutState {
         base_generation_root: checkout.root.base(),
         generation_root: checkout.generation_root,
-        base_file_table: checkout.base_root.file_table,
         base_root: checkout.base_root.clone(),
         root: checkout.root.clone(),
         authority_head: checkout.authority_head,
@@ -156,7 +155,6 @@ fn nfc_config() -> VolumeConfig {
 struct CheckoutState {
     base_generation_root: ObjectId,
     generation_root: ObjectId,
-    base_file_table: ObjectId,
     base_root: GenerationRoot,
     root: GenerationRoot,
     authority_head: Option<Head>,

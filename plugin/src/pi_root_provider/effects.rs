@@ -26,7 +26,7 @@ impl PiRootProvider {
             ));
         }
         self.execution_owner()?
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         if let Some(observation) = self
             .observe_result_with_native_work(effect, request.attempt_id, &original.0, false, work)
@@ -53,7 +53,7 @@ impl PiRootProvider {
         self.check_native_ledger(work)?;
         let mut state = self.state.lock().await;
         self.execution_owner()?
-            .verify(true, &mut Some(&mut native_work_io(work)?))
+            .verify(true, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let original = self
             .authenticate_with_native_work(attempt, false, work)
@@ -73,7 +73,7 @@ impl PiRootProvider {
         }
         match self
             .execution_owner()?
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await
         {
             Ok(()) => {
@@ -250,31 +250,36 @@ impl PiRootProvider {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
         let verifier = self.owner.effect_verifier_with_native_work(work)?;
-        let reader = HistoryReader::new_with_native_work(
+        let mut reader_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let reader = HistoryReader::new(
             &self.stream,
             verifier.0.audience(),
             &verifier.0,
-            work,
+            &mut Some(&mut reader_io),
         )?;
-        let cursor = reader.0.pin_with_native_work(0, work).await?;
-        let (value, custody) = reader
-            .0
-            .effect_with_native_work(
-                &cursor.0,
+        let cursor = reader.pin(0, Some(&mut reader_io)).await?;
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let value = reader
+            .effect(
+                &cursor,
                 effect,
                 HistoryReadLimits {
                     maximum_events: self.owner.policy().limits.context_messages,
                     maximum_bytes: self.maximum(),
                 },
-                work,
+                Some(&mut io),
             )
             .await?;
         let state = (
             value.ok_or(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "original root effect is absent",
-            })?,
-            custody,
+            })?.0,
+            io.into_custody()?,
         );
         let plan = &self.preparation.plan;
         if state.0.provider != ROOT_ALLOCATION_PROVIDER
@@ -355,7 +360,7 @@ impl PiRootProvider {
         acyclic_harness::effect_host::task_effect_id(
             self.owner.policy().root_task,
             self.preparation.command.operation_id,
-            &mut Some(&mut native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )
     }
 

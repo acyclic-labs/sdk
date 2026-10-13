@@ -118,7 +118,7 @@ pub(in crate::core) fn effect_request_digest_with_work(
     request: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(
+    crate::executor::json::canonical_json_digest(
         &(provider, guarantee, effect_kind, request),
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,

@@ -106,7 +106,7 @@ mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_error::{NativeObjectsCause, NativeObjectsError, NativeObjectsSharedFailure};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native_error::{NativeTransportErrors, native_preparation_error};
+pub(crate) use native_error::native_preparation_error;
 pub use object::{BodyStream, Download, Object, UploadBody};
 pub use ownership::Guarded;
 #[cfg(not(target_arch = "wasm32"))]

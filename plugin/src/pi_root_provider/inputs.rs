@@ -6,7 +6,7 @@ fn pi_input_write_grant_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(ContentGrant, NativeAllocation)> {
     let authority = owner.authority(work)?;
-    let mut io = acyclic_harness::store::native_work_io(work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let grant = ContentGrant::verify(
         &authority.verifier,
         &authority.signed,
@@ -15,7 +15,7 @@ fn pi_input_write_grant_with_native_work(
         owner.policy().maximum_payload_bytes,
         &mut Some(&mut io),
     )?;
-    Ok((grant, io.into_custody()))
+    Ok((grant, io.into_custody()?))
 }
 
 fn validate_pi_input_media(
@@ -334,7 +334,7 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
             reason: "root artifact exceeds original header bounds or media type",
         });
     }
-    let bytes = context.read_file_with_native_work(reference, work).await?;
+    let bytes = context.read_file(reference, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)).await?;
     let maximum_owned = std::mem::size_of::<T>() as u64;
     let decoded = guarded_pi_decode(
         bytes.as_ref(),

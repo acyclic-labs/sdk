@@ -18,19 +18,6 @@ impl<A, O> Clone for Generation<A, O> {
 }
 
 impl<A, O> Generation<A, O> {
-    pub(crate) fn publication_retained_bytes(&self) -> u64 {
-        self.publication_closure.as_ref().map_or(0, |slot| {
-            let publication = slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::size_of::<std::sync::Mutex<Option<crate::facade::VerifiedPublication<A, O>>>>(
-            ) as u64
-                + publication
-                    .as_ref()
-                    .map_or(0, crate::facade::VerifiedPublication::retained_bytes)
-        })
-    }
-
     /// Content-addressed generation identity.
     pub const fn id(&self) -> GenerationId {
         self.id

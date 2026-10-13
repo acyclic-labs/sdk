@@ -1,3 +1,4 @@
+//! Aggregate identity and host-issued authorization.
 use super::*;
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -89,7 +90,6 @@ impl Authority {
     }
 }
 
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 /// Immutable authorization scope captured at admission.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,12 +99,10 @@ pub struct Scope {
     /// Effective capabilities after policy intersection.
     pub(in crate::core) capabilities: Capabilities,
     /// Host-attested agent on whose behalf this operation runs, if any.
-    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub(in crate::core) agent: Option<AgentId>,
     /// Trusted issuer identity.
     pub(in crate::core) issuer: String,
     /// Parent proof, present for attenuated scopes.
-    #[cfg_attr(feature = "wasm", tsify(type = "number[] | null"))]
     pub(in crate::core) parent_proof: Option<[u8; 32]>,
     /// Keyed proof over the complete grant.
     pub(in crate::core) proof: [u8; 32],
@@ -267,9 +265,7 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         capabilities: Capabilities,
     ) -> Result<Scope> {
-        self.verifier(&mut None)
-            .expect("verifier copy")
-            .verify(parent, &mut None)?;
+        self.verifier(&mut None)?.verify(parent, &mut None)?;
         if !capabilities.is_subset_of(&parent.capabilities) {
             return Err(Error::Unauthorized(
                 "child scope cannot widen ancestor capabilities".into(),
@@ -284,7 +280,7 @@ impl AuthorityIssuer {
         )
     }
 
-    /// Delegates one pinned private file to another agent without a fork or directory-wide grant.
+    /// Delegates one pinned private file to another agent without a fork or
     pub fn delegate_private_file_read(
         &self,
         owner_scope: &Scope,
@@ -333,9 +329,7 @@ impl AuthorityIssuer {
         owner_scope: &Scope,
         volume: &crate::conversation::VolumeRef,
     ) -> Result<()> {
-        self.verifier(&mut None)
-            .expect("verifier copy")
-            .verify(owner_scope, &mut None)?;
+        self.verifier(&mut None)?.verify(owner_scope, &mut None)?;
         volume.validate(&mut None)?;
         if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
             || !owner_scope
@@ -538,7 +532,7 @@ impl AuthorityVerifier {
     ) -> Result<[u8; 32]> {
         self.verify_audience(&seed.parent, work)?;
         self.canonical_proof(
-            b"harness/v1/fork-history-witness\0",
+            b"harness/v2/fork-history-witness\0",
             &(
                 (
                     &self.id,
@@ -551,6 +545,9 @@ impl AuthorityVerifier {
                     &seed.resources,
                     &seed.omissions,
                     &seed.child_private_volume,
+                    &seed.authorized_source,
+                    &seed.child_result_volume,
+                    &seed.child_result_generation,
                 ),
                 (
                     &seed.child_private_generation,

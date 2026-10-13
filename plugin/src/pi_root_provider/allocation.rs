@@ -43,7 +43,7 @@ impl PiRootProvider {
         }
         for (key, path) in paths {
             self.execution_owner()?
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             self.require_native_creation()?;
             let physical = self
@@ -90,7 +90,7 @@ impl PiRootProvider {
         self.require_native_creation()?;
         let owner = self.execution_owner()?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         self.bind_conversation_with_native_work(effect, attempt, work)
             .await?;
@@ -124,7 +124,7 @@ impl PiRootProvider {
                 let input = &inputs.0[key];
                 self.validate_attachment(input)?;
                 owner
-                    .verify(false, &mut Some(&mut native_work_io(work)?))
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                     .await?;
                 self.require_native_creation()?;
                 let identity = guard_root_preparation_source_with_native_work(
@@ -186,41 +186,58 @@ impl PiRootProvider {
                     ));
                 }
                 owner
-                    .verify(false, &mut Some(&mut native_work_io(work)?))
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                     .await?;
                 self.require_native_creation()?;
                 let workspace = match existing_workspace {
                     Some(workspace) => {
-                        LocalLazyWorkspace::resume_root_observation_with_native_work(
+                        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        };
+                        let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+                            &self.store,
+                            workspace.id(),
+                            &mut accounting,
+                        )
+                        .await
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
+                        .ok_or_else(|| crate::pi_fork_host::native_lazy_error(
+                            acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                        ))?;
+                        original.validate_root_binding(workspace.id(), input.0)
+                            .map_err(crate::pi_fork_host::native_lazy_error)?;
+                        LocalLazyWorkspace::open(
                             workspace,
                             Arc::clone(&physical.source),
                             self.store.clone(),
-                            input.0,
-                            work,
+                            &mut accounting,
                         )
                         .await
-                        .map_err(|(source, custody)| Error::NativeSource { source, custody })?
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
                     }
                     None => {
                         let operation =
                             self.creation_operation_with_native_work(effect, attempt, key, work)?;
                         let name = {
-                            let mut io = native_work_io(work)?;
+                            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                             let value = volume.storage_name(&mut Some(&mut io))?;
-                            (value, io.into_custody())
+                            (value, io.into_custody()?)
                         };
-                        acyclic_fs::LazyWorkspace::attach_with_operation_with_native_work(
+                        acyclic_fs::LazyWorkspace::attach(
                             &self.fs,
                             &name.0,
                             Arc::clone(&physical.source),
                             self.store.clone(),
                             VolumeConfig::native(Lifecycle::Durable),
                             operation,
-                            work,
-                            work.cancellation(),
+                            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                                work,
+                                cancellation: work.cancellation(),
+                            },
                         )
                         .await
-                        .map_err(|(source, custody)| Error::NativeSource { source, custody })?
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
                         .0
                     }
                 };
@@ -231,7 +248,10 @@ impl PiRootProvider {
                     acyclic_fs::WorkCounters::UNCHARGED,
                 )?;
                 slot.absorb(&mut owned_key.1)?;
-                let workspace = workspace.into_arc_with_native_work(work)?;
+                let workspace = workspace.into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                })?;
                 state.handles.insert(
                     owned_key.0,
                     PiRootHandle {
@@ -245,14 +265,10 @@ impl PiRootProvider {
             }
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let volume = &self.preparation.request.binding.scratch.volume;
-        owner.require_volume_grant(
-            volume,
-            VolumeOperation::Write,
-            &mut Some(&mut native_work_io(work)?),
-        )?;
+        owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
         if self
             .creation_with_native_work(
                 effect,
@@ -266,15 +282,15 @@ impl PiRootProvider {
             .is_none()
         {
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             self.require_native_creation()?;
             let operation =
                 self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
             let name = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 let value = volume.storage_name(&mut Some(&mut io))?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             self.fs
                 .create_workspace_with_operation_with_native_work(
@@ -290,7 +306,7 @@ impl PiRootProvider {
         #[cfg(test)]
         self.test_fault_native("before-result-stage")?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let observation = self
             .observe_result_with_native_work(effect, attempt, original, true, work)

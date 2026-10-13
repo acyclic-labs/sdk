@@ -1,5 +1,3 @@
-use super::*;
-
 /// Customer-visible sparse representation class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceExtentKind {

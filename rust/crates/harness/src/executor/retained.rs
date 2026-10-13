@@ -53,7 +53,7 @@ pub(crate) async fn completed_tool_projection(
     let result = retain_preparation(load_json::<ToolResult>(journal, result, io).await?);
     let projection = retain_preparation(load_json::<Value>(journal, projection, io).await?);
     crate::executor::with_history_io(io, |work| {
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.output_schema,
             &result.value,
             "tool output",

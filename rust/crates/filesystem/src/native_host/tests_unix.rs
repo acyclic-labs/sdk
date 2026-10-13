@@ -94,10 +94,19 @@ fn held_special_metadata_rejects_intermediate_symlink_escape() -> std::io::Resul
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
     symlink(&outside_path, root_path.join("pivot"))?;
     let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    #[cfg(target_os = "linux")]
     assert!(
-        root.set_permissions_without_open(Path::new("pivot/target"), 0o600, &mut ordinary_work())
-            .map_err(ordinary_error)
+        root.open_linux_metadata_target(Path::new("pivot/target"), &mut ordinary_work())
             .is_err()
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        open_macos_metadata_target(
+            &root.directory,
+            Path::new("pivot/target"),
+            &mut ordinary_work()
+        )
+        .is_err()
     );
     assert!(
         root.create_fifo_held(Path::new("pivot/created"), 0o600, &mut ordinary_work())
@@ -158,7 +167,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
             },
             &mut work
         ),
-        Err(crate::DemandError::LinuxMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert_eq!(
         std::fs::metadata(&moved)?.permissions().mode() & 0o7777,

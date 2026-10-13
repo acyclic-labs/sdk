@@ -16,7 +16,7 @@ pub struct FilesystemRootBootstrapAllocation<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) publication_lease: Option<Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) witness: Arc<crate::durable_host::RootBootstrapBindingWitness>,
+    pub(crate) witness: Arc<(crate::store::VerifiedRootBinding, Option<crate::runtime::NativeCustody>)>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) _custody: acyclic_fs::NativeAllocation,
 }
@@ -81,8 +81,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             owner.authenticate_root_bootstrap_creator_with_native_work(&creator, work).await?;
             drop(creator);
             drop(creator_custody);
-            let witness = owner.root_bootstrap_binding_witness_with_native_work(work).await?;
-            let root = witness.binding();
+            let witness = owner.authenticated_root_binding_with_native_work(work).await?;
+            let root = &witness.0;
             let original_custody;
             let (original_root, custody) = owner.original_root_admission_with_native_work(work).await?;
             original_custody = custody;
@@ -143,7 +143,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             hex::encode_to_slice(root.original_task().into_bytes(), &mut key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity encoding failed" })?;
             let suffix = std::str::from_utf8(&key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity is not ASCII" })?;
             let create = IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work|
-                crate::contract::preparation_format(format_args!("root-bootstrap-journal:{suffix}"), work))?)?;
+                crate::executor::preparation_format(format_args!("root-bootstrap-journal:{suffix}"), work))?)?;
             let lifecycle = if self.host.filesystem.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
             } else {
@@ -197,7 +197,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             } else {
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
                 let key = IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work|
-                    crate::contract::preparation_format(format_args!("root-bootstrap-claim:{suffix}"), work))?)?;
+                    crate::executor::preparation_format(format_args!("root-bootstrap-claim:{suffix}"), work))?)?;
                 let path = crate::executor::stock_string_copy("/root-bootstrap.json", Some(&io))?;
                 let mutations = [WorkspaceMutation::PutFile { path, bytes: record }];
                 let outcome = bounded_io::apply_generation(&self.host, &journal, Some(&observed.generation),
@@ -233,7 +233,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )?;
             let snapshot = if let Some(snapshot) = native_snapshot {
                 let remaining = io.remaining()?;
-                let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
+                let value = crate::executor::json::json_value_bounded(&snapshot, crate::executor::json::JsonBounds {
                     maximum_bytes: remaining.bytes_encoded, maximum_items: remaining.items_examined, maximum_depth: 32,
                 }, Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge, true))?;
                 io.release(std::mem::size_of::<serde_json::Value>() as u64)?;
@@ -294,7 +294,7 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn record(&self) -> impl Serialize + '_ {
-        let root = self.witness.binding();
+        let root = &self.witness.0;
         let selected = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
             self.request
                 .generation

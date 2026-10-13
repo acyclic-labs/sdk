@@ -124,24 +124,10 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/harness_descriptor.bin"));
 
 pub use bundle::{HarnessBuilder, HarnessBundle as Harness};
-pub use contract::{
-    Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
-    COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, ConversationId,
-    EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection,
-    OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
-    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
-    canonical_json_bytes_bounded, json_bytes_bounded,
-    json_from_slice_bounded, json_value_bounded, json_value_decode_owned_bytes,
-    sdk_json_diagnostic_bytes,
-    json_owned_value_conversion_additional_bytes, json_typed_diagnostic_owned_bytes,
-    preparation_serde_diagnostic_label_bytes,
-    is_valid_component_label, resolve_policies, resolve_policy_layers,
-};
+pub use contract::{Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT, COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, ConversationId, EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection, OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId, is_valid_component_label, resolve_policies, resolve_policy_layers};
+pub use crate::executor::json::{JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, canonical_json_bytes_bounded, json_bytes_bounded, json_from_slice_bounded, json_value_bounded, json_value_decode_owned_bytes, sdk_json_diagnostic_bytes, json_owned_value_conversion_additional_bytes, json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use contract::{
-     
-    json_from_value_bounded,
-};
+pub use crate::executor::json::{json_from_value_bounded};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 pub use extension::{

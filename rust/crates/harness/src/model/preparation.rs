@@ -1,30 +1,19 @@
 use super::*;
 use crate::{
     core::{
-        copy_boxed, copy_configuration, copy_file, copy_reference, copy_text, copy_value,
+        copy_boxed, copy_configuration, copy_reference, copy_text, copy_value,
         copy_vector,
     },
     wire_codec::CodecQuota,
 };
 
 #[cfg(feature = "filesystem")]
-pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
-    crate::contract::preparation_serde_diagnostic_label_bytes()
-        + concat!(
-            "ModelPrefix",
-            "version",
-            "parent",
-            "message_digest",
-            "total_messages",
-            "messages"
-        )
-        .len() as u64
-        + 6 * 4
-}
+pub(crate) const MODEL_DIAGNOSTIC_LABEL_BYTES: u64 =
+    crate::executor::json::preparation_serde_diagnostic_label_bytes() + 84;
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ModelPrefix {
     fn diagnostic_label_bytes() -> u64 {
-        model_serde_diagnostic_label_bytes()
+        MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
@@ -33,27 +22,27 @@ impl crate::filesystem::PreparationRecord for ModelPrefix {
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 {
-        model_serde_diagnostic_label_bytes()
+        MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
             .max(<crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
             .max(std::mem::size_of::<Self>() as u64)
     }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ToolResultContent
     }
 }
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 {
-        model_serde_diagnostic_label_bytes()
+        MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.payload_bytes()
     }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ToolResultContent
     }
 }
 
@@ -63,24 +52,14 @@ pub(crate) fn vec_with_capacity<T>(capacity: usize, io: Option<&PreparationIo>) 
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            if bytes == 0 {
-                work.remaining()?;
-                return Ok(values);
-            }
-            let mut custody = work.claim(
-                bytes,
-                u64::from(bytes != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )?;
-            values
-                .try_reserve_exact(capacity)
-                .map_err(Error::Allocation)?;
-            let completed =
-                custody.reconcile_capacity(slots(values.capacity(), std::mem::size_of::<T>())?);
-            io.absorb_native_custody(custody)?;
-            completed?;
-            return Ok(values);
+        if let Some(original) = io.original_native_work() {
+            return with_history_io(Some(io), |work| {
+                let mut quota = CodecQuota::new(work, 0)?;
+                let values = crate::core::reserve_copy_vector(capacity, &mut quota)?;
+                original.remaining()?;
+                quota.transfer();
+                Ok(values)
+            });
         }
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
@@ -115,7 +94,7 @@ pub(crate) fn charge_items(io: Option<&PreparationIo>, items: u64) -> Result<()>
 }
 pub(super) fn history_step(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {
     if let Some(work) = work.as_deref_mut() {
-        work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items })?;
+        work.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items })?;
     }
     Ok(())
 }
@@ -144,14 +123,14 @@ fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn History
         let maximum_items = observer.remaining()?.items_examined;
         #[cfg(not(feature = "filesystem"))]
         let maximum_items = u64::MAX;
-        crate::contract::json_owned_value_shape_bounded(
+        crate::executor::json::json_owned_value_shape_bounded(
             value,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: maximum,
                 maximum_items,
                 maximum_depth: 256,
             },
-            crate::contract::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::None,
             &mut |next| observer.codec_charge(next),
         )?;
     }
@@ -163,7 +142,7 @@ pub(super) fn value_bound(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     inspect_value(value, maximum, work)?;
-    crate::contract::json_byte_length(value, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(value, maximum, work).map(|_| ())
 }
 pub(super) fn result_bound(
     content: &ToolResultContent,
@@ -196,7 +175,7 @@ pub(super) fn result_bound(
             }
         }
     }
-    crate::contract::json_byte_length(content, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(content, maximum, work).map(|_| ())
 }
 
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {
@@ -287,7 +266,7 @@ impl ToolResultContent {
                             text: copy_text(text, quota)?,
                         },
                         ModelDataPart::File { file, policy } => ModelDataPart::File {
-                            file: copy_file(file, quota)?,
+                            file: file.clone_in_quota(quota)?,
                             policy: policy.copy_fields(quota)?,
                         },
                     })
@@ -304,7 +283,7 @@ impl ModelContentPart {
                 text: copy_text(text, quota)?,
             },
             Self::File { file, policy } => Self::File {
-                file: copy_file(file, quota)?,
+                file: file.clone_in_quota(quota)?,
                 policy: policy.copy_fields(quota)?,
             },
             Self::ToolCall {

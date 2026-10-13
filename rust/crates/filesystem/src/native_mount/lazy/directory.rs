@@ -14,7 +14,7 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let (text, _allocation) = self.path(path, Some(work))?;
+        let (text, _allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
@@ -96,7 +96,7 @@ where
                             .map_err(MountSourceError::NativeWork)?;
                     }
                     let (child, _allocation) = copy_path(path.components(), Some(&name), work)?;
-                    let (child_text, _text_allocation) = self.path(&child, Some(work))?;
+                    let (child_text, _text_allocation) = self.path(&child, work)?;
                     let (lookup, pin) = if let Some(node) = entry.source {
                         let (lookup, _, _allocation) = self
                             .lazy
@@ -117,17 +117,15 @@ where
                         let Some(lookup) = lookup else {
                             continue;
                         };
-                        self.project_unauthored(&child_text, lookup, Some(work))
-                            .await?
+                        self.project_unauthored(&child_text, lookup, work).await?
                     } else {
-                        match self.resolve(&child, &child_text, owner, Some(work)).await? {
+                        match self.resolve(&child, &child_text, owner, work).await? {
                             Resolution::Absent => continue,
                             Resolution::Authored(lookup) => {
-                                (self.project_authored(lookup, Some(work)).await?, None)
+                                (self.project_authored(lookup, work).await?, None)
                             }
                             Resolution::Unauthored(lookup, _allocation) => {
-                                self.project_unauthored(&child_text, lookup, Some(work))
-                                    .await?
+                                self.project_unauthored(&child_text, lookup, work).await?
                             }
                         }
                     };

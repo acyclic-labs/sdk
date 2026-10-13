@@ -97,7 +97,8 @@ async fn b09_inbox_rejects_hostile_envelopes() -> Result<()> {
     f.host
         .send(TaskId::from_bytes([1; 16]), recipient, message, payload)
         .await?;
-    let mailbox = f.host.mailbox(recipient)?;
+    let mailbox =
+        acyclic_stream::Stream::new(f.stream.clone(), format!("harness/v2/mail/{recipient}"))?;
     let records = mailbox.read(0, 1).await?.try_collect::<Vec<_>>().await?;
     let original: Value = crate::contract::json_from_slice(&records[0].value)
         .map_err(|error| Error::Invalid(error.to_string()))?;

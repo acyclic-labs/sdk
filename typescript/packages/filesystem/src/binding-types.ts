@@ -56,13 +56,9 @@ type WasmTypedClass<Base, Args extends object = {}, AsyncResults extends object 
 }, keyof Properties> & Properties & (Exclude<keyof Args | keyof AsyncResults | keyof SyncResults | keyof Properties, keyof Base> extends never
   ? unknown : { readonly __unknownGeneratedWasmKeys__: Exclude<keyof Args | keyof AsyncResults | keyof SyncResults | keyof Properties, keyof Base> });
 
-export type WasmRawMergeConflict = WasmBinding.MergeConflictResult;
-
 export type WasmRawObjectCacheStats = { readonly [Key in keyof ObjectCacheStats]: string };
 
 export type WasmImportManifest = Pick<GenerationExportManifest, "manifestBytes" | "objects">;
-
-export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
 
 export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
   listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
@@ -77,8 +73,6 @@ export type WasmRawChangeSet = WasmTypedClass<WasmBinding.BrowserChangeSet, {}, 
   readonly to: WasmRawGeneration;
 }>;
 
-export type WasmRawJoinPlan = WasmBinding.BrowserJoinPlan;
-
 export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   joinInto: [target: WasmRawWorkspace, options: JoinOptions];
 }, {
@@ -90,8 +84,6 @@ export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   pin: WasmRawGeneration;
   sync: WasmRawGeneration;
 }>;
-
-export type WasmRawTransaction = WasmBinding.BrowserTransaction;
 
 export type WasmRawSpeculation = WasmTypedClass<WasmBinding.BrowserSpeculation, {
   observe: [observation: ResidencyObservation];
@@ -141,10 +133,6 @@ export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
 }, {
   readonly capabilities: EngineCapabilities;
 }>;
-
-export type WasmRawResolvedFile = WasmBinding.BrowserResolvedFile;
-
-export type WasmRawResolvedFiles = WasmBinding.BrowserResolvedFiles;
 
 type NativeBoundary<T> =
   T extends Uint8Array ? Uint8Array :

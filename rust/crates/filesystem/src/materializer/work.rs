@@ -30,7 +30,7 @@ impl NativeMaterializationWork {
     ) -> Result<Self, (NativeTreeMaterializationError, crate::WorkCounters)> {
         let mut state = crate::demand::DemandWork::new(budget, cancellation);
         state
-            .allocate(Self::accounting_state_bytes())
+            .claim_allocation(Self::accounting_state_bytes(), 1, crate::WorkCounters::UNCHARGED)
             .map_err(|error| (native_materialization_work_error(error), state.work))?;
         Ok(Self {
             state: Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
@@ -55,9 +55,9 @@ impl NativeMaterializationWork {
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
         self.state.with_original_leaf(|state| {
-            state.with_invocation_scope(self.invocation.as_ref().map(Arc::downgrade), |state| {
-                state.with_resource_scope(self.resource.as_ref().map(Arc::downgrade), |state| {
-                    state.with_capture(None, operation)
+            state.scope(|work| &mut work.native_invocation, self.invocation.as_ref().map(Arc::downgrade), |state| {
+                state.scope(|work| &mut work.native_resource, self.resource.as_ref().map(Arc::downgrade), |state| {
+                    state.scope(|work| &mut work.capture_custody, None, operation)
                 })
             })
         })
@@ -66,7 +66,7 @@ impl NativeMaterializationWork {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.state(|state| state.with_capture(self.capture_origin.clone(), operation))
+        self.state(|state| state.scope(|work| &mut work.capture_custody, self.capture_origin.clone(), operation))
     }
     pub(super) fn poison(&self, error: NativeTreeMaterializationError) {
         self.state(|state| {
@@ -98,30 +98,6 @@ impl NativeMaterializationWork {
     pub fn shares_allocation_context(&self, other: &Self) -> bool {
         self.shares_ledger(other) && self.shares_resource_allowance(other)
     }
-    pub(crate) fn original_demand_work(&self) -> crate::demand::OriginalDemandWork {
-        crate::demand::OriginalDemandWork {
-            state: self.state.clone(),
-            resource: self.resource.clone(),
-            capture_origin: self.capture_origin.clone(),
-            invocation: self.invocation.clone(),
-            #[cfg(feature = "native-mount")]
-            execution: self.execution.clone(),
-        }
-    }
-    pub(crate) fn from_original_demand_work(
-        original: &crate::demand::OriginalDemandWork,
-    ) -> Result<Self, crate::DemandError> {
-        Ok(Self {
-            state: original.state.clone(),
-            resource: original.resource.clone(),
-            capture_origin: original.capture_origin.clone(),
-            invocation: original.invocation.clone(),
-            #[cfg(feature = "native-mount")]
-            execution: original.execution.clone(),
-            cancellation: original.with_original_leaf(|state| state.cancellation().clone())?,
-        })
-    }
-    #[cfg(feature = "native-mount")]
     pub(crate) fn from_meter(state: Arc<crate::demand::NativeDemandReadMeter>) -> Self {
         let cancellation = state.lock().cancellation().clone();
         Self {
@@ -130,6 +106,7 @@ impl NativeMaterializationWork {
             resource: None,
             capture_origin: None,
             invocation: None,
+            #[cfg(feature = "native-mount")]
             execution: None,
         }
     }
@@ -278,7 +255,7 @@ impl NativeMaterializationWork {
         operations: u64,
         delta: crate::WorkCounters,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.state(|state| state.claim_native_owned(bytes, operations, delta, &None))
+        self.state(|state| state.claim_allocation(bytes, operations, delta))
             .map_err(native_materialization_work_error)?;
         Ok(NativeAllocation {
             meter: self.allocation_work(),
@@ -302,14 +279,14 @@ impl NativeMaterializationWork {
         &self,
         maximum: crate::WorkCounters,
     ) -> Result<NativeWorkReservation, NativeTreeMaterializationError> {
-        self.state(|state| state.reserve_native_work(maximum))
+        self.state(|state| state.reserve(maximum))
             .map_err(native_materialization_work_error)?;
         Ok(NativeWorkReservation::new(self.allocation_work(), maximum))
     }
     pub(crate) fn reserve_cleanup_write(
         &self,
     ) -> Result<NativeCleanupWrite, NativeTreeMaterializationError> {
-        self.state(|state| state.reserve(NativeResourceCredit::WriteOperations, 1))
+        self.state(|state| state.reserve(NativeResourceCredit::WriteOperations.delta(1)))
             .map_err(native_materialization_work_error)?;
         Ok(NativeCleanupWrite {
             meter: self.allocation_work(),

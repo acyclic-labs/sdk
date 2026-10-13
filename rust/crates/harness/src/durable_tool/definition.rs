@@ -87,7 +87,7 @@ impl ResumableTool {
             ));
         }
         let scope = context.effective_scope();
-        let required = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("tool:call:{}", self.definition.name), work))?;
+        let required = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("tool:call:{}", self.definition.name), work))?;
         #[cfg(feature = "filesystem")]
         let _required = io
             .map(|io| io.guard_owned(required.capacity() as u64))
@@ -95,7 +95,7 @@ impl ResumableTool {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", work))?;
+        crate::executor::with_history_io(io, |work| crate::executor::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let identity = match native {
             Some(work) => self.machine.identity_with_native_work(work)?,
@@ -130,7 +130,7 @@ impl ResumableTool {
             revision: 0,
             state,
         };
-        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(self.machine.state_schema(), &initial.state, "tool state", work))?;
+        crate::executor::with_history_io(io, |work| crate::executor::validate_json_schema_value(self.machine.state_schema(), &initial.state, "tool state", work))?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
             request_digest: crate::executor::preparation_digest(
@@ -232,7 +232,7 @@ impl ResumableTool {
         }
         drop(grant);
         drop(grant_hold);
-        crate::executor::with_history_io(Some(io), |work| crate::contract::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", work))?;
+        crate::executor::with_history_io(Some(io), |work| crate::executor::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", work))?;
         let registry_custody;
         let mut registry = MachineRegistry::default();
         registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;

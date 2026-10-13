@@ -53,7 +53,7 @@ impl ModelContentPart {
                 arguments,
             } => add(
                 add(call_id.capacity() as u64, name.capacity() as u64)?,
-                crate::contract::json_value_logical_owned_bytes(arguments)?,
+                crate::executor::json::json_value_logical_owned_bytes(arguments)?,
             ),
             Self::ToolResult {
                 call_id,
@@ -69,7 +69,7 @@ impl ModelContentPart {
 impl ToolResultContent {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
-            Self::Json { value } => crate::contract::json_value_logical_owned_bytes(value),
+            Self::Json { value } => crate::executor::json::json_value_logical_owned_bytes(value),
             Self::Parts { parts } => parts.iter().try_fold(
                 slots(parts.capacity(), size_of::<ModelDataPart>())?,
                 |bytes, part| {
@@ -105,7 +105,7 @@ impl ModelContent {
 }
 impl ModelRequest {
     fn payload_bytes(&self) -> Result<u64> {
-        let mut bytes = crate::contract::json_value_logical_owned_bytes(&self.model.options)?;
+        let mut bytes = crate::executor::json::json_value_logical_owned_bytes(&self.model.options)?;
         for capacity in [
             self.model.provider.capacity(),
             self.model.name.capacity(),
@@ -140,7 +140,7 @@ impl ModelRequest {
             ] {
                 bytes = add(
                     bytes,
-                    crate::contract::json_value_logical_owned_bytes(value)?,
+                    crate::executor::json::json_value_logical_owned_bytes(value)?,
                 )?;
             }
         }

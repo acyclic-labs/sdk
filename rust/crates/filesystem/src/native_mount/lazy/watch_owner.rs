@@ -6,7 +6,7 @@ pub struct NativeMountSourceWatchOwner {
     pub(super) sink: Option<Arc<dyn SourceChangeSink>>,
     pub(super) startup_failure: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
     pub(super) bytes: u64,
-    pub(super) custody: Option<crate::native_mount::NativeMountAllocationCustody>,
+    pub(super) custody: Option<std::sync::Arc<crate::native_mount::NativeMountAllocationCustody>>,
 }
 
 impl NativeMountSourceWatchOwner {
@@ -62,7 +62,7 @@ impl NativeMountSourceWatchOwner {
         let original = carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeUnsupported)?;
-        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(&original);
+        let mut work = crate::NativeMaterializationWork::clone(&original);
         crate::native_host::NativeHostWork::check(&mut work).map_err(mount_demand_error)?;
         if self.is_stopped() {
             return Ok(false);
@@ -70,7 +70,7 @@ impl NativeMountSourceWatchOwner {
         let result = if let Some(failure) = &self.startup_failure {
             failure.stop_with_work(&mut work)
         } else if let Some(watch) = &self.watch {
-            crate::demand::stop_watch(watch.as_ref(), &original, original.cancellation())
+            watch.stop(&mut crate::kernel::KernelAccounting::native(&original, original.cancellation()))
         } else {
             return Ok(false);
         };

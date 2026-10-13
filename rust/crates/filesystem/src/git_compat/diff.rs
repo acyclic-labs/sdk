@@ -48,7 +48,18 @@ where
         } else {
             (from, &mut before_policies)
         };
-        if !git_path_eligible_at(generation, policies, &path, already_tracked).await? {
+        load_git_ignore_policy(generation, policies, "").await?;
+        let root = policies.get("").cloned().unwrap_or_default();
+        if !git_path_eligible_with_root_at(
+            generation,
+            policies,
+            &root,
+            &path,
+            false,
+            already_tracked,
+        )
+        .await?
+        {
             continue;
         }
         let comparable = |record: Option<crate::kernel::FileRecord>| {
@@ -68,21 +79,6 @@ where
         file_changes: files.len(),
         binding_changes: bindings,
     })
-}
-
-pub(super) async fn git_path_eligible_at<A, O>(
-    generation: &Generation<A, O>,
-    policies: &mut BTreeMap<String, GitIgnorePolicy>,
-    path: &str,
-    already_tracked: &BTreeSet<String>,
-) -> Result<bool, GitCaptureError>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-{
-    load_git_ignore_policy(generation, policies, "").await?;
-    let root = policies.get("").cloned().unwrap_or_default();
-    git_path_eligible_with_root_at(generation, policies, &root, path, false, already_tracked).await
 }
 
 pub(super) async fn git_path_eligible_with_root_at<A, O>(

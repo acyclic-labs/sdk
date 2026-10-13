@@ -5,6 +5,7 @@ use crate::{
     model::{FileProjectionPolicy, ModelContentPart, ModelRole},
     resources::ProviderRef,
 };
+use acyclic_stream::MemoryStream;
 #[cfg(feature = "filesystem")]
 fn owned_context_budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::WorkBudget {
@@ -17,7 +18,7 @@ fn owned_context_budget() -> acyclic_fs::WorkBudget {
         ..acyclic_fs::WorkBudget::default()
     }
 }
-use acyclic_stream::MemoryStream;
+
 fn native_retention_policy() -> FileProjectionPolicy {
     FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
         intent: crate::model::NativeMediaIntent::Document { maximum_pages: 1 },
@@ -26,6 +27,7 @@ fn native_retention_policy() -> FileProjectionPolicy {
         configuration: None,
     }))
 }
+
 fn native_call_context(file: &FileRef, results: usize, native_in_result: bool) -> Result<Context> {
     let mut calls: Vec<_> = (0..results)
         .map(|index| ModelContentPart::ToolCall {
@@ -41,18 +43,12 @@ fn native_call_context(file: &FileRef, results: usize, native_in_result: bool) -
         });
     }
     let mut messages = vec![
-        ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Text("old".into()),
-        },
+        text(ModelRole::User, "old"),
         ModelMessage {
             role: ModelRole::Assistant,
             content: ModelContent::Parts(calls),
         },
-        ModelMessage {
-            role: ModelRole::Assistant,
-            content: ModelContent::Text("gap".into()),
-        },
+        text(ModelRole::Assistant, "gap"),
     ];
     for index in 0..results {
         messages.push(ModelMessage {
@@ -73,10 +69,7 @@ fn native_call_context(file: &FileRef, results: usize, native_in_result: bool) -
             }),
         });
     }
-    messages.push(ModelMessage {
-        role: ModelRole::User,
-        content: ModelContent::Text("current".into()),
-    });
+    messages.push(text(ModelRole::User, "current"));
     Ok(Context {
         current_input_index: Some(
             u32::try_from(messages.len() - 1)
@@ -86,12 +79,15 @@ fn native_call_context(file: &FileRef, results: usize, native_in_result: bool) -
         metadata: BTreeMap::new(),
     })
 }
+
 struct RefVerifier;
+
 struct TestPayloadStore {
     volume: VolumeRef,
     files: std::sync::Mutex<BTreeMap<String, (FileRef, Vec<u8>)>>,
     reads: std::sync::atomic::AtomicUsize,
 }
+
 fn payload_limits() -> Limits {
     Limits {
         file_bytes: 1_048_576,
@@ -102,64 +98,7 @@ fn payload_limits() -> Limits {
         ..Limits::default()
     }
 }
-struct LimitSpy(std::sync::Mutex<Vec<Limits>>);
-impl ContextSource for LimitSpy {
-    fn load<'a>(
-        &'a self,
-        _: &'a ContextInput,
-        limits: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.0.lock().unwrap().push(limits);
-            Ok(vec![ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text("source".into()),
-            }])
-        })
-    }
-}
-impl ContextStage for LimitSpy {
-    fn name(&self) -> &str {
-        "limit-spy"
-    }
-    fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        Ok(serde_json::json!({"revision":"1"}))
-    }
-    fn apply<'a>(
-        &'a self,
-        _: &'a ContextInput,
-        context: Context,
-        limits: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.0.lock().unwrap().push(limits);
-            Ok(context)
-        })
-    }
-}
-impl ContextRenderer for LimitSpy {
-    fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        Ok(serde_json::json!({"revision":"1"}))
-    }
-    fn render<'a>(
-        &'a self,
-        _: &'a ContextSelection,
-        _: ContextRenderMode,
-        _: &'a ContextInput,
-        limits: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.0.lock().unwrap().push(limits);
-            Ok(vec![ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text("rendered".into()),
-            }])
-        })
-    }
-}
+
 impl TestPayloadStore {
     fn new() -> Result<Self> {
         Ok(Self {
@@ -175,6 +114,7 @@ impl TestPayloadStore {
         })
     }
 }
+
 impl ContentPublisher for TestPayloadStore {
     fn volume(&self) -> &VolumeRef {
         &self.volume
@@ -215,6 +155,7 @@ impl ContentPublisher for TestPayloadStore {
         })
     }
 }
+
 impl ContentResidencyVerifier for TestPayloadStore {
     fn verify<'a>(
         &'a self,
@@ -249,169 +190,7 @@ impl ContentResidencyVerifier for TestPayloadStore {
         })
     }
 }
-struct RemoveInputMarker;
-impl ContextStage for RemoveInputMarker {
-    fn name(&self) -> &str {
-        "remove-input-marker"
-    }
 
-    fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        Ok(serde_json::json!({"name": self.name(), "revision": "1"}))
-    }
-
-    fn apply<'a>(
-        &'a self,
-        _: &'a ContextInput,
-        mut context: Context,
-        _: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
-        context.current_input_index = None;
-        crate::conversation::BoundedContentFuture::new(io, || async move { Ok(context) })
-    }
-}
-struct InputDependentProjection {
-    revision: u32,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-}
-impl ContextStage for InputDependentProjection {
-    fn name(&self) -> &str {
-        "input-dependent-projection"
-    }
-
-    fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        Ok(serde_json::json!({ "name": self.name(), "revision": self.revision }))
-    }
-
-    fn apply<'a>(
-        &'a self,
-        input: &'a ContextInput,
-        mut context: Context,
-        _: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            context.messages.push(ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(format!(
-                    "stage:{}:{}",
-                    self.revision,
-                    serde_json::to_string(&input.input)
-                        .map_err(|error| crate::Error::Invalid(error.to_string()))?
-                )),
-            });
-            context.messages.reverse();
-            let length = u32::try_from(context.messages.len())
-                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-            context.current_input_index =
-                context.current_input_index.map(|index| length - 1 - index);
-            Ok(context)
-        })
-    }
-}
-fn retained_input_base(input: ModelContent) -> Context {
-    Context {
-        messages: vec![
-            ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text("older question".into()),
-            },
-            ModelMessage {
-                role: ModelRole::Assistant,
-                content: ModelContent::Text("older answer".into()),
-            },
-            ModelMessage {
-                role: ModelRole::User,
-                content: input,
-            },
-        ],
-        current_input_index: Some(2),
-        metadata: BTreeMap::new(),
-    }
-}
-struct CountingVerifier {
-    count: std::sync::atomic::AtomicUsize,
-    payloads: Arc<TestPayloadStore>,
-}
-impl ContentResidencyVerifier for CountingVerifier {
-    fn verify<'a>(
-        &'a self,
-        file: &'a FileRef,
-        _maximum_bytes: u64,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            file.validate(&mut None)
-        })
-    }
-
-    fn read<'a>(
-        &'a self,
-        file: &'a FileRef,
-        _maximum_bytes: u64,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        self.payloads.read(file, _maximum_bytes, io)
-    }
-}
-struct AttributeRenderer;
-impl ContextRenderer for AttributeRenderer {
-    fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        Ok(serde_json::json!({"revision": "1"}))
-    }
-
-    fn render<'a>(
-        &'a self,
-        selection: &'a ContextSelection,
-        mode: ContextRenderMode,
-        _: &'a ContextInput,
-        _: crate::conversation::Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            let ContextSourceValue::Attribute { attribute } = &selection.source else {
-                return Err(crate::Error::Unsupported(
-                    "test renderer handles attributes".into(),
-                ));
-            };
-            Ok(vec![ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(format!(
-                    "{mode:?}:{:?}:{}:{}",
-                    selection.representation, attribute.state_revision, attribute.value
-                )),
-            }])
-        })
-    }
-}
-fn attribute_pipeline(
-    value: &str,
-    mode: ContextRenderMode,
-    representation: ContextRepresentation,
-) -> Result<ContextPipeline> {
-    let attribute = ContextAttribute::typed(
-        "example.role".into(),
-        "1".into(),
-        serde_json::json!({"type":"string"}),
-        value.into(),
-        &value,
-    )?;
-    Ok(ContextPipeline::new([Arc::new(SelectionStage::new(
-        "role".into(),
-        ContextSelection {
-            source: ContextSourceValue::Attribute { attribute },
-            extent: ContextExtent::Whole,
-            representation,
-        },
-        Arc::new(AttributeRenderer),
-        Arc::new(RefVerifier),
-        mode,
-        ContextPlacement::Prepend,
-        crate::conversation::Limits::default(),
-    )?) as Arc<dyn ContextStage>]))
-}
 impl ContentResidencyVerifier for RefVerifier {
     fn verify<'a>(
         &'a self,
@@ -424,6 +203,7 @@ impl ContentResidencyVerifier for RefVerifier {
         })
     }
 }
+
 fn message(role: ModelRole, text: &str) -> Result<ModelMessage> {
     let volume = VolumeRef::new(
         ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
@@ -447,6 +227,75 @@ fn message(role: ModelRole, text: &str) -> Result<ModelMessage> {
             policy: FileProjectionPolicy::BoundedFull,
         }),
     })
+}
+fn input() -> ContextInput {
+    ContextInput {
+        input: ModelContent::Text("current".into()),
+        selected_context: None,
+        step: 0,
+        prior_messages: Vec::new(),
+    }
+}
+fn text(role: ModelRole, value: &str) -> ModelMessage {
+    ModelMessage {
+        role,
+        content: ModelContent::Text(value.into()),
+    }
+}
+fn context(messages: Vec<ModelMessage>, current: Option<u32>) -> Context {
+    Context {
+        messages,
+        current_input_index: current,
+        metadata: BTreeMap::new(),
+    }
+}
+fn summary(source: &Context, through: usize) -> Result<ContextSummary> {
+    let mut prefix = source.clone();
+    prefix.messages.truncate(through);
+    prefix.current_input_index = prefix
+        .current_input_index
+        .filter(|index| (*index as usize) < through);
+    Ok(ContextSummary {
+        operation_id: crate::OperationId::new(),
+        step: 0,
+        source_messages: through as u32,
+        source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
+        output: message(ModelRole::System, "summary")?
+            .content
+            .file_refs()
+            .next()
+            .unwrap()
+            .clone(),
+    })
+}
+fn compact(
+    source: &Context,
+    maximum: usize,
+    through: usize,
+) -> Result<(Context, CompactionReference)> {
+    DurableContextProvider::compact(
+        source,
+        maximum,
+        Some(summary(source, through)?),
+        CompactionRetention::default(),
+        None,
+    )
+}
+fn durable(
+    stream: Arc<MemoryStream>,
+    payloads: Arc<TestPayloadStore>,
+    maximum: u32,
+    limits: Limits,
+) -> Result<DurableContextProvider> {
+    DurableContextProvider::new(
+        stream,
+        StreamPath::new("context/test").unwrap(),
+        "memory",
+        "1",
+        maximum,
+        payloads,
+        limits,
+    )
 }
 mod compaction;
 mod durable;

@@ -54,7 +54,6 @@ impl CoreLog {
             allocation: work
                 .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
                 .transpose()?,
-            failure: None,
         };
         if let Some(work) = work {
             reserve(
@@ -69,18 +68,14 @@ impl CoreLog {
             })?;
         }
         buffer.bytes.extend_from_slice(&[b' '; 65]);
-        let encoded = serde_json::to_writer(
+        serde_json::to_writer(
             &mut buffer,
             &LogFrame {
                 epoch: self.epoch,
                 sequence: self.sequence,
                 change: &change,
             },
-        );
-        if let Some(error) = buffer.failure.take() {
-            return Err(error);
-        }
-        encoded?;
+        )?;
         if let Some(work) = work {
             work.charge(crate::WorkCounters {
                 bytes_hashed: (buffer.bytes.len() - 65) as u64,

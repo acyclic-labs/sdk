@@ -168,7 +168,7 @@ impl Api {
             backend_read_operations: 1, backend_write_operations: 1,
             allocation_operations: 1, ..WorkCounters::default()
         }, &work.budget)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_read_operations: 1, allocation_operations: 1,
             ..WorkCounters::default()
         })?;
@@ -180,7 +180,7 @@ impl Api {
         }
         let result = (|| {
             let mut symbol = |name: &CStr| {
-                work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
                 // SAFETY: the handle is open and the name is a valid C string.
                 // Lookups include the frameworks linked by CoreServices.
                 let address = unsafe { libc::dlsym(framework, name.as_ptr()) };
@@ -267,9 +267,9 @@ impl Api {
                     ..WorkCounters::default()
                 })?;
                 if owned == 0 {
-                    work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
+                    work.started_io(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
                 } else {
-                    work.allocate(owned)?;
+                    work.claim_allocation(owned, u64::from((owned) != 0), crate::WorkCounters::UNCHARGED)?;
                 }
                 if let Err(error) = native_write(work, cleanup) {
                     work.release(owned)?;
@@ -299,9 +299,9 @@ impl Api {
                 bytes_copied: slots, ..WorkCounters::default()
             })?;
             if slots == 0 {
-                work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
             } else {
-                work.allocate(slots)?;
+                work.claim_allocation(slots, u64::from((slots) != 0), crate::WorkCounters::UNCHARGED)?;
             }
             array_bytes = slots;
             let copy = work.reserve_source_copy(slots)?;
@@ -367,7 +367,7 @@ fn native_write<W: SourceDemandReadWork>(work: &mut W, cleanup: u64) -> Result<(
     work.preflight(WorkCounters {
         backend_write_operations: cleanup + 1, ..WorkCounters::default()
     })?;
-    work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })
+    work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })
 }
 
 fn native_allocate<W: SourceDemandReadWork>(work: &mut W, cleanup: u64) -> Result<(), DemandError> {
@@ -376,7 +376,7 @@ fn native_allocate<W: SourceDemandReadWork>(work: &mut W, cleanup: u64) -> Resul
         backend_write_operations: cleanup + 1, allocation_operations: 1,
         ..WorkCounters::default()
     })?;
-    work.charge(WorkCounters {
+    work.started_io(WorkCounters {
         backend_write_operations: 1, allocation_operations: 1,
         ..WorkCounters::default()
     })
@@ -453,7 +453,7 @@ extern "C" fn terminal_suffix(info: *mut c_void) {
     let owner = unsafe { &mut *context.terminal.get() }.take()
         .expect("the original stream's sole terminal owner is present");
     if let Some(birth) = owner.birth.clone() {
-        let mut work = crate::demand::NativeSourceWork::from_original_work(&birth);
+        let mut work = crate::NativeMaterializationWork::clone(&birth);
         owner.finish_deferred(context, &mut work);
     } else {
         let cancellation = crate::CancellationToken::new();
@@ -510,7 +510,7 @@ pub(crate) struct EventStream {
     ownership: crate::demand::SourcePayloadOwnership,
     cleanup: (u64, u64),
     original_cleanup: bool,
-    birth: Option<crate::demand::OriginalDemandWork>,
+    birth: Option<crate::NativeMaterializationWork>,
 }
 
 // SAFETY: FSEvents streams and dispatch queues may be stopped and released
@@ -605,7 +605,7 @@ impl EventStream {
 
     fn birth_work<W: SourceDemandReadWork>(&self, work: &W) -> bool {
         self.original_cleanup && work.native_source_work().is_some_and(|work| {
-            let current = work.original_demand_work();
+            let current = work.clone();
             self.birth.as_ref().is_some_and(|birth| {
                 Arc::ptr_eq(&birth.state, &current.state)
                     && match (birth.resource.as_ref(), current.resource.as_ref()) {
@@ -681,7 +681,7 @@ impl EventStream {
         self.owned_bytes = 0;
         if let Some(birth) = &self.birth {
             let (reads, writes) = std::mem::take(&mut self.cleanup);
-            crate::demand::NativeSourceWork::from_original_work(birth).with_original_leaf(|work| {
+            crate::NativeMaterializationWork::clone(birth).with_original_leaf(|work| {
                 crate::source_watch::cancel_cleanup_credits(work, WorkCounters {
                     backend_read_operations: reads, backend_write_operations: writes,
                     ..WorkCounters::UNCHARGED
@@ -756,7 +756,7 @@ impl EventStream {
             }))?;
             cleanup_reserved = true;
             let requested_context_bytes = crate::source_watch::arc_control_bytes::<StreamContext>();
-            work.allocate(requested_context_bytes)?;
+            work.claim_allocation(requested_context_bytes, u64::from((requested_context_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             context_bytes = requested_context_bytes;
             context = Arc::into_raw(Arc::new(StreamContext {
                 handler, terminal: std::cell::UnsafeCell::new(None),
@@ -807,7 +807,7 @@ impl EventStream {
                 owned_bytes: path_bytes + context_bytes,
                 cleanup: if work.is_native_original() { (1, 5) } else { (0, 0) },
                 original_cleanup: work.is_native_original(),
-                birth: work.native_source_work().map(|work| work.original_demand_work().allocation_work()),
+                birth: work.native_source_work().map(|work| work.clone().allocation_work()),
                 ownership: ownership.take().expect("startup custody"),
             })
         })();
@@ -840,7 +840,7 @@ impl EventStream {
                     } else { Default::default() },
                     cleanup: if cleanup_reserved && work.is_native_original() { (1, 5) } else { (0, 0) },
                     original_cleanup: cleanup_reserved && work.is_native_original(),
-                    birth: work.native_source_work().map(|work| work.original_demand_work().allocation_work()),
+                    birth: work.native_source_work().map(|work| work.clone().allocation_work()),
                 };
                 let _cleanup = failed.cleanup_admitted(work);
             }
@@ -857,7 +857,7 @@ impl Drop for EventStream {
     fn drop(&mut self) {
         if self.stream.is_null() && self.queue.is_null() { return; }
         if let Some(birth) = self.birth.clone() {
-            let mut work = crate::demand::NativeSourceWork::from_original_work(&birth);
+            let mut work = crate::NativeMaterializationWork::clone(&birth);
             let _ = self.cleanup_admitted(&mut work);
             return;
         }

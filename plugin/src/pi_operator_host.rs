@@ -9,7 +9,6 @@ use crate::{
     pi_owner::PiOwnerConfig,
 };
 use acyclic_fs::{MaterializationPhase, NativeMaterializationWork};
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Capabilities, Error, OperationId, Result,
     core::SchemaRegistry,
@@ -154,9 +153,9 @@ fn conversation_journal<'a>(
         work,
     )?;
     let verifier = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     Journal::new_with_native_work(
         stream.clone(),
@@ -204,7 +203,7 @@ pub(crate) async fn open_prepared_approval(
         ));
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let storage = protected.authority(work)?;
     let authority = protected.conversation_authority_with_native_work(
@@ -214,14 +213,14 @@ pub(crate) async fn open_prepared_approval(
         work,
     )?;
     let verifier = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let current = runtime
         .runtime
         .task_host()
-        .journal_owner_with_native_work(binding.task_id, fence, work)
+        .journal_owner(binding.task_id, fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
         .await?;
     let journal = Journal::for_task_with_native_work(
         current,
@@ -252,17 +251,13 @@ pub(crate) async fn open_prepared_approval(
     };
     journal
         .open_interaction_with_native_work(
-            acyclic_harness::durable_host::task_interaction_id_with_native_work(
-                binding.task_id,
-                descriptor.operation,
-                work,
-            )?,
+            acyclic_harness::durable_host::task_interaction_id(binding.task_id, descriptor.operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
             &interaction,
             work,
         )?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let _staged = crate::pi_root_provider::stage_pi_input(
         protected,
@@ -274,7 +269,7 @@ pub(crate) async fn open_prepared_approval(
     )
     .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await
 }
 
@@ -296,11 +291,7 @@ pub(crate) async fn require_resolved_approval<'a>(
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
     ToolApprovalVerifier::verify_with_native_work(
         &journal,
-        acyclic_harness::durable_host::task_interaction_id_with_native_work(
-            protected.policy().root_task,
-            descriptor.operation,
-            work,
-        )?,
+        acyclic_harness::durable_host::task_interaction_id(protected.policy().root_task, descriptor.operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
         descriptor.operation,
         pi_operator::parse_digest(descriptor.approval_digest)?,
         work,
@@ -423,11 +414,7 @@ async fn observe_writeback(
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
     let (outcome, _outcome_custody) = journal
         .interaction_outcome_with_native_work(
-            acyclic_harness::durable_host::task_interaction_id_with_native_work(
-                protected.policy().root_task,
-                descriptor.operation,
-                work,
-            )?,
+            acyclic_harness::durable_host::task_interaction_id(protected.policy().root_task, descriptor.operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
             work,
         )?
         .await?;
@@ -805,12 +792,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(root, &fence, work)
+            .journal_owner(root, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
             .await?
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let (admitted, _admission_custody) = self.admission_input(root, work).await?;
         self.protected.validate_root(&admitted.binding, work)?;
@@ -848,11 +835,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 &prepared,
                 work,
             )?;
-            let id = acyclic_harness::durable_host::task_interaction_id_with_native_work(
-                root,
-                prepared.operation,
-                work,
-            )?;
+            let id = acyclic_harness::durable_host::task_interaction_id(root, prepared.operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
             let capability = work.display(&format_args!("interaction:respond:{id}"))?;
             let grants = Capabilities::new_with_native_work(
                 ["interaction:resolve", capability.0.as_str()],
@@ -869,13 +852,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 reason: None,
             };
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             journal
                 .resolve_interaction_with_native_work(id, &response, &responder.0.2, work)?
                 .await?;
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
         }
         if decision == PiOperatorDecision::Decline {
@@ -888,11 +871,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             )?;
             let (outcome, _outcome_custody) = journal
                 .interaction_outcome_with_native_work(
-                    acyclic_harness::durable_host::task_interaction_id_with_native_work(
-                        root,
-                        prepared.operation,
-                        work,
-                    )?,
+                    acyclic_harness::durable_host::task_interaction_id(root, prepared.operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
                     work,
                 )?
                 .await?;
@@ -940,7 +919,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             TaskCommandProgress::Indeterminate => return Ok(TaskCommandProgress::Indeterminate),
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let (status, native) = observe_writeback(
             &self.filesystem,

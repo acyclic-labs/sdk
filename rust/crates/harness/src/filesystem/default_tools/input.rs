@@ -442,7 +442,7 @@ where
         };
         validate_plan(&plan, arguments, io)?;
         if !io.is_some_and(|io| io.original_native_work().is_some()) {
-            crate::contract::json_byte_length(&plan, self.maximum_request_bytes
+            crate::executor::json::json_byte_length(&plan, self.maximum_request_bytes
                     .min(context.scope().limits().file_bytes), &mut None).map(|_| ())?;
         }
         Ok(plan)

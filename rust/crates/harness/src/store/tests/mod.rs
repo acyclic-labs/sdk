@@ -259,3 +259,5 @@ fn schemas() -> SchemaRegistry {
     );
     schemas
 }
+
+use projections::projection_command;

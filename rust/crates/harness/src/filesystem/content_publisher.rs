@@ -198,7 +198,7 @@ where
             if let Some(io) = io {
                 io.charge(hashing)?;
             }
-            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), work))?)?;
+            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), work))?)?;
             let retry_hold = io
                 .map(|io| io.guard_owned(retry.as_str().len() as u64))
                 .transpose()?;

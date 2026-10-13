@@ -39,11 +39,8 @@ impl CallbackGate {
         }
     }
 
-    pub(super) fn drain(
-        &self,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        work.admit(crate::WorkCounters::UNCHARGED)?;
+    pub(super) fn drain(&self, work: &Work) -> Result<(), NativeMountError> {
+        work.admit(WorkCounters::UNCHARGED)?;
         let mut pending = self.draining.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(generation) = *pending {
             self.wait_generation(generation, work)?;
@@ -56,11 +53,7 @@ impl CallbackGate {
         Ok(())
     }
 
-    fn wait_generation(
-        &self,
-        generation: u64,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    fn wait_generation(&self, generation: u64, work: &Work) -> Result<(), NativeMountError> {
         let active = self.slot(generation);
         loop {
             work.charge(scan_work(1))?;

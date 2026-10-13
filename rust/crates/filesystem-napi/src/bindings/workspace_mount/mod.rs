@@ -3,11 +3,8 @@ use super::*;
 /// Explicit native workspace mount policy.
 #[napi(object)]
 pub struct NativeWorkspaceMountOptions {
-    /// Whether the mount accepts authored changes.
     pub writable: bool,
-    /// Exact workspace directory projected as the mount root.
     pub subdirectory: String,
-    /// `close-and-sync`, `per-mutation`, or `manual`.
     pub publication: String,
 }
 
@@ -33,14 +30,12 @@ pub struct NativeWorkspaceUnmountTask {
 
 #[napi]
 impl NativeWorkspaceMount {
-    /// Exact native mount path.
     #[must_use]
     #[napi(getter)]
     pub fn path(&self) -> String {
         self.path.clone()
     }
 
-    /// Publishes every pending authored effect without detaching.
     #[must_use]
     #[napi]
     pub fn sync(&self) -> AsyncTask<NativeWorkspaceMountSyncTask> {
@@ -49,7 +44,6 @@ impl NativeWorkspaceMount {
         })
     }
 
-    /// Publishes pending effects and detaches exactly once.
     #[must_use]
     #[napi]
     pub fn unmount(&self) -> AsyncTask<NativeWorkspaceUnmountTask> {

@@ -51,45 +51,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         stat(self, GenerationSelector::Head, path, work, cancellation).await
     }
 
-    pub(crate) async fn stat_optional(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Option<WorkspaceStat>>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = lookup_stat(
-            self,
-            GenerationSelector::Head,
-            path,
-            &mut accounting,
-            cancellation,
-        )
-        .await;
-        crate::facade::measured(result, &accounting)
-    }
-
-    pub(crate) async fn record_by_id(
-        &self,
-        file_id: FileId,
-    ) -> Result<crate::kernel::FileRecord, WorkspaceError> {
-        let mut checkout = self
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        checkout
-            .read_file_record_by_id(file_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(WorkspaceError::engine)
-    }
-
     /// Returns one authenticated bounded directory page and its result allocation.
     pub async fn list_directory<W: crate::facade::FsWork>(
         &self,

@@ -68,7 +68,7 @@ where
         }
         let _mutation = self.mutation_lease(None, Some(work))?;
         for path in paths {
-            self.promote_parents_locked(path, Some(work))?;
+            self.promote_parents_locked(path, work)?;
             match self.promote_locked(path, Some(work)) {
                 Ok(()) | Err(MountSourceError::NotFound) => {}
                 Err(error) => return Err(error),
@@ -94,7 +94,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<((Arc<dyn MountOpenFile>, u64), Option<MountLookup>), MountSourceError> {
-        let (text, mut allocation) = self.path(path, Some(work))?;
+        let (text, mut allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (lease, resolution, source_file) =
@@ -110,8 +110,7 @@ where
                             Some(self.authored.cancellation()),
                         )
                         .await?;
-                    let (resolution, file) =
-                        self.resolve_opened(path, &text, owner, Some(work)).await?;
+                    let (resolution, file) = self.resolve_opened(path, &text, owner, work).await?;
                     Ok((lease, resolution, file))
                 })
             })?;
@@ -131,7 +130,7 @@ where
         };
         let id = self
             .runtime
-            .wait(|| async { file_id(&self.lazy, &text, &lookup, Some(work)).await })?;
+            .wait(|| async { file_id(&self.lazy, &text, &lookup, work).await })?;
         if let Some(file) = self.detached_by_id(id)? {
             return self
                 .bind_open_file((file, 0), Some(id), generation, work)
@@ -152,11 +151,9 @@ where
                     crate::WorkCounters::UNCHARGED,
                 )
                 .map_err(MountSourceError::NativeWork)?;
-            if let Some(allocation) = &mut allocation {
-                owned
-                    .absorb(allocation)
-                    .map_err(MountSourceError::NativeWork)?;
-            }
+            owned
+                .absorb(&mut allocation)
+                .map_err(MountSourceError::NativeWork)?;
             let file: Arc<dyn MountOpenFile> = Arc::new(LazyOpenFile {
                 lazy: Arc::clone(&self.lazy),
                 authored: Arc::clone(&self.authored),
@@ -290,12 +287,12 @@ where
     pub(super) fn is_source_projection(
         &self,
         path: &MountPath,
-        original: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<bool, MountSourceError> {
-        let (text, _allocation) = self.path(path, original)?;
+        let (text, _allocation) = self.path(path, work)?;
         self.runtime.wait(|| async {
             match self
-                .resolve(path, &text, ViewGate::callback_owner(), original)
+                .resolve(path, &text, ViewGate::callback_owner(), work)
                 .await?
             {
                 Resolution::Absent => Err(MountSourceError::NotFound),
@@ -313,7 +310,12 @@ where
         path: &MountPath,
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| self.promote(path, original))
+        match original {
+            Some(work) => self.runtime.wait(|| self.promote(path, work)),
+            None => adapter::boundary(self.authored.cancellation(), |work| {
+                self.promote_locked(path, Some(work))
+            }),
+        }
     }
 
     pub(super) fn read_content(
@@ -329,7 +331,7 @@ where
         let end = offset
             .checked_add(length)
             .ok_or(MountSourceError::Invalid("content range overflows".into()))?;
-        let (text, _allocation) = self.path(path, Some(work))?;
+        let (text, _allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (_lease, resolution, source_file) =
@@ -346,7 +348,7 @@ where
                         )
                         .await?;
                     let (resolution, source_file) =
-                        self.resolve_opened(path, &text, owner, Some(work)).await?;
+                        self.resolve_opened(path, &text, owner, work).await?;
                     Ok((lease, resolution, source_file))
                 })
             })?;
@@ -366,7 +368,7 @@ where
         let _allocation = allocation;
         let id = self
             .runtime
-            .wait(|| async { file_id(&self.lazy, &text, &lookup, Some(work)).await })?;
+            .wait(|| async { file_id(&self.lazy, &text, &lookup, work).await })?;
         if let Some(detached) = self.detached_by_id(id)? {
             return stream_pieces(offset, end, piece, sink, |offset, length| {
                 detached.read_range_with_meter(offset, length, work)
@@ -380,13 +382,7 @@ where
         let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
         stream_pieces(offset, end, piece, sink, |offset, length| {
             if let Some(file) = &source_file {
-                return crate::demand::read_file(
-                    file.as_ref(),
-                    offset,
-                    u64::from(length),
-                    work,
-                    work.cancellation(),
-                )
+                return file.read_range(offset, u64::from(length), &mut accounting)
                 .map_err(mount_demand_error);
             }
             self.runtime.wait(|| async {

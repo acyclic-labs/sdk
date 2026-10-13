@@ -13,7 +13,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         let maximum = self
             .protected
@@ -77,7 +77,7 @@ impl PiNativeCommandHost {
             }
         }
         let observed = {
-            let mut io = native_work_io(meter)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?);
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -89,7 +89,7 @@ impl PiNativeCommandHost {
                 .task_host()
                 .recover_work(task, &mut Some(&mut io))
                 .await?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let lease = match observed.0 {
             WorkPull::Claimed(lease) => lease,
@@ -101,7 +101,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(task, &fence, meter)
+            .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(meter)?))
             .await?;
         match self
             .observe_preparation_journal(task, &owner, meter)
@@ -170,11 +170,11 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
             .await?
             .into_native_shared(work)?;
         owner
-            .verify(recovery, &mut Some(&mut native_work_io(work)?))
+            .verify(recovery, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         Ok(((admitted.1, admitted.2), owner, original))
     }
@@ -208,9 +208,9 @@ impl PiNativeCommandHost {
             work,
         )?;
         let interaction_verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let result = input
             .binding
@@ -221,7 +221,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(owner.task_id(), &context.owned_task_fence()?, work)
+            .journal_owner(owner.task_id(), &context.owned_task_fence()?, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
             .await?;
         Journal::for_task_with_native_work(
             journal_owner,
@@ -261,9 +261,9 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         Ok(NativeProcessAuthority {
             verifier: verifier.0,
@@ -325,26 +325,32 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
-        let history = HistoryReader::new_with_native_work(
+        let mut reader_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let history = HistoryReader::new(
             &self.stream,
             &conversation.0.0,
             &verifier.0,
-            work,
+            &mut Some(&mut reader_io),
         )?;
-        let cursor = history.0.pin_with_native_work(0, work).await?;
+        let cursor = history.pin(0, Some(&mut reader_io)).await?;
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id,
             command,
-            &mut Some(&mut native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
-        history
-            .0
-            .effect_with_native_work(&cursor.0, effect, history_limits(context)?, work)
-            .await
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let effect = history
+            .effect(&cursor, effect, history_limits(context)?, Some(&mut io))
+            .await?;
+        Ok((effect.map(|(effect, _)| effect), io.into_custody()?))
     }
 
     pub(super) async fn bind_recovery(
@@ -390,7 +396,7 @@ impl PiNativeCommandHost {
             owner.clone(),
             command,
             &plan.0,
-            task_interaction_id(input.binding.task_id, command),
+            task_interaction_id(input.binding.task_id, command, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
             authority,
             work,
         )

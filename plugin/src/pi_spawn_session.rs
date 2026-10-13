@@ -3,7 +3,6 @@
 use super::*;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     conversation::ContentResidencyVerifier,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
@@ -242,10 +241,7 @@ impl PiSession {
                 ));
             }
             live.owner
-                .verify(
-                    false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
-                )
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             Some(live)
         };
@@ -378,7 +374,7 @@ impl PiSession {
                         .runtime
                         .runtime
                         .task_host()
-                        .observe_admission_with_native_work(plan.preparation.task_id(), &work)
+                        .observe_admission_with_native_work(plan.preparation.task_id(), &work)?
                         .await?;
                     let admission = admission;
                     if admission != plan.preparation {
@@ -430,7 +426,7 @@ impl PiSession {
             }
             let (acknowledgement, pending, prepared) = if let Some(live) = &live {
                 live.owner
-                    .verify(false, &mut Some(&mut native_work_io(&work)?))
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
                     .await?;
                 self.spawn_child_step(
                     owner,
@@ -531,7 +527,7 @@ impl PiSession {
         }
         if let Some(live) = &live {
             live.owner
-                .verify(false, &mut Some(&mut native_work_io(&work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
                 .await?;
         }
         self.spawn_save_created(&commit, operations, &prepared, &work)?;
@@ -1018,9 +1014,9 @@ impl PiSession {
         )?;
         let paths = paths;
         let (workspace, workspace_custody) = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = project.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let workspace = workspace;
         if !matches!(&pending.task_binding, PluginTaskBinding::Pi(binding) if binding.as_ref() == &commit.child)
@@ -1185,11 +1181,11 @@ impl PiSession {
     ) -> acyclic_harness::Result<()> {
         let host = self.runtime.runtime.task_host();
         let (preparation, preparation_custody) = host
-            .observe_admission_with_native_work(plan.preparation.task_id(), work)
+            .observe_admission_with_native_work(plan.preparation.task_id(), work)?
             .await?;
         let preparation = preparation;
         let (child, child_custody) = host
-            .observe_admission_with_native_work(plan.request.child.task_id(), work)
+            .observe_admission_with_native_work(plan.request.child.task_id(), work)?
             .await?;
         let child = child;
         if preparation != plan.preparation || child != plan.request.child {
@@ -1207,7 +1203,7 @@ impl PiSession {
         drop(preparation);
         drop(preparation_custody);
         let (outcome, outcome_custody) = host
-            .outcome_with_native_work(plan.preparation.task_id(), work)
+            .outcome_with_native_work(plan.preparation.task_id(), work)?
             .await?;
         let outcome = outcome;
         let Some(Outcome::Succeeded(value)) = outcome else {
@@ -1276,9 +1272,9 @@ impl PiSession {
         }
         prepared
             .report
-            .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+            .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(
                 work,
-            )?))?;
+            )?)))?;
         binding.validate(None, [key.as_str()], false)?;
         let route = SpawnBorrowedRoute {
             task_binding: PluginTaskBinding::Pi(binding),
@@ -1410,7 +1406,7 @@ impl PiSession {
         let host = self.runtime.runtime.task_host();
         let preparation = acyclic_harness::runtime::task_id_for_admission(operations.preparation);
         let (preparation_outcome, preparation_custody) =
-            match host.outcome_with_native_work(preparation, work).await {
+            match host.outcome_with_native_work(preparation, work)?.await {
                 Ok((value, custody)) => (value, Some(custody)),
                 Err(acyclic_harness::Error::NotFound(_)) if !created => (None, None),
                 Err(error) => return Err(error),
@@ -1418,7 +1414,7 @@ impl PiSession {
         let preparation_outcome = preparation_outcome;
         let (outcome, outcome_custody) = if created {
             let (outcome, custody) = host
-                .outcome_with_native_work(commit.child.task_id, work)
+                .outcome_with_native_work(commit.child.task_id, work)?
                 .await?;
             (outcome, Some(custody))
         } else {
@@ -1435,7 +1431,7 @@ impl PiSession {
         let native_effect = acyclic_harness::effect_host::task_effect_id(
             commit.child.task_id,
             operations.native,
-            &mut Some(&mut native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
         let body = SpawnObservation {
             operation: &commit.sdk_operation,

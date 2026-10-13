@@ -372,7 +372,7 @@ impl PiNativeCommandHost {
         };
         effect
             .owner
-            .verify(false, &mut Some(&mut native_work_io(&original_work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original_work)?)))
             .await?;
         if effect.owner.task_id() != task
             || effect.context.durable_task_id() != Some(task)
@@ -458,7 +458,7 @@ impl PiNativeCommandHost {
             let effect = entry.handles.lock().await.effect.clone().ok_or_else(|| {
                 unauthorized("Pi selected child has not entered its original native operation")
             })?;
-            let outcome = effect.owner.outcome_with_native_work(&meter).await?;
+            let outcome = effect.owner.outcome_with_native_work(&meter)?.await?;
             if outcome.0.is_none() {
                 let original_work = entry
                     .handles
@@ -470,7 +470,7 @@ impl PiNativeCommandHost {
                     .clone();
                 effect
                     .owner
-                    .verify(false, &mut Some(&mut native_work_io(&original_work)?))
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original_work)?)))
                     .await?;
                 let view = self
                     .live_view(task)
@@ -617,7 +617,7 @@ impl PiNativeCommandHost {
         self.child_admission(task, &work).await?;
         bound
             .owner
-            .verify(false, &mut Some(&mut native_work_io(&work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
             .await?;
         Ok(work)
     }

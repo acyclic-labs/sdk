@@ -1,11 +1,11 @@
 use super::{MountPath, NativeMountError};
-use crate::demand::{NativeMountAllocationCustody, NativeSourceWork};
+use crate::demand::NativeMountAllocationCustody;
 use crate::materializer::NativeResourceCredit::{Copy, Items};
 use crate::{NativeAllocation, NativeMaterializationWork, WorkCounters, WorkError};
 
 pub(super) struct FuseOwned<T> {
     value: Option<T>,
-    legacy: Option<(NativeMountAllocationCustody, u64)>,
+    legacy: Option<(std::sync::Arc<NativeMountAllocationCustody>, u64)>,
     allocation: Option<NativeAllocation>,
 }
 
@@ -62,10 +62,15 @@ impl<T> FuseOwned<T> {
         }
         let admitted = (|| {
             let custody = NativeMountAllocationCustody::new(
-                &mut NativeSourceWork::from_native_materialization_work(work),
+                &mut crate::NativeMaterializationWork::clone(work),
             )?;
-            work.original_demand_work()
-                .with_original_leaf(|work| custody.retain_admitted(bytes, work))??;
+            work.with_original_leaf(|work| {
+                work.check().and_then(|()| {
+                    custody
+                        .retain(bytes, work)
+                        .map_err(crate::DemandError::from)
+                })
+            })?;
             Ok::<_, crate::native_mount::NativeMountStartupAdmissionError>(custody)
         })();
         match admitted {
@@ -76,8 +81,7 @@ impl<T> FuseOwned<T> {
             }),
             Err(error) => {
                 drop(value);
-                work.original_demand_work()
-                    .with_original_leaf(|work| work.release(bytes))??;
+                work.with_original_leaf(|work| work.release(bytes))?;
                 Err(error)
             }
         }

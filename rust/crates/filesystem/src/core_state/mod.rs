@@ -1,6 +1,5 @@
 //! Journaled local persistence for filesystem control-plane state.
 
-use crate::lazy_workspace::MemoryLazyNode;
 use crate::record_store::Revisioned;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
@@ -538,9 +537,6 @@ pub enum LocalCoreStateStoreError {
     /// Content-addressed state did not match its claimed digest.
     #[error("core state content address does not match its payload")]
     Integrity,
-    /// A transferred native payload belonged to a different original ledger.
-    #[error("native core-state payload belongs to another operation ledger")]
-    NativeLedgerMismatch,
     /// A durable workspace-context transaction was malformed or incompatible.
     #[error("workspace-context transaction is incompatible: {0}")]
     ContextTransaction(String),
@@ -611,7 +607,6 @@ mod publications;
 use nodes::*;
 mod collection;
 mod lazy_log;
-use lazy_log::*;
 mod records;
 use records::*;
 mod native_records;

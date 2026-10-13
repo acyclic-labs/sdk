@@ -1532,9 +1532,7 @@ mod tests {
         );
         assert!(
             !store
-                .inner(object_id, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
+                .inner().contains(object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?
         );
 
         let mut insufficient = WorkBudget::UNBOUNDED;
@@ -1561,9 +1559,7 @@ mod tests {
         );
         assert!(
             !store
-                .inner(object_id, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
+                .inner().contains(object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?
         );
 
         {
@@ -1576,9 +1572,7 @@ mod tests {
         }?;
         assert!(
             store
-                .inner(object_id, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
+                .inner().contains(object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?
         );
         drop(store);
         drop(provider);
@@ -1617,9 +1611,7 @@ mod tests {
         for (object_id, bytes) in &objects {
             assert!(
                 !store
-                    .inner(*object_id, WorkBudget::UNBOUNDED, &token)
-                    .await?
-                    .value,
+                    .inner().contains(*object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?,
                 "overflow must not make staged bytes durable"
             );
             let read = {
@@ -1711,9 +1703,7 @@ mod tests {
             let mut durable = 0;
             for (object_id, _) in early {
                 if store
-                    .inner(*object_id, WorkBudget::UNBOUNDED, &token)
-                    .await?
-                    .value
+                    .inner().contains(*object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?
                 {
                     durable += 1;
                 }
@@ -1799,9 +1789,7 @@ mod tests {
         for &object_id in &superseded {
             assert!(
                 !store
-                    .inner(object_id, WorkBudget::UNBOUNDED, &token)
-                    .await?
-                    .value,
+                    .inner().contains(object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?,
                 "an object outside the published closure must stay private"
             );
         }
@@ -2408,8 +2396,8 @@ mod tests {
         }?;
         assert!(!store.index().objects.contains_key(&object_id));
         assert!(store.index().objects.contains_key(&unselected));
-        assert!(store.inner(object_id, WorkBudget::UNBOUNDED, &token).await?.value);
-        assert!(!store.inner(unselected, WorkBudget::UNBOUNDED, &token).await?.value);
+        assert!(store.inner().contains(object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?);
+        assert!(!store.inner().contains(unselected, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token)).await?);
         assert_eq!(work.receipt().backend_write_operations, 1);
         drop(hold);
         drop(bytes);

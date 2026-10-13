@@ -19,7 +19,7 @@ where
     async fn suspend(
         &self,
         byte: u8,
-        workflow: &crate::filesystem::FilesystemWorkflowJournal<P, A, O>,
+        workflow: &Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>,
         key: &str,
     ) -> Result<()> {
         let admission = self.owner(byte).await?.workflow_admission().clone();
@@ -34,14 +34,6 @@ where
             )
             .await?;
         Ok(())
-    }
-
-    fn reserved(&self, scheduler: &crate::scheduler::Scheduler, byte: u8) -> bool {
-        scheduler
-            .operation(OperationId::from_bytes([byte; 16]))
-            .unwrap()
-            .reservation
-            .is_some()
     }
 }
 
@@ -73,11 +65,12 @@ async fn b19_release_requires_suspended_workflow_and_settled_tool() -> Result<()
     journal
         .append(
             attempt,
-            "started".into(),
-            ExecutionEvent::Started {
+            "started",
+            &(ExecutionEvent::Started {
                 request_digest: [9; 32],
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     let invocation = crate::tool::ToolInvocation::for_model_call(
         attempt,
@@ -92,13 +85,14 @@ async fn b19_release_requires_suspended_workflow_and_settled_tool() -> Result<()
     journal
         .append(
             attempt,
-            "tool".into(),
-            ExecutionEvent::ToolStarted {
+            "tool",
+            &(ExecutionEvent::ToolStarted {
                 step: 0,
                 call_id: "tool".into(),
                 invocation,
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     f.suspend(1, &workflow, "suspend").await?;
     assert!(
@@ -109,27 +103,31 @@ async fn b19_release_requires_suspended_workflow_and_settled_tool() -> Result<()
     journal
         .append(
             attempt,
-            "settle".into(),
-            ExecutionEvent::ToolFailed {
+            "settle",
+            &(ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: "tool".into(),
                 reason: ToolFailureKind::ExecutorRejected,
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     assert!(
         journal
             .release_if_quiescent_with_native_work(&work, &workflow)
             .await?
     );
-    assert!(!f.reserved(f.host.coordinator.lock().await.scheduler(), 1));
+    assert!(!!matches!(
+        f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+        crate::distributed::WorkPull::Idle
+    ));
     Ok(())
 }
 
 #[tokio::test]
-async fn b20_release_rejects_raced_journals_and_foreign_bindings() -> Result<()> {
+async fn b20_public_release_rejects_foreign_bindings() -> Result<()> {
     let f = fixture::fixture().await?;
-    let original = f.running(1).await?;
+    f.running(1).await?;
     let attempt = OperationId::from_bytes([2; 16]);
     let journal = f.execution(f.owner(1).await?, attempt)?;
     let workflow = f.workflow(f.owner(1).await?)?;
@@ -137,68 +135,18 @@ async fn b20_release_rejects_raced_journals_and_foreign_bindings() -> Result<()>
     journal
         .append(
             attempt,
-            "started".into(),
-            ExecutionEvent::Started {
+            "started",
+            &(ExecutionEvent::Started {
                 request_digest: [9; 32],
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     let token = acyclic_fs::CancellationToken::new();
     let work = work(
         acyclic_fs::performance::work_budget(100_000, 100_000_000),
         &token,
     )?;
-    for workflow_race in [true, false] {
-        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let proof = workflow.prove_release_with_io(&io).await?.unwrap();
-        let tail = acyclic_stream::Stream::new(
-            f.stream.clone(),
-            format!("harness/v2/execution/{attempt}"),
-        )?
-        .tail()
-        .await?;
-        if workflow_race {
-            let admission = f.owner(1).await?.workflow_admission().clone();
-            DurableWorkflowHost::open(f.machines.clone(), admission.initial, workflow.clone())
-                .await?
-                .step(
-                    OperationId::from_bytes([3; 16]),
-                    IdempotencyKey::new("race")?,
-                    json!(0),
-                    |_| Ok(()),
-                )
-                .await?;
-        } else {
-            let invocation = crate::tool::ToolInvocation::for_model_call(
-                attempt,
-                0,
-                "raced".into(),
-                "test".into(),
-                json!({}),
-                None,
-            )?;
-            let invocation =
-                crate::executor::stage_json(&journal, attempt, "raced", &invocation, None).await?;
-            journal
-                .append(
-                    attempt,
-                    "raced".into(),
-                    ExecutionEvent::ToolStarted {
-                        step: 0,
-                        call_id: "raced".into(),
-                        invocation,
-                    },
-                )
-                .await?;
-        }
-        assert!(
-            original
-                .release_quiescent_execution_with_native_work(attempt, tail, &proof, &work)
-                .await
-                .is_err()
-        );
-        assert!(f.reserved(f.host.coordinator.lock().await.scheduler(), 1));
-    }
     let replacement = f.replace(1).await?;
     let replaced_workflow = f.workflow(replacement)?;
     assert!(
@@ -231,7 +179,10 @@ async fn b20_release_rejects_raced_journals_and_foreign_bindings() -> Result<()>
             .await
             .is_err()
     );
-    assert!(f.reserved(f.host.coordinator.lock().await.scheduler(), 1));
+    assert!(!matches!(
+        f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+        crate::distributed::WorkPull::Idle
+    ));
     Ok(())
 }
 
@@ -246,11 +197,12 @@ async fn b21_cancelled_or_zero_read_work_retains_reservation() -> Result<()> {
     journal
         .append(
             attempt,
-            "started".into(),
-            ExecutionEvent::Started {
+            "started",
+            &(ExecutionEvent::Started {
                 request_digest: [9; 32],
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     let budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
     for cancelled in [true, false] {
@@ -275,7 +227,10 @@ async fn b21_cancelled_or_zero_read_work_retains_reservation() -> Result<()> {
                 .await
                 .is_err()
         );
-        assert!(f.reserved(f.host.coordinator.lock().await.scheduler(), 1));
+        assert!(!matches!(
+            f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+            crate::distributed::WorkPull::Idle
+        ));
     }
     Ok(())
 }

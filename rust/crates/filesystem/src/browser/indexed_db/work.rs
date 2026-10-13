@@ -34,12 +34,7 @@ impl crate::AuthorityWork<'_> {
             .get::<JsValue, _, _>(key)
             .primitive()
             .map_err(backend)?;
-        await_cancellable(request, self.cancellation)
-            .await
-            .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
-                Some(e) => backend(e),
-            })
+        await_cancellable(request, self.cancellation).await
     }
     pub(super) async fn fixed(
         &mut self,
@@ -98,12 +93,7 @@ impl crate::AuthorityWork<'_> {
             .with_key(key)
             .primitive()
             .map_err(backend)?;
-        await_cancellable(request, self.cancellation)
-            .await
-            .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
-                Some(e) => backend(e),
-            })?;
+        await_cancellable(request, self.cancellation).await?;
         Ok(())
     }
     pub(super) async fn insert(
@@ -119,12 +109,7 @@ impl crate::AuthorityWork<'_> {
             .with_key(key)
             .primitive()
             .map_err(backend)?;
-        await_cancellable(request, self.cancellation)
-            .await
-            .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
-                Some(e) => backend(e),
-            })?;
+        await_cancellable(request, self.cancellation).await?;
         Ok(())
     }
     pub(super) async fn blob(
@@ -147,12 +132,12 @@ impl crate::AuthorityWork<'_> {
         if blob.size() != length as f64 {
             return Err(corrupt("invalid Blob length"));
         }
-        let buffer = await_cancellable(JsFuture::from(blob.array_buffer()), self.cancellation)
-            .await
-            .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
-                Some(e) => backend(js_message(&e)),
-            })?;
+        let request = JsFuture::from(blob.array_buffer());
+        let buffer = await_cancellable(
+            async { request.await.map_err(|error| js_message(&error)) },
+            self.cancellation,
+        )
+        .await?;
         let array = Uint8Array::new(&buffer);
         if u64::from(array.length()) != length {
             return Err(corrupt("invalid materialized length"));

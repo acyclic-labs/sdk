@@ -451,11 +451,10 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
     let head = match active {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
-    let encoded = crate::kernel::encode(
-        WorkBudget::UNBOUNDED,
-        Some(&CancellationToken::new()),
-        0,
-        |observe| {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let encoded =
+        crate::kernel::codec::encode_owned(&mut accounting, |observe, allocation_error| {
             crate::kernel::encode_volume_created(
                 VolumeCreated {
                     volume_id: wrong_volume,
@@ -463,21 +462,10 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
                     initial_generation_root: generation_root,
                 },
                 observe,
-                |_| {
-                    VolumeCreatedError::Decode(
-                        crate::kernel::CanonicalDecodeError::AllocationFailed,
-                    )
-                },
+                allocation_error,
             )
-        },
-    )?;
-    let (proposal, _) = creation_commit(
-        OperationId::from_bytes([227; 16]),
-        encoded,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )?
-    .value;
+        })?;
+    let proposal = creation_commit(OperationId::from_bytes([227; 16]), encoded, &mut accounting)?;
     ({
         let authority_cancellation = &crate::CancellationToken::new();
 

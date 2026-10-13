@@ -191,15 +191,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let checkout = self
             .checkout_accounted(selector, mode, accounting, cancellation)
             .await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if accounting.native_work().is_some() {
-            return Ok(crate::kernel::Owned::new(
-                checkout,
-                accounting.claim_owned(0, 0)?,
-                0,
-            ));
-        }
-        let bytes = checkout.logical_owned_bytes();
+        let bytes = if accounting.standalone_parts().is_some() {
+            checkout.logical_owned_bytes()
+        } else {
+            0
+        };
         Ok(crate::kernel::Owned::new(
             checkout,
             accounting.claim_owned(bytes, 0)?,

@@ -73,7 +73,7 @@ pub(super) fn tool_json_bound<T: serde::Serialize>(
         drop(encoded_hold);
         return Ok(());
     }
-    crate::contract::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
 }
 
 pub(super) fn tool_validate_projection(

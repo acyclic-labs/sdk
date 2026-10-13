@@ -121,18 +121,20 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
-    /// Opens one typed durable interaction exactly once.
+    /// Opens one typed durable interaction exactly once on its optional original IO.
     fn open_interaction<'a>(
         &'a self,
         id: InteractionId,
-        interaction: Interaction,
-    ) -> BoxFuture<'a, Result<()>>;
+        interaction: &'a Interaction,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 
-    /// Reads the canonical durable outcome without treating refusal as an answer.
+    /// Reads the durable outcome while its optional IO retains returned metadata.
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
-    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>>;
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>>;
 
     /// Pure original-work capability check, before a native frame or provider callback.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -142,34 +144,5 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     ) -> Result<bool> {
         work.remaining()?;
         Ok(false)
-    }
-
-    /// Opens the same admitted durable interaction without reconstructing authority.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn open_interaction_with_native_work<'a>(
-        &'a self,
-        _id: InteractionId,
-        _interaction: &'a Interaction,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native execution interaction opening is unavailable",
-        })
-    }
-
-    /// Reads the original outcome with custody through its actual last use.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn interaction_outcome_with_native_work<'a>(
-        &'a self,
-        _id: InteractionId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (Option<InteractionOutcome>, acyclic_fs::NativeAllocation)>,
-    > {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native execution interaction outcome is unavailable",
-        })
     }
 }

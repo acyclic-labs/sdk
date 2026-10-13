@@ -1,28 +1,7 @@
 use super::*;
 use crate::conversation::FileDescriptor;
+use crate::resources::ProviderRef;
 use serde_json::json;
-
-#[derive(Clone, Debug)]
-pub(super) enum Step {
-    Lifecycle(usize),
-    Custom(u8),
-    Bind(u8),
-    Resubmit(usize),
-    ConflictingIntent(usize),
-    StaleRevision,
-}
-
-pub(in crate::core) fn step() -> impl proptest::strategy::Strategy<Value = Step> {
-    use proptest::prelude::*;
-    prop_oneof![
-        (0..6_usize).prop_map(Step::Lifecycle),
-        any::<u8>().prop_map(Step::Custom),
-        any::<u8>().prop_map(Step::Bind),
-        any::<usize>().prop_map(Step::Resubmit),
-        any::<usize>().prop_map(Step::ConflictingIntent),
-        Just(Step::StaleRevision)
-    ]
-}
 
 pub(in crate::core) fn operation(value: u8) -> OperationId {
     OperationId::from_bytes([value; 16])
@@ -30,13 +9,9 @@ pub(in crate::core) fn operation(value: u8) -> OperationId {
 
 pub(in crate::core) fn request_file(bytes: &[u8]) -> Result<FileRef> {
     use crate::conversation::VolumeClass;
+    let provider = ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?;
     let volume = VolumeRef::new(
-        crate::resources::ProviderRef::new(
-            "test".into(),
-            "filesystem".into(),
-            "2".into(),
-            &mut None,
-        )?,
+        provider,
         "effects".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
@@ -94,11 +69,8 @@ pub(in crate::core) fn schemas() -> SchemaRegistry {
 
 pub(in crate::core) fn reducer_fixture() -> Reducer {
     let owner = issuer();
-    Reducer::new(
-        owner.audience.clone(),
-        owner.verifier(&mut None).expect("fixture verifier"),
-        schemas(),
-    )
+    let verifier = owner.verifier(&mut None).expect("fixture verifier");
+    Reducer::new(owner.audience, verifier, schemas())
 }
 
 pub(in crate::core) fn command(
@@ -148,6 +120,21 @@ pub(in crate::core) fn command(
         causal_parent: None,
         action,
     }
+}
+
+fn apply(reducer: &mut Reducer, id: u8, action: Action) -> Result<ApplyResult> {
+    reducer.apply(command(operation(id), reducer.revision(), action))
+}
+
+pub(in crate::core) fn restore(reducer: &Reducer, owner: &AuthorityIssuer) -> Result<Reducer> {
+    let bytes = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
+    Reducer::restore(
+        crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        owner.verifier(&mut None)?,
+        reducer.schemas.clone(),
+        &mut None,
+    )
 }
 
 mod authority;

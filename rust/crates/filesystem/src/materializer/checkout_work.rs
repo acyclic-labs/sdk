@@ -11,16 +11,16 @@ impl NativeMaterializationWork {
     pub(crate) fn checkout_control_sink(
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
         self.state
-            .checkout_control_witness(producer)
+            .checkout_control_sink(producer)
             .ok_or(NativeTreeMaterializationError::InvalidLayout)
     }
     pub(crate) fn register_native_checkout_control(
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
         header: &mut NativeAllocation,
-    ) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
         self.state
             .register_native_checkout_control(self, producer, header)
     }

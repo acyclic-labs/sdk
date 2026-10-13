@@ -80,8 +80,8 @@ impl ModelEvent {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
-            Self::ToolCall { call_id, name, arguments } => add(add(call_id.capacity() as u64, name.capacity() as u64)?, crate::contract::json_value_logical_owned_bytes(arguments)?)?,
-            Self::Completed { metadata } => crate::contract::json_value_logical_owned_bytes(metadata)?,
+            Self::ToolCall { call_id, name, arguments } => add(add(call_id.capacity() as u64, name.capacity() as u64)?, crate::executor::json::json_value_logical_owned_bytes(arguments)?)?,
+            Self::Completed { metadata } => crate::executor::json::json_value_logical_owned_bytes(metadata)?,
         };
         add(std::mem::size_of::<Self>() as u64, payload)
     }

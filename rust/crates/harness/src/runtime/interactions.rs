@@ -2,7 +2,6 @@ use super::*;
 
 impl TaskContext {
     /// Routes an interaction by stable identity; its request/answer bytes stay in owner storage.
-
     pub async fn interact(
         &self,
         operation_id: OperationId,
@@ -36,7 +35,6 @@ impl TaskContext {
     }
 
     /// Pure support discovery for the original binding, before callback boxing or constructing an owned interaction request.
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn supports_native_interactions(
         &self,
@@ -68,7 +66,6 @@ impl TaskContext {
     }
 
     /// Routes an already-paid request through this context's original binding.
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn interact_with_native_work(
         &self,
@@ -225,7 +222,6 @@ impl TaskContext {
     }
 
     /// Sends a donor-authorized parcel under the retained owner fence and route.
-
     pub async fn send(
         &self,
         recipient: TaskId,
@@ -241,7 +237,6 @@ impl TaskContext {
     }
 
     /// Reads only one retained parcel selected by this task's original receive command.
-
     pub async fn read_received_mail(
         &self,
         receive_operation: OperationId,
@@ -270,7 +265,6 @@ impl TaskContext {
     }
 
     /// Reads a bounded durable inbox page after the last observed sequence.
-
     pub async fn inbox(&self, after: u64, limit: usize) -> Result<Vec<InboxItem>> {
         if limit == 0 {
             return Err(Error::Invalid("inbox page bound is invalid".into()));
@@ -295,7 +289,6 @@ impl TaskContext {
     }
 
     /// Sends the same exact parcel with the original native owner and work.
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn send_with_native_work<'a>(
         &'a self,
@@ -311,7 +304,6 @@ impl TaskContext {
     }
 
     /// Reads a bounded original-owner inbox page without rebuilding a scope.
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn inbox_with_native_work<'a>(
         &'a self,
@@ -330,7 +322,6 @@ impl TaskContext {
     }
 
     /// Queries an existing effect by identity and never redispatches it.
-
     pub async fn reconcile_effect(&self, effect_id: EffectId) -> Result<crate::core::EffectStatus> {
         let task = self.durable_task.ok_or_else(|| {
             Error::Unsupported("effect reconciliation requires a durable task".into())

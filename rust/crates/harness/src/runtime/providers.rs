@@ -1,7 +1,6 @@
 use super::*;
 
 /// Provider boundary for stable durable admission and outcome observation.
-
 pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
     /// Requires the current uncancelled running lease before a fresh task step or dispatch.
     fn verify_dispatch_owner<'a>(
@@ -73,7 +72,6 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
 }
 
 /// Owner-bound durable task state, independently replaceable from admission and execution.
-
 pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
@@ -301,7 +299,6 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
 }
 
 /// Independently replaceable durable admission boundary.
-
 pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
@@ -448,7 +445,6 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
 }
 
 /// One replaceable execution route.
-
 pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Immutable provider implementation pinned in every admitted placement.
     fn identity(&self) -> ComponentIdentity;
@@ -475,7 +471,6 @@ pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
 }
 
 /// Replaceable owner-bound observer for an already planned provider effect.
-
 pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
     /// Returns the latest attested status after querying the pinned attempt.
     fn reconcile<'a>(
@@ -485,7 +480,6 @@ pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
 }
 
 /// Replaceable local interaction router.
-
 pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
     /// Routes an interaction while retaining its payloads in the provider.
     fn route<'a>(
@@ -525,11 +519,9 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
 }
 
 /// Owner-mediated interaction ledger.
-
 pub type InteractionInspection = Option<(InteractionTicket, Option<InteractionResolution>)>;
 
 /// Owner-mediated resolver for versioned questions and approvals.
-
 pub trait InteractionResolver: acyclic_stream::ProviderPlatform {
     /// Reads the admitted request and current decision before a CAS reply.
     fn inspect<'a>(

@@ -506,7 +506,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         let published: files::FileResult = serde_json::from_value(write_value.clone())
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(published.file.path(), "destination.txt");
-        assert_eq!(writable.read_file(&published.file).await?.as_ref(), b"body".as_ref());
+        assert_eq!(writable.read_file(&published.file, None).await?.as_ref(), b"body".as_ref());
         assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(write_executor.reconciliations.load(Ordering::SeqCst), 0);
         if reopened {

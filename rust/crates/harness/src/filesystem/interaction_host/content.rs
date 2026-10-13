@@ -62,7 +62,7 @@ where
             ));
         }
         let kind = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("answer-{expected_version}-{operation_id}"),
                 work,
             )
@@ -235,16 +235,16 @@ where
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let path = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!(".system/interactions/{id}/{kind}.json"),
                 work,
             )
         })?;
         let name = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("{kind}.json"), work)
+            crate::executor::preparation_format(format_args!("{kind}.json"), work)
         })?;
         let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("interaction:{id}:{kind}"), work)
+            crate::executor::preparation_format(format_args!("interaction:{id}:{kind}"), work)
         })?)?;
         let names_hold = io
             .map(|io| {
@@ -296,13 +296,13 @@ pub(super) fn admit_interaction(bytes: &[u8], io: Option<&PreparationIo>) -> Res
     let Some(io) = io else {
         return Ok(());
     };
-    let _diagnostic = io.reserve_decode(crate::contract::lexical_json_diagnostic_bytes())?;
-    let bounds = crate::contract::JsonBounds {
+    let _diagnostic = io.reserve_decode(crate::executor::json::lexical_json_diagnostic_bytes())?;
+    let bounds = crate::executor::json::JsonBounds {
         maximum_bytes: bytes.len() as u64,
         maximum_items: io.remaining()?.items_examined,
         maximum_depth: 128,
     };
-    match crate::contract::admit_json(bytes, bounds, &mut |charge| io.codec_charge(charge, false)) {
+    match crate::executor::json::admit_json(bytes, bounds, &mut |charge| io.codec_charge(charge, false)) {
         Err(Error::Invalid(_)) => Err(interaction_boundary(
             Some(io),
             ErrorCode::Storage,

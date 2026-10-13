@@ -239,7 +239,7 @@ pub fn validate_task_children_page(
 pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, JsValue> {
     let schema: serde_json::Value = from_js(schema)?;
     let value: serde_json::Value = from_js(value)?;
-    crate::contract::validate_json_schema_value(&schema, &value, "tool value", &mut None)
+    crate::executor::validate_json_schema_value(&schema, &value, "tool value", &mut None)
         .map_err(js_error)?;
     to_js(&value)
 }

@@ -38,7 +38,9 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = inputs.observer(&observation, work.cancellation())?;
+            let mut checkout = observation
+                .observer(work, work.cancellation())
+                .map_err(fs_error)?;
             let file_id = checkout
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -111,7 +113,7 @@ where
             )
         } else {
             carrier
-                .with_work(|work| work.allocate(bytes))
+                .with_work(|work| work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED))
                 .map_err(super::super::lazy::mount_demand_error)?;
             None
         };
@@ -156,7 +158,9 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = inputs.observer(&observation, work.cancellation())?;
+            let mut checkout = observation
+                .observer(work, work.cancellation())
+                .map_err(fs_error)?;
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, work, work.cancellation())
                 .await?

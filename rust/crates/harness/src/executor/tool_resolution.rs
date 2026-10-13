@@ -21,7 +21,7 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(operation_id));
         }
         let key = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("tool:{step}:{call_id}:failed:{}", OperationId::new()),
                 work,
             )

@@ -87,8 +87,6 @@ use crate::model::{
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
 };
 
-use crate::obs::Observe as _;
-
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
@@ -195,15 +193,13 @@ use candidates::root_parent_bytes;
 pub use checkout::Checkout;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use collection::LocalGarbageCollection;
-pub(crate) use content_model::ContentAddress;
 pub use content_model::ContentChange;
-pub(crate) use content_model::ContentFile;
-pub(crate) use content_model::ContentOperation;
 pub use content_model::ContentTimes;
 pub use content_model::FileCloneRequest;
 pub use content_model::GroupedChange;
 pub use content_model::GroupedOutcome;
 use content_model::content_input_path_bytes;
+pub(crate) use content_model::{ContentAddress, ContentFile};
 pub use detached::DetachedFile;
 pub use diff::DirectoryBindingChange;
 pub use diff::FileRecordChange;
@@ -270,7 +266,6 @@ use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;
 pub(crate) use metadata::read_record_metadata_to_file_root_with_accounting;
 use proof::DependencyLedger;
-use proof::ObservedPathMap;
 use proof::Proof;
 use publication::LastCommit;
 pub(crate) use publication::PublicationClosure;
@@ -296,7 +291,6 @@ use tree::directory_entries;
 use tree::list_directory_to_file_root_with_accounting;
 use volume_creation::CREATION_FINGERPRINT_DOMAIN;
 use volume_creation::creation_commit;
-use volume_creation::creation_commit_with_accounting;
 use volume_creation::creation_fingerprint;
 use volume_creation::derived_digest;
 use volume_creation::merge_creation_backend_work;
@@ -314,3 +308,5 @@ use workspace_creation::decode_first_creation_record;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/opaque_authority.rs"]
 pub(crate) mod test_authority;
+
+use crate::kernel::{decode_published_generation, decode_volume_created};

@@ -14,29 +14,13 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     };
     let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
     crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), &invocation)?;
-    crate::contract::json_byte_length(&invocation, wide.limits().file_bytes, &mut None)
+    crate::executor::json::json_byte_length(&invocation, wide.limits().file_bytes, &mut None)
         .map(|_| ())?;
-    let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            crate::tool::Tool {
-                definition: crate::tool::ToolDefinition {
-                    name: "example.echo".into(),
-                    revision: "1".into(),
-                    description: "Echo".into(),
-                    input_schema: json!({"type":"object"}),
-                    output_schema: json!({"type":"object"}),
-                    projection_schema: crate::tool::json_projection_schema(
-                        json!({"type":"object"}),
-                    ),
-                },
-                executor: adapter.clone(),
-                projection: Arc::new(Projection),
-            },
-            None,
-        ),
-        &mut None,
-        None,
+    let tools = echo_tools(
+        adapter.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let narrow = Limits {
         file_bytes: 128,
@@ -62,8 +46,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     assert_eq!(adapter.0.load(Ordering::SeqCst), 0);
     assert_eq!(journal.3.load(Ordering::SeqCst), 0);
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
-    assert!(journal.journal.0.lock().unwrap().is_empty());
-    assert!(journal.journal.1.lock().unwrap().is_empty());
+    assert!(journal.0.lock().unwrap().is_empty());
+    assert!(journal.1.lock().unwrap().is_empty());
     assert!(messages.is_empty());
     Ok(())
 }

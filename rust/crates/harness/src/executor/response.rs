@@ -46,7 +46,7 @@ impl StockExecution<'_> {
             checkpoint: None,
         };
         let projection_key = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(format_args!("context:{step}"), work)
+            crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
         let reference = stage_json(
             journal,
@@ -58,7 +58,7 @@ impl StockExecution<'_> {
         .await?;
         let accounting_ref = if let Some(accounting) = &accounting {
             let accounting_key = with_history_io(self.io, |work| {
-                crate::contract::preparation_format(format_args!("context:{step}:accounting"), work)
+                crate::executor::preparation_format(format_args!("context:{step}:accounting"), work)
             })?;
             Some(
                 stage_json(
@@ -74,7 +74,7 @@ impl StockExecution<'_> {
             None
         };
         let prepared_key = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(format_args!("context:{step}:prepared"), work)
+            crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
         self.verify_execution_owner().await?;
         if !journal

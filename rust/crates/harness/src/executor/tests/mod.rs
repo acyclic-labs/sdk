@@ -314,8 +314,14 @@ async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime:
             }
         },
     )?)?;
-    let harness =
-        crate::runtime::AgentHarness::new(tasks, ToolRegistry::default(), scope, 1, None)?;
+    let harness = crate::runtime::Bindings {
+        tasks,
+        tools: ToolRegistry::default(),
+        scope,
+        concurrency: 1,
+        ..crate::runtime::Bindings::local()
+    }
+    .build(None)?;
     let definition = harness.task::<(), ()>("context-probe@1")?;
     assert!(matches!(
         harness.spawn(&definition, ()).await?.result().await?,
@@ -732,36 +738,46 @@ impl ExecutionJournal for Journal {
     fn open_interaction<'a>(
         &'a self,
         id: InteractionId,
-        request: Interaction,
-    ) -> BoxFuture<'a, Result<()>> {
-        async move {
+        request: &'a Interaction,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() {
+            return Err(Error::Unsupported(
+                "test journal has no native interactions".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             request.validate(&mut None)?;
             let mut interactions = self.2.lock().unwrap();
             if let Some((original, _)) = interactions.get(&id) {
-                if original != &request {
+                if original != request {
                     return Err(Error::Conflict("approval request changed".into()));
                 }
             } else {
-                interactions.insert(id, (request, None));
+                interactions.insert(id, (request.clone(), None));
             }
             Ok(())
-        }
-        .boxed()
+        })
     }
 
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
-    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
-        async move {
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
+        if io.is_some() {
+            return Err(Error::Unsupported(
+                "test journal has no native interactions".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             Ok(self
                 .2
                 .lock()
                 .unwrap()
                 .get(&id)
                 .and_then(|(_, outcome)| outcome.clone()))
-        }
-        .boxed()
+        })
     }
 }
 
@@ -826,3 +842,31 @@ mod recovery;
 mod replay;
 mod tools_1;
 mod tools_2;
+fn echo_tools(
+    executor: Arc<dyn crate::tool::ToolExecutor>,
+    input_schema: Value,
+    output_schema: Value,
+    projection_schema: Value,
+) -> Result<ToolRegistry> {
+    let mut tools = ToolRegistry::default();
+    tools.register(
+        (
+            crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(),
+                    revision: "1".into(),
+                    description: "Echo".into(),
+                    input_schema,
+                    output_schema,
+                    projection_schema,
+                },
+                executor,
+                projection: Arc::new(Projection),
+            },
+            None,
+        ),
+        &mut None,
+        None,
+    )?;
+    Ok(tools)
+}

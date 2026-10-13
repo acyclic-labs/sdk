@@ -25,3 +25,6 @@ mod recovery;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod release;
+
+#[cfg(feature = "filesystem")]
+mod preparation;

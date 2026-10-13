@@ -6,18 +6,8 @@ pub struct NativeWorkspaceGraph {
     pub(in crate::bindings) inner: WorkspaceGraph<LocalCoreStateStore>,
 }
 
-/// Durable, recursively forkable multi-root workspace-context registry.
-#[napi]
-pub struct NativeWorkspaceContextRegistry {
-    pub(in crate::bindings) inner: WorkspaceContextRegistry<LocalCoreStateStore>,
-}
-
 /// One durable workspace-lineage record.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceLineageRecord {
     pub version: u32,
     pub revision: BigInt,
@@ -30,172 +20,7 @@ pub struct NativeWorkspaceLineageRecord {
 }
 
 #[napi]
-impl NativeWorkspaceContextRegistry {
-    /// Opens context state in the shared private namespace.
-    #[napi(factory)]
-    pub fn open(state_root: String) -> Self {
-        Self {
-            inner: WorkspaceContextRegistry::new(LocalCoreStateStore::new(state_root)),
-        }
-    }
-
-    /// Registers a root context without enumerating its physical roots.
-    #[napi]
-    pub async fn register_root(&self, context_id: Buffer, roots_wire: Buffer) -> Result<Buffer> {
-        let roots = workspace_context_wire::decode_roots(&roots_wire).map_err(napi_wire_error)?;
-        let context = self
-            .inner
-            .register_root(
-                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
-                roots,
-            )
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_context(&context)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-
-    /// Registers a child whose roots point at its exact direct parent.
-    #[napi]
-    pub async fn register_child(
-        &self,
-        context_id: Buffer,
-        parent_context_id: Buffer,
-        roots_wire: Buffer,
-    ) -> Result<Buffer> {
-        let roots = workspace_context_wire::decode_roots(&roots_wire).map_err(napi_wire_error)?;
-        let context = self
-            .inner
-            .register_child(
-                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
-                WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
-                roots,
-            )
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_context(&context)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-
-    /// Adopts one parent-authorized root without enumerating its contents.
-    #[napi]
-    pub async fn adopt_root(&self, context_id: Buffer, root_wire: Buffer) -> Result<Buffer> {
-        let root = workspace_context_wire::decode_root(&root_wire).map_err(napi_wire_error)?;
-        let context = self
-            .inner
-            .adopt_root(WorkspaceContextId::from_bytes(fixed_16(&context_id)?), root)
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_context(&context)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-
-    /// Releases one root after callers have settled its filesystem changes.
-    #[napi]
-    pub async fn remove_root(&self, context_id: Buffer, root_id: Buffer) -> Result<Buffer> {
-        let context = self
-            .inner
-            .remove_root(
-                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
-                WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
-            )
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_context(&context)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-
-    /// Resolves one durable context as stable JSON.
-    #[napi]
-    pub async fn resolve(&self, context_id: Buffer) -> Result<Buffer> {
-        let context = self
-            .inner
-            .resolve(WorkspaceContextId::from_bytes(fixed_16(&context_id)?))
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_context(&context)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-
-    /// Freezes or resumes a retained context.
-    #[napi]
-    pub async fn set_active(&self, context_id: Buffer, active: bool) -> Result<Buffer> {
-        let context = self
-            .inner
-            .set_active(
-                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
-                active,
-            )
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_context(&context)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-
-    /// Advances one root binding after a compatibility branch switch.
-    #[napi]
-    pub async fn set_workspace(
-        &self,
-        context_id: Buffer,
-        root_id: Buffer,
-        workspace_id: Buffer,
-        workspace_name: String,
-        parent_workspace_id: Option<Buffer>,
-    ) -> Result<Buffer> {
-        let parent = parent_workspace_id
-            .as_ref()
-            .map(|value| fixed_16(value).map(WorkspaceId::from_bytes))
-            .transpose()?;
-        let context = self
-            .inner
-            .set_workspace(
-                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
-                WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
-                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
-                workspace_name,
-                parent,
-            )
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_context(&context)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-
-    /// Recursively tombstones a direct-child context subtree.
-    #[napi]
-    pub async fn discard_subtree(
-        &self,
-        parent_context_id: Buffer,
-        child_context_id: Buffer,
-        maximum: NapiU32,
-    ) -> Result<Buffer> {
-        let maximum = maximum.into_inner();
-
-        let discarded = self
-            .inner
-            .discard_subtree(
-                WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
-                WorkspaceContextId::from_bytes(fixed_16(&child_context_id)?),
-                maximum,
-            )
-            .await
-            .map_err(napi_error)?;
-        workspace_context_wire::encode_discard(&discarded)
-            .map(Buffer::from)
-            .map_err(napi_wire_error)
-    }
-}
-
-#[napi]
 impl NativeWorkspaceGraph {
-    /// Opens the recursive-workspace graph in the shared private namespace.
     #[napi(factory)]
     pub fn open(state_root: String) -> Self {
         Self {
@@ -203,7 +28,6 @@ impl NativeWorkspaceGraph {
         }
     }
 
-    /// Registers a live SDK workspace as a publication root.
     #[napi]
     pub async fn register_root(
         &self,
@@ -216,7 +40,6 @@ impl NativeWorkspaceGraph {
             .map_err(napi_error)
     }
 
-    /// Forks a live child workspace and records its exact direct parent.
     #[napi]
     pub async fn fork(
         &self,
@@ -235,7 +58,6 @@ impl NativeWorkspaceGraph {
             .map_err(napi_error)
     }
 
-    /// Verifies and returns the child's exact direct-parent registration.
     #[napi]
     pub async fn authorize_join(
         &self,
@@ -252,7 +74,6 @@ impl NativeWorkspaceGraph {
             .map_err(napi_error)
     }
 
-    /// Returns the bounded direct-parent chain, nearest parent first.
     #[napi]
     pub async fn ancestors(
         &self,

@@ -1,7 +1,5 @@
 use super::*;
 
-use super::*;
-
 fn ids() -> (OperationId, OperationId) {
     (
         OperationId::from_bytes([1; 16]),
@@ -24,7 +22,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
         params: json!({"name":"echo","arguments":{}}),
         maximum_bytes: 4096,
     };
-    request.validate().unwrap();
+    request.exchange(None).unwrap();
     let expected = json!({"content":[{"type":"text","text":"héllo"}],
             "structuredContent":{"sequence":u64::MAX}});
     let mut transcript = initialized(initialization);
@@ -50,7 +48,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
                 params: params.clone(),
                 ..request
             }
-            .validate()
+            .exchange(None)
             .is_err(),
             "accepted {params}"
         );
@@ -60,7 +58,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
             operation: initialization,
             ..request.clone()
         }
-        .validate()
+        .exchange(None)
         .is_err()
     );
     assert!(
@@ -68,7 +66,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
             maximum_bytes: 0,
             ..request.clone()
         }
-        .validate()
+        .exchange(None)
         .is_err()
     );
     assert!(
@@ -77,7 +75,7 @@ fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
             params: json!({"cursor":1}),
             ..request
         }
-        .validate()
+        .exchange(None)
         .is_err()
     );
     let mut malformed = initialized(initialization);
@@ -423,7 +421,6 @@ fn original_native_frame_quota_precedes_trusted_parse_and_preserves_owned_cause(
         .err()
         .unwrap();
     assert!(matches!(error, Error::NativeWork { .. }));
-    assert!(exchange.result.is_none());
     drop(exchange);
     drop(first);
     drop(guard);

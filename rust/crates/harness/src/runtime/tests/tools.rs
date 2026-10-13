@@ -47,13 +47,9 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         owned_interactions: None,
         owned_mailbox: None,
         output_content: None,
-        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-        native_root_output: std::sync::OnceLock::new(),
         model_steps: Arc::new((AtomicUsize::new(0), None)),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_metadata_source: None,
-        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-        working_view: std::sync::OnceLock::new(),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_custody: None,
     };
@@ -340,13 +336,9 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
         owned_interactions: None,
         owned_mailbox: None,
         output_content: None,
-        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-        native_root_output: std::sync::OnceLock::new(),
         model_steps: Arc::new((AtomicUsize::new(0), None)),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_metadata_source: None,
-        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-        working_view: std::sync::OnceLock::new(),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_custody: None,
     };

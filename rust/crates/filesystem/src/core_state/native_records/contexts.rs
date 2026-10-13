@@ -11,35 +11,11 @@ fn index_ready(
         .is_some())
 }
 
-fn decode_filename(name: &[u8], work: &Work) -> Result<Option<WorkspaceContextId>, Error> {
-    let Some(stem) = name.strip_suffix(b".json") else {
-        return Ok(None);
-    };
-    if stem.len() != 32 {
-        return Ok(None);
-    }
+fn decode_filename(name: &[u8]) -> Option<WorkspaceContextId> {
+    let stem = name.strip_suffix(b".json")?;
     let mut bytes = [0; 16];
-    // Decode the fixed-width metadata one actual character at a time. There is
-    // no decoded-byte counter, and malformed names must retain only the real
-    // examined prefix rather than charging a guessed opaque codec completion.
-    for (index, byte) in stem.iter().copied().enumerate() {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        let nibble = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            b'A'..=b'F' => byte - b'A' + 10,
-            _ => return Ok(None),
-        };
-        if index % 2 == 0 {
-            bytes[index / 2] = nibble << 4;
-        } else {
-            bytes[index / 2] |= nibble;
-        }
-    }
-    Ok(Some(WorkspaceContextId::from_bytes(bytes)))
+    hex::decode_to_slice(stem, &mut bytes).ok()?;
+    Some(WorkspaceContextId::from_bytes(bytes))
 }
 
 fn include_id(
@@ -90,9 +66,6 @@ fn live_ids(
         let mut reader = reader;
         loop {
             check(work, cxl)?;
-            #[cfg(unix)]
-            let next = reader.next(&mut &*work)?;
-            #[cfg(windows)]
             let next = reader.next(&mut &*work)?;
             let Some((entry, entry_allocation)) = next else {
                 break;
@@ -100,7 +73,7 @@ fn live_ids(
             // Retire the entry before its allocation on every exit.
             let entry = entry;
             #[cfg(unix)]
-            let id = decode_filename(entry.name.as_encoded_bytes(), work)?;
+            let id = decode_filename(entry.name.as_encoded_bytes());
             #[cfg(windows)]
             let id = {
                 let mut ascii = [0_u8; 37];
@@ -114,7 +87,7 @@ fn live_ids(
                     for (target, unit) in ascii.iter_mut().zip(&entry.name) {
                         *target = *unit as u8;
                     }
-                    decode_filename(&ascii[..entry.name.len()], work)?
+                    decode_filename(&ascii[..entry.name.len()])
                 }
             };
             drop(entry);
@@ -133,26 +106,21 @@ fn live_ids(
             }
         }
     }
-    let mut live = BTreeSet::new();
-    for id in ids {
+    let mut next = ids.first().copied();
+    while let Some(id) = next {
         match load::<WorkspaceContext>(root, log, id, work, cxl)? {
-            Some(context) => {
-                if context.0.context_id != id {
-                    return Err(Error::Integrity);
-                }
-                // Both retained identifiers remain funded during the move.
-                held.absorb(&mut work.claim(
-                    std::mem::size_of::<WorkspaceContextId>() as u64,
-                    0,
-                    crate::WorkCounters::UNCHARGED,
-                )?)?;
-                live.insert(id);
+            Some(context) if context.0.context_id != id => return Err(Error::Integrity),
+            None => {
+                ids.remove(&id);
+                held.release(std::mem::size_of::<WorkspaceContextId>() as u64)?;
             }
-            None => {}
+            _ => {}
         }
-        held.release(std::mem::size_of::<WorkspaceContextId>() as u64)?;
+        next = ids
+            .range((std::ops::Bound::Excluded(id), std::ops::Bound::Unbounded))
+            .next()
+            .copied();
     }
-    let ids = live;
     Ok((ids, held))
 }
 

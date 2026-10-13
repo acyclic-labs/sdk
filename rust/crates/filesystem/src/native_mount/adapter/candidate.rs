@@ -112,7 +112,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
                     .sum::<u64>();
             inputs
                 .carrier
-                .with_work(|work| work.adopt(bytes))
+                .with_work(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
                 .map_err(super::lazy::mount_demand_error)?;
             inputs.bytes = bytes;
         }

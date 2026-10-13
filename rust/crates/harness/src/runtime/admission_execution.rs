@@ -2,7 +2,6 @@ use super::*;
 
 impl AgentHarness {
     /// Admits a process-local task after validating its registration and input.
-
     pub async fn spawn<I, O>(
         self: &Arc<Self>,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -96,7 +95,7 @@ impl AgentHarness {
             ));
         };
         let extension_leases = self.retain_task_extensions(definition, &scope)?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.input_schema,
             &serde_json::to_value(&input).map_err(|error| Error::Invalid(error.to_string()))?,
             "task input",
@@ -126,13 +125,9 @@ impl AgentHarness {
                         owned_interactions: None,
                         owned_mailbox: None,
                         output_content: None,
-                        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-                        native_root_output: std::sync::OnceLock::new(),
                         model_steps: Arc::new((AtomicUsize::new(0), None)),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_metadata_source: None,
-                        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-                        working_view: std::sync::OnceLock::new(),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_custody: None,
                     },
@@ -143,7 +138,7 @@ impl AgentHarness {
                     None => run.await?,
                 };
                 drop(extension_leases);
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &output_schema,
                     &serde_json::to_value(&output)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -165,7 +160,6 @@ impl AgentHarness {
     }
 
     /// Admits a pinned resumable task through a host; live futures are rejected.
-
     pub async fn admit<I, O>(
         self: &Arc<Self>,
         operation_id: OperationId,

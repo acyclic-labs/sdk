@@ -109,7 +109,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation ownership for an SDK observer.
-    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
+    fn allocation_custody(&self) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
         None
     }
 
@@ -177,7 +177,7 @@ pub(crate) struct ViewLedger {
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
     observers: Mutex<Observers>,
-    _custody: Option<crate::demand::NativeMountAllocationCustody>,
+    _custody: Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
 }
 
 impl ViewLedger {
@@ -426,25 +426,15 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
     let bytes = name.as_bytes();
     match name.encoding() {
         NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-            if bytes.is_ascii() {
-                hasher.write_u8(1);
-                hash_ascii_fold(bytes.iter().copied(), hasher);
-                return;
-            }
             if let Ok(text) = std::str::from_utf8(bytes) {
-                hash_unicode_fold(text.chars(), hasher);
+                hash_text(text.chars(), hasher);
                 return;
             }
         }
         NameEncoding::WindowsUtf16Le => {
             if let Some(units) = crate::kernel::types::utf16le_units(bytes) {
-                if units.clone().all(|unit| unit < 0x80) {
-                    hasher.write_u8(1);
-                    hash_ascii_fold(units.map(|unit| unit as u8), hasher);
-                    return;
-                }
                 if char::decode_utf16(units.clone()).all(|value| value.is_ok()) {
-                    hash_unicode_fold(
+                    hash_text(
                         char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
                         hasher,
                     );
@@ -458,7 +448,7 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
     hasher.write(bytes);
 }
 
-fn hash_unicode_fold(text: impl Iterator<Item = char>, hasher: &mut DefaultHasher) {
+fn hash_text(text: impl Iterator<Item = char>, hasher: &mut DefaultHasher) {
     hasher.write_u8(1);
     let mut encoded = [0_u8; 4];
     for folded in text
@@ -468,23 +458,6 @@ fn hash_unicode_fold(text: impl Iterator<Item = char>, hasher: &mut DefaultHashe
     {
         hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
     }
-}
-
-/// Hashes ASCII text lowercased, exactly as the Unicode fold hashes it.
-fn hash_ascii_fold(bytes: impl Iterator<Item = u8>, hasher: &mut DefaultHasher) {
-    let mut buffer = [0_u8; 64];
-    let mut filled = 0;
-    for byte in bytes {
-        if let Some(slot) = buffer.get_mut(filled) {
-            *slot = byte.to_ascii_lowercase();
-            filled += 1;
-        }
-        if filled == buffer.len() {
-            hasher.write(&buffer);
-            filled = 0;
-        }
-    }
-    hasher.write(buffer.get(..filled).unwrap_or_default());
 }
 
 fn key_of(value: &impl Hash) -> u64 {
@@ -542,7 +515,7 @@ fn admitted_names<T>(
     work.charge(scan_work(items))
         .map_err(super::lazy::mount_demand_error)?;
     if scratch != 0 {
-        work.allocate(scratch)
+        work.claim_allocation(scratch, u64::from((scratch) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(super::lazy::mount_demand_error)?;
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));

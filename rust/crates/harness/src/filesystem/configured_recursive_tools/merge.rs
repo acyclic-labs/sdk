@@ -1,7 +1,7 @@
 use super::*;
+use crate::executor::stock_boundary;
 use crate::executor::with_history_io;
 use crate::filesystem::PreparationIo;
-use crate::executor::stock_boundary;
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -45,7 +45,7 @@ where
         for merge in &self.config.merges {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work {
+                    crate::executor::json::JsonCodecCharge::Work {
                         bytes: 32,
                         items: 1,
                     },
@@ -57,8 +57,9 @@ where
                 break;
             }
         }
-        let allocation = allocation
-            .ok_or_else(|| stock_boundary(io, ErrorCode::Unauthorized, "merge has no notice binding"))?;
+        let allocation = allocation.ok_or_else(|| {
+            stock_boundary(io, ErrorCode::Unauthorized, "merge has no notice binding")
+        })?;
         let runtime = self.runtime(io)?;
         let ordinary;
         #[cfg(not(target_arch = "wasm32"))]
@@ -111,13 +112,14 @@ where
                 ));
             }
         }
-        let selected = selected
-            .ok_or_else(|| stock_boundary(io, ErrorCode::Unauthorized, "merge source has no Project"))?;
+        let selected = selected.ok_or_else(|| {
+            stock_boundary(io, ErrorCode::Unauthorized, "merge source has no Project")
+        })?;
         if let Some(original) = original
             && (original.caller != caller.task
                 || original.arguments != *arguments
-                || &original.destination != caller.owner.authority()
-                || &original.source != source.owner.authority()
+                || &original.destination != caller.owner.issuer.audience()
+                || &original.source != source.owner.issuer.audience()
                 || original.target_project != caller.project
                 || original.source_project != selected.volume)
         {
@@ -253,10 +255,10 @@ where
         drop(self.read(context, &notice.content, reader).await?);
         let (verifier, scope, project, source_authority, source_project) =
             with_history_io(io, |work| {
-                let verifier = caller.owner.issuer().verifier(work)?;
+                let verifier = caller.owner.issuer.verifier(work)?;
                 let source_authority = match work.as_deref_mut() {
-                    Some(work) => work.clone_authority(source.owner.authority())?,
-                    None => source.owner.authority().clone(),
+                    Some(work) => work.clone_authority(source.owner.issuer.audience())?,
+                    None => source.owner.issuer.audience().clone(),
                 };
                 Ok::<_, Error>((
                     verifier,

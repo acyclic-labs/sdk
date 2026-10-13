@@ -1,9 +1,5 @@
 //! Core response and persisted-metadata validation, independent of transport features.
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-use super::NativeTransportErrors;
 use super::{Error, request, wire};
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-use std::sync::Arc;
 
 /// Validates a generated response against its original request, shared with WASM clients.
 pub fn validate_binary(
@@ -292,10 +288,19 @@ fn zstd_output(maximum: usize) -> Result<Vec<u8>, std::collections::TryReserveEr
     Ok(output)
 }
 
+/// Maps an unexpected GET frame to its terminal service error or a protocol failure.
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-mod native;
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-pub(crate) use native::*;
+pub(crate) fn reject_frame(frame: Option<wire::get_object_response::Frame>) -> Error {
+    match frame {
+        Some(wire::get_object_response::Frame::Error(detail)) => {
+            wire::ErrorCode::try_from(detail.code)
+                .ok()
+                .filter(|code| *code != wire::ErrorCode::Unspecified)
+                .map_or_else(invalid, Error::from)
+        }
+        _ => invalid(),
+    }
+}
 
 /// Builds an uncompressed body frame for a provider that does not compress.
 #[must_use]

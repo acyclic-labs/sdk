@@ -240,7 +240,7 @@ pub struct JoinPlan<A, O> {
     pub(super) source_head: Generation<A, O>,
     pub(super) target_head: Generation<A, O>,
     pub(super) target_authority_head: crate::Head,
-    pub(super) base: crate::facade::WorkspaceCommonAncestor,
+    pub(crate) base: crate::facade::WorkspaceCommonAncestor,
     pub(super) history: JoinHistory,
     pub(super) maximum_generations: u32,
     pub(super) maximum_changes: u32,
@@ -261,12 +261,6 @@ impl<A, O> JoinPlan<A, O> {
     /// Exact discovered common ancestor.
     pub const fn common_ancestor(&self) -> GenerationId {
         self.base.id
-    }
-
-    /// Workspace volume that authenticated the exact common ancestor.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) const fn common_ancestor_volume(&self) -> VolumeId {
-        self.base.volume_id
     }
 
     /// Source workspace retained by the plan.

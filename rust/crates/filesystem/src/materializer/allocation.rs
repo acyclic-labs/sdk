@@ -104,7 +104,7 @@ impl NativeAllocation {
             .checked_sub(bytes)
             .ok_or(crate::WorkError::Overflow)?;
         self.meter
-            .state(|state| state.release_native_owned(bytes, &None))
+            .state(|state| state.release(bytes))
             .map_err(native_materialization_work_error)
     }
     pub(crate) fn release_deferred(&mut self, bytes: u64) {
@@ -174,9 +174,9 @@ impl NativeAllocation {
     pub(crate) fn transfer_checkout_control(
         &mut self,
         owner: &Arc<crate::kernel::ProofDataCustody>,
-        scope: &crate::demand::NativeCheckoutControlWitness,
+        scope: &std::sync::Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if !scope.owns(&self.meter.state, owner) {
+        if !std::sync::Arc::ptr_eq(scope, owner) || !owner.is_native_original(&self.meter.state) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok(crate::kernel::ProofDataClaim::native_control(
@@ -188,9 +188,9 @@ impl NativeAllocation {
         &mut self,
         bytes: u64,
         owner: &Arc<crate::kernel::ProofDataCustody>,
-        scope: &crate::demand::NativeCheckoutControlWitness,
+        scope: &std::sync::Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if !scope.owns(&self.meter.state, owner) {
+        if !std::sync::Arc::ptr_eq(scope, owner) || !owner.is_native_original(&self.meter.state) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok(crate::kernel::ProofDataClaim::native_data(

@@ -79,8 +79,11 @@ impl Reducer {
             return Err(Error::Invalid("snapshot must retain its head event".into()));
         }
         let bytes = if work.is_some() {
-            self.projection
-                .owned_bytes(&self.authority, self.events.iter(), self.events.capacity())?
+            self.projection.owned_bytes(
+                &self.authority,
+                self.events.iter(),
+                self.events.capacity(),
+            )?
         } else {
             0
         };
@@ -103,7 +106,7 @@ impl Reducer {
         quota.replace(ownership::owned_sum([quota.retained(), binding_bytes])?)?;
         let mut bindings = Vec::with_capacity(count);
         for ((name, version), binding) in schemas.into_iter().flat_map(BTreeMap::iter) {
-            let digest = crate::contract::canonical_json_digest(
+            let digest = crate::executor::json::canonical_json_digest(
                 binding,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 quota.work(),

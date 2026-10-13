@@ -16,7 +16,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         })?;
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         carrier
-            .with_work(|leaf| leaf.allocate(bytes))
+            .with_work(|leaf| leaf.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
             .map_err(super::lazy::mount_demand_error)?;
         if let Err(error) = lease.attach_owned_payload(bytes) {
             carrier

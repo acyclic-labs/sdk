@@ -67,7 +67,7 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
         _operation: OperationId,
     ) -> [Option<(
         &TaskVolumeSnapshot,
-        &crate::durable_host::RootBootstrapBindingWitness,
+        &crate::store::VerifiedRootBinding,
     )>; 2] {
         [None, None]
     }

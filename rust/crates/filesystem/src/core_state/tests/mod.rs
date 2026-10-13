@@ -1,5 +1,12 @@
+use super::collection::content_address;
 use super::*;
+use crate::lazy_workspace::MemoryLazyNode;
 use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId};
+
+const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
+const CRASH_CHILD: WorkspaceContextId = WorkspaceContextId::from_bytes([0x42; 16]);
+const CRASH_WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([0x43; 16]);
+const CRASH_GROUPS: [std::ops::Range<usize>; 6] = [0..1, 1..2, 2..5, 5..6, 6..7, 7..8];
 
 pub(super) fn context_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
     RecordKey::Context(id)
@@ -203,11 +210,11 @@ pub(super) fn core_snapshot(store: &LocalCoreStateStore) -> CoreSnapshot {
         .with_log(|log| {
             Ok(CoreSnapshot {
                 contexts: load_all_contexts(&namespace, log)?,
-                children: log.get::<ContextChildren>(&namespace, CRASH_PARENT)?,
-                child_count: log.get::<ContextChildCount>(&namespace, CRASH_PARENT)?,
+                children: log.get::<ContextChildren>(&namespace, CRASH_PARENT, None)?,
+                child_count: log.get::<ContextChildCount>(&namespace, CRASH_PARENT, None)?,
                 index_ready: context_children_index_ready(&namespace, log)?,
-                lineage: log.get::<WorkspaceLineageRecord>(&namespace, CRASH_WORKSPACE)?,
-                lazy: log.get::<LazyWorkspaceState>(&namespace, CRASH_WORKSPACE)?,
+                lineage: log.get::<WorkspaceLineageRecord>(&namespace, CRASH_WORKSPACE, None)?,
+                lazy: log.get::<LazyWorkspaceState>(&namespace, CRASH_WORKSPACE, None)?,
             })
         })
         .expect("recovered snapshot")

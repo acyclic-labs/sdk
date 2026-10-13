@@ -165,7 +165,7 @@ pub(crate) fn native_buffer_codec_charge(
             Ok(())
         }
         JsonCodecCharge::Release { .. } => unreachable!(),
-        charge => acyclic_harness::store::native_work_io(work)?.codec_charge(charge),
+        charge => acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?).codec_charge(charge),
     }
 }
 
@@ -192,7 +192,7 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
     };
     let reference = (reference, custody);
     let bytes = context
-        .read_file_with_native_work(&reference.0, work)
+        .read_file(&reference.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
         .await?;
     let maximum = owner
         .policy()

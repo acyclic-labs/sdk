@@ -192,10 +192,17 @@ async fn foreign_cursor_record_metadata_is_rejected_without_byte_rebinding() -> 
         .expect("genuine native record producer");
     let receiver =
         NativeMaterializationWork::new(budget(), &cancellation).expect("different receiver ledger");
-    let mut records = read_records(&client, &path, 0, 1, &mut Some(&mut crate::store::HistoryWork::new(
+    let mut records = read_records(
+        &client,
+        &path,
+        0,
+        1,
+        &mut Some(&mut crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&producer)?,
-        )))
-        .await?;
+        )),
+    )
+    .await?
+    .map_err(|error| crate::store::operations::stream_error_with_work(error, &None))?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&receiver).expect("receiver custody"),
     );

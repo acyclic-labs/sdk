@@ -84,10 +84,11 @@ async fn json_and_every_sse_chunk_width_preserve_session_identity() -> Result<()
                 Some("session".into()),
                 4096,
                 100,
+                None,
             )?;
             assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
             let result = transport.call(operation, "echo", json!({}), None).await?;
-            assert_eq!(result.content[0]["text"], "hello 🦀");
+            assert_eq!(result["content"][0]["text"], "hello 🦀");
             let requests = provider
                 .requests
                 .lock()
@@ -116,6 +117,7 @@ async fn expired_session_and_receipt_absence_never_repost() -> Result<()> {
         Some("session".into()),
         4096,
         100,
+        None,
     )?;
     assert!(matches!(
         transport.call(operation, "echo", json!({}), None).await,
@@ -155,6 +157,7 @@ async fn initialization_pins_negotiated_session_and_rejects_foreign_version() ->
             None,
             4096,
             100,
+            None,
         )?;
         let request = transport.initialization_request(operation, "fixture", "1")?;
         assert!(!request.headers.contains_key("mcp-session-id"));

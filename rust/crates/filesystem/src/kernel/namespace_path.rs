@@ -6,7 +6,7 @@ use crate::path::PortablePath;
 use super::allocation::{AllocationError, AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 use thiserror::Error;
-use super::codec::{CanonicalDecodeError, Decoder, Encoder, ReadAllocationStep};
+use super::codec::{CanonicalDecodeError, ReadAllocationStep};
 
 /// Canonical absolute path represented as exact logical-name components.
 #[derive(Debug)]
@@ -363,25 +363,6 @@ impl NamespacePath {
         owned.finish(result)
     }
 
-    pub(crate) fn names_with_steps<E: From<NamespacePathError>>(
-        names: &[LogicalName],
-        limits: VolumeLimits,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<Self, E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-        let encoded_bytes = Self::validate_component_lengths_with_steps(
-            names.iter().map(|name| name.as_bytes().len()), limits, || {
-                cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-                steps(NamespacePathStep::Charge(&WorkCounters {
-                    source_path_components: 1, items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                }))
-            },
-        )?;
-        Self::copy_names_with_steps(names, None, encoded_bytes, cancellation, steps)
-    }
-
     pub(crate) fn unicode_text_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,
@@ -574,78 +555,6 @@ impl NamespacePath {
         let components = self.components.get(..self.components.len() - 1)?.to_vec();
         Some(Self::from_owned_components(components, encoded_bytes)
             .expect("simultaneously allocated path buffers fit the address space"))
-    }
-
-    pub(crate) fn cursor_encoded_len(&self) -> Result<usize, NamespacePathError> {
-        self.components.iter().try_fold(4_usize, |length, name| {
-            length.checked_add(name.cursor_encoded_len()?)
-                .ok_or(NamespacePathError::Codec(CanonicalDecodeError::LengthOverflow))
-        })
-    }
-
-    pub(crate) fn encode_cursor_into_with_accounting(
-        &self,
-        encoder: &mut Encoder,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), crate::FsError> {
-        accounting.check()?;
-        cancellation.check()?;
-        let count = u32::try_from(self.components.len())
-            .map_err(|_| NamespacePathError::TooDeep)?;
-        if encoder.remaining_capacity() < self.cursor_encoded_len()? {
-            return Err(NamespacePathError::AllocationFailed.into());
-        }
-        let delta = WorkCounters { bytes_encoded: 4, items_examined: 1,
-            ..WorkCounters::UNCHARGED };
-        accounting.admit(delta)?;
-        encoder.u32(count);
-        accounting.record_completed(delta)?;
-        for name in &self.components {
-            name.encode_cursor_into_with_accounting(encoder, accounting, cancellation)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn decode_cursor_with_accounting(
-        decoder: &mut Decoder<'_>,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
-        let mut owned = NamespacePathAccounting::new(accounting)?;
-        let result = (|| -> Result<Self, crate::FsError> {
-            cancellation.check()?;
-            owned.observe(NamespacePathStep::Charge(&WorkCounters {
-                items_examined: 1, ..WorkCounters::UNCHARGED
-            }))?;
-            let count = decoder.u32(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?;
-            if count > u32::from(limits.maximum_path_depth) {
-                return Err(NamespacePathError::TooDeep.into());
-            }
-            let mut preview = *decoder;
-            let mut depth = 0;
-            let mut encoded_bytes = 1;
-            for _ in 0..count {
-                let (_, bytes) = LogicalName::read_cursor_borrowed(
-                    &mut preview, profile, limits.maximum_component_bytes, cancellation, &mut owned,
-                )?;
-                append_encoded_length(&mut depth, &mut encoded_bytes, bytes.len(), limits)?;
-            }
-            let encoded_bytes = finish_encoded_lengths(depth, encoded_bytes, limits)?;
-            let capacity = usize::try_from(count).map_err(|_| NamespacePathError::TooDeep)?;
-            let mut components = namespace_path_vec_with_steps(
-                capacity, cancellation, &mut |step| owned.observe(step),
-            )?;
-            for _ in 0..count {
-                components.push(LogicalName::decode_cursor(
-                    decoder, profile, limits.maximum_component_bytes, cancellation, &mut owned,
-                )?);
-            }
-            Self::from_owned_components(components, encoded_bytes).map_err(Into::into)
-        })();
-        owned.finish(result)
     }
 
     /// Returns whether this path is equal to or below `ancestor`.

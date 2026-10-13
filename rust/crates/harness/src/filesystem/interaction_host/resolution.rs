@@ -15,7 +15,7 @@ where
     ) -> Result<()> {
         with_history_io(io, |work| self.verifier.verify(scope, work))?;
         let grant = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("interaction:respond:{id}"), work)
+            crate::executor::preparation_format(format_args!("interaction:respond:{id}"), work)
         })?;
         let hold = io
             .map(|io| io.guard_owned(grant.capacity() as u64))

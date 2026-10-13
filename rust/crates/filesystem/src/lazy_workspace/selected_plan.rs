@@ -61,7 +61,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         requested: &[NamespacePath],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(SelectedImportPlan, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx)?;
+        self.validate_snapshot(cut, ctx).await?;
         let mut roots = Owned::allocate(requested.len(), ctx)?;
         let result = async {
             for path in requested {
@@ -190,7 +190,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         roots: &[String],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx)?;
+        self.validate_snapshot(cut, ctx).await?;
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
         let mut paths = Owned::allocate(roots.len(), ctx)?;
         let mut used = false;

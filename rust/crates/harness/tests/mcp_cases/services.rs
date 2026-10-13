@@ -80,12 +80,6 @@ pub(super) async fn admitted_context(scope: RuntimeScope, router: Arc<dyn Intera
     let context = result.lock().map_err(|error| Error::Storage(error.to_string()))?.take().ok_or_else(|| Error::NotFound("admitted context".into()))?;
     Ok(context)
 }
-fn sampling_policy() -> acyclic_harness::mcp::callbacks::McpSamplingPolicy {
-    acyclic_harness::mcp::callbacks::McpSamplingPolicy {
-        continuation: acyclic_harness::model::ModelContent::Text("Host-selected continuation request".into()),
-        image: None, audio: None,
-    }
-}
 fn policy() -> McpCallbackPolicy {
     McpCallbackPolicy { server: "fixture".into(), revision: "g1".into(), sampling: true, elicitation: true, maximum_requests: 4 }
 }
@@ -106,7 +100,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let operation = OperationId::from_bytes([81;16]);
         let tool = ToolContext::new(std::sync::Arc::new(context), operation, "remote", None)?;
         let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-        let callback: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope.clone())?, disk.clone(), "deterministic".into(), sampling_policy())?);
+        let callback: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope.clone())?, disk.clone(), "deterministic".into(), acyclic_harness::model::ModelContent::Text("Host-selected continuation request".into()), None, None)?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
         let address = listener.local_addr().map_err(|error| Error::Storage(error.to_string()))?;
         let callback_message = sampling(operation).message;
@@ -129,7 +123,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
             assert!(tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept()).await.is_err());
             Ok::<_, Error>(())
         });
-        let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000)?.with_callbacks(policy(), Arc::clone(&callback))?);
+        let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000, Some((policy(), Arc::clone(&callback))))?);
         let mut installed = super::catalog();
         let mut registry = ToolRegistry::default();
         let projection: Arc<dyn acyclic_harness::tool::ToolProjection> = Arc::new(super::Projection);
@@ -139,7 +133,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         installed.install(&mut registry, None, &transport, &projection, 8, 8192)?;
         let observed = transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await;
         if lose_ack { assert!(matches!(observed, Err(Error::Indeterminate(_)))); }
-        else { assert_eq!(observed?.content.first().and_then(|content| content.get("text")), Some(&json!("complete"))); }
+        else { assert_eq!(observed?["content"].as_array().and_then(|content| content.first()).and_then(|content| content.get("text")), Some(&json!("complete"))); }
         assert!(transport.reconcile(operation, None).await?.is_none());
         server.await.map_err(|error| Error::Storage(error.to_string()))??;
         assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
@@ -147,7 +141,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let (disk, issuer, _) = journal(root.path(), false).await?;
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
         let tool = ToolContext::new(std::sync::Arc::new(context), operation, "remote", None)?;
-        let reopened = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
+        let reopened = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), acyclic_harness::model::ModelContent::Text("Host-selected continuation request".into()), None, None)?;
         let (_, result) = reopened.admit(tool.clone(), &sampling(operation)).await?;
         assert_eq!(result.pointer("/result/role"), Some(&json!("assistant")));
         assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
@@ -168,7 +162,7 @@ async fn form_callback_replays_owner_answer_and_rejects_changed_schema() -> Resu
     let operation = OperationId::from_bytes([82;16]);
     let tool = ToolContext::new(std::sync::Arc::new(context), operation, "form", None)?;
     let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-    let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
+    let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), acyclic_harness::model::ModelContent::Text("Host-selected continuation request".into()), None, None)?;
     let mut form = McpCallbackRequest { parent: operation, policy: policy(), message: json!({"jsonrpc":"2.0","id":7,"method":"elicitation/create","params":{"mode":"form","message":"Question","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}}) };
     let (_, first) = callbacks.admit(tool.clone(), &form).await?;
     assert_eq!(first.pointer("/result/content/answer"), Some(&json!("participant")));
@@ -201,7 +195,7 @@ async fn real_resource_prompt_endpoint_and_schema_negative_controls() -> Result<
         }
         Ok::<_, Error>(())
     });
-    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), Some("services-session".into()), 8192, 2000)?;
+    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), Some("services-session".into()), 8192, 2000, None)?;
     assert_eq!(transport.rpc(OperationId::from_bytes([90;16]), "resources/list", json!({}), None).await?["nextCursor"], json!("next"));
     assert_eq!(transport.rpc(OperationId::from_bytes([91;16]), "resources/templates/list", json!({}), None).await?["resourceTemplates"].as_array().unwrap().len(), 1);
     assert_eq!(transport.rpc(OperationId::from_bytes([92;16]), "resources/read", json!({"uri":"test://resource"}), None).await?["contents"].as_array().unwrap().len(), 1);
@@ -223,7 +217,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let operation = OperationId::from_bytes([83;16]);
     let tool = ToolContext::new(std::sync::Arc::new(context), operation, "cancel", None)?;
     let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: true });
-    let callbacks: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), sampling_policy())?);
+    let callbacks: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), acyclic_harness::model::ModelContent::Text("Host-selected continuation request".into()), None, None)?);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
     let address = listener.local_addr().map_err(|error| Error::Storage(error.to_string()))?;
     let server_model = Arc::clone(&model);
@@ -241,7 +235,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
         assert!(tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept()).await.is_err());
         Ok::<_, Error>(())
     });
-    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000)?.with_callbacks(policy(), Arc::clone(&callbacks))?;
+    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000, Some((policy(), Arc::clone(&callbacks))))?;
     assert!(matches!(transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await, Err(Error::Indeterminate(id)) if id == operation));
     let callback = sampling(operation);
     let records = disk.replay(callback.validate()?, 0, 64).await?;
@@ -274,10 +268,10 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         let operation = OperationId::from_bytes([86;16]);
         let tool = ToolContext::new(std::sync::Arc::new(context.clone()), operation, "media", None)?;
         let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-        let mut selection = sampling_policy();
-        selection.image = Some(NativeMediaPolicy { intent: NativeMediaIntent::Image { detail: ImageDetail::Low }, maximum_bytes: 8, maximum_work: 16, configuration: None });
-        selection.audio = Some(NativeMediaPolicy { intent: NativeMediaIntent::Audio { maximum_duration_ms: 1000 }, maximum_bytes: 8, maximum_work: 16, configuration: None });
-        let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), selection)?;
+        let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(),
+            acyclic_harness::model::ModelContent::Text("Host-selected continuation request".into()),
+            Some(NativeMediaPolicy { intent: NativeMediaIntent::Image { detail: ImageDetail::Low }, maximum_bytes: 8, maximum_work: 16, configuration: None }),
+            Some(NativeMediaPolicy { intent: NativeMediaIntent::Audio { maximum_duration_ms: 1000 }, maximum_bytes: 8, maximum_work: 16, configuration: None }))?;
         let request = McpCallbackRequest { parent: operation, policy: policy(), message: json!({"jsonrpc":"2.0","id":"media","method":"sampling/createMessage","params":{"messages":[{"role":"user","content":[{"type":"image","data":"bWVkaWE=","mimeType":"image/png"},{"type":"audio","data":"YXVkaW8=","mimeType":"audio/wav"}]}],"maxTokens":128}}) };
         let result = callbacks.admit(tool.clone(), &request).await;
         assert_eq!(result.is_ok(), granted);
@@ -291,7 +285,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
             let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs().collect::<Vec<_>>();
             assert_eq!(files.len(), 2);
             let mut bytes = Vec::new();
-            for file in files { bytes.push(context.read_file(file).await?); }
+            for file in files { bytes.push(context.read_file(file, None).await?); }
             assert_eq!(bytes.len(), 2);
             assert_eq!(bytes[0].as_ref(), b"media");
             assert_eq!(bytes[1].as_ref(), b"audio");

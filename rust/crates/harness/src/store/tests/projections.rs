@@ -36,7 +36,7 @@ async fn stale_writer_does_not_advance_its_projection() -> Result<()> {
     Ok(())
 }
 
-fn projection_command(identity: u128, revision: u64) -> Result<Command> {
+pub(super) fn projection_command(identity: u128, revision: u64) -> Result<Command> {
     let mut command = command(1)?;
     command.operation_id = OperationId::from_bytes(identity.to_le_bytes());
     command.idempotency_key = IdempotencyKey::new(format!("projection-{identity}"))?;
@@ -317,7 +317,7 @@ fn forge_projection_payload(location: &mut Value, payload: &mut Vec<u8>, mode: u
         let mut forged: Value = crate::contract::json_from_slice(payload)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         forged["projection"]["lifecycle"] = json!("completed");
-        let digest = crate::contract::canonical_json_digest(&(
+        let digest = crate::executor::json::canonical_json_digest(&(
             &forged["format_version"],
             &forged["authority"],
             &forged["revision"],

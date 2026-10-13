@@ -55,7 +55,6 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             .map_err(|e| object_error(backend(e)))?;
         let tx = transaction(&self.database, &[OBJECTS], TransactionMode::Readwrite)
             .map_err(|e| object_error(backend(e)))?;
-        let mut added = false;
         for write in writes {
             let key = Self::key(write.object_id);
             let length = write.bytes.len() as u64;
@@ -97,10 +96,9 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 io.insert(&tx, OBJECTS, &key, blob.into())
                     .await
                     .map_err(object_error)?;
-                added = true;
             }
         }
-        if added {
+        if existing.len() != writes.len() {
             io.commit(tx).await.map_err(object_error)?;
         } else {
             drop(tx);

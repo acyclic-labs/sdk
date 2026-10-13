@@ -1,7 +1,6 @@
 use super::*;
 
 /// Provider capabilities visible to task dependency admission.
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TaskDependencyEnvironment {
     /// A model provider is bound for this composition.
@@ -31,7 +30,6 @@ pub struct TaskDependencyEnvironment {
 }
 
 /// Validates an immutable task dependency graph and its provider requirements.
-
 pub(crate) fn validate_task_requirements(
     tasks: &BTreeMap<(String, String), BTreeSet<String>>,
     tools: &BTreeSet<(String, String)>,

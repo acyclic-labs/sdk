@@ -16,7 +16,7 @@ fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() {
         NativeMaterializationWork::new(budget, &cancellation).expect("original grants ledger");
     let construction = NativeMaterializationWork::new(budget, &cancellation)
         .expect("independent construction ledger");
-    let paid = Capabilities::new_with_native_work(["read"], &original).expect("paid input");
+    let paid = Capabilities::copy(["read"], &original).expect("paid input");
     let (scope, custody) =
         RuntimeScope::new_with_native_work(paid, Limits::default(), &construction)
             .expect("independent guards are legitimate");
@@ -93,7 +93,7 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
     )
     .expect("original ledger");
     let (root, root_custody) = RuntimeScope::new_with_native_work(
-        Capabilities::new_with_native_work(["read"], &work).expect("paid read-only grants"),
+        Capabilities::copy(["read"], &work).expect("paid read-only grants"),
         Limits::default(),
         &work,
     )
@@ -130,7 +130,7 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
     };
     let (child, child_custody) = root
         .narrow_with_native_work(
-            Capabilities::new_with_native_work(["read"], &work).expect("paid child grants"),
+            Capabilities::copy(["read"], &work).expect("paid child grants"),
             narrower,
             &work,
         )
@@ -142,7 +142,7 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
     assert!(!child.grants().contains("write"));
     assert!(matches!(
         root.narrow_with_native_work(
-            Capabilities::new_with_native_work(["write"], &work).expect("requested widening"),
+            Capabilities::copy(["write"], &work).expect("requested widening"),
             Limits::default(),
             &work,
         ),
@@ -474,7 +474,7 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
     assert_eq!(work.receipt(), before);
     let mut io =
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
-    let prompt = io.clone_text("Approve Î»?")?;
+    let prompt = io.clone_text("Approve ÃŽÂ»?")?;
     let request = Interaction::Approval {
         prompt,
         operation_id: OperationId::new(),

@@ -62,7 +62,7 @@ pub enum LazyWorkspaceError {
         /// Original rollback failure.
         cleanup: DemandError,
         /// Producer state still requiring cleanup.
-        publication: Option<Box<dyn crate::demand::SourceDirectoryPublication>>,
+        publication: Option<Box<crate::demand::SourceDirectoryPublication>>,
         /// Retained diagnostic funding.
         #[cfg(not(target_arch = "wasm32"))]
         allocation: Option<crate::NativeAllocation>,

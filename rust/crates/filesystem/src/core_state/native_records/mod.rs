@@ -31,7 +31,7 @@ pub(super) fn checked_packet<T>(
     // Keep the value-first tuple intact through every rejecting branch.
     let parts = owned;
     if !parts.1.work().shares_allocation_context(work) {
-        return Err(Error::NativeLedgerMismatch);
+        return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
     }
     if parts.1.bytes() != bytes(&parts.0)? {
         return Err(Error::Integrity);

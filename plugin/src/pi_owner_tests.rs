@@ -160,7 +160,7 @@ async fn root_input_denial_preserves_storage_and_selected_paths() {
             root_input_fixture(session.path(), &raw, policy).await;
         let observation = work();
         let workspace = raw
-            .open_workspace_with_native_work(
+            .open_workspace(
                 &owner.policy.journal.storage_name(&mut None).unwrap(),
                 &observation,
                 observation.cancellation(),

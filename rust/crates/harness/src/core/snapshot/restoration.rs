@@ -49,15 +49,15 @@ impl Snapshot {
     ) -> Result<Self> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut admitted = 0;
-        let admission = crate::contract::snapshot_json_admission(
+        let admission = crate::executor::json::snapshot_json_admission(
             bytes,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes,
                 maximum_items: maximum_bytes,
                 maximum_depth: 256,
             },
             &mut |charge| {
-                if let crate::contract::JsonCodecCharge::Admission {
+                if let crate::executor::json::JsonCodecCharge::Admission {
                     maximum_owned_bytes,
                     ..
                 } = charge
@@ -79,7 +79,24 @@ impl Snapshot {
                 .and_then(|value| decoder.end().map(|()| value));
         let wire = match decoded {
             Ok(snapshot) => snapshot,
-            Err(source) => return Err(Error::Storage(source.to_string())),
+            Err(source) => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if quota.work().as_deref().is_some_and(copying::is_native) {
+                    let bytes = quota.retained();
+                    let custody = quota
+                        .work()
+                        .as_deref_mut()
+                        .expect("native decoder observer")
+                        .take_native_custody(bytes)?;
+                    quota.transfer();
+                    return Err(Error::NativeJson {
+                        code: crate::wire::ErrorCode::Storage,
+                        source,
+                        custody: Some(custody),
+                    });
+                }
+                return Err(Error::Storage(source.to_string()));
+            }
         };
         quota.relinquish(conversation_allowance)?;
         let Snapshot {

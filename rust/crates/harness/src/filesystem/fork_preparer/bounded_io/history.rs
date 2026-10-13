@@ -124,14 +124,14 @@ impl HistoryIo for &PreparationIo {
             ..Default::default()
         }).map_err(Into::into)
     }
-    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
+    fn codec_charge(&mut self, charge: crate::executor::json::JsonCodecCharge) -> Result<()> {
         match charge {
-            crate::contract::JsonCodecCharge::Admission {
+            crate::executor::json::JsonCodecCharge::Admission {
                 maximum_owned_bytes,
                 value_shape,
             } => self.retain_owned(
                 maximum_owned_bytes
-                    .max(crate::contract::json_value_decode_owned_bytes(value_shape)?),
+                    .max(crate::executor::json::json_value_decode_owned_bytes(value_shape)?),
             ).map_err(Into::into),
             charge => PreparationIo::codec_charge(self, charge, true),
         }

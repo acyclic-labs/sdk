@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 pub(crate) struct HostNameEncodingError;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::demand::{DemandError, DemandWork, NativeSourceWork, SourceDemandReadWork};
+use crate::demand::{DemandError, DemandWork,  SourceDemandReadWork};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 
@@ -21,7 +21,7 @@ enum NameWork<'a, W: SourceDemandReadWork = DemandWork> {
     Original {
         work: &'a crate::NativeMaterializationWork,
         allocation: Option<crate::materializer::NativeAllocation>,
-        source: Option<NativeSourceWork<'a>>,
+        source: Option<crate::NativeMaterializationWork>,
     },
     Source(&'a mut W),
 }
@@ -57,7 +57,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
             Self::Owned { allocations, work, budget, .. } => allocations
                 .claim_bytes(bytes, u64::from(bytes != 0), work, *budget)
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest)),
-            Self::Source(work) => work.allocate(bytes),
+            Self::Source(work) => work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED),
             Self::Original { work, allocation, .. } => {
                 *allocation = Some(work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED).map_err(original_name_error)?);
                 Ok(())
@@ -124,7 +124,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
         self.check()?;
         match self {
             Self::Owned { work, budget, .. } => work.charge(&delta, budget).map_err(Into::into),
-            Self::Source(work) => work.charge(delta),
+            Self::Source(work) => work.started_io(delta),
             Self::Original { work, .. } => work.charge(delta).map_err(original_name_error),
         }
     }
@@ -188,8 +188,8 @@ pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
         ).map(|name| (name, None));
     }
     let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = source.materialization_work()?;
-    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source) };
+    let original = { crate::native_host::NativeHostWork::check(&source)?; source.clone() };
+    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source.clone()) };
     let name = host_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)?;
     crate::native_host::NativeHostWork::check(&source)?;
     let NameWork::Original { allocation, .. } = accounting else { unreachable!() };
@@ -206,8 +206,8 @@ pub(crate) fn host_wide_name_bytes_with_source_work<W: SourceDemandReadWork>(
         ).map(|name| (name, None));
     }
     let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = source.materialization_work()?;
-    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source) };
+    let original = { crate::native_host::NativeHostWork::check(&source)?; source.clone() };
+    let mut accounting: NameWork<'_> = NameWork::Original { work: &original, allocation: None, source: Some(source.clone()) };
     let name = host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)?;
     crate::native_host::NativeHostWork::check(&source)?;
     let NameWork::Original { allocation, .. } = accounting else { unreachable!() };

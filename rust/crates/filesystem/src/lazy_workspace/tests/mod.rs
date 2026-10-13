@@ -142,7 +142,7 @@ impl DemandFile for PinnedFile {
         if self.counts.cancel_range.swap(false, Ordering::Relaxed) {
             cancellation(ctx).cancel();
         }
-        ctx.check().map_err(SourceCursor::cursor_accounting_error)?;
+        ctx.check().map_err(DemandError::from)?;
         let start = usize::try_from(offset)
             .unwrap_or(usize::MAX)
             .min(self.bytes.len());
@@ -155,15 +155,15 @@ impl DemandFile for PinnedFile {
             ..WorkCounters::UNCHARGED
         };
         ctx.admit(read)
-            .map_err(SourceCursor::cursor_accounting_error)?;
+            .map_err(DemandError::from)?;
         let mut out = Owned::<Vec<u8>>::allocate(end - start, ctx)
-            .map_err(SourceCursor::cursor_accounting_error)?;
+            .map_err(DemandError::from)?;
         self.counts.ranges.fetch_add(1, Ordering::Relaxed);
         out.value.extend_from_slice(&self.bytes[start..end]);
         ctx.record_completed(read)
-            .map_err(SourceCursor::cursor_accounting_error)?;
+            .map_err(DemandError::from)?;
         let bytes = crate::kernel::owned_read_bytes((out.value, out.allocation).into())
-            .map_err(SourceCursor::cursor_accounting_error)?;
+            .map_err(DemandError::from)?;
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.native_work().is_some() {
             return Ok(OwnedSourceChunk::intrinsic(bytes, out.bytes));
@@ -191,7 +191,7 @@ impl DemandSource for CountingSource {
                 backend_read_operations: 1,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(SourceCursor::cursor_accounting_error)?;
+            .map_err(DemandError::from)?;
             self.counts.lookups.fetch_add(1, Ordering::Relaxed);
             self.versioned_node(source)
                 .map(Some)
@@ -226,9 +226,9 @@ impl DemandSource for CountingSource {
                 source_entries_visited: self.directory_entries as u64,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(SourceCursor::cursor_accounting_error)?;
+            .map_err(DemandError::from)?;
             let mut entries = Owned::allocate(self.directory_entries, &mut ctx)
-                .map_err(SourceCursor::cursor_accounting_error)?;
+                .map_err(DemandError::from)?;
             for index in 0..self.directory_entries {
                 let name = if self.directory_entries == 1 {
                     "file.txt".to_owned()
@@ -237,20 +237,22 @@ impl DemandSource for CountingSource {
                 };
                 let mut guard = ctx
                     .claim_owned(name.capacity() as u64, 1)
-                    .map_err(SourceCursor::cursor_accounting_error)?;
+                    .map_err(DemandError::from)?;
                 let name = LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 255)
                     .map_err(|_| DemandError::InvalidRequest)?;
                 entries
                     .allocation
                     .absorb(&mut guard)
-                    .map_err(SourceCursor::cursor_accounting_error)?;
-                entries.value.push(SourceDirectoryEntry::new(name, node));
+                    .map_err(DemandError::from)?;
+                entries.bytes += name.logical_owned_bytes();
+                entries.value.push(SourceDirectoryEntry { name, node });
             }
-            Ok(SourceDirectoryPage::stateless(
-                entries.value,
+            SourceDirectoryPage::stateless(
+                entries,
                 None,
                 SourceVersion([4; 32]),
-            ))
+                &mut ctx,
+            )
         })();
         work.finish(result, &ctx)
     }
@@ -288,7 +290,7 @@ impl DemandSource for CountingSource {
             let bytes = self.pinned(source, version)?;
             let guard = ctx
                 .claim_owned(std::mem::size_of::<PinnedFile>() as u64, 1)
-                .map_err(SourceCursor::cursor_accounting_error)?;
+                .map_err(DemandError::from)?;
             Ok(Box::new(PinnedFile {
                 bytes,
                 counts: Arc::clone(&self.counts),
@@ -318,7 +320,7 @@ async fn native_source(
 ) -> Arc<crate::demand::native::NativeDemandSource> {
     Arc::new(
         crate::demand::native::NativeDemandSource::open(
-            path.to_path_buf(),
+            std::borrow::Cow::Borrowed(path),
             profile,
             crate::model::VolumeLimits::default(),
             None,

@@ -54,15 +54,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
             validate_volume_capabilities(config, self.inner.capabilities)?;
             let observed = self
-                .read_fork_creation_with_accounting(id.volume_id(), &mut accounting, cancellation)
-                .await;
+                .read_creation(id.volume_id(), &mut accounting, cancellation)
+                .await
+                .map_err(WorkspaceError::from);
             let (creation, operation) = match observed {
                 Ok(record) => record,
                 Err(WorkspaceError::Filesystem(FsError::Authority(
                     AuthorityStoreError::Missing,
                 ))) => {
                     let (_, root) = self
-                        .create_volume_with_id_operation_with_accounting(
+                        .create_volume_operation(
                             id.volume_id(),
                             config,
                             Some(operation_id),
@@ -72,12 +73,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         )
                         .await?;
                     let observed = self
-                        .read_fork_creation_with_accounting(
-                            id.volume_id(),
-                            &mut accounting,
-                            cancellation,
-                        )
-                        .await?;
+                        .read_creation(id.volume_id(), &mut accounting, cancellation)
+                        .await
+                        .map_err(WorkspaceError::from)?;
                     if observed.0.initial_generation_root != root {
                         return Err(E::from(FsError::CreationRejected));
                     }
@@ -158,8 +156,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result = async {
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
             let (creation, operation) = match self
-                .read_fork_creation_with_accounting(id.volume_id(), &mut accounting, cancellation)
+                .read_creation(id.volume_id(), &mut accounting, cancellation)
                 .await
+                .map_err(WorkspaceError::from)
             {
                 Ok(record) => record,
                 Err(WorkspaceError::Filesystem(FsError::Authority(
@@ -210,92 +209,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<crate::Workspace<A, O>>, WorkspaceError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.create_workspace",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty
-        );
-
-        crate::obs::in_span(&span, async move {
-            let created = self
-                .create_named_workspace(name, config, operation_id, budget, cancellation)
-                .await?;
-            let work = created.work;
-            let live = created.value.name.retained_bytes();
-            let allowance = remaining_owned(work, budget, live).map_err(|failure| {
-                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
-            })?;
-            let mut accounting = KernelAccounting::standalone(allowance, cancellation);
-            created
-                .value
-                .volume
-                .resolve_head_generation(&mut accounting, cancellation)
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
+            let (volume, _) = self
+                .create_volume_operation::<FsError, ()>(
+                    id.volume_id(),
+                    config,
+                    operation_id,
+                    &mut accounting,
+                    cancellation,
+                    None::<&mut ()>,
+                )
                 .await
-                .map_err(|error| {
-                    merge_simultaneous_failure(work, accounting.spent(), live, error)
-                        .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
-                })?;
-            let work = merge_simultaneous_work(work, accounting.spent(), live, budget).map_err(
-                |failure| {
-                    failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
-                },
-            )?;
-            Ok(OperationReceipt {
-                value: created.value,
-                work,
-            })
-        })
-        .await
-        .observe_on(&span, "create_workspace")
-    }
-
-    pub(super) async fn create_named_workspace(
-        &self,
-        name: impl AsRef<str>,
-        config: VolumeConfig,
-        operation_id: Option<OperationId>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<crate::Workspace<A, O>>, WorkspaceError> {
-        let named = self.workspace_name_identity(name, budget, cancellation)?;
-        let (name, id) = named.value;
-        let prior = named.work;
-        let live = name.retained_bytes();
-        let allowance = remaining_owned(prior, budget, live).map_err(|failure| {
-            failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
-        })?;
-        let created = self
-            .create_volume_with_id_operation(
-                id.volume_id(),
-                config,
-                operation_id,
-                allowance,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                merge_simultaneous_failure(prior, *failure.work, live, failure.error)
-                    .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
-            })?;
-        let work =
-            merge_simultaneous_work(prior, created.work, live, budget).map_err(|failure| {
-                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
-            })?;
-        Ok(OperationReceipt {
-            value: crate::Workspace {
+                .map_err(WorkspaceError::from)?;
+            volume
+                .resolve_head_generation(&mut accounting, cancellation)
+                .await?;
+            Ok(crate::Workspace {
                 name,
                 id,
-                volume: created.value,
+                volume,
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
-            },
-            work,
-        })
+            })
+        }
+        .await;
+        measured(result, &accounting)
     }
+
     /// Authenticates one named workspace and its current authority head.
     pub async fn open_workspace<W: FsWork>(
         &self,
@@ -303,21 +245,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<crate::Workspace<A, O>, WorkspaceError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.open_workspace",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty
-        );
         let mut accounting = budget.accounting(cancellation);
-        let result = crate::obs::in_span(&span, async {
+        let result = (async {
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
             let (creation, _) = self
-                .read_fork_creation_with_accounting(id.volume_id(), &mut accounting, cancellation)
-                .await?;
+                .read_creation(id.volume_id(), &mut accounting, cancellation)
+                .await
+                .map_err(WorkspaceError::from)?;
             validate_volume_capabilities(creation.config, self.inner.capabilities)?;
             let volume = Volume {
                 fs: self.clone(),
@@ -335,10 +269,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             })
         })
         .await;
-        let result = measured(result, &accounting)
-            .observe_on(&span, "open_workspace")
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error);
         budget.finish(result, &accounting)
     }
 }

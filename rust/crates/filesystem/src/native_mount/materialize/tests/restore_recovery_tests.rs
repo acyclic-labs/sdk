@@ -362,7 +362,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     let cancellation = CancellationToken::new();
     let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
         .map_err(|failure| failure.0)?;
-    let root = receipt.run(|work| HostRoot::open(temporary.path(), work))?;
+    let root = HostRoot::open(temporary.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
     let namespace = NamespacePath::new(
@@ -448,7 +448,7 @@ fn restore_preparation_rejects_a_swapped_root_before_any_write()
     )));
     let native_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
     let allocation_work = (&native_work).clone();
-    let mut work = NativeSourceWork::new(&original);
+    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
     let failure = prepare_restore(
         allocation_work
             .path(&destination, None)
@@ -601,7 +601,7 @@ fn live_mount_recovery_preserves_the_correct_entry() -> Result<(), Box<dyn std::
         if published {
             std::fs::write(root.join(&backup), b"before")?;
         } else {
-            parent.rename_to(relative, &parent, &backup, &mut work)?;
+            rename_entry(&parent, relative, &parent, &backup, &mut work)?;
         }
         recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
         assert_eq!(std::fs::read(&destination)?, expected);

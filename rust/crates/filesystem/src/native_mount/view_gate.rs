@@ -572,7 +572,7 @@ impl ViewGate {
             let admitted = carrier.with_work(|work| {
                 let (result, budget) = {
                     let (admissions, allocations, counters, mut budget) =
-                        work.view_gate_admission_parts().map_err(super::lazy::mount_demand_error)?;
+                        work.admissions(|roots| &mut roots.view_gates).map_err(super::lazy::mount_demand_error)?;
                     let result = self.try_read_for_callback_measured(
                         owner, expected, admissions, allocations, counters, &mut budget,
                     );
@@ -787,7 +787,7 @@ mod tests {
     ) -> Result<ViewReadLease, MountSourceError> {
         work.check().map_err(super::super::lazy::mount_demand_error)?;
         let (result, budget) = {
-            let (proofs, allocations, counters, mut budget) = work.view_gate_admission_parts()
+            let (proofs, allocations, counters, mut budget) = work.admissions(|roots| &mut roots.view_gates)
                 .map_err(super::super::lazy::mount_demand_error)?;
             let result = gate.try_read_for_callback_measured(
                 owner, None, proofs, allocations, counters, &mut budget,
@@ -808,11 +808,12 @@ mod tests {
         assert_eq!(work.budget.items_examined, original.items_examined - 1);
         let before = work.work.items_examined;
         let (counters, allocations, roots) = work.into_current();
-        let work = DemandWork::from_current(original, &cancellation, counters, allocations, roots);
+        let mut work = DemandWork::from_current(original, &cancellation, counters, allocations, roots);
         drop(lease);
-        let receipt = work.finish(Ok(())).expect("actual cleanup under reconstructed full budget");
-        assert_eq!(receipt.work.items_examined, before + 1);
-        receipt.work.verify(original).expect("no artificial quota overflow");
+        work.record(WorkCounters::UNCHARGED).expect("actual cleanup under reconstructed full budget");
+        let receipt = work.receipt();
+        assert_eq!(receipt.items_examined, before + 1);
+        receipt.verify(original).expect("no artificial quota overflow");
         assert_eq!(gate.state.lock().expect("gate state").readers, 0);
     }
 
@@ -829,14 +830,14 @@ mod tests {
         let mut queued = work.take_for_native_queue();
         assert_eq!(queued.budget.items_examined, budget.items_examined - 2);
         drop(first);
-        let _ = queued.view_gate_admission_parts().expect("first actual cleanup");
+        let _ = queued.admissions(|roots| &mut roots.view_gates).expect("first actual cleanup");
         assert_eq!(queued.work.items_examined, before + 1);
         assert_eq!(queued.budget.items_examined, budget.items_examined - 1);
         drop(second);
-        let _ = queued.view_gate_admission_parts().expect("second actual cleanup");
+        let _ = queued.admissions(|roots| &mut roots.view_gates).expect("second actual cleanup");
         assert_eq!(queued.work.items_examined, before + 2);
         assert_eq!(queued.budget.items_examined, budget.items_examined);
-        queued.finish(Ok(())).expect("same original meter finishes");
+        queued.record(WorkCounters::UNCHARGED).expect("same original meter finishes");
         assert_eq!(gate.state.lock().expect("gate state").readers, 0);
     }
 
@@ -870,7 +871,7 @@ mod tests {
         assert_eq!(gate.reader_generation.load(Ordering::Acquire), generation);
         assert_eq!(gate.state.lock().expect("gate state").readers, 1);
         drop(first);
-        work.finish(Ok(())).expect("only admitted read releases");
+        work.record(WorkCounters::UNCHARGED).expect("only admitted read releases");
     }
 
     #[tokio::test]
@@ -883,13 +884,14 @@ mod tests {
         let generation = gate.reader_generation.load(Ordering::Acquire);
         let independent = gate.read(None).await.expect("actual independent reader grows registry");
         assert!(gate.reader_generation.load(Ordering::Acquire) > generation);
-        let _ = work.view_gate_admission_parts().expect("same root reconciles freed original backing");
+        let _ = work.admissions(|roots| &mut roots.view_gates).expect("same root reconciles freed original backing");
         assert_eq!(work.live_allocation_bytes(), 0);
         drop(independent);
         let before = work.work.items_examined;
         drop(first);
-        let receipt = work.finish(Ok(())).expect("original physical read cleanup");
-        assert_eq!(receipt.work.items_examined, before + 1);
+        work.record(WorkCounters::UNCHARGED).expect("original physical read cleanup");
+        let receipt = work.receipt();
+        assert_eq!(receipt.items_examined, before + 1);
     }
 
     #[tokio::test]
@@ -907,8 +909,9 @@ mod tests {
         drop(nested);
         drop(writer.await);
         let before = work.work.items_examined;
-        let receipt = work.finish(Ok(())).expect("two actual callback releases");
-        assert_eq!(receipt.work.items_examined, before + 2);
+        work.record(WorkCounters::UNCHARGED).expect("two actual callback releases");
+        let receipt = work.receipt();
+        assert_eq!(receipt.items_examined, before + 2);
     }
 
     #[test]
@@ -921,11 +924,11 @@ mod tests {
         let (counters, allocations, roots) = work.into_current();
         let mut tighter = WorkBudget::UNBOUNDED;
         tighter.items_examined = before;
-        let work = DemandWork::from_current(tighter, &cancellation, counters, allocations, roots);
+        let mut work = DemandWork::from_current(tighter, &cancellation, counters, allocations, roots);
         drop(lease);
-        let failure = work.finish(Ok(())).expect_err("tighter ceiling cannot erase actual cleanup");
-        assert_eq!(failure.work.items_examined, before + 1);
-        assert!(matches!(failure.error, crate::demand::DemandError::Work(_)));
+        let failure = work.record(WorkCounters::UNCHARGED).expect_err("tighter ceiling cannot erase actual cleanup");
+        assert_eq!(work.receipt().items_examined, before + 1);
+        assert!(matches!(failure, crate::demand::DemandError::Work(_)));
     }
 
     #[test]
@@ -935,7 +938,7 @@ mod tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let mut lease = measured_read(&gate, CallbackOwner(1), &mut work).expect("actual read");
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
-        work.allocate(bytes).expect("actual Box payload admission");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("actual Box payload admission");
         lease.attach_owned_payload(bytes).expect("same original cleanup custody");
         let lease = Box::new(lease);
         let live = work.live_allocation_bytes();
@@ -962,11 +965,11 @@ mod tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         let mut first = measured_read(&gate, CallbackOwner(1), &mut work).expect("first read");
-        work.allocate(bytes).expect("first original Box");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("first original Box");
         first.attach_owned_payload(bytes).expect("first payload custody");
         let first = Box::new(first);
         let mut second = measured_read(&gate, CallbackOwner(1), &mut work).expect("nested read");
-        work.allocate(bytes).expect("second original Box");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("second original Box");
         second.attach_owned_payload(bytes).expect("second payload custody");
         let second = Box::new(second);
         let live = work.live_allocation_bytes();
