@@ -148,7 +148,7 @@ impl PiControlHost<'_> {
                 &self.filesystem,
                 &self.stream,
                 &self.protected,
-                &approved.0,
+                &(&approved.0).into(),
                 work,
             )
             .await?;
@@ -246,7 +246,7 @@ impl PiControlHost<'_> {
             &self.filesystem,
             &self.stream,
             &self.protected,
-            descriptor,
+            &descriptor,
             work,
         )
         .await?;

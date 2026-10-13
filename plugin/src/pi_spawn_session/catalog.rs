@@ -28,36 +28,7 @@ struct BorrowedRoute<'a> {
     mount_path: &'a Path,
     lifecycle: RouteLifecycle,
 }
-const ROUTE_DIAGNOSTIC_BYTES: u64 = pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
-    + pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "Route",
-        "task_binding",
-        "agent_id",
-        "turn_id",
-        "context_id",
-        "root_id",
-        "parent_agent_id",
-        "roots",
-        "mount_path",
-        "lifecycle",
-        "RouteRoot",
-        "repository_workspace_id",
-        "published_generation",
-        "RouteLifecycle",
-        "mounting",
-        "active",
-        "stop_requested",
-        "frozen",
-        "PluginTaskBinding",
-        "kind",
-        "binding",
-        "pi",
-        "host_managed",
-        "a string",
-        "path string",
-        "an array of length 16",
-        "an array of length 32",
-    ]);
+const ROUTE_DIAGNOSTIC_BYTES: u64 = pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES + 399;
 
 impl PiSession {
     fn spawn_parent_alias(&self, caller: TaskId) -> Result<&str> {

@@ -259,7 +259,7 @@ impl PiSession {
                 }
                 let reservation = self
                     .command_host(&work, Some(native.clone()))?
-                    .reservation_with_native_work(plan, &work)?;
+                    .reservation(plan, &work)?;
                 self.spawn_save_pending(Some(reservation), commit, operations, &work)?;
             }
         }

@@ -373,12 +373,6 @@ impl PiNativeCommandHost {
             .map(|prepared| prepared.frozen_source)
     }
 
-    /// The child's original authenticated FIRST native companion, not its final process publication.
-    pub(crate) fn source_frozen(&self, task: TaskId) -> Option<LazySnapshotRef> {
-        self.source_prepared(task)
-            .map(|prepared| prepared.native_lazy)
-    }
-
     pub(crate) fn selected_source_task(&self, task: TaskId) -> Option<TaskId> {
         let prepared = self.source_prepared(task)?;
         prepared
@@ -424,61 +418,83 @@ impl PiNativeCommandHost {
         task: TaskId,
         meter: &NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {
-        async {
-            let prepared = self.prepared(task).ok_or_else(|| {
-                unauthorized("Pi selected child has no authenticated creator companion")
-            })?;
-            let entry = self
-                .find_entry(task)
-                .ok_or_else(|| unauthorized("Pi selected child has no original native handles"))?;
-            let effect = entry.handles.lock().await.effect.clone().ok_or_else(|| {
-                unauthorized("Pi selected child has not entered its original native operation")
-            })?;
-            let outcome = effect.owner.outcome_with_native_work(&meter)?.await?;
-            if outcome.0.is_none() {
-                let original_work = entry
-                    .handles
-                    .lock()
-                    .await
-                    .preparation_work
-                    .as_ref()
-                    .ok_or(Error::Indeterminate(effect.command))?
-                    .clone();
-                let view = self
-                    .live_view(task)
-                    .ok_or(Error::Indeterminate(effect.command))?;
-                return crate::pi_fork_host::freeze_child_source(
-                    &effect.context,
-                    &effect.owner,
-                    &view,
-                    &prepared.workspace,
-                    &original_work,
-                )
-                .await;
-            }
-            if prepared.binding.project_volumes.len() != 1 {
-                return Err(unauthorized(
-                    "Pi published child has no unique original project binding",
-                ));
-            }
-            let project = prepared
-                .binding
-                .project_volumes
-                .values()
-                .next()
+        let prepared = self.prepared(task).ok_or_else(|| {
+            unauthorized("Pi selected child has no authenticated creator companion")
+        })?;
+        let entry = self
+            .find_entry(task)
+            .ok_or_else(|| unauthorized("Pi selected child has no original native handles"))?;
+        let effect = entry.handles.lock().await.effect.clone();
+        let Some(effect) = effect else {
+            let snapshot = self
+                .source_prepared(task)
+                .map(|prepared| prepared.native_lazy)
                 .ok_or_else(|| {
-                    unauthorized("Pi published child has no original project binding")
+                    unauthorized("Pi undispatched source lost its first native companion")
                 })?;
-            effect
-                .provider
-                .published_project_candidate_with_native_work(
-                    effect.provider.original_attempt(),
-                    project,
-                    meter,
-                )?
+            prepared
+                .workspace
+                .validate_snapshot(
+                    snapshot,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work: meter,
+                        cancellation: meter.cancellation(),
+                    },
+                )
                 .await
+                .map_err(crate::pi_fork_host::native_lazy_error)?;
+            return Ok((snapshot, meter.claim(0, 0, WorkCounters::UNCHARGED)?));
+        };
+        let outcome = self
+            .runtime
+            .runtime
+            .task_host()
+            .outcome_with_native_work(task, meter)?
+            .await?;
+        if !outcome
+            .0
+            .as_ref()
+            .is_some_and(|outcome| outcome.is_terminal())
+        {
+            let original_work = entry
+                .handles
+                .lock()
+                .await
+                .preparation_work
+                .as_ref()
+                .ok_or(Error::Indeterminate(effect.command))?
+                .clone();
+            let view = self
+                .live_view(task)
+                .ok_or(Error::Indeterminate(effect.command))?;
+            return crate::pi_fork_host::freeze_child_source(
+                &effect.context,
+                &effect.owner,
+                &view,
+                &prepared.workspace,
+                &original_work,
+            )
+            .await;
         }
-        .await
+        if prepared.binding.project_volumes.len() != 1 {
+            return Err(unauthorized(
+                "Pi published child has no unique original project binding",
+            ));
+        }
+        let project = prepared
+            .binding
+            .project_volumes
+            .values()
+            .next()
+            .ok_or_else(|| unauthorized("Pi published child has no original project binding"))?;
+        effect
+            .provider
+            .published_project_candidate_with_native_work(
+                effect.provider.original_attempt(),
+                project,
+                meter,
+            )?
+            .await
     }
 
     /// Authorizes a terminal metadata candidate through the actual operation's Common Project reader, then rereads the same protected publication.

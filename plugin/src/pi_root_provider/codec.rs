@@ -1,17 +1,6 @@
 //! Bounded JSON on the original native ledger.
 use super::*;
 
-/// Counts actual closed DTO labels plus serde's expected-list punctuation.
-pub(crate) const fn pi_serde_diagnostic_labels_bytes(labels: &[&str]) -> u64 {
-    let mut total = 0_u64;
-    let mut index = 0;
-    while index < labels.len() {
-        total += labels[index].len() as u64 + 4;
-        index += 1;
-    }
-    total
-}
-
 pub(crate) fn guarded_pi_bytes<T: Serialize>(
     value: &T,
     maximum_bytes: u64,
@@ -191,7 +180,10 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
     };
     let reference = (reference, custody);
     let bytes = context
-        .read_file(&reference.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
+        .read_file(
+            &reference.0,
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        )
         .await?;
     let maximum = owner
         .policy()

@@ -24,86 +24,11 @@ pub(crate) struct PiNativeSourceCut {
 }
 
 /// Closed launch graph diagnostic inventory: original derives, camel-case source fields, snake-case mode tags and pinned serde primitive expectations.
-pub(crate) const PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES: u64 =
-    crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "PiNativeLaunchIntent",
-        "struct PiNativeLaunchIntent",
-        "agent_alias",
-        "child_session_id",
-        "source",
-        "invocation",
-        "session_path",
-        "session_bytes",
-        "maximum_entries",
-        "maximum_bytes",
-        "PiNativeSourceCut",
-        "struct PiNativeSourceCut",
-        "mode",
-        "parentSessionId",
-        "parentSessionFile",
-        "parentCwd",
-        "sourceLeafId",
-        "ownerEntryId",
-        "parentLeafId",
-        "capturedAt",
-        "entriesJson",
-        "sha256",
-        "PiNativeSourceMode",
-        "enum PiNativeSourceMode",
-        "caller_tool",
-        "scratch",
-        "PiNativeHostRuntime",
-        "struct PiNativeHostRuntime",
-        "PiNativeInvocation",
-        "struct PiNativeInvocation",
-        "runtime_digest",
-        "an array of length 32",
-        "u8",
-        "version",
-        "executable",
-        "executable_prefix",
-        "extension",
-        "provider_extension",
-        "session_file",
-        "cwd",
-        "provider",
-        "model",
-        "prompt",
-        "builtin_tools",
-        "environment",
-        "timeout_ms",
-        "control_timeout_ms",
-        "cancellation_poll_ms",
-        "maximum_output_bytes",
-        "maximum_result_bytes",
-        "a string",
-        "path string",
-        "a sequence",
-        "a map",
-        "option",
-        "u32",
-        "u64",
-    ]);
+pub(crate) const PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES: u64 = 957;
 
-const NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES: u64 =
-    crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "NativeHeader",
-        "struct NativeHeader",
-        "type",
-        "version",
-        "id",
-        "timestamp",
-        "cwd",
-        "a string",
-        "u32",
-    ]);
+const NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES: u64 = 103;
 
-pub(super) const NATIVE_CAPABILITIES_DIAGNOSTIC_LABEL_BYTES: u64 =
-    crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "Capabilities",
-        "a sequence",
-        "a string",
-    ]);
+pub(super) const NATIVE_CAPABILITIES_DIAGNOSTIC_LABEL_BYTES: u64 = 42;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

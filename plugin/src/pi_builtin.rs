@@ -70,24 +70,7 @@ pub(crate) fn builtin_tool_definition_with_native_work(
     )
 }
 const BUILTIN_DIAGNOSTIC_LABEL_BYTES: u64 =
-    acyclic_harness::preparation_serde_diagnostic_label_bytes()
-        + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-            "PiBuiltinRequest",
-            "caller",
-            "sdk_operation",
-            "path",
-            "io",
-            "PiBuiltinIo",
-            "kind",
-            "read",
-            "write",
-            "edit_read",
-            "edit_write",
-            "maximum_bytes",
-            "variants",
-            "content",
-            "expected_sha256",
-        ]);
+    acyclic_harness::preparation_serde_diagnostic_label_bytes() + 187;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -854,7 +837,13 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .journal_owner(request.caller, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(&self.work)?))
+            .journal_owner(
+                request.caller,
+                &fence,
+                Some(&acyclic_harness::executor::PreparationIo::from_native_work(
+                    &self.work,
+                )?),
+            )
             .await?
             .with_invocation_cancellation(self.work.cancellation())
             .into_native_shared(&self.work)?;
@@ -917,7 +906,12 @@ pub(crate) async fn authorize_owner(
         ));
     }
     owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await
 }
 

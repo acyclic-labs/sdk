@@ -101,80 +101,21 @@ struct ControlResults {
 
 #[cfg(not(target_arch = "wasm32"))]
 const PI_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 =
-    super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
-        + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-            "WorkflowCommand",
-            "operation_id",
-            "kind",
-            "payload",
-        ]);
+    super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES + 54;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) const PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
-    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "PiTaskInput",
-        "binding",
-        "execution",
-        "PiTaskExecution",
-        "kind",
-        "host",
-        "child",
-        "root",
-        "preparation",
-        "launch",
-    ]);
+pub(crate) const PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES: u64 =
+    PI_COMMAND_DIAGNOSTIC_LABEL_BYTES + 116;
 
 #[cfg(not(target_arch = "wasm32"))]
-const CONTROL_INPUT_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
-    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiControlInput", "command"]);
+const CONTROL_INPUT_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES + 29;
 
 #[cfg(not(target_arch = "wasm32"))]
-const COMMAND_RESULTS_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
-    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "CommandResults",
-        "commands",
-        "CommandResult",
-        "operation_id",
-        "value",
-        "Outcome",
-        "Succeeded",
-        "Failed",
-        "Cancelled",
-        "Indeterminate",
-        "message",
-    ]);
+const COMMAND_RESULTS_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES + 147;
 #[cfg(not(target_arch = "wasm32"))]
-const STATE_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
-    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "PiTaskState",
-        "state",
-        "preparing",
-        "command",
-        "allocating",
-        "operation",
-        "hosting",
-        "allocation",
-        "reply",
-        "controlling",
-        "ready",
-        "awaiting",
-        "completed",
-        "result",
-        "failed",
-        "message",
-        "PiControlReply",
-        "operation_id",
-        "value",
-    ]);
+const STATE_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES + 232;
 #[cfg(not(target_arch = "wasm32"))]
-const CONTROL_RESULTS_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
-    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "ControlResults",
-        "commands",
-        "PiControlReply",
-        "operation_id",
-        "value",
-    ]);
+const CONTROL_RESULTS_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES + 73;
 pub(crate) struct PiTaskMachine {
     identity: MachineIdentity,
     schema: Value,

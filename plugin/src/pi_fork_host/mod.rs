@@ -1,0 +1,202 @@
+//! Native Pi fork controls over the one retained catalog and task journal.
+use crate::{
+    LocalAuthorityBackend, LocalLazyWorkspace, LocalObjectBackend, PendingSpawn,
+    PendingSpawnLifecycle, PluginTaskBinding, ServiceResources,
+    pi_fork::{
+        PiForkCoordinator, PiForkOperations, PiForkPlan, RetainedSpawnCommit, derived,
+        original_operation,
+    },
+    pi_native_host::PiNativeFilesystem,
+    pi_owner::PiOwnerConfig,
+    pi_root_provider::PiRootHandle,
+    pi_task::{PiTaskExecution, PiTaskInput},
+};
+use acyclic_fs::{LazySnapshotRef, NativeMaterializationWork};
+use acyclic_harness::{
+    Error, OperationId, Result, TaskId,
+    core::SchemaRegistry,
+    durable_host::TaskJournalOwner,
+    filesystem::{ForkPreparationLimits, PreparationIo, TaskCommandProgress},
+    runtime::TaskContext,
+    scheduler::LeaseFence,
+    store::{HistoryWork, StreamAggregate},
+    workflow::WorkflowCommand,
+};
+use acyclic_stream::LocalStream;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{collections::BTreeMap, sync::Arc};
+
+pub(crate) const PI_FORK_COMMAND_KIND: &str = "acyclic.pi.fork";
+pub(crate) const PI_OBSERVE_SOURCE_COMMAND_KIND: &str = "acyclic.pi.observe-source";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PiForkCommand {
+    pub(crate) commit: RetainedSpawnCommit,
+    pub(crate) root_source: Option<LazySnapshotRef>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PiObserveSourceCommand {
+    pub(crate) caller: TaskId,
+    pub(crate) sdk_operation: String,
+    pub(crate) root_key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ObservedSource {
+    pub(crate) caller: TaskId,
+    pub(crate) sdk_operation: String,
+    pub(crate) root_key: String,
+    pub(crate) snapshot: LazySnapshotRef,
+}
+
+pub(crate) const OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES: u64 =
+    crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES + 240;
+
+#[derive(Serialize)]
+struct PiPreparedReply<'a> {
+    task: TaskId,
+    binding: &'a crate::PiTaskBinding,
+    state: &'static str,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PiRootSource<S = String> {
+    pub(crate) snapshot: LazySnapshotRef,
+    pub(crate) root_key: S,
+}
+
+const FORK_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 =
+    crate::pi_fork::FORK_PLAN_DIAGNOSTIC_LABEL_BYTES + 42;
+const OBSERVE_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 = OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES + 26;
+const PENDING_DIAGNOSTIC_LABEL_BYTES: u64 =
+    crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES + 444;
+
+impl crate::pi_host::PiControlHost<'_> {
+    /// The actor durably saves these existing Preparing records before another pass.
+    pub(crate) fn pending_to_save(
+        &self,
+    ) -> Result<Option<(PendingSpawn, acyclic_fs::NativeAllocation)>> {
+        Ok(self
+            .pending
+            .lock()
+            .map_err(|_| invalid("Pi pending control lock poisoned"))?
+            .take())
+    }
+
+    pub(crate) fn coordinator(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<PiForkCoordinator<'_>> {
+        PiForkCoordinator::new(
+            self.runtime.clone(),
+            self.filesystem.clone(),
+            self.stream.clone(),
+            self.resources,
+            self.protected.clone(),
+            work,
+        )
+    }
+
+    pub(super) async fn context(
+        &self,
+        shared: Arc<TaskContext>,
+        fence: &LeaseFence,
+        work: &NativeMaterializationWork,
+    ) -> Result<(
+        Arc<TaskContext>,
+        Arc<TaskJournalOwner<LocalStream>>,
+        PiTaskInput,
+        acyclic_fs::NativeAllocation,
+    )> {
+        let caller = self.caller(shared.as_ref(), fence, work).await?;
+        let (owner, input, _) = &caller;
+        let task = owner.task_id();
+        let shared = if task == self.protected.policy().root_task {
+            let PiTaskExecution::Host { root, .. } = &input.execution else {
+                return Err(unauthorized("Pi original root input substituted a child"));
+            };
+            crate::pi_root_provider::bind_root_output_context_with_native_work(
+                shared,
+                owner,
+                self.protected.clone(),
+                self.resources,
+                self.filesystem.clone(),
+                self.stream.clone(),
+                &input.binding,
+                root,
+                work,
+            )
+            .await?
+        } else {
+            shared
+                .with_output_volume_with_native_work(&input.binding.scratch.volume, work)
+                .await?
+        };
+        Ok((shared, caller.0, caller.1, caller.2))
+    }
+
+    pub(super) fn decode<T: serde::de::DeserializeOwned, S: Serialize>(
+        &self,
+        value: &S,
+        label_bytes: u64,
+        work: &NativeMaterializationWork,
+    ) -> Result<(T, acyclic_fs::NativeAllocation)> {
+        let maximum = self.protected.policy().maximum_payload_bytes;
+        let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
+        let (value, custody) = crate::pi_root_provider::guarded_pi_decode(
+            &bytes.0,
+            maximum,
+            maximum,
+            acyclic_harness::wire::ErrorCode::Invalid,
+            acyclic_harness::JsonValueSchema::None,
+            label_bytes,
+            work,
+        )?;
+        Ok((value, custody))
+    }
+}
+
+fn invalid(message: &'static str) -> Error {
+    Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Invalid,
+        reason: message,
+    }
+}
+fn unauthorized(message: &'static str) -> Error {
+    Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Unauthorized,
+        reason: message,
+    }
+}
+
+fn ready<T: Serialize>(
+    response: &T,
+    work: &NativeMaterializationWork,
+) -> Result<TaskCommandProgress> {
+    let (value, custody) = crate::pi_root_provider::guarded_pi_value(
+        response,
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
+        work,
+    )?;
+    Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
+}
+
+pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
+    match source {
+        acyclic_fs::LazyWorkspaceError::NativeWork(cause) => cause.into(),
+        source => source.into(),
+    }
+}
+
+mod execution;
+mod observation;
+mod reservation;
+mod selection;
+mod snapshot;
+pub(crate) use snapshot::{freeze_child_source, freeze_created_root_source};

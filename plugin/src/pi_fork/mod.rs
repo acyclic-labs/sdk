@@ -209,26 +209,7 @@ impl PiForkPlan {
 pub(crate) const FORK_PLAN_DIAGNOSTIC_LABEL_BYTES: u64 =
     crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
         + crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES
-        + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-            "PiForkPlan",
-            "original",
-            "commit",
-            "preparation",
-            "request",
-            "source_checkpoint",
-            "source",
-            "frozen",
-            "project_creation",
-            "RetainedSpawnCommit",
-            "sdk_operation",
-            "alias",
-            "prompt",
-            "caller",
-            "source_task",
-            "child",
-            "launch",
-            "an array of length 16",
-        ]);
+        + 251;
 
 pub(crate) struct PreparedPiFork {
     pub(crate) binding: PiTaskBinding,
