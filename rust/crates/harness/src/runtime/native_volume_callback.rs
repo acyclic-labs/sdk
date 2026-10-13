@@ -160,7 +160,7 @@ impl<P: StreamProvider + 'static> NativeMountCallbackGuard for VolumeCallback<P>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::durable_host::tests::created_resource_access::CreationFixture;
+    use crate::durable_host::tests::created_fixture::CreationFixture;
 
     fn work(cancellation: &acyclic_fs::CancellationToken) -> NativeMaterializationWork {
         let units = 16_384;

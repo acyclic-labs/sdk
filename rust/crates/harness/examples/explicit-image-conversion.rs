@@ -80,7 +80,7 @@ impl ImageConversion {
     }
 
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
-        self.authorize_with_context(&context, &invocation)?;
+        self.authorize(None, Some(&context), &invocation, None)?;
         let input = Self::input(&invocation)?;
         let mut bytes = context.read_file(&input.source, None).await?.to_vec();
         let count = bytes
@@ -120,11 +120,13 @@ impl ImageConversion {
 }
 
 impl ToolExecutor for ImageConversion {
-    fn authorize_with_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-    ) -> Result<()> {
+    fn authorize(&self, scope: Option<&acyclic_harness::runtime::RuntimeScope>, context: Option<&acyclic_harness::runtime::ToolContext>, invocation: &acyclic_harness::tool::ToolInvocation, work: acyclic_harness::NativeWork<'_>) -> acyclic_harness::Result<()> {
+let _ = (scope, context, invocation, work);
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+if work.is_some() {
+ return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported, reason: "tool executor has no native authorization producer" });
+}
+if let Some(context) = context { return {
         let input = Self::input(invocation)?;
         if input.source.descriptor().media_type() != MIME
             || input.source.descriptor().byte_length() > MAXIMUM_BYTES
@@ -141,9 +143,11 @@ impl ToolExecutor for ImageConversion {
             arguments: json!({"path":input.destination}),
             ..invocation.clone()
         };
-        self.read.authorize_with_context(context, &read)?;
-        self.write.authorize_with_context(context, &write)
-    }
+        self.read.authorize(None, Some(context), &read, None)?;
+        self.write.authorize(None, Some(context), &write, None)
+    }; }
+Ok(())
+}
 
     fn execute<'a>(
         &'a self,

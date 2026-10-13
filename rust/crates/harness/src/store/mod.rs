@@ -5,11 +5,9 @@ mod archive;
 mod configuration;
 mod execution;
 mod forks;
-mod migrations;
 mod opening;
 use execution::stream_idempotency_key_with_work;
 use forks::fork_child_binding_with_work;
-pub use migrations::{ExtensionMigrationRequest, NativeExtensionMigrations};
 
 mod checkpoints;
 
@@ -32,12 +30,12 @@ pub use effects::effect_events;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{
-        ContentPublisher, ContentResidencyVerifier, Limits, ReferencedAttachments,
-        verified_attachment_manifest, verified_content_bytes,
+        ContentResidencyVerifier, Limits, ReferencedAttachments, verified_attachment_manifest,
+        verified_content_bytes,
     },
     core::{
         Action, ApplyResult, Authority, AuthorityVerifier, Command, EffectStatus, EventPayload,
-        EventReference, ExtensionDependency, Reducer, SchemaRegistry, Scope, Snapshot,
+        EventReference, Reducer, SchemaRegistry, Scope, Snapshot,
     },
     fork::{CompositeForkVerifier, ForkPreparer, ForkReport, ForkRequest, ForkSeed},
     interaction::InteractionOutcome,
@@ -51,9 +49,7 @@ use acyclic_stream::{
 
 use acyclic_stream::OwnedBytes;
 
-use serde_json::Value;
-
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 /// Finite recent terminal cache.
 pub const DEFAULT_TERMINAL_EFFECTS: usize = 64;
@@ -126,7 +122,6 @@ pub struct StreamAggregate<P> {
     content_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     fork_verifier: Option<Arc<CompositeForkVerifier>>,
     merge_verifier: Option<Arc<dyn ProjectMergeVerifier>>,
-    extension_migrations: Option<Arc<NativeExtensionMigrations>>,
     limits: Limits,
 }
 

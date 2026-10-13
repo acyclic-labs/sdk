@@ -17,7 +17,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         let agent = AgentId::new();
         let volume = VolumeRef::new(
             provider.clone(),
-            "private",
+            "private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
             &mut None,

@@ -76,7 +76,7 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
     };
     meter.cancelled.store(false, Ordering::SeqCst);
     let failure = reopened
-        .native_commit(wrong_family, meter.original())
+        .native_commit(wrong_family, None, meter.original())
         .await?
         .err()
         .ok_or("Commit incorrectly reused an Append identity")?;
@@ -154,7 +154,7 @@ async fn native_request_copy_cancellation_precedes_detached_publication()
     let meter = Arc::new(Meter::local());
     meter.cancel_on_copy.store(true, Ordering::SeqCst);
     let error = provider
-        .native_commit(request, meter.original())
+        .native_commit(request, None, meter.original())
         .await
         .err()
         .ok_or("cancelled capture escaped into publication")?;
@@ -181,7 +181,7 @@ async fn native_durability_denial_precedes_semantic_cas() -> Result<(), Box<dyn 
     let request = keyed_commit("not-published", 0)?;
     let key = request.idempotency_key.clone();
     let error = provider
-        .native_commit(request, meter.original())
+        .native_commit(request, None, meter.original())
         .await
         .err()
         .ok_or("native commit unexpectedly passed the durability gate")?;
@@ -386,7 +386,7 @@ async fn native_lost_ack_drains_flush_and_reopens_original_identity()
     let meter = Arc::new(Meter::local());
     meter.cancel_on_write.store(true, Ordering::SeqCst);
     let error = provider
-        .native_commit(request.clone(), meter.original())
+        .native_commit(request.clone(), None, meter.original())
         .await
         .err()
         .ok_or("cancelled accepted mutation fabricated an acknowledgement")?;
@@ -428,7 +428,7 @@ async fn native_compaction_drains_accepted_controls_and_actual_close()
     let meter = Arc::new(Meter::local());
     meter.cancel_on_durability.store(true, Ordering::SeqCst);
     let error = provider
-        .native_commit(request.clone(), meter.original())
+        .native_commit(request.clone(), None, meter.original())
         .await
         .err()
         .ok_or("late cancelled compaction fabricated an acknowledgement")?;
@@ -486,7 +486,7 @@ async fn native_commit_before_checks_actual_cas_and_preserves_replay()
         .lock()
         .map_err(|_| "native clock seam was poisoned")? = Some((clock.clone(), 100));
     let expired = provider
-        .native_commit_before(request.clone(), 100, meter.original())
+        .native_commit(request.clone(), Some(100), meter.original())
         .await?;
     assert!(matches!(
         expired.as_ref(),
@@ -503,7 +503,7 @@ async fn native_commit_before_checks_actual_cas_and_preserves_replay()
     meter.assert_refunded();
     let accepted = provider.commit(request.clone()).await?;
     let replay = provider
-        .native_commit_before(request, 0, meter.original())
+        .native_commit(request, Some(0), meter.original())
         .await??;
     assert_eq!(replay.value(), &accepted);
     drop(replay);
@@ -576,7 +576,7 @@ async fn native_guard_rechecks_actual_canonical_drift_before_retaining_owner_ide
                     let intervening = keyed_commit("guard-drift-other", 0)
                         .map_err(|error| NativeGuardFailure::Provider(error))?;
                     let result = provider
-                        .native_commit(intervening, meter.original())
+                        .native_commit(intervening, None, meter.original())
                         .await
                         .map_err(NativeGuardFailure::Io)??;
                     assert!(matches!(result.value(), CommitOutcome::Committed(_)));

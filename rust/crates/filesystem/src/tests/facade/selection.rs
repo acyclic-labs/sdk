@@ -42,6 +42,9 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
             },
             &cancellation,
         );
+        let (allocation, admitted) = accounting.record_actual_owned(owned)?;
+        admitted?;
+        let paths = crate::kernel::Owned::new(paths, allocation, owned);
         let failure = fs
             .select_fork_paths(
                 &source,

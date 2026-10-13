@@ -47,6 +47,7 @@ pub(crate) fn write_codex_ownership(
         &temporary,
         path,
         acyclic_native_runtime::RenameMode::Replace,
+        None,
     )
     .map_err(display)
 }

@@ -26,19 +26,55 @@ enum MergeResult<'a> {
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     RecursiveExecutor<P, A, O>
 {
-    pub(super) async fn apply_merge(
+    pub(super) async fn run_merge(
         &self,
         context: &ToolContext,
         owner: &(
             Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<FilesystemWorkflowJournal<P, A, O>>,
+            Arc<TaskJournalOwner<P>>,
         ),
         merge: &RecursiveMergeToolPlan,
         cancellation: &CancellationToken,
         output_io: Option<&PreparationIo>,
     ) -> Result<Value> {
-        let (runtime, workflow) = owner;
-        let owner = workflow.owner.as_ref().expect("validated tool owner");
+        let temporary = recursive_temporary_io(output_io)?;
+        let io = temporary.as_ref();
+        let value = self
+            .apply_merge(context, owner, merge, cancellation, io)
+            .await?;
+        let receipt = merge_result(merge, &value, io)?;
+        if let Some(receipt) = receipt {
+            self.publish_merge(context, owner, merge, Some(&receipt), cancellation, io)
+                .await?;
+            #[derive(Serialize)]
+            struct Published<'a> {
+                status: &'static str,
+                receipt: &'a ProjectMergeReceipt,
+            }
+            encode(
+                &Published {
+                    status: "published",
+                    receipt: &receipt,
+                },
+                output_io,
+            )
+        } else {
+            encode(&value, output_io)
+        }
+    }
+
+    pub(super) async fn apply_merge(
+        &self,
+        context: &ToolContext,
+        owner: &(
+            Arc<FilesystemTaskRuntime<P, A, O>>,
+            Arc<TaskJournalOwner<P>>,
+        ),
+        merge: &RecursiveMergeToolPlan,
+        cancellation: &CancellationToken,
+        output_io: Option<&PreparationIo>,
+    ) -> Result<Value> {
+        let (runtime, owner) = owner;
         let temporary = recursive_temporary_io(output_io)?;
         let io = temporary.as_ref();
         let binding = self
@@ -47,7 +83,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .expect("authorized source")
             .merge(context, &merge.arguments, Some(merge), cancellation, io)
             .await?;
-        validate_merge_binding(context, merge.arguments.source, &binding, io)?;
+        validate_merge_binding(context, &binding, io)?;
         let controller = ParentProjectController::new(
             binding.filesystem.as_ref(),
             binding.destination.reducer(),
@@ -183,7 +219,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         context: &ToolContext,
         owner: &(
             Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<FilesystemWorkflowJournal<P, A, O>>,
+            Arc<TaskJournalOwner<P>>,
         ),
         merge: &RecursiveMergeToolPlan,
         receipt: Option<&ProjectMergeReceipt>,
@@ -198,7 +234,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .expect("authorized source")
             .merge(context, &merge.arguments, Some(merge), cancellation, io)
             .await?;
-        validate_merge_binding(context, merge.arguments.source, &binding, io)?;
+        validate_merge_binding(context, &binding, io)?;
         let receipt = receipt.ok_or_else(|| {
             recursive_reject(
                 io,
@@ -207,12 +243,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             )
         })?;
         validate_merge_receipt(merge, receipt, io)?;
-        reject_if(
-            receipt.operation_id != context.operation_id(),
-            io,
-            crate::wire::ErrorCode::Unauthorized,
-            "receipt names another effect",
-        )?;
+        deny(receipt.operation_id != context.operation_id(), io)?;
         let copy = crate::executor::with_history_io(io, |work| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let copy = receipt.copy(&mut quota)?;
@@ -234,7 +265,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             causal_parent: None,
             action: Action::PublishProjectMerge { receipt: copy },
         };
-        let owner = owner.1.owner.as_ref().expect("validated tool owner");
+        let owner = &owner.1;
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history
             .as_mut()
@@ -249,6 +280,6 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 &mut work,
             )
             .await?;
-        encode(receipt, output_io)
+        Ok(Value::Null)
     }
 }

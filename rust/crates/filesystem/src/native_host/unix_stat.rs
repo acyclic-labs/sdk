@@ -33,12 +33,7 @@ pub(super) fn clone_directory<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    loop {
-        match work.attempt_io(READ, || directory.try_clone()) {
-            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
-            result => return result,
-        }
-    }
+    retry_io(work, READ, || directory.try_clone())
 }
 
 #[cfg(unix)]
@@ -48,31 +43,38 @@ pub(super) fn open_unix<W: NativeHostWork>(
     mut flags: i32,
     work: &mut W,
 ) -> Result<File, W::Error> {
-    use std::os::fd::FromRawFd as _;
+    let parent = if directory == libc::AT_FDCWD {
+        rustix::fs::CWD
+    } else {
+        // SAFETY: callers retain the parent throughout the syscall.
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(directory) }
+    };
+    let delta = if flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT) != 0 {
+        WRITE
+    } else {
+        READ
+    };
     loop {
-        work.started_io(
-            if flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT) != 0 {
-                WRITE
-            } else {
-                READ
-            },
-        )?;
-        // SAFETY: the held parent or AT_FDCWD and terminated name are live.
-        let fd = unsafe { libc::openat(directory, name.as_ptr(), flags, 0o666) };
-        if fd >= 0 {
-            // SAFETY: openat returned a new owned descriptor.
-            return Ok(unsafe { File::from_raw_fd(fd) });
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
+        let result = retry_io(work, delta, || {
+            rustix::fs::openat(
+                parent,
+                name,
+                rustix::fs::OFlags::from_bits_retain(flags as _),
+                rustix::fs::Mode::from_bits_truncate(0o666),
+            )
+            .map(File::from)
+            .map_err(io::Error::from)
+        });
         #[cfg(target_os = "linux")]
-        if error.kind() == io::ErrorKind::PermissionDenied && flags & libc::O_NOATIME != 0 {
+        if result
+            .as_ref()
+            .is_err_and(|error| W::io_error_kind(error) == Some(io::ErrorKind::PermissionDenied))
+            && flags & libc::O_NOATIME != 0
+        {
             flags &= !libc::O_NOATIME;
             continue;
         }
-        return Err(error.into());
+        return result;
     }
 }
 
@@ -120,31 +122,25 @@ pub(super) fn fstat<W: NativeHostWork>(
     name: &std::ffi::CStr,
     work: &mut W,
 ) -> Result<libc::stat, W::Error> {
-    loop {
-        let result = work.attempt_io(READ, || {
-            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-            // SAFETY: held descriptor, terminated name and complete output remain live.
-            let result = unsafe {
-                if name.is_empty() && fd != libc::AT_FDCWD {
-                    libc::fstat(fd, stat.as_mut_ptr())
-                } else {
-                    libc::fstatat(
-                        fd,
-                        name.as_ptr(),
-                        stat.as_mut_ptr(),
-                        libc::AT_SYMLINK_NOFOLLOW,
-                    )
-                }
-            };
-            if result != 0 {
-                return Err(io::Error::last_os_error());
+    retry_io(work, READ, || {
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: held descriptor, terminated name and complete output remain live.
+        let result = unsafe {
+            if name.is_empty() && fd != libc::AT_FDCWD {
+                libc::fstat(fd, stat.as_mut_ptr())
+            } else {
+                libc::fstatat(
+                    fd,
+                    name.as_ptr(),
+                    stat.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
             }
-            // SAFETY: the successful call initialized the complete record.
-            Ok(unsafe { stat.assume_init() })
-        });
-        match result {
-            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
-            result => return result,
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
         }
-    }
+        // SAFETY: the successful call initialized the complete record.
+        Ok(unsafe { stat.assume_init() })
+    })
 }

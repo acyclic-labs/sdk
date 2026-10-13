@@ -23,7 +23,7 @@ impl RemoteTool {
                 "MCP tool context identity mismatch".into(),
             ));
         }
-        self.authorize(Some(context.task().scope()), invocation)
+        self.authorize(Some(context.task().scope()), None, invocation, None)
     }
     pub(super) fn result(&self, result: Value) -> Result<ToolResult> {
         let mut value = super::services::validate_result("tools/call", result, None)?;
@@ -48,7 +48,22 @@ impl RemoteTool {
     }
 }
 impl ToolExecutor for RemoteTool {
-    fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
+    fn authorize(
+        &self,
+        scope: Option<&crate::runtime::RuntimeScope>,
+        context: Option<&crate::runtime::ToolContext>,
+        invocation: &crate::tool::ToolInvocation,
+        work: crate::NativeWork<'_>,
+    ) -> crate::Result<()> {
+        let _ = (scope, context, invocation, work);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "tool executor has no native authorization producer",
+            });
+        }
+
         if !scope.is_some_and(|scope| {
             scope
                 .grants()

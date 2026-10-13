@@ -113,7 +113,12 @@ fn operator_proof_binds_body_owner_and_agent_and_cannot_be_replaced_by_a_native_
     verify_request(&owner, session, &parsed.0, &native).unwrap();
     assert!(verify_request(&foreign, session, &parsed.0, &native).is_err());
     let original_proof = parsed.0.operator.clone();
-    let original_body = parsed.0.body.clone();
+    let original_body = PiOperatorBody::Inspect {
+        session: session.into(),
+        operation: "original-sdk-writeback".into(),
+        project_files: false,
+        file_evidence: None,
+    };
     let binding = crate::pi_binding::tests::binding(session, 81);
     let caller = pi_caller::issue(&owner, session, &binding, &native).unwrap();
     parsed.0.operator = caller.0;

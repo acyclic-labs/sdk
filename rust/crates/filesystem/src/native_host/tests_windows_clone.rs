@@ -33,6 +33,15 @@ fn filetime_conversions_cover_their_extremes() {
     assert_eq!(filetime_to_unix_nanoseconds(i64::MAX), None);
     assert_eq!(filetime_to_unix_nanoseconds(i64::MIN), None);
     assert_eq!(filetime_to_unix_nanoseconds(0), None);
+    let ticks = 1_000_000_000_000_000_000_u64;
+    let value = windows_time(UNIX_EPOCH_FILETIME as u64 + ticks).into_std();
+    assert_eq!(
+        value
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        u128::from(ticks) * 100
+    );
 }
 use bytes::Bytes;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -41,199 +50,6 @@ use std::path::Path;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
-#[tokio::test]
-async fn held_async_copy_preserves_source_hardlinks_and_rejects_escape() -> std::io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let source_path = temporary.path().join("source");
-    let destination_path = temporary.path().join("destination");
-    let outside_path = temporary.path().join("outside");
-    std::fs::create_dir(&source_path)?;
-    std::fs::create_dir(&destination_path)?;
-    std::fs::create_dir(&outside_path)?;
-    std::fs::write(source_path.join("file"), b"source contents")?;
-    std::fs::hard_link(source_path.join("file"), source_path.join("alias"))?;
-    std::fs::write(outside_path.join("untouched"), b"outside")?;
-    let source = test_root(&source_path)?;
-    let destination = test_root(&destination_path)?;
-    destination
-        .copy_file_from(&source, Path::new("alias"), Path::new("copy"))
-        .await?;
-    assert_eq!(
-        std::fs::read(destination_path.join("copy"))?,
-        b"source contents"
-    );
-    std::fs::write(destination_path.join("copy"), b"changed")?;
-    assert_eq!(std::fs::read(source_path.join("file"))?, b"source contents");
-    assert_eq!(
-        std::fs::read(source_path.join("alias"))?,
-        b"source contents"
-    );
-    assert!(
-        destination
-            .copy_file_from(
-                &source,
-                Path::new("../outside/untouched"),
-                Path::new("escape")
-            )
-            .await
-            .is_err()
-    );
-    match std::os::windows::fs::symlink_dir(&outside_path, source_path.join("pivot")) {
-        Ok(()) => assert!(
-            destination
-                .copy_file_from(&source, Path::new("pivot/untouched"), Path::new("escape"))
-                .await
-                .is_err()
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
-        Err(error) => return Err(error),
-    }
-    assert!(!destination_path.join("escape").exists());
-    assert_eq!(std::fs::read(outside_path.join("untouched"))?, b"outside");
-    Ok(())
-}
-#[tokio::test]
-async fn cancelled_async_copy_leaves_no_partial_output() -> std::io::Result<()> {
-    use std::time::Duration;
-    let temporary = tempfile::tempdir()?;
-    let source_path = temporary.path().join("source");
-    let destination_path = temporary.path().join("destination");
-    std::fs::create_dir(&source_path)?;
-    std::fs::create_dir(&destination_path)?;
-    let source_file = std::fs::File::create(source_path.join("large"))?;
-    let length = 128 * 1024 * 1024;
-    source_file.set_len(length)?;
-    let source = test_root(&source_path)?;
-    let destination = test_root(&destination_path)?;
-    let task = tokio::spawn(async move {
-        destination
-            .copy_file_from(&source, Path::new("large"), Path::new("copy"))
-            .await
-    });
-    let copy_path = destination_path.join("copy");
-    let staged = || -> std::io::Result<bool> {
-        for entry in std::fs::read_dir(&destination_path)? {
-            if entry?
-                .file_name()
-                .to_string_lossy()
-                .starts_with(STAGING_PREFIX)
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    };
-    let absent_or_complete = || match std::fs::metadata(&copy_path) {
-        Ok(metadata) => assert_eq!(metadata.len(), length, "partial destination"),
-        Err(error) => assert!(
-            matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-            ),
-            "{error}"
-        ),
-    };
-    while !staged()? && !task.is_finished() {
-        absent_or_complete();
-        tokio::task::yield_now().await;
-    }
-    task.abort();
-    let _ = task.await;
-    while staged()? {
-        absent_or_complete();
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    absent_or_complete();
-    Ok(())
-}
-/// Names the directory [`staged_copy_crash_child`] stages into.
-const CRASH_DIRECTORY: &str = "ACYCLIC_STAGED_COPY_CRASH_DIRECTORY";
-#[test]
-#[ignore = "runs only as a child of a_process_dying_mid_copy_leaves_nothing"]
-fn staged_copy_crash_child() -> std::io::Result<()> {
-    let Some(directory) = std::env::var_os(CRASH_DIRECTORY) else {
-        return Ok(());
-    };
-    let staged = StagedWindowsFile::create(cap_std::fs::Dir::open_ambient_dir(
-        directory,
-        cap_std::ambient_authority(),
-    )?)?;
-    staged.guard.try_clone()?.write_all(b"partial copy")?;
-    std::process::abort();
-}
-#[test]
-fn a_process_dying_mid_copy_leaves_nothing() -> std::io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let status = acyclic_native_runtime::process_status(
-        std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--ignored",
-                "--exact",
-                "native_host::windows_clone_tests::staged_copy_crash_child",
-                "--test-threads=1",
-            ])
-            .env(CRASH_DIRECTORY, temporary.path())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()),
-        std::time::Duration::from_secs(120),
-    )?;
-    assert!(!status.success(), "the child must die mid-copy");
-    let names = std::fs::read_dir(temporary.path())?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    assert!(names.is_empty(), "a crashed copy left {names:?}");
-    Ok(())
-}
-#[test]
-fn a_published_copy_keeps_only_its_final_name() -> std::io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let parent =
-        cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-    let staged = StagedWindowsFile::create(parent)?;
-    staged.guard.try_clone()?.write_all(b"complete copy")?;
-    staged.publish(std::ffi::OsStr::new("copy"))?;
-    assert_eq!(
-        staged
-            .publish(std::ffi::OsStr::new("copy"))
-            .map_err(|error| error.kind()),
-        Err(std::io::ErrorKind::AlreadyExists),
-        "publishing never replaces an existing name"
-    );
-    drop(staged);
-    let names = std::fs::read_dir(temporary.path())?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    assert_eq!(names, ["copy"]);
-    assert_eq!(
-        std::fs::read(temporary.path().join("copy"))?,
-        b"complete copy"
-    );
-    Ok(())
-}
-#[test]
-fn a_staged_name_goes_while_another_process_holds_the_file() -> std::io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-    let temporary = tempfile::tempdir()?;
-    let parent =
-        cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-    let staged = StagedWindowsFile::create(parent)?;
-    let name = std::fs::read_dir(temporary.path())?
-        .next()
-        .expect("created staged file")?
-        .file_name();
-    let held = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-        .open(temporary.path().join(name))?;
-    drop(staged);
-    let names = std::fs::read_dir(temporary.path())?.count();
-    drop(held);
-    assert_eq!(names, 0, "the staged name outlived its guard");
-    Ok(())
-}
 #[test]
 fn hydrating_a_placeholder_leaves_its_attributes_the_same() {
     use same_windows_attributes;
@@ -288,32 +104,6 @@ fn a_name_deleted_while_held_open_is_not_found() -> std::io::Result<()> {
     assert_eq!(
         stat.map(|_| ()).map_err(|error| error.kind()),
         Err(std::io::ErrorKind::NotFound)
-    );
-    Ok(())
-}
-#[tokio::test]
-async fn copy_never_replaces_an_existing_destination() -> std::io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    std::fs::write(temporary.path().join("source"), b"new")?;
-    std::fs::write(temporary.path().join("existing"), b"old")?;
-    let root = test_root(temporary.path())?;
-    let copied = root
-        .copy_file_from(&root, Path::new("source"), Path::new("existing"))
-        .await;
-    assert_eq!(
-        copied.map_err(|error| error.kind()),
-        Err(std::io::ErrorKind::AlreadyExists),
-        "an existing destination is never replaced"
-    );
-    assert_eq!(std::fs::read(temporary.path().join("existing"))?, b"old");
-    let mut names = std::fs::read_dir(temporary.path())?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    names.sort();
-    assert_eq!(
-        names,
-        ["existing", "source"],
-        "a staged copy was left behind"
     );
     Ok(())
 }

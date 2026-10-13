@@ -118,28 +118,32 @@ impl ToolRegistry {
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let retained = if io.is_some() {
-                let extra = (std::mem::size_of::<(String, String)>() as u64)
-                    .checked_add(std::mem::size_of::<Arc<dyn ToolExecutor>>() as u64)
-                    .and_then(|bytes| {
-                        bytes.checked_add(std::mem::size_of::<Arc<dyn ToolProjection>>() as u64)
-                    })
-                    .and_then(|bytes| bytes.checked_add(key.0.capacity() as u64))
-                    .and_then(|bytes| bytes.checked_add(key.1.capacity() as u64))
-                    .and_then(|bytes| match &selection {
-                        Some((name, selection)) => bytes
-                            .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
-                            .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
-                            .and_then(|bytes| {
-                                bytes.checked_add(match selection {
-                                    ModelSelection::Revision(revision) => {
-                                        revision.capacity() as u64
-                                    }
-                                    _ => 0,
-                                })
-                            }),
-                        None => Some(bytes),
-                    })
-                    .ok_or(OWNERSHIP_OVERFLOW)?;
+                let selection_bytes = match &selection {
+                    Some((name, selected)) => [
+                        std::mem::size_of::<(String, ModelSelection)>() as u64,
+                        name.capacity() as u64,
+                        match selected {
+                            ModelSelection::Revision(revision) => revision.capacity() as u64,
+                            _ => 0,
+                        },
+                    ]
+                    .into_iter()
+                    .try_fold(0_u64, |total, bytes| total.checked_add(bytes))
+                    .ok_or(OWNERSHIP_OVERFLOW)?,
+                    None => 0,
+                };
+                let extra = [
+                    (std::mem::size_of::<(String, String)>()
+                        + std::mem::size_of::<Arc<dyn ToolExecutor>>()
+                        + std::mem::size_of::<Arc<dyn ToolProjection>>())
+                        as u64,
+                    key.0.capacity() as u64,
+                    key.1.capacity() as u64,
+                    selection_bytes,
+                ]
+                .into_iter()
+                .try_fold(0_u64, |total, bytes| total.checked_add(bytes))
+                .ok_or(OWNERSHIP_OVERFLOW)?;
                 let released = if previous && selection.is_none() {
                     match self.selected.get(&key.0) {
                         Some(ModelSelection::Revision(revision)) => revision.capacity() as u64,

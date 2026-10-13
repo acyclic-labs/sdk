@@ -197,14 +197,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         };
         if work.is_native() {
             work.admit(completed)?;
-            work.charge(completed)?;
-        } else {
-            work.record(completed)?;
-            work.cancellation
-                .check()
-                .map_err(|_| AuthorityStoreError::Cancelled)?;
-            work.spent().verify(work.budget)?;
         }
+        work.charge(completed)?;
         if !work.is_native() && record.0.sequence != from {
             return Err(authority_corrupt(
                 "Stream returned a non-contiguous record",
@@ -250,21 +244,18 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         meter.admit(submitted)?;
         #[cfg(not(target_arch = "wasm32"))]
         if meter.is_native() {
-            let mut child = meter.operation()?;
             let outcome = match guard.as_deref_mut() {
                 Some(guard) => {
                     guard
-                        .native_commit(self.provider.as_ref(), request, deadline, &mut child)
+                        .native_commit(self.provider.as_ref(), request, deadline, meter)
                         .await
                 }
                 None => {
-                    ().native_commit(self.provider.as_ref(), request, deadline, &mut child)
-                        .await
-                        .map(|result| {
-                            result.map_err(|error| {
-                                AuthorityError::Authority(error.into_error(std::convert::identity))
-                            })
-                        })
+                    let result = self
+                        .provider
+                        .native_commit(request, deadline, meter.native_meter())
+                        .await;
+                    result.map(|result| result.map_err(AuthorityError::from))
                 }
             }
             .map_err(|error| meter.native_io_failure(error))??;

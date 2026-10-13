@@ -105,10 +105,8 @@ pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
     ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
 };
-pub(crate) use default_tools::InvocationCancellation;
 pub use default_tools::{
-    MergeToolArguments, MergeToolSelection, MergeToolSide, RecursiveDefaultToolset,
-    recursive_default_tools,
+    MergeToolArguments, MergeToolSelection, MergeToolSide, recursive_default_tools,
 };
 pub(in crate::filesystem) use default_tools::{
     RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,

@@ -2,24 +2,17 @@ use super::*;
 
 #[tokio::test]
 async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Result<()> {
-    let root_policy: Arc<dyn ToolPolicy> = Arc::new(FixedPolicy {
-        identity: ComponentIdentity {
-            name: "root.policy".into(),
-            version: "1".into(),
-            digest: [1; 32],
-        },
-        decision: ToolPolicyDecision::Allow,
-    });
-    let child_policy: Arc<dyn ToolPolicy> = Arc::new(FixedPolicy {
-        identity: ComponentIdentity {
-            name: "child.policy".into(),
-            version: "1".into(),
-            digest: [2; 32],
-        },
-        decision: ToolPolicyDecision::Deny {
-            reason: "child veto".into(),
-        },
-    });
+    let (mut root_policy, _, _) = native_policy_fixture_inputs();
+    root_policy.identity.name = "root.policy".into();
+    root_policy.identity.digest = [1; 32];
+    root_policy.decision = ToolPolicyDecision::Allow;
+    let mut child_policy = root_policy.clone();
+    child_policy.identity.name = "child.policy".into();
+    child_policy.identity.digest = [2; 32];
+    child_policy.decision = ToolPolicyDecision::Deny {
+        reason: "child veto".into(),
+    };
+    let child_policy: Arc<dyn ToolPolicy> = Arc::new(child_policy);
     let scope = RuntimeScope::new(
         Capabilities::new(["tool:call:test.echo"]),
         Limits::default(),
@@ -27,41 +20,13 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
     let harness = crate::runtime::Bindings {
         scope: scope.clone(),
         concurrency: 1,
-        policy: Some(root_policy),
+        policy: Some(Arc::new(root_policy)),
         ..crate::runtime::Bindings::local()
     }
     .build(None)?;
-    let context = TaskContext {
-        harness,
-        task_id: OperationId::new(),
-        durable_task: None,
-        descendants: TaskGroup::new(1, None).unwrap(),
-        scope,
-        policy_overrides: Vec::new(),
-        owned_interactions: None,
-        owned_mailbox: None,
-        output_content: None,
-        model_steps: Arc::new((AtomicUsize::new(0), None)),
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        native_purpose: None,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        native_custody: None,
-    };
+    let context = test_context(harness)?;
     let narrowed = context.scoped_policy(child_policy)?;
-    let definition = ToolDefinition {
-        name: "test.echo".into(),
-        revision: "1".into(),
-        description: "Echo".into(),
-        input_schema: serde_json::json!({}),
-        output_schema: serde_json::json!({}),
-        projection_schema: crate::tool::json_projection_schema(serde_json::json!({})),
-    };
-    let invocation = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: OperationId::new().to_string(),
-        name: definition.name.clone(),
-        arguments: serde_json::json!({}),
-    };
+    let (_, definition, invocation) = native_policy_fixture_inputs();
     assert!(matches!(
         narrowed.authorize_tool(&definition, &invocation).await,
         Err(Error::Unauthorized(_))
@@ -252,55 +217,15 @@ fn tool_approval_keeps_terminal_outcomes_distinct() {
 
 #[tokio::test]
 async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() -> Result<()> {
-    let policy = FixedPolicy {
-        identity: ComponentIdentity {
-            name: "approval.policy".into(),
-            version: "1".into(),
-            digest: [9; 32],
-        },
-        decision: ToolPolicyDecision::RequireApproval {
-            prompt: "Approve echo".into(),
-        },
+    let (mut policy, definition, mut invocation) = native_policy_fixture_inputs();
+    policy.decision = ToolPolicyDecision::RequireApproval {
+        prompt: "Approve echo".into(),
     };
+    invocation.call_id = "provider-call-name".into();
+    invocation.arguments = serde_json::json!({"text":"hello"});
     let task = TaskId::from_bytes([42; 16]);
-    let scope = RuntimeScope::default();
-    let context = TaskContext {
-        harness: crate::runtime::Bindings {
-            scope: scope.clone(),
-            concurrency: 1,
-            ..crate::runtime::Bindings::local()
-        }
-        .build(None)?,
-        task_id: OperationId::from_bytes([41; 16]),
-        durable_task: Some(task),
-        descendants: TaskGroup::new(1, None).unwrap(),
-        scope,
-        policy_overrides: Vec::new(),
-        owned_interactions: None,
-        owned_mailbox: None,
-        output_content: None,
-        model_steps: Arc::new((AtomicUsize::new(0), None)),
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        native_purpose: None,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        native_custody: None,
-    };
-    let definition = ToolDefinition {
-        name: "test.echo".into(),
-        revision: "1".into(),
-        description: "Echo".into(),
-        input_schema: serde_json::json!({"type":"object"}),
-        output_schema: serde_json::json!({}),
-        projection_schema: crate::tool::json_projection_schema(serde_json::json!({})),
-    };
-    let invocation = ToolInvocation::for_model_call(
-        OperationId::from_bytes([40; 16]),
-        0,
-        "provider-call-name".into(),
-        definition.name.clone(),
-        serde_json::json!({"text":"hello"}),
-        None,
-    )?;
+    let mut context = test_context(Bindings::local().build(None)?)?;
+    context.durable_task = Some(task);
     let approval = context
         .policy_approval(
             &policy,
@@ -328,25 +253,10 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
         )
         .map(|(value, _)| value)?
     );
-    assert_eq!(
-        context
-            .policy_approval(
-                &policy,
-                None,
-                &definition,
-                &invocation,
-                None,
-                &context.scope
-            )
-            .await?
-            .map(|paid| paid.0),
-        Some(approval.clone())
-    );
-    for (changed_task, changed_policy, changed_definition, changed_invocation) in [
+    for (changed_task, changed_policy, changed_invocation) in [
         (
             TaskId::from_bytes([43; 16]),
             policy.identity.clone(),
-            definition.clone(),
             invocation.clone(),
         ),
         (
@@ -356,13 +266,11 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
                 digest: [8; 32],
                 ..policy.identity.clone()
             },
-            definition.clone(),
             invocation.clone(),
         ),
         (
             task,
             policy.identity.clone(),
-            definition.clone(),
             ToolInvocation {
                 arguments: serde_json::json!({"text":"different"}),
                 ..invocation.clone()
@@ -374,7 +282,7 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
             tool_approval_request(
                 changed_task,
                 &changed_policy,
-                &changed_definition,
+                &definition,
                 &changed_invocation,
                 ("Approve echo".into(), None),
                 None

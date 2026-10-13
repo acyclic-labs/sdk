@@ -1,7 +1,5 @@
 use super::*;
-use crate::filesystem::default_tools::{
-    decode, encode, recursive_reject,
-};
+use crate::filesystem::default_tools::{decode, encode, recursive_reject};
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use crate::wire::ErrorCode;
 
@@ -85,28 +83,22 @@ impl ForkPreparationMachine {
         .requires("host")
     }
     fn initial_state(&self, input: &Value, io: Option<&PreparationIo>) -> Result<Value> {
+        let invalid = |reason| recursive_reject(io, ErrorCode::Invalid, reason);
         let request: ResourcePreparationRequest = decode(input, io)?;
         crate::executor::with_history_io(io, |work| request.validate(work))?;
-        let command = request.command.ok_or_else(|| {
-            recursive_reject(
-                io,
-                ErrorCode::Invalid,
-                "fork preparation has no admitted command",
-            )
-        })?;
+        let command = request
+            .command
+            .ok_or_else(|| invalid("fork preparation has no admitted command"))?;
         if command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
-            return Err(recursive_reject(
-                io,
-                ErrorCode::Invalid,
-                "fork preparation command kind differs",
-            ));
+            return Err(invalid("fork preparation command kind differs"));
         }
+        let request_digest = crate::executor::with_history_io(io, |work| {
+            crate::executor::json::canonical_json_digest(&request.payload, u64::MAX, work)
+        })?;
         encode(
             &State::Ready {
                 command,
-                request_digest: crate::executor::with_history_io(io, |work| {
-                    crate::executor::json::canonical_json_digest(&request.payload, u64::MAX, work)
-                })?,
+                request_digest,
             },
             io,
         )
@@ -117,100 +109,92 @@ impl ForkPreparationMachine {
         input: &Value,
         io: Option<&PreparationIo>,
     ) -> Result<MachineTransition> {
+        let reject = |code, reason| recursive_reject(io, code, reason);
         if state.is_null() {
-            return Err(recursive_reject(
-                io,
+            return Err(reject(
                 ErrorCode::Conflict,
                 "fork preparation is already settled",
             ));
         }
-        let (state, commands, status) = match decode::<State>(state, io)? {
+        let (operation_id, request_digest) = match decode::<State>(state, io)? {
             State::Ready {
                 command,
                 request_digest,
             } => {
                 crate::executor::with_history_io(io, |work| command.validate(work))?;
                 if !input.is_null() || command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
-                    return Err(recursive_reject(
-                        io,
+                    return Err(reject(
                         ErrorCode::Invalid,
                         "fork preparation initial trigger changed",
                     ));
                 }
-                let operation_id = command.operation_id;
+                let state = encode(
+                    &State::Waiting {
+                        operation_id: command.operation_id,
+                        request_digest,
+                    },
+                    io,
+                )?;
                 let mut commands = Vec::new();
                 crate::executor::stock_vec_push(&mut commands, command, io)?;
-                (
-                    Some(State::Waiting {
-                        operation_id,
-                        request_digest,
-                    }),
+                return Ok(MachineTransition {
+                    state,
                     commands,
-                    MachineStatus::Suspended,
-                )
+                    status: MachineStatus::Suspended,
+                });
             }
             State::Waiting {
                 operation_id,
                 request_digest,
-            } => {
-                let CommandResults { commands: [result] } = decode(input, io)?;
-                if result.operation_id != operation_id {
-                    return Err(recursive_reject(
-                        io,
+            } => (operation_id, request_digest),
+        };
+        let CommandResults { commands: [result] } = decode(input, io)?;
+        if result.operation_id != operation_id {
+            return Err(reject(
+                ErrorCode::Unauthorized,
+                "fork preparation result belongs to another command",
+            ));
+        }
+        let status = match result.value {
+            Outcome::Succeeded(report) => {
+                crate::executor::with_history_io(io, |work| report.validate(work))?;
+                if report.request.operation_id != operation_id
+                    || crate::executor::with_history_io(io, |work| {
+                        crate::executor::json::canonical_json_digest(
+                            &report.request,
+                            u64::MAX,
+                            work,
+                        )
+                    })? != request_digest
+                {
+                    return Err(reject(
                         ErrorCode::Unauthorized,
-                        "fork preparation result belongs to another command",
+                        "fork report changed the exact admitted source/request",
                     ));
                 }
-                let status = match result.value {
-                    Outcome::Succeeded(report) => {
-                        crate::executor::with_history_io(io, |work| report.validate(work))?;
-                        if report.request.operation_id != operation_id
-                            || crate::executor::with_history_io(io, |work| {
-                                crate::executor::json::canonical_json_digest(
-                                    &report.request,
-                                    u64::MAX,
-                                    work,
-                                )
-                            })? != request_digest
-                        {
-                            return Err(recursive_reject(
-                                io,
-                                ErrorCode::Unauthorized,
-                                "fork report changed the exact admitted source/request",
-                            ));
-                        }
-                        MachineStatus::Completed {
-                            value: encode(&report, io)?,
-                        }
-                    }
-                    Outcome::Failed { message } => MachineStatus::Failed { message },
-                    Outcome::Cancelled => MachineStatus::Failed {
-                        message: crate::executor::stock_string_copy(
-                            "fork preparation cancelled; allocation may remain uncertain",
-                            io,
-                        )?,
-                    },
-                    Outcome::Indeterminate { .. } => {
-                        return Err(recursive_reject(
-                            io,
-                            ErrorCode::Conflict,
-                            "uncertain preparation cannot settle as a completed report",
-                        ));
-                    }
-                };
-                (None, Vec::new(), status)
+                MachineStatus::Completed {
+                    value: encode(&report, io)?,
+                }
+            }
+            Outcome::Failed { message } => MachineStatus::Failed { message },
+            Outcome::Cancelled => MachineStatus::Failed {
+                message: crate::executor::stock_string_copy(
+                    "fork preparation cancelled; allocation may remain uncertain",
+                    io,
+                )?,
+            },
+            Outcome::Indeterminate { .. } => {
+                return Err(reject(
+                    ErrorCode::Conflict,
+                    "uncertain preparation cannot settle as a completed report",
+                ));
             }
         };
         Ok(MachineTransition {
-            state: encode(&state, io)?,
-            commands,
+            state: encode(&(), io)?,
+            commands: Vec::new(),
             status,
         })
-    }
-}
-impl Default for ForkPreparationMachine {
-    fn default() -> Self {
-        Self::new()
     }
 }
 impl ResumableMachine for ForkPreparationMachine {

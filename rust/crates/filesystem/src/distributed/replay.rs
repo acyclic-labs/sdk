@@ -1,7 +1,7 @@
 use super::*;
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
-    pub(super) async fn authority_replay(
+    pub(super) async fn read_records(
         &self,
         authority: AuthorityId,
         after: Sequence,
@@ -12,7 +12,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if limit.records == 0 || limit.payload_bytes == 0 {
             return Err(AuthorityStoreError::InvalidReplayLimit);
         }
-        self.authority_require_live(authority, work).await?;
         let mut output = work.vec_owned((limit.records as usize).min(acyclic_stream::MAX_ITEMS))?;
         let path = work.path(authority, "/records", None)?;
         if !work.is_native() {
@@ -60,6 +59,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             work.admit(read)?;
             work.charge(read)?;
             let durable = authority_decode_borrowed(authority, &record.0.value, work)?;
+            if durable.sequence.get() != record.0.sequence {
+                return Err(authority_corrupt(
+                    "Stream sequence does not match filesystem authority sequence",
+                    work,
+                ));
+            }
             bytes = bytes.checked_add(durable.payload.len() as u64).ok_or(
                 AuthorityStoreError::ReplayRecordTooLarge {
                     observed: u64::MAX,
@@ -113,10 +118,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let records = work.path(authority, "/records", None)?;
         let epochs = work.path(authority, "/epochs", None)?;
         let retirement = work.path(authority, "/retirement", None)?;
-        let copying = WorkCounters {
-            bytes_copied: 64,
-            ..WorkCounters::UNCHARGED
-        };
+        let copying = codec_work(0, 64, 0);
         work.admit(copying)?;
         let mut identity = [0; 64];
         identity[..16].copy_from_slice(&authority.into_bytes());

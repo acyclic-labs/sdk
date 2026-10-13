@@ -18,7 +18,6 @@ pub struct AuthorityWork<'a> {
     /// The original native ledger, when present.
     pub original: Option<&'a crate::NativeMaterializationWork>,
     pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
-    pub(crate) opaque_live_upper_bytes: u64,
     pub(crate) read_observation: Option<(&'a crate::kernel::ProofDataCustody, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) request_allocation: Option<crate::NativeAllocation>,
@@ -32,7 +31,6 @@ impl<'a> AuthorityWork<'a> {
             budget,
             cancellation,
             allocations: Default::default(),
-            opaque_live_upper_bytes: 0,
             read_observation: None,
             #[cfg(not(target_arch = "wasm32"))]
             request_allocation: None,
@@ -92,7 +90,6 @@ impl<'a> AuthorityWork<'a> {
             .budget
             .peak_allocation_bytes
             .checked_sub(self.allocations.live_bytes())
-            .and_then(|bytes| bytes.checked_sub(self.opaque_live_upper_bytes))
             .ok_or(WorkError::Overflow)?;
         Ok(remaining)
     }
@@ -152,28 +149,73 @@ impl<'a> AuthorityWork<'a> {
     }
 
     pub(crate) fn check(&self) -> Result<(), AuthorityStoreError> {
+        self.admit(WorkCounters::UNCHARGED)
+    }
+
+    pub(crate) fn admit(&self, mut delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         self.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
-            return original.admit(WorkCounters::UNCHARGED).map_err(Into::into);
+            return original.admit(delta).map_err(Into::into);
         }
         self.work.verify(self.budget)?;
-        let peak = self
-            .allocations
-            .live_bytes()
-            .checked_add(self.opaque_live_upper_bytes)
-            .ok_or(WorkError::Overflow)?;
-        self.work
-            .admit(
-                &WorkCounters {
-                    peak_allocation_bytes: peak,
-                    ..WorkCounters::UNCHARGED
-                },
-                &self.budget,
-            )
-            .map_err(Into::into)
+        delta.peak_allocation_bytes = delta
+            .peak_allocation_bytes
+            .max(self.allocations.live_bytes());
+        self.work.admit(&delta, &self.budget).map_err(Into::into)
+    }
+
+    pub(crate) fn operation(&self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
+        self.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = self.original {
+            return Ok(Self::native(original, self.cancellation));
+        }
+        Ok(Self::new(self.remaining()?, self.cancellation))
+    }
+
+    pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = self.original {
+            let result = original.record_admitted(delta);
+            return result.map_err(AuthorityStoreError::from);
+        }
+        self.work.try_add_assign(&delta)?;
+        self.check()
+    }
+
+    pub(crate) fn vec_owned<T>(
+        &mut self,
+        capacity: usize,
+    ) -> Result<(Vec<T>, AuthorityAllocation), AuthorityStoreError> {
+        let owned = crate::kernel::Owned::<Vec<T>>::allocate(capacity, &mut self.accounting())
+            .map_err(authority_error)?;
+        let allocation = match owned.allocation {
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                Some(allocation)
+            }
+        };
+        Ok((owned.value, allocation))
+    }
+
+    pub(crate) fn accounting(&mut self) -> crate::kernel::allocation::KernelAccounting<'_> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = self.original {
+            return crate::kernel::allocation::KernelAccounting::native(
+                original,
+                self.cancellation,
+            );
+        }
+        crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+            &mut self.allocations,
+            &mut self.work,
+            self.budget,
+            self.cancellation,
+        )
     }
 
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
@@ -265,14 +307,7 @@ pub trait AuthorityGuard: ProviderTask {
                 return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));
             };
             let meter = original.state.clone();
-            let result = match deadline {
-                Some(deadline) => {
-                    provider
-                        .native_commit_before(request, deadline, meter)
-                        .await
-                }
-                None => provider.native_commit(request, meter).await,
-            };
+            let result = provider.native_commit(request, deadline, meter).await;
             result.map(|result| result.map_err(AuthorityError::from))
         }
     }
@@ -356,3 +391,15 @@ pub type AuthorityAllocation = Option<crate::NativeAllocation>;
 /// Browser authority results need no native allocation guard.
 #[cfg(target_arch = "wasm32")]
 pub type AuthorityAllocation = Option<()>;
+
+pub(crate) fn authority_error(error: crate::FsError) -> AuthorityStoreError {
+    match error {
+        crate::FsError::Authority(error) => error,
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => AuthorityStoreError::NativeOriginal(error),
+        crate::FsError::Work(error) => error.into(),
+        crate::FsError::Cancelled(_) => AuthorityStoreError::Cancelled,
+        crate::FsError::WorkspaceDeleted => AuthorityStoreError::Retired,
+        _ => AuthorityStoreError::RejectedStatic("authority allocation failed"),
+    }
+}

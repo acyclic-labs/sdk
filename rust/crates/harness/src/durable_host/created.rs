@@ -1,6 +1,5 @@
 //! Authenticated creation receipts and inherited resource access.
 use super::*;
-use crate::wire::ErrorCode;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Registers the trusted creators used to verify retained resource evidence.

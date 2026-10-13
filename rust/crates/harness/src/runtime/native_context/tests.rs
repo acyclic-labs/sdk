@@ -1,5 +1,5 @@
 use super::*;
-use crate::durable_host::tests::created_resource_access::CreationFixture;
+use crate::durable_host::tests::created_fixture::CreationFixture;
 
 const BUDGET: acyclic_fs::WorkBudget =
     acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
@@ -11,42 +11,30 @@ fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializ
     })
 }
 
-#[tokio::test]
-async fn cancelled_shared_context_preserves_original_cause_and_metadata_custody() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let original = work(&cancellation)?;
-    let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
-    let context = fixture
+async fn root_context(
+    fixture: &CreationFixture,
+    io: &crate::filesystem::PreparationIo,
+) -> Result<Arc<TaskContext>> {
+    fixture
         .harness
         .durable_context(
             fixture.root,
             fixture.root_lease.operation.operation_id,
-            Some(&io),
+            Some(io),
         )
-        .await?;
-    let bytes = context
-        .native_custody
-        .as_ref()
-        .expect("issued context custody")
-        .bytes();
-    cancellation.cancel();
-    assert!(matches!(
-        context.require_original_native_work(&original),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            ..
-        })
-    ));
-    assert_eq!(
-        context
-            .native_custody
-            .as_ref()
-            .expect("retained context custody")
-            .bytes(),
-        bytes
-    );
-    Ok(())
+        .await
+}
+
+fn exhaust_memory(
+    original: &NativeMaterializationWork,
+) -> Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
+    let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
+    let quota = original.claim(available, u64::from(available != 0), Default::default())?;
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
+        .expect("finite fixture allocation");
+    Ok((buffer, quota))
 }
 
 #[tokio::test]
@@ -58,7 +46,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
         matches!(fixture.admit_child(created.request.child.clone()).await?,
         crate::Admission::Accepted(admitted) if admitted == task)
     );
-    let observation = fixture.host.observe_task(task).await?;
+    let observation = fixture.observation(task).await?;
     let reservation = observation
         .reservation
         .ok_or_else(|| Error::NotFound("created native context lease".into()))?;
@@ -146,14 +134,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
         })
     ));
 
-    let root = fixture
-        .harness
-        .durable_context(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            Some(&io),
-        )
-        .await?;
+    let root = root_context(&fixture, &io).await?;
     let root_reader =
         crate::runtime::content_residency_verifier(Arc::clone(&root), root_owner, Some(&io))?;
     assert!(matches!(
@@ -166,17 +147,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
         })
     ));
 
-    let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
-    let quota = original.claim(
-        available,
-        u64::from((available) != 0),
-        acyclic_fs::WorkCounters::default(),
-    )?;
-    let mut buffer = Vec::<u8>::new();
-    buffer
-        .try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
-        .expect("finite fixture allocation");
-    let blocker = (buffer, quota);
+    let blocker = exhaust_memory(&original)?;
     let denied = reader.read(&staged.0, 65_536, Some(&content_io));
     assert!(matches!(
         denied,
@@ -209,14 +180,7 @@ async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_fu
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
     let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
-    let shared = fixture
-        .harness
-        .durable_context(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            Some(&io),
-        )
-        .await?;
+    let shared = root_context(&fixture, &io).await?;
     assert!(shared.native_work()?.shares_allocation_context(&original));
     shared.as_ref().require_original_native_work(&original)?;
     let operation = crate::OperationId::from_bytes([119; 16]);
@@ -255,17 +219,7 @@ async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_fu
         })
     ));
 
-    let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
-    let quota = original.claim(
-        available,
-        u64::from((available) != 0),
-        acyclic_fs::WorkCounters::default(),
-    )?;
-    let mut buffer = Vec::<u8>::new();
-    buffer
-        .try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
-        .expect("finite fixture allocation");
-    let blocker = (buffer, quota);
+    let blocker = exhaust_memory(&original)?;
 
     assert!(matches!(
         ToolContext::new(Arc::clone(&shared), operation, &call_id, Some(&io)),
@@ -282,7 +236,16 @@ async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_fu
 
     drop(blocker);
     let original_io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+    let retained = original.live_allocation_bytes();
     cancellation.cancel();
+    assert!(matches!(
+        shared.require_original_native_work(&original),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert_eq!(original.live_allocation_bytes(), retained);
     assert!(matches!(
         ToolContext::new(shared, operation, &call_id, Some(&original_io)),
         Err(Error::NativeWork {

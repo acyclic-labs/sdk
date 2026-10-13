@@ -108,7 +108,7 @@ async fn sealed_summary_preparation(
     fork: &ForkRequest,
     maximum_work: u64,
     maximum_bytes: u64,
-) -> Result<(crate::resource_preparation::TaskResourcePreparation, crate::filesystem::InvocationCancellation)> {
+) -> Result<(crate::resource_preparation::TaskResourcePreparation, crate::filesystem::default_tools::InvocationCancellation)> {
     let owner_id = OperationId::new();
     let authority = Authority { kind: AggregateKind::Task, id: format!("summary-preparation-{owner_id}") };
     let issuer = AuthorityIssuer::new("summary-preparation", [173; 32], authority.clone());
@@ -200,7 +200,7 @@ read_authorization: fork.authorized_source.clone(),
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
     host.start_task(&lease, &mut None).await?;
-    let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
+    let invocation = crate::filesystem::default_tools::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, &((&lease.reservation).into()), None).await?
         .with_invocation_cancellation(&invocation.0));
     Ok((owner.resource_preparation(request, &mut None).await?, invocation))

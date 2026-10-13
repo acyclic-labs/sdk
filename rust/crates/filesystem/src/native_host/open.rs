@@ -26,39 +26,19 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     } else {
         path
     };
-    create_directories_owned(directory, relative, work).map(|_| ())
-}
-
-fn create_directories_owned<W: NativeHostWork>(
-    mut current: Dir,
-    path: &Path,
-    work: &mut W,
-) -> Result<Dir, W::Error> {
-    for component in path.components() {
-        work.started_io(ITEM)?;
-        let name = match component {
-            std::path::Component::CurDir => continue,
-            std::path::Component::Normal(name) => name,
-            _ => return Err(W::invalid_request()),
-        };
-        #[cfg(unix)]
-        {
-            current = open_unix_directory(&current, name, true, work)?;
-        }
-        #[cfg(windows)]
-        {
-            current = Dir::from_std_file(with_wide_path(Path::new(name), work, |name, work| {
-                create_windows_directory(&current, name, work)
-            })?);
-        }
-    }
-    Ok(current)
+    let relative = relative.strip_prefix(".").unwrap_or(relative);
+    #[cfg(unix)]
+    directory_path(&directory, relative, true, work)?;
+    #[cfg(windows)]
+    with_wide_path(relative, work, |path, work| {
+        directory_path(&directory, path, true, work)
+    })?;
+    Ok(())
 }
 
 pub(super) fn directory_path<W: NativeHostWork>(
     parent: &Dir,
-    #[cfg(unix)] path: &Path,
-    #[cfg(windows)] path: &[u16],
+    path: &NativePath,
     create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
@@ -81,11 +61,7 @@ pub(super) fn directory_path<W: NativeHostWork>(
         }
         #[cfg(windows)]
         {
-            current = if create {
-                Dir::from_std_file(create_windows_directory(&current, name, work)?)
-            } else {
-                open_windows_directory(&current, name, work)?.0
-            };
+            current = open_windows_directory(&current, name, create, work)?.0;
         }
     }
     Ok(current)
@@ -99,70 +75,53 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
 ) -> Result<File, W::Error> {
     require_leaf(name)?;
     #[cfg(windows)]
-    {
-        with_wide_path(name, work, |name, work| {
-            use windows::{Wdk::Storage::FileSystem as nt, Win32::Storage::FileSystem as fs};
-            let disposition = match options {
-                NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
-                NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
-                _ => nt::FILE_CREATE,
-            };
-            let access = fs::FILE_GENERIC_READ
-                | if matches!(options, NativeOpenOptions::Read) {
-                    fs::FILE_ACCESS_RIGHTS(0)
-                } else {
-                    fs::FILE_GENERIC_WRITE
-                };
-            let file = open_windows_at(
-                parent,
-                name,
-                access,
-                disposition,
-                nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
-                work,
-            )?;
-            if windows_stat_information(&file, work)?.FileAttributes
-                & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
-                != 0
-            {
-                return Err(W::invalid_request());
-            }
-            Ok(file)
-        })
-    }
+    return with_wide_path(name, work, |name, work| {
+        let disposition = match options {
+            NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
+            NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
+            _ => nt::FILE_CREATE,
+        };
+        let access = if matches!(options, NativeOpenOptions::Read) {
+            fs::FILE_GENERIC_READ
+        } else {
+            fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE
+        };
+        let file = open_windows_at(
+            parent,
+            name,
+            access,
+            disposition,
+            nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+            work,
+        )?;
+        if windows_stat_information(&file, work)?.FileAttributes
+            & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
+            != 0
+        {
+            return Err(W::invalid_request());
+        }
+        Ok(file)
+    });
     #[cfg(unix)]
-    {
-        let flags = libc::O_CLOEXEC
-            | libc::O_NOFOLLOW
-            | libc::O_NONBLOCK
-            | match options {
-                NativeOpenOptions::Read => libc::O_RDONLY,
-                NativeOpenOptions::ReadWrite => libc::O_RDWR,
-                NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-                NativeOpenOptions::ReadWriteCreateNew => {
-                    libc::O_RDWR | libc::O_CREAT | libc::O_EXCL
-                }
-                NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
-            };
-        unix_name(name.as_os_str(), work, |name, work| {
-            let file = open_unix(parent.as_raw_fd(), name, flags, work)?;
-            loop {
-                match fstat(file.as_raw_fd(), c"", work) {
-                    Ok(stat)
-                        if stat.st_mode & libc::S_IFMT as libc::mode_t
-                            == libc::S_IFREG as libc::mode_t =>
-                    {
-                        return Ok(file);
-                    }
-                    Ok(_) => return Err(W::invalid_request()),
-                    Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        })
-    }
+    unix_name(name.as_os_str(), work, |name, work| {
+        let mode = match options {
+            NativeOpenOptions::Read => libc::O_RDONLY,
+            NativeOpenOptions::ReadWrite => libc::O_RDWR,
+            NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
+        };
+        let file = open_unix(
+            parent.as_raw_fd(),
+            name,
+            mode | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            work,
+        )?;
+        if fstat(file.as_raw_fd(), c"", work)?.st_mode & libc::S_IFMT != libc::S_IFREG {
+            return Err(W::invalid_request());
+        }
+        Ok(file)
+    })
 }
 
 pub(crate) fn builtin_io(
@@ -199,16 +158,25 @@ pub(crate) fn remove_leaf<W: NativeHostWork>(
 ) -> Result<(), W::Error> {
     require_leaf(name)?;
     #[cfg(unix)]
-    {
-        unix_name(name.as_os_str(), work, |name, work| {
-            remove_unix_named_leaf(parent, name, directory, work)
-        })
-    }
+    return unix_name(name.as_os_str(), work, |name, work| {
+        remove_unix_named_leaf(parent, name, directory, work)
+    });
     #[cfg(windows)]
-    {
-        with_wide_path(name, work, |name, work| {
-            remove_windows_leaf(parent, name, directory, None, work)
-        })
+    with_wide_path(name, work, |name, work| {
+        remove_windows_leaf(parent, name, directory, None, work)
+    })
+}
+
+pub(super) fn retry_io<W: NativeHostWork, T>(
+    work: &mut W,
+    delta: WorkCounters,
+    mut operation: impl FnMut() -> io::Result<T>,
+) -> Result<T, W::Error> {
+    loop {
+        match work.attempt_io(delta, &mut operation) {
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {}
+            result => return result,
+        }
     }
 }
 
@@ -217,16 +185,13 @@ pub(super) fn unix_mutation<W: NativeHostWork>(
     work: &mut W,
     mut operation: impl FnMut() -> libc::c_int,
 ) -> Result<(), W::Error> {
-    loop {
-        work.started_io(WRITE)?;
+    retry_io(work, WRITE, || {
         if operation() == 0 {
-            return Ok(());
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
         }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error.into());
-        }
-    }
+    })
 }
 
 #[cfg(unix)]
@@ -246,86 +211,58 @@ pub(super) fn remove_unix_named_leaf<W: NativeHostWork>(
     })
 }
 
-#[derive(Debug)]
-pub(crate) struct NativePreparedAsciiLeaf<const N: usize> {
-    #[cfg(unix)]
+pub(crate) fn prepare_ascii_leaf<const N: usize>(
     bytes: [u8; N],
-    #[cfg(windows)]
-    wide: [u16; N],
-}
-
-impl<const N: usize> NativePreparedAsciiLeaf<N> {
-    pub(crate) fn new(
-        bytes: [u8; N],
-        work: &NativeMaterializationWork,
-    ) -> Result<Self, NativeTreeMaterializationError> {
-        if N < 2 || bytes[N - 1] != 0 {
-            return Err(NativeTreeMaterializationError::InvalidLayout);
-        }
-        let credit = work.reserve_work(WorkCounters {
-            items_examined: (N - 1) as u64,
-            #[cfg(windows)]
-            bytes_encoded: (N - 1).checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        #[cfg(windows)]
-        let mut wide = [0; N];
-        for (index, byte) in bytes[..N - 1].iter().copied().enumerate() {
-            crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
-            #[cfg(windows)]
-            {
-                wide[index] = u16::from(byte);
-            }
-            #[cfg(unix)]
-            let _ = index;
-            credit.record_completed(WorkCounters {
-                items_examined: 1,
-                #[cfg(windows)]
-                bytes_encoded: 2,
-                ..WorkCounters::UNCHARGED
-            })?;
-            if !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':') {
-                return Err(NativeTreeMaterializationError::InvalidLayout);
-            }
-        }
-        if matches!(&bytes[..N - 1], b"." | b"..") {
-            return Err(NativeTreeMaterializationError::InvalidLayout);
-        }
-        Ok(Self {
-            #[cfg(unix)]
-            bytes,
-            #[cfg(windows)]
-            wide,
-        })
+    work: &NativeMaterializationWork,
+) -> Result<[NativeUnit; N], NativeTreeMaterializationError> {
+    if N < 2 || bytes[N - 1] != 0 || matches!(&bytes[..N - 1], b"." | b"..") {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
     }
+    let item = WorkCounters {
+        items_examined: 1,
+        #[cfg(windows)]
+        bytes_encoded: 2,
+        ..WorkCounters::UNCHARGED
+    };
+    let credit = work.reserve_work(WorkCounters {
+        items_examined: (N - 1) as u64,
+        #[cfg(windows)]
+        bytes_encoded: (N - 1).checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let mut name = [0; N];
+    for (index, byte) in bytes[..N - 1].iter().copied().enumerate() {
+        crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
+        credit.record_completed(item)?;
+        if !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':') {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        name[index] = NativeUnit::from(byte);
+    }
+    Ok(name)
 }
 
-pub(crate) fn remove_prepared_ascii_leaf<W: NativeHostWork, const N: usize>(
+pub(crate) fn remove_ascii_leaf<W: NativeHostWork, const N: usize>(
     parent: &Dir,
-    name: &NativePreparedAsciiLeaf<N>,
+    name: &[NativeUnit; N],
     work: &mut W,
 ) -> Result<(), W::Error> {
     #[cfg(unix)]
-    {
-        remove_unix_named_leaf(
-            parent,
-            std::ffi::CStr::from_bytes_with_nul(&name.bytes).map_err(|_| W::invalid_request())?,
-            false,
-            work,
-        )
-    }
+    return remove_unix_named_leaf(
+        parent,
+        std::ffi::CStr::from_bytes_with_nul(name).map_err(|_| W::invalid_request())?,
+        false,
+        work,
+    );
     #[cfg(windows)]
-    {
-        remove_windows_leaf(parent, &name.wide[..N - 1], false, None, work)
-    }
+    remove_windows_leaf(parent, &name[..N - 1], false, None, work)
 }
+
 pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     root: &Dir,
-    #[cfg(unix)] path: &Path,
-    #[cfg(windows)] path: &[u16],
+    path: &NativePath,
     work: &mut W,
-    #[cfg(unix)] operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, W::Error>,
-    #[cfg(windows)] operation: impl FnOnce(&Dir, &[u16], &mut W) -> Result<T, W::Error>,
+    operation: impl FnOnce(&Dir, &NativeLeaf, &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
     #[cfg(unix)]
     let (parent, leaf) = (
@@ -336,11 +273,7 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
     let parent = directory_path(root, parent, false, work)?;
     #[cfg(unix)]
-    {
-        unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work))
-    }
+    return unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work));
     #[cfg(windows)]
-    {
-        operation(&parent, leaf, work)
-    }
+    operation(&parent, leaf, work)
 }

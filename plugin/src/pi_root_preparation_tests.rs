@@ -15,7 +15,7 @@ struct Fixture {
     request: PiRootRequest,
     command: WorkflowCommand,
     runtime: PiTaskRuntime,
-    private: acyclic_fs::NativeHostPrivateStateRoot,
+    private: std::path::PathBuf,
     work: acyclic_fs::NativeMaterializationWork,
     _command: acyclic_fs::NativeAllocation,
 }
@@ -37,7 +37,7 @@ async fn open(
         stream,
         filesystem,
         &owner.policy.journal,
-        owner.authority_with_native_work(work).unwrap(),
+        owner.authority(work).unwrap(),
         work,
     )
     .await
@@ -54,14 +54,8 @@ impl Fixture {
         .unwrap();
         let (owner, filesystem, request) =
             root_input_fixture(session.path(), &raw, root_policy()).await;
-        let filesystem = Arc::new(filesystem);
         let work = work();
-        let private =
-            acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
-                session.path(),
-                &work,
-            )
-            .unwrap();
+        let private = session.path().to_path_buf();
         let command = stage_root_command(&owner, &filesystem, &request, &work)
             .await
             .unwrap();
@@ -382,10 +376,11 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     .await
     .unwrap();
     fixture.filesystem = FilesystemHost::new(
-            fixture.raw.clone(),
-            fixture.owner.policy.journal.provider(), None,
-        )
-        .unwrap();
+        fixture.raw.clone(),
+        fixture.owner.policy.journal.provider(),
+        None,
+    )
+    .unwrap();
     fixture.runtime = open(
         fixture.session.path(),
         &fixture.owner,
@@ -444,7 +439,8 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
     let head = fixture.head().await;
     for case in ["key", "bytes", "concurrency", "depth"] {
         let other = tempfile::tempdir().unwrap();
-        let mut owner = crate::pi_owner::tests::load_owner(fixture.session.path()).unwrap();
+        let mut owner =
+            PiOwnerConfig::load(fixture.session.path(), Path::new(""), &fixture.work).unwrap();
         match case {
             "key" => owner = PiOwnerConfig::new(&owner.policy, None, &fixture.work).unwrap(),
             "bytes" => owner.policy.maximum_payload_bytes /= 2,
@@ -453,12 +449,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
             _ => unreachable!(),
         }
         publish_owner(&owner, other.path(), &fixture.work).unwrap();
-        let private =
-            acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
-                other.path(),
-                &fixture.work,
-            )
-            .unwrap();
+        let private = other.path();
         assert!(matches!(
             PiRootPreparation::load(
                 &private,

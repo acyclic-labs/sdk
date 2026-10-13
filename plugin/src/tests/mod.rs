@@ -5,6 +5,7 @@
 
 use super::*;
 use support::*;
+use support::native_hook_request;
 pub(crate) use support::configured_test_service_bootstrap;
 
 mod hosts;

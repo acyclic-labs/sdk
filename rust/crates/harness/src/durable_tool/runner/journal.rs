@@ -31,7 +31,7 @@ impl DurableToolRunner {
                 )
             })?;
             tool.executor
-                .authorize_with_native_context(context, invocation, work)?;
+                .authorize(None, Some(context), invocation, Some(work))?;
             drop(grant);
             drop(grant_hold);
             return match context.authorize_tool(definition, invocation, work).await? {
@@ -49,7 +49,8 @@ impl DurableToolRunner {
             "tool input",
             &mut None,
         )?;
-        tool.executor.authorize_with_context(context, invocation)?;
+        tool.executor
+            .authorize(None, Some(context), invocation, None)?;
         match context
             .task()
             .authorize_tool(definition, invocation)
@@ -65,7 +66,8 @@ impl DurableToolRunner {
         operation_id: OperationId,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Vec<crate::executor::ExecutionRecord>, crate::NativeCustody)> {
-        let (_, records, hold) = replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, io).await?;
+        let (_, records, hold) =
+            replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, io).await?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(hold) = hold {
             let (records, custody) = crate::filesystem::native_decoded((records, hold))?;
@@ -86,9 +88,16 @@ impl DurableToolRunner {
             let (value, hold) = load_json::<T>(self.journal.as_ref(), reference, Some(io)).await?;
             let mut hold = hold.expect("funded decoding retains its output");
             let retained = (std::mem::size_of::<T>() as u64)
-                .checked_add(crate::filesystem::UploadRecord::logical_owned_bytes(&value)?)
-                .ok_or_else(|| tool_error(Some(io), crate::wire::ErrorCode::Storage,
-                    "native stock logical payload size overflow"))?;
+                .checked_add(crate::filesystem::UploadRecord::logical_owned_bytes(
+                    &value,
+                )?)
+                .ok_or_else(|| {
+                    tool_error(
+                        Some(io),
+                        crate::wire::ErrorCode::Storage,
+                        "native stock logical payload size overflow",
+                    )
+                })?;
             hold.substitute(retained)?;
             let (value, custody) = crate::filesystem::native_decoded((value, hold))?;
             return Ok((value, Some(custody)));
@@ -124,7 +133,8 @@ impl DurableToolRunner {
     ) -> Result<(crate::conversation::FileRef, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-            let reference = stage_json(self.journal.as_ref(), operation_id, key, value, Some(io)).await?;
+            let reference =
+                stage_json(self.journal.as_ref(), operation_id, key, value, Some(io)).await?;
             let custody = io.take_native_custody(reference.logical_owned_bytes()?)?;
             return Ok((reference, Some(custody)));
         }

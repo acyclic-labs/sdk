@@ -227,7 +227,7 @@ pub(crate) fn write_service_drain_completion(
     file.write_all(b"\n").map_err(display)?;
     file.sync_all().map_err(display)?;
     drop(file);
-    durable_rename(&next, &path, RenameMode::Replace).map_err(display)
+    durable_rename(&next, &path, RenameMode::Replace, None).map_err(display)
 }
 
 pub(crate) fn verify_service_drain_completion(data: &Path, identity: &str) -> Result<(), String> {

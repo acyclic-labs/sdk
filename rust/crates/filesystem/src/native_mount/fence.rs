@@ -15,7 +15,7 @@ pub(super) struct MountDestinationGuard {
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
     pub(super) registry_file: Option<File>,
     pub(super) cleanup_name:
-        Option<crate::native_host::NativePreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
+        Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
 }
 
@@ -248,7 +248,7 @@ impl MountDestinationGuard {
                 bytes_copied: NATIVE_FENCE_NAME_BYTES as u64,
                 ..crate::WorkCounters::UNCHARGED
             })?;
-            let prepared = crate::native_host::NativePreparedAsciiLeaf::new(terminated, native)?;
+            let prepared = crate::native_host::prepare_ascii_leaf(terminated, native)?;
             let credit = native.reserve_work(crate::WorkCounters {
                 backend_write_operations: 2,
                 #[cfg(windows)]
@@ -437,7 +437,7 @@ impl MountDestinationGuard {
         // A contended registry is a real pending control. Do not spend an
         // unbounded sequence of new lock attempts after cancellation.
         lock_mount_file_with_work(registry, false, &mut work)?;
-        match crate::native_host::remove_prepared_ascii_leaf(directory, name, &mut work) {
+        match crate::native_host::remove_ascii_leaf(directory, name, &mut work) {
             Ok(()) => {}
             Err(crate::NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound => {}

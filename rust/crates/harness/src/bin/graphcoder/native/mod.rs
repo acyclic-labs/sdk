@@ -16,7 +16,7 @@ use acyclic_harness::{
         ContextRenderMode, DiscoveredContext, SourceStage,
     },
     conversation::{Limits, VolumeRef},
-    core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope, Snapshot},
+    core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope},
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
     filesystem::{
@@ -252,14 +252,14 @@ pub(super) async fn runtime(
             &scope,
             &tasks,
             &machines,
-            &toolset.tools,
+            &toolset,
             config.session_limits,
             config.concurrency,
             MAX_FRAME_BYTES as u64,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
             &[creation],
-            &toolset.resumable_tools,
+            &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
             None,
         )
         .await?

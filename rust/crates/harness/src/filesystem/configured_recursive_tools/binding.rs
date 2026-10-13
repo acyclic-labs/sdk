@@ -63,15 +63,7 @@ where
                 "configured descendant is not its admitted allocation",
             ));
         }
-        let verifier = with_history_io(io, |work| {
-            let verifier = caller.owner.issuer.verifier(work)?;
-            verifier.verify_scope_for_with_work(
-                caller.owner.issuer.audience(),
-                &caller.owner.scope,
-                work,
-            )?;
-            Ok::<_, Error>(verifier)
-        })?;
+        let verifier = with_history_io(io, |work| caller.owner.issuer.verifier(work))?;
         for volume in
             std::iter::once(&caller.private_volume).chain(project_read.then_some(&caller.project))
         {

@@ -157,7 +157,7 @@ pub(crate) async fn commit<P: StreamProvider>(
             .cloned()
         {
             let result = client
-                .native_commit(request, original.runtime_meter())
+                .native_commit(request, None, original.runtime_meter())
                 .await;
             return match native_call_result(&original, result)? {
                 Ok(output) => {

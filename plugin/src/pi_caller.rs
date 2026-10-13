@@ -77,8 +77,10 @@ pub(crate) fn issue(
             });
         }
     };
-    let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+    let capabilities = Capabilities::copy([CALLER_CAPABILITY], work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
     let value = authority.issuer.issue(
         identity_text,
         &capabilities.0,
@@ -148,15 +150,13 @@ pub(crate) fn verify<'a>(
     let authority = owner.authority(work)?;
     let verified = authority.verifier.verify(
         scope,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
     );
     drop(authority);
     verified?;
-    let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let caller_only = scope.capabilities() == &capabilities.0;
-    drop(capabilities.0);
-    drop(capabilities.1);
-    if !caller_only {
+    if !scope.capabilities().iter().eq([CALLER_CAPABILITY]) {
         return Err(denied("Pi caller scope carries non-caller authority"));
     }
     let binding = match &state.task_binding {
@@ -182,7 +182,7 @@ pub(crate) fn verify<'a>(
     let identity = pi_root_provider::guarded_pi_bytes(
         &PiCallerClaims {
             version: 1,
-            root_session: &state.root_session_id,
+            root_session: state.root_session_id.as_str(),
             native_session,
             task: binding.task_id,
         },

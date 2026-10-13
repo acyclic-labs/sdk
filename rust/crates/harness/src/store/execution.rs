@@ -59,25 +59,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     } => {
                         owner.require_effect_grants(provider, true, work)?;
                         #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(native) =
-                            work.as_deref().and_then(|io| io.original_native_work())
-                        {
-                            owner.validate_input_file(
-                                request,
-                                Some(&crate::filesystem::PreparationIo::from_native_work(native)?),
-                            )?;
-                            owner.validate_input_file(
-                                result_schema,
-                                Some(&crate::filesystem::PreparationIo::from_native_work(native)?),
-                            )?;
-                        } else {
-                            owner.validate_input_file(request, None)?;
-                            owner.validate_input_file(result_schema, None)?;
-                        }
+                        let io = work
+                            .as_deref()
+                            .and_then(|io| io.original_native_work())
+                            .map(crate::filesystem::PreparationIo::from_native_work)
+                            .transpose()?;
                         #[cfg(target_arch = "wasm32")]
-                        {
-                            owner.validate_input_file(request, None)?;
-                            owner.validate_input_file(result_schema, None)?;
+                        let io = None;
+                        for file in [request, result_schema] {
+                            owner.validate_input_file(file, io.as_ref())?;
                         }
                         crate::distributed::JournalWrite::Fresh
                     }
@@ -142,68 +132,25 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .map(|(result, _)| result)
     }
 
-    pub(super) async fn plan_command(
-        &self,
-        command: &Command,
-        fresh_migration: bool,
-    ) -> Result<ApplyResult> {
-        if !fresh_migration {
-            if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
-                && let Some(effect) = self
-                    .effect(effect_id, default_projection_read_limits(), &mut None)
-                    .await
-                    .map(|state| state.map(|(state, _)| state))?
-            {
-                return self
-                    .reducer
-                    .plan_with_archived_effect(command, effect_id, &effect, &mut None)
-                    .map(|(result, _)| result);
-            }
+    pub(super) async fn plan_command(&self, command: &Command) -> Result<ApplyResult> {
+        if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
+            && let Some(effect) = self
+                .effect(effect_id, default_projection_read_limits(), &mut None)
+                .await
+                .map(|state| state.map(|(state, _)| state))?
+        {
             return self
                 .reducer
-                .plan_indexed_with_retained_quota(command, false, &mut None)
+                .plan_with_archived_effect(command, effect_id, &effect, &mut None)
                 .map(|(result, _)| result);
         }
-        if let Action::MigrateExtensionState {
-            name,
-            previous,
-            to_version,
-            content,
-        } = &command.action
-        {
-            self.reducer.preflight_extension_migration(
-                &command.scope,
-                command.expected_revision,
-                previous,
-                name,
-                *to_version,
-                content.volume(),
-            )?;
-        }
-        self.validate_admission_content(&command.action).await?;
         self.reducer
-            .plan_indexed_with_retained_quota(command, true, &mut None)
+            .plan_indexed_with_retained_quota(command, false, &mut None)
             .map(|(result, _)| result)
     }
 
     /// Reconciles a possibly committed append without issuing another append.
     pub async fn reconcile(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
-        async {
-            let result = self.reconcile_inner(command).await?;
-            if result.is_some()
-                && let crate::core::Action::PublishFork { seed } = &command.action
-            {
-                self.release_replayed_fork_fence(seed).await?;
-            }
-            Ok(result)
-        }
-        .await
-    }
-
-    pub(super) async fn reconcile_inner(
-        &mut self,
-        command: &Command,
-    ) -> Result<Option<ApplyResult>> {
         if let Some((result, _)) = self
             .replay(
                 command,
@@ -213,6 +160,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
             .await?
         {
+            if let Action::PublishFork { seed } = &command.action {
+                self.release_replayed_fork_fence(seed).await?;
+            }
             return Ok(Some(result));
         }
         let key = stream_idempotency_key_with_work(

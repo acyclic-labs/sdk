@@ -28,10 +28,10 @@ use uuid::Uuid;
 const RECORD_LOCK_DEADLINE: Duration = Duration::from_secs(5);
 const RECORD_LOCK_RETRY: Duration = Duration::from_millis(5);
 const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
-const LAZY_WORKSPACE_FAMILY: &str = "lazy-workspaces";
-const MATERIALIZATION_FAMILY: &str = "materialization";
 const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
 const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
+const LAZY_WORKSPACE_FAMILY: &str = "lazy-workspaces";
+const MATERIALIZATION_FAMILY: &str = "materialization";
 const OWNER_LOCK: &str = "owner.lock";
 
 /// One journaled private namespace shared by core control-plane state.
@@ -41,7 +41,6 @@ pub struct LocalCoreStateStore {
     ownership: Ownership,
     /// Open while this handle's commits defer durability.
     deferral: Option<Arc<AtomicBool>>,
-    recent_puts: Arc<NodeRetention>,
     journal_work: Option<crate::materializer::NativeMaterializationWork>,
 }
 
@@ -52,7 +51,6 @@ impl std::fmt::Debug for LocalCoreStateStore {
             .field("root", &self.root)
             .field("ownership", &self.ownership)
             .field("deferral", &self.deferral)
-            .field("recent_puts", &self.recent_puts)
             .finish_non_exhaustive()
     }
 }
@@ -161,7 +159,6 @@ impl LocalCoreStateStore {
             root: Arc::new(root.into()),
             ownership: Ownership::Shared,
             deferral: None,
-            recent_puts: Arc::default(),
             journal_work: None,
         }
     }
@@ -178,7 +175,6 @@ impl LocalCoreStateStore {
                 log: Mutex::default(),
             })),
             deferral: None,
-            recent_puts: Arc::default(),
             journal_work: None,
         })
     }
@@ -326,7 +322,7 @@ impl LocalCoreStateStore {
         .await
     }
 
-    /// Removes one journaled record only at `expected_revision`.
+    /// Removes one journaled record only at the expected revision.
     async fn compare_and_delete_record<T: DeserializeOwned + Revisioned>(
         &self,
         family: &'static str,
@@ -334,7 +330,15 @@ impl LocalCoreStateStore {
         expected_revision: u64,
     ) -> Result<bool, LocalCoreStateStoreError> {
         self.transaction(move |namespace| {
-            compare_and_delete::<T>(&mut namespace.record(family, &key)?, expected_revision)
+            let mut paths = namespace.record(family, &key)?;
+            with_lock(&mut paths, |paths| {
+                let current = read_recoverable::<T>(paths)?;
+                if current.as_ref().map_or(0, |(value, _)| value.revision()) != expected_revision {
+                    return Ok(false);
+                }
+                remove_record(paths)?;
+                Ok(true)
+            })
         })
         .await
     }

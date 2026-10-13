@@ -1,8 +1,13 @@
 use super::*;
-use acyclic_harness::filesystem::{
-    BorrowedNativeVolumeBinding, FilesystemContentVerifier, FilesystemInteractionHost,
-    NativePreparationRoot, NativeProcessRequest, NativeViewOptions, NativeVolumeNamespace,
-    NativeVolumeView, PreparationIo,
+use acyclic_harness::{
+    filesystem::{
+        BorrowedNativeVolumeBinding, FilesystemContentVerifier, FilesystemInteractionHost,
+        FsRootProjectSourceProvider, NativePreparationRoot, NativeProcessRequest,
+        NativeViewOptions, NativeVolumeNamespace, NativeVolumeView, ParentProjectController,
+        PreparationIo,
+    },
+    source_authorization::ProjectSourceSnapshot,
+    store::HistoryReader,
 };
 
 impl Producer {
@@ -286,25 +291,20 @@ impl Producer {
         let [project, private, result] = [
             (
                 "project",
-                VolumeClass::Project,
                 VolumeOwner::Project("qualification-project".into()),
             ),
-            (
-                "private",
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
-            ),
-            (
-                "result",
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
-            ),
+            ("private", VolumeOwner::Agent(agent)),
+            ("result", VolumeOwner::Agent(agent)),
         ]
-        .map(|(suffix, class, owner)| {
+        .map(|(suffix, owner)| {
             VolumeRef::new(
                 self.config.filesystem_provider.clone(),
                 format!("{label}-{suffix}").into(),
-                class,
+                if matches!(owner, VolumeOwner::Agent(_)) {
+                    VolumeClass::AgentPrivate
+                } else {
+                    VolumeClass::Project
+                },
                 owner,
                 &mut None,
             )
@@ -335,33 +335,32 @@ impl Producer {
             let graph_root = self.config.project_source_root.ok_or_else(|| {
                 Error::Unsupported("coordinator graph root source policy is not configured".into())
             })?;
-            let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
+            let policy = FsRootProjectSourceProvider::new(
                 self.files.clone(),
                 &self.config.owner.authority,
                 graph_root,
                 None,
             )?;
-            let service_issuer = AuthorityIssuer::new(
+            let issuer = AuthorityIssuer::new(
                 &self.config.owner.issuer,
                 self.config.owner.key,
                 self.config.owner.authority.clone(),
             );
-            let owner = Arc::new(
-                self.runtime
-                    .task_host()
-                    .journal_owner(parent.task, &fence, None)
-                    .await?
-                    .with_invocation_cancellation(&self.cancellation),
-            );
+            let owner = self
+                .runtime
+                .task_host()
+                .journal_owner(parent.task, &fence, None)
+                .await?
+                .with_invocation_cancellation(&self.cancellation);
             Some(
                 owner
                     .authorize_project_source(
                         &context,
-                        &service_issuer,
+                        &issuer,
                         policy.as_ref(),
                         source_task,
                         operation,
-                        &acyclic_harness::source_authorization::ProjectSourceSnapshot {
+                        &ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: selected.generation.clone(),
                             native_snapshot: None,
@@ -419,16 +418,10 @@ impl Producer {
             &self.cancellation,
         )
         .await?;
-        self.config.fork_sources.push(Arc::new(ForkSourceConfig {
+        self.config.fork_sources.push(ForkSourceConfig {
             caller: parent.task,
-            owner: parent.binding.clone(),
-            snapshot: parent
-                .aggregate
-                .reducer()
-                .snapshot(usize::MAX, &mut None)?
-                .0,
             request: binding.request.clone(),
-        }));
+        });
         let mut child = self.template.clone();
         child.operation_id = child_operation;
         child.parent = Some(parent.task);
@@ -437,46 +430,43 @@ impl Producer {
             .iter()
             .map(|grant| (*grant).to_owned())
             .collect::<Vec<_>>();
-        for capability in std::iter::once(
-            parent
-                .project
-                .capability(VolumeOperation::Read, &mut None)?,
-        )
-        .chain(
-            self.planned_commands
-                .values()
-                .map(|command| command.payload.read_capability(&mut None))
-                .collect::<Result<Vec<_>>>()?,
-        ) {
+        let capabilities =
+            std::iter::once(parent.project.capability(VolumeOperation::Read, &mut None)).chain(
+                self.planned_commands
+                    .values()
+                    .map(|command| command.payload.read_capability(&mut None)),
+            );
+        for capability in capabilities {
+            let capability = capability?;
             if admission.grants.contains(&capability) {
                 grants.push(capability);
             }
         }
-        let parent_state = parent.aggregate.reducer();
+        let state = parent.aggregate.reducer();
         let preparation = &binding.request.preparation;
-        let history = acyclic_harness::store::HistoryReader::new(
+        let history = HistoryReader::new(
             &self.stream,
             &parent.binding.authority,
             &verifier,
             &mut None,
         )?
         .fork_history(
-            parent_state,
+            state,
             preparation.inherited_through_sequence,
             HISTORY_LIMITS,
             &mut None,
         )
         .await?;
-        let (reference_grants, _) = acyclic_harness::filesystem::ParentProjectController::new(
+        let (references, _) = ParentProjectController::new(
             &self.files,
-            parent_state,
+            state,
             &verifier,
             &parent.binding.scope,
             &parent.project,
             None,
         )?
         .inherited_reference_grants(
-            parent_state,
+            state,
             agent,
             &binding.request.attached_agents,
             preparation.inherited_through_sequence,
@@ -487,7 +477,7 @@ impl Producer {
             Some(&history),
         )
         .await?;
-        for grant in reference_grants {
+        for grant in references {
             if grant.reader != agent {
                 return Err(Error::Unauthorized(
                     "canonical projection grants another reader".into(),
@@ -531,19 +521,23 @@ impl Producer {
             .root
             .join("inputs")
             .join(format!("{label}-prepare.json"));
-        persist(
-            &request_path,
-            &json!({ "operation": preparation_operation, "parent": parent.task,
-            "caller_lease": parent.lease, "request": request }),
-        )
-        .await?;
         let report_path = self
             .root
             .join("inputs")
             .join(format!("{label}-report.json"));
-        self.preparations.push(json!({ "label": label, "parent": parent.task, "operation": preparation_operation,
+        persist(
+            &request_path,
+            &json!({
+                "operation": preparation_operation, "parent": parent.task,
+                "caller_lease": parent.lease, "request": request,
+            }),
+        )
+        .await?;
+        self.preparations.push(json!({
+            "label": label, "parent": parent.task, "operation": preparation_operation,
             "task": preparation_task, "child_task_operation": child_operation, "request": request_path,
-            "report": if source.is_none() { Some(&report_path) } else { None }, "executed": source.is_none() }));
+            "report": if source.is_none() { Some(&report_path) } else { None }, "executed": source.is_none(),
+        }));
         let grants = Capabilities::new(request.child.grants.iter().map(str::to_owned).chain([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
@@ -638,8 +632,10 @@ impl Producer {
         self.leases.insert(label.to_owned(), lease_path);
         persist(
             &report_path,
-            &json!({ "report": report, "seed": seed,
-            "child": self.runtime.task_host().observe_admission(task).await? }),
+            &json!({
+                "report": report, "seed": seed,
+                "child": self.runtime.task_host().observe_admission(task).await?,
+            }),
         )
         .await?;
         Ok(Some(Caller {

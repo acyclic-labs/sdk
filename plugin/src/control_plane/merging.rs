@@ -74,7 +74,7 @@ impl ControlPlane {
                 // only reads from the physical root is no change of its own, as
                 // the parent's generations hold only what the parent authored.
                 // Source paths the child deleted travel as source deletions.
-                let plan = source.join_into(&target).plan().await.map_err(display)?;
+                let plan = source.join_into(&target).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| display(failure.error))?;
                 let target_head = plan.target_head();
                 let parent_repository_id = self.parent_repository_id(caller, *root_id, target.id())?;
                 let tracked = GitCompatRepository::new(parent_repository_id, self.store.clone())
@@ -91,10 +91,10 @@ impl ControlPlane {
                     .map_err(display)?;
                 let changed = base
                     .diff_to(&source_head, u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                    .await.map_err(|failure| failure.error)
+                    .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                     .map_err(display)?
                     .changed_paths(u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                     .map_err(display)?;
                 let child_wins_bindings = git_ignore_policy(&lazy_source)
                     .await?

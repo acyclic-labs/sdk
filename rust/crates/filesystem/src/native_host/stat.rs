@@ -188,8 +188,7 @@ pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::S
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
     let magnitude = nanos.unsigned_abs();
     let duration = std::time::Duration::new(
-        u64::try_from(magnitude / 1_000_000_000)
-            .map_err(|_| io::Error::other("timestamp overflow"))?,
+        (magnitude / 1_000_000_000) as u64,
         (magnitude % 1_000_000_000) as u32,
     );
     let value = if nanos < 0 {
@@ -219,7 +218,9 @@ pub(crate) fn unix_nanoseconds_to_filetime(nanoseconds: i64) -> i64 {
 #[cfg(windows)]
 pub(super) fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
     const UNIX_EPOCH_TICKS: u64 = UNIX_EPOCH_FILETIME.unsigned_abs();
-    let since = |ticks: u64| std::time::Duration::from_nanos(ticks.saturating_mul(100));
+    let since = |ticks: u64| {
+        std::time::Duration::new(ticks / 10_000_000, ((ticks % 10_000_000) * 100) as u32)
+    };
     cap_std::time::SystemTime::from_std(if ticks >= UNIX_EPOCH_TICKS {
         std::time::UNIX_EPOCH + since(ticks - UNIX_EPOCH_TICKS)
     } else {
@@ -234,11 +235,6 @@ pub struct HostListedEntry {
     #[cfg(windows)]
     pub name: Vec<u16>,
     pub stat: Option<HostStat>,
-}
-impl HostListedEntry {
-    pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        self.name.capacity() as u64 * if cfg!(windows) { 2 } else { 1 }
-    }
 }
 pub(crate) fn stat_file<W: NativeHostWork>(
     file: &File,

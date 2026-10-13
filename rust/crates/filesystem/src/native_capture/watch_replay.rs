@@ -392,7 +392,7 @@ pub async fn capture_watch_batch<
             .clone()
             .release(rename_mutations_bytes)
             .map_err(capture_demand_error)?;
-        let namespace_boundary = mutations.len();
+        let namespace_mutations = std::mem::take(&mut mutations);
         let rename_records_bytes = vector_bytes(&rename_records);
         for (path, record) in rename_records {
             let Some(record) = record else {
@@ -490,34 +490,9 @@ pub async fn capture_watch_batch<
             .release(observed_bytes)
             .map_err(capture_demand_error)?;
         release_host_links(host_links, meter)?;
-        if namespace_boundary == 0 || namespace_boundary == mutations.len() {
-            apply_capture_transaction(checkout, mutations, meter).await?;
-        } else {
-            // The public entry point owns the unpublished candidate for both phases.
-            let final_state = {
-                let count = mutations.len() - namespace_boundary;
-                let bytes = count
-                    .checked_mul(std::mem::size_of::<AuthoredMutation>())
-                    .ok_or(CaptureError::from(WorkError::Overflow))?
-                    as u64;
-                let copied = WorkCounters {
-                    bytes_copied: bytes,
-                    ..WorkCounters::UNCHARGED
-                };
-                crate::native_host::NativeHostWork::admit(&mut meter.clone(), copied)
-                    .map_err(capture_demand_error)?;
-                let mut final_state = capture_vec(count, meter)?;
-                final_state.extend(mutations.drain(namespace_boundary..));
-                meter.clone().record(copied).map_err(capture_demand_error)?;
-                final_state
-            };
-            apply_capture_transaction(checkout, mutations, meter).await?;
-            apply_capture_transaction(checkout, final_state, meter).await?;
-            {
-                cancellation.check()?;
-                meter.clone().check().map_err(capture_demand_error)
-            }?;
-        }
+        apply_capture_transaction(checkout, namespace_mutations, meter).await?;
+        apply_capture_transaction(checkout, mutations, meter).await?;
+        meter.clone().check().map_err(capture_demand_error)?;
         Ok(WatchCaptureReceipt {
             epoch,
             first_sequence,

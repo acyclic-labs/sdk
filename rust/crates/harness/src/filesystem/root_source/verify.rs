@@ -1,6 +1,5 @@
 use super::*;
-use crate::executor::stock_boundary;
-use crate::filesystem::fork_preparer_io;
+use crate::{executor::stock_boundary, filesystem::fork_preparer_io, wire::ErrorCode};
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FsRootProjectSourceProvider<A, O>
@@ -9,34 +8,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &self,
         context: RootProjectSourceContext<'_>,
         snapshot: &ProjectSourceSnapshot,
-        io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Unauthorized, reason);
+        let denied = |reason| stock_boundary(io, ErrorCode::Unauthorized, reason);
         let check = || {
             context.cancellation.check().map_err(|_| {
                 #[cfg(not(target_arch = "wasm32"))]
-                if io
-                    .and_then(crate::filesystem::PreparationIo::original_native_work)
-                    .is_some()
-                {
+                if io.and_then(PreparationIo::original_native_work).is_some() {
                     return Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled);
                 }
-                reject("project source operation cancelled")
+                denied("project source operation cancelled")
             })
         };
         if io.is_some() {
             check()?;
         }
-        if context.owner != &self.owner
-            || context.graph_root != self.graph_root
-            || !context.created_project_authenticated
-        {
-            return Err(reject(
-                "project source lacks this graph's authenticated creator",
-            ));
+        if context.owner != &self.owner || context.graph_root != self.graph_root || !context.created_project_authenticated {
+            return Err(denied("project source belongs to another service graph"));
         }
         if snapshot.native_snapshot.is_some() {
-            return Err(reject(
+            return Err(denied(
                 "native source has no original provider binding",
             ));
         }
@@ -48,14 +39,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || snapshot.project.provider() != &self.host.provider
             || snapshot.generation.as_resource().provider() != &self.host.provider
         {
-            return Err(reject(
+            return Err(denied(
                 "project source belongs to another namespace or provider",
             ));
         }
         let budget = source_budget(context.maximum_work, context.maximum_bytes).map_err(|_| {
             stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "project source requires finite positive admission",
             )
         })?;
@@ -63,39 +54,32 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let io = match io {
             Some(io) => io,
             None => {
-                ordinary =
-                    crate::filesystem::PreparationIo::from_budget(budget, context.cancellation)?;
+                ordinary = PreparationIo::from_budget(budget, context.cancellation)?;
                 &ordinary
             }
         };
         io.check_cancellation()?;
         if !io.contains_capability(&context.source.grants, &snapshot.project, "volume:read:")? {
-            return Err(reject(
+            return Err(denied(
                 "selected source admission lacks original project read authority",
             ));
         }
-        let before = io.owned_bytes()?;
         let reference =
             fork_preparer_io::content_workspace(&self.host.provider, &snapshot.project, Some(io))?;
-        let hold = io.guard_owned(
-            io.owned_bytes()?
-                .checked_sub(before)
-                .ok_or_else(|| io.invalid("source reference custody underflows"))?,
-        )?;
-        let reference = (reference, hold);
-        let opened = (&self.host).open(&reference.0, Some(io)).await?;
+        let _reference = io.guard_owned(reference.logical_owned_bytes()?)?;
+        let opened = self.host.open(&reference, Some(io)).await?;
         if io.original_native_work().is_none() {
             io.retain_owned(opened.name().as_str().len() as u64)?;
         }
         let selected =
             (&self.host).generation(&opened, &snapshot.generation, Some(io)).await?;
-        let generation = selected.id();
         drop(selected);
         check()?;
         io.remaining()?;
         Ok(())
     }
 }
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootProjectSourceProvider
     for FsRootProjectSourceProvider<A, O>
 {
@@ -123,7 +107,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootProjec
             })?;
         crate::NativeFutureBundle::new(work, || async move {
             work.remaining()?;
-            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let io = PreparationIo::from_native_work(work)?;
             self.verify_source(context, snapshot, Some(&io)).await
         })
     }
@@ -131,14 +115,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootProjec
 
 impl crate::filesystem::PreparationRecord for LazySnapshotRef {
     fn maximum_slot_bytes() -> u64 {
-        0 // All fields are fixed-size values.
+        0
     }
 }
 
 pub(super) fn source_snapshot<'a>(
     value: &serde_json::Value,
     bounds: JsonBounds,
-    io: &'a crate::filesystem::PreparationIo,
+    io: &'a PreparationIo,
 ) -> Result<(LazySnapshotRef, crate::filesystem::DecodeReservation<'a>)> {
     crate::executor::json::json_owned_value_shape_bounded(
         value,
@@ -146,20 +130,20 @@ pub(super) fn source_snapshot<'a>(
         crate::executor::json::JsonValueSchema::None,
         &mut |charge| io.codec_charge(charge, false),
     )?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.original_native_work().is_some() {
+        io.check_json_byte_bound(value, bounds.maximum_bytes)?;
+        return io.value_decode_preparation(value, ErrorCode::Invalid);
+    }
     let bytes = io.encode(value, bounds.maximum_bytes, true)?;
     let _bytes = io.guard_bytes(&bytes)?;
-    io.decode(
-        std::marker::PhantomData,
-        &bytes,
-        crate::wire::ErrorCode::Invalid,
-    )
+    io.decode(std::marker::PhantomData, &bytes, ErrorCode::Invalid)
 }
 
 pub(super) fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
-    if maximum_work == 0
-        || maximum_work == u64::MAX
-        || maximum_bytes == 0
-        || maximum_bytes == u64::MAX
+    if [maximum_work, maximum_bytes]
+        .into_iter()
+        .any(|limit| limit == 0 || limit == u64::MAX)
     {
         return Err(Error::Invalid(
             "project source requires finite positive admission".into(),

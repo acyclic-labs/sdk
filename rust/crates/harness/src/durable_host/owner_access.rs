@@ -15,34 +15,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(|io| io.original_native_work()) {
             context.require_original_native_work(work)?;
-            if !self.native_shared_work_matches(work) || !context.native_metadata_matches(work) {
+            if !context.native_metadata_matches(work) {
                 return Err(Error::Unauthorized(
                     "context differs from original owner ledger".into(),
                 ));
             }
         }
-        crate::executor::with_history_io(io, |work| {
-            crate::core::inspect_metadata(
-                &(
-                    context.scope().grants(),
-                    &self.admission.grants,
-                    context.scope().resource_proofs(),
-                    &self.admission.resource_proofs,
-                    context.scope().extensions(),
-                    &self.admission.extensions,
-                ),
-                work,
-            )
-        })?;
+        self.require_mail_scope(context.scope(), io)?;
         if !context.original_task_binding_matches(self.task_id(), &self.fence)
             || context.id() != self.operation_id()
             || !context
                 .original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
-            || context.scope().grants() != &self.admission.grants
-            || context.scope().limits() != self.admission.limits
-            || context.scope().run_limits() != self.admission.run_limits
-            || context.scope().resource_proofs() != self.admission.resource_proofs
-            || context.scope().extensions() != self.admission.extensions.as_ref()
         {
             return Err(Error::Unauthorized(
                 "context differs from original owner admission".into(),

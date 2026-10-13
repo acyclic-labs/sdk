@@ -9,8 +9,8 @@ use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
 use crate::cancellation::{CancellationError, CancellationToken};
 
 use crate::foundation::{
-    AuthorityId, Digest, DurableCommit, FileId, GenerationId, Head, OperationId,
-    ProposedCommit, Sequence, VolumeId,
+    AuthorityId, Digest, DurableCommit, FileId, GenerationId, Head, OperationId, ProposedCommit,
+    Sequence, VolumeId,
 };
 
 use crate::heap_future::in_heap;
@@ -20,8 +20,8 @@ use crate::kernel::{
     lookup_file_record_async_with_accounting, lookup_path_async_with_accounting,
     lookup_paths_async_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    merge_generation_with_borrowed_resolutions_with_accounting,
-    plan_extent_range_with_accounting, prove_record_closure_async, read_blob_range_with_accounting,
+    merge_generation_with_borrowed_resolutions_with_accounting, plan_extent_range_with_accounting,
+    prove_record_closure_async, read_blob_range_with_accounting,
     read_generation_root_with_accounting, retire_allocation, types,
 };
 
@@ -66,10 +66,8 @@ use crate::kernel::{
     authenticate_generation_export_manifest_async, build_blob,
     build_generation_export_manifest_async, contextual_publication_fingerprint,
     decode_workspace_deleted, export_generation_batch_async, import_generation_batch_async,
-    lookup_file_records, merge_generation_async,
-    prove_generation_closure, publish_generation,
-    publish_generation_async_with_permit,
-    retention_authority_id, volume_authority_id,
+    merge_generation_async, prove_generation_closure, publish_generation,
+    publish_generation_async_with_permit, retention_authority_id, volume_authority_id,
 };
 
 #[cfg(test)]
@@ -150,7 +148,6 @@ pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;
 mod generation;
-mod grouped;
 mod join_publication;
 mod join_request;
 mod join_witness;
@@ -197,8 +194,6 @@ pub use collection::LocalGarbageCollection;
 pub use content_model::ContentChange;
 pub use content_model::ContentTimes;
 pub use content_model::FileCloneRequest;
-pub use content_model::GroupedChange;
-pub use content_model::GroupedOutcome;
 use content_model::content_input_path_bytes;
 pub(crate) use content_model::{ContentAddress, ContentFile};
 pub use detached::DetachedFile;
@@ -206,7 +201,6 @@ pub use diff::DirectoryBindingChange;
 pub use diff::FileRecordChange;
 pub use diff::GenerationDiff;
 pub use diff::MergePreparation;
-pub use directory::DirectoryPageRequest;
 pub use directory::DirectoryRecordEntry;
 pub use directory::DirectoryRecordPage;
 pub use directory::PathMetadataLookup;
@@ -282,7 +276,6 @@ use rebase::probe_limits;
 pub use resolved_read::FileDescription;
 pub use resolved_read::ResolvedFile;
 pub use resolved_read::ResolvedFileRangeReadRequest;
-use resolved_read::order_batch_results;
 pub use staging::StagedContent;
 pub(crate) use staging::stage_content_for_volume_with_accounting;
 pub use transactions::AuthoredLiveMutationResult;
@@ -300,7 +293,6 @@ use work::add;
 pub(crate) use work::measured;
 use work::merge_simultaneous_work;
 use work::remaining;
-use work::remaining_owned;
 use work::{authority_work, record_authority_work};
 use workspace_creation::decode_first_creation_record;
 
