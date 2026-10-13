@@ -151,6 +151,7 @@ dependencies = [
  "prost-types",
  "rcgen",
  "rustix",
+ "rustls",
  "s3s",
  "serde",
  "serde_json",
