@@ -1,0 +1,514 @@
+use super::*;
+
+#[tokio::test]
+async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_expired_work()
+-> Result<()> {
+    for expired_before_dispatch in [true, false] {
+        let fixture = Fixture::new().await?;
+        let runtime = fixture.runtime().await?;
+        let lease = fixture.admit(&runtime).await?;
+        let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+        runtime.task_host().start_task(&lease, &mut None).await?;
+        let fence = LeaseFence::from(&lease.reservation);
+        let turn = OperationId::from_bytes([106; 16]);
+        let model = Model::new(
+            "synthetic".into(),
+            "deadline".into(),
+            "1".into(),
+            Value::Null,
+        )?;
+        let provider = Arc::new(PendingModel {
+            clock: fixture.clock.clone(),
+            generated: AtomicUsize::new(0),
+            reconciled: AtomicUsize::new(0),
+        });
+        let execution = runtime
+            .stock_execution(
+                task,
+                fence.clone(),
+                turn,
+                model.clone(),
+                provider.clone(),
+                ContextPipeline::default(),
+                None,
+            )
+            .await?
+            .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
+        let input = TurnInput {
+            operation_id: execution.operation_id(),
+            input: crate::model::ModelContent::Text("question".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        if expired_before_dispatch {
+            fixture.clock.0.store(20, Ordering::SeqCst);
+        }
+        assert!(matches!(execution.execute(input.clone()).await,
+            Err(Error::Indeterminate(operation)) if operation == input.operation_id));
+        assert_eq!(
+            provider.generated.load(Ordering::SeqCst),
+            usize::from(!expired_before_dispatch)
+        );
+        let state = fixture.scheduler_state(task).await?;
+        assert!(state.cancellation_requested);
+        assert_eq!(state.reservation, Some(lease.reservation.clone()));
+        assert!(state.outcome.is_none());
+        assert!(
+            runtime
+                .task_host()
+                .verify_dispatch_owner(task, &fence, None)?
+                .await
+                .is_err()
+        );
+        drop(execution);
+        drop(runtime);
+        let reopened = fixture.runtime().await?;
+        let execution = reopened
+            .stock_execution(
+                task,
+                fence.clone(),
+                turn,
+                model,
+                provider.clone(),
+                ContextPipeline::default(),
+                None,
+            )
+            .await?
+            .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
+        if expired_before_dispatch {
+            assert!(matches!(
+                execution.reconcile(input, 1_000).await,
+                Err(Error::Indeterminate(_))
+            ));
+            assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
+        } else {
+            assert!(execution.reconcile(input, 1_000).await?.is_some());
+            assert_eq!(provider.reconciled.load(Ordering::SeqCst), 1);
+            assert!(
+                reopened
+                    .execution_journal(task, fence, turn)
+                    .await?
+                    .is_quiescent(None)
+                    .await?
+            );
+        }
+        assert_eq!(
+            provider.generated.load(Ordering::SeqCst),
+            usize::from(!expired_before_dispatch)
+        );
+        assert!(fixture.scheduler_state(task).await?.outcome.is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlement() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
+    let runtime = fixture.runtime().await?;
+    let provider = Arc::new(PendingModel {
+        clock: Arc::clone(&fixture.clock),
+        generated: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
+    let model = Model::new(
+        "synthetic".into(),
+        "deadline".into(),
+        "1".into(),
+        Value::Null,
+    )?;
+    let context = ContextPipeline::default();
+    let compaction = crate::context::CompactionPolicy::Disabled;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::default(),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let input = super::super::super::ModelTaskCommand {
+        input: crate::model::ModelContent::Text("question".into()),
+        selected_context: None,
+        max_steps: 1,
+        max_output_tokens: None,
+        selected_output_volume: None,
+        mailbox_operation: None,
+    };
+    let (lease, custody) = fixture
+        .native_lease_command(
+            &runtime,
+            super::super::super::MODEL_TASK_COMMAND_KIND,
+            serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?,
+            &work,
+        )
+        .await?;
+    let original = lease.clone();
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let commands = runtime.commands().with_model(
+        &model,
+        provider.clone(),
+        &context,
+        &compaction,
+        Some(&super::super::super::PreparationIo::from_native_work(
+            &work,
+        )?),
+    )?;
+    let (attempt, custody) = runtime
+        .resume_task_with_native_work(lease, custody, &commands, 2, &work)
+        .await?;
+    let lease = match attempt {
+        TaskWorkerAttempt::Unresolved {
+            lease,
+            error: Error::Indeterminate(_),
+        } => {
+            assert_eq!(lease, original);
+            lease
+        }
+        _ => {
+            return Err(Error::Invalid(
+                "native model lost acknowledgement did not preserve original lease".into(),
+            ));
+        }
+    };
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    let before = work.receipt();
+    drop(commands);
+    drop(runtime);
+    let reopened = fixture.runtime().await?;
+    let commands = reopened.commands().with_model(
+        &model,
+        provider.clone(),
+        &context,
+        &compaction,
+        Some(&super::super::super::PreparationIo::from_native_work(
+            &work,
+        )?),
+    )?;
+    let (attempt, custody) = reopened
+        .reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work)
+        .await?;
+    assert!(
+        matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task)
+    );
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    assert!(work.receipt().backend_read_operations > before.backend_read_operations);
+    assert!(custody.work().shares_ledger(&work));
+    assert!(matches!(
+        reopened.task_host().outcome(task).await?,
+        Some(Outcome::Cancelled)
+    ));
+    let witness = reopened
+        .readonly_workflow_journal_with_native_work(task, &work)
+        .await?;
+    let replay_io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let records =
+        crate::workflow::WorkflowJournal::replay(witness.as_ref(), 0, 64, Some(&replay_io))?
+            .await?;
+    assert!(!records.0.is_empty());
+    assert!(records.1.as_ref().unwrap().work().shares_ledger(&work));
+    drop(records);
+    drop(witness);
+    drop(attempt);
+    drop(custody);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_model_selected_writer_requires_original_created_binding_before_provider()
+-> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
+    let runtime = fixture.runtime().await?;
+    let input = super::super::super::ModelTaskCommand {
+        input: crate::model::ModelContent::Text("must not dispatch".into()),
+        selected_context: None,
+        max_steps: 1,
+        max_output_tokens: None,
+        selected_output_volume: Some(fixture.volume.clone()),
+        mailbox_operation: None,
+    };
+    let payload = serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
+    let provider = Arc::new(PendingModel {
+        clock: Arc::clone(&fixture.clock),
+        generated: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
+    let model = Model::new(
+        "synthetic".into(),
+        "deadline".into(),
+        "1".into(),
+        Value::Null,
+    )?;
+    let context = ContextPipeline::default();
+    let compaction = crate::context::CompactionPolicy::Disabled;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::default(),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let commands = runtime.commands().with_model(
+        &model,
+        provider.clone(),
+        &context,
+        &compaction,
+        Some(&super::super::super::PreparationIo::from_native_work(
+            &work,
+        )?),
+    )?;
+    let (lease, custody) = fixture
+        .native_lease_command(
+            &runtime,
+            super::super::super::MODEL_TASK_COMMAND_KIND,
+            payload,
+            &work,
+        )
+        .await?;
+    let (attempt, custody) = runtime
+        .resume_task_with_native_work(lease, custody, &commands, 2, &work)
+        .await?;
+    assert!(matches!(
+        &attempt,
+        TaskWorkerAttempt::Unresolved {
+            error: Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                ..
+            },
+            ..
+        }
+    ));
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
+    assert!(custody.work().shares_ledger(&work));
+    drop(attempt);
+    drop(custody);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_stock_model_configuration_denies_before_copy_or_provider_on_original_work()
+-> Result<()> {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime().await?;
+    let model = Model::new(
+        "synthetic".into(),
+        "original-config".into(),
+        "1".into(),
+        serde_json::json!({"configured": true}),
+    )?;
+    let context = ContextPipeline::default();
+    let compaction = crate::context::CompactionPolicy::Disabled;
+    let provider = Arc::new(PendingModel {
+        clock: Arc::clone(&fixture.clock),
+        generated: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
+    for cancelled in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut budget = acyclic_fs::WorkBudget::default();
+        if !cancelled {
+            budget.peak_allocation_bytes =
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
+        }
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        if cancelled {
+            cancellation.cancel();
+        }
+        let before = work.receipt();
+        let result = runtime.commands().with_model(
+            &model,
+            provider.clone(),
+            &context,
+            &compaction,
+            Some(&super::super::super::PreparationIo::from_native_work(
+                &work,
+            )?),
+        );
+        assert!(result.as_ref().is_err_and(Error::is_native_failure));
+        assert_eq!(
+            work.receipt().allocation_operations,
+            before.allocation_operations
+        );
+        assert_eq!(
+            work.receipt().backend_read_operations,
+            before.backend_read_operations
+        );
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
+        drop(result);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_stock_model_configuration_retains_original_custody_and_rejects_foreign_rebinding()
+-> Result<()> {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime().await?;
+    let model = Model::new(
+        "synthetic".into(),
+        "original-config".into(),
+        "1".into(),
+        json!({"configured": "retained"}),
+    )?;
+    let context = ContextPipeline::default();
+    let compaction = crate::context::CompactionPolicy::Disabled;
+    let provider = Arc::new(PendingModel {
+        clock: Arc::clone(&fixture.clock),
+        generated: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::default(),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let before = work.receipt();
+    let commands = runtime.commands().with_model(
+        &model,
+        provider.clone(),
+        &context,
+        &compaction,
+        Some(&super::super::super::PreparationIo::from_native_work(
+            &work,
+        )?),
+    )?;
+    assert!(work.receipt().allocation_operations > before.allocation_operations);
+    assert!(work.receipt().bytes_copied > before.bytes_copied);
+    let foreign = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::default(),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let before = foreign.receipt();
+    let result = commands.with_model(
+        &model,
+        provider.clone(),
+        &context,
+        &compaction,
+        Some(&super::super::super::PreparationIo::from_native_work(
+            &foreign,
+        )?),
+    );
+    assert!(matches!(
+        result,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert_eq!(foreign.receipt(), before);
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_source() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::default(),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
+    runtime
+        .task_host()
+        .start_task(
+            &lease,
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(&work)?.history_io()),
+        )
+        .await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let fence = LeaseFence::from(&lease.reservation);
+    let shared = runtime
+        .task_context_with_native_work(task, &fence, &work)
+        .await?;
+    assert!(shared.original_task_binding_matches(task, &fence));
+    let operation = lease.operation.operation_id;
+    let call_id = work.display(&operation)?;
+    let tool = ToolContext::new(
+        Arc::clone(&shared),
+        operation,
+        &call_id.0,
+        Some(&PreparationIo::from_native_work(&work)?),
+    )?;
+    drop(call_id);
+    let before = work.receipt();
+    tool.validate_native_mcp_context(&work)?;
+    tool.validate_native_mcp_reconciliation_context(&work)?;
+    assert_eq!(work.receipt(), before);
+    let read = runtime
+        .harness()
+        .durable_context(
+            task,
+            operation,
+            Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
+        )
+        .await?;
+    let read_tool = ToolContext::new(
+        read,
+        operation,
+        "read-context-control",
+        Some(&PreparationIo::from_native_work(&work)?),
+    )?;
+    assert!(matches!(
+        read_tool.validate_native_mcp_context(&work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(matches!(
+        read_tool.validate_native_mcp_reconciliation_context(&work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    fixture.clock.0.store(20, Ordering::SeqCst);
+    runtime
+        .task_host()
+        .expire_task_deadline(
+            task,
+            Some(&fence),
+            &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&work)?,
+            )),
+        )
+        .await?;
+    let settlement = runtime
+        .task_context_for_original_owner_with_native_work(task, &fence, true, &work)
+        .await?;
+    let settlement_tool = ToolContext::new(
+        settlement,
+        operation,
+        "settlement-context-control",
+        Some(&PreparationIo::from_native_work(&work)?),
+    )?;
+    assert!(matches!(
+        settlement_tool.validate_native_mcp_context(&work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    settlement_tool.validate_native_mcp_reconciliation_context(&work)?;
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+    drop(settlement_tool);
+    drop(read_tool);
+    drop(tool);
+    drop(shared);
+    drop(lease);
+    drop(recovery_custody);
+    Ok(())
+}
