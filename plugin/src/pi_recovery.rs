@@ -221,13 +221,13 @@ pub(crate) async fn observe_pi_session(
             let mut request = decode_recovery_value::<
                 acyclic_harness::resource_preparation::ResourcePreparationRequest,
             >(
-                std::mem::take(&mut admission.0.input),
+                std::borrow::Cow::Owned(std::mem::take(&mut admission.0.input)),
                 acyclic_harness::JsonValueSchema::ResourcePreparationRequest,
                 work,
             )?;
             request.0.validate(&mut None)?;
             let child = decode_recovery_value::<PiTaskInput>(
-                std::mem::take(&mut request.0.child.input),
+                std::borrow::Cow::Owned(std::mem::take(&mut request.0.child.input)),
                 acyclic_harness::JsonValueSchema::None,
                 work,
             )?;
@@ -365,7 +365,7 @@ pub(crate) async fn observe_pi_session(
                         outcome: match outcome {
                             Outcome::Succeeded(value) => {
                                 let mut decoded = decode_recovery_value::<FileRef>(
-                                    value,
+                                    std::borrow::Cow::Owned(value),
                                     acyclic_harness::JsonValueSchema::None,
                                     work,
                                 )?;
@@ -471,7 +471,7 @@ where
         .observe_admission_with_native_work(binding.task_id, work)?
         .await?;
     let mut admitted = decode_recovery_value::<PiTaskInput>(
-        std::mem::take(&mut admission.0.input),
+        std::borrow::Cow::Owned(std::mem::take(&mut admission.0.input)),
         acyclic_harness::JsonValueSchema::None,
         work,
     )?;
@@ -598,12 +598,13 @@ fn invalid(message: &'static str) -> Error {
     Error::Invalid(message.to_owned())
 }
 
-/// Closed first-party recovery DTOs consume their owned Value rather than cloning it.
-fn decode_recovery_value<T: serde::de::DeserializeOwned>(
-    value: serde_json::Value,
+/// Decodes closed Pi DTOs directly from their original Value.
+pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
+    value: std::borrow::Cow<'_, serde_json::Value>,
     schema: &'static acyclic_harness::JsonValueSchema,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
+    let borrowed = matches!(value, std::borrow::Cow::Borrowed(_));
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut retained_owned = 0;
     let remaining = work.remaining()?;
@@ -613,7 +614,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
         maximum_depth: 64,
     };
     let result = acyclic_harness::json_from_value_bounded::<T, _>(
-        std::borrow::Cow::Owned(value),
+        value,
         bounds,
         std::mem::size_of::<T>() as u64,
         Some(acyclic_harness::wire::ErrorCode::Invalid),
@@ -624,7 +625,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
                 value_shape,
             } = charge
             {
-                let (additional, diagnostics) = recovery_conversion_quota(value_shape)?;
+                let (additional, diagnostics) = recovery_conversion_quota(value_shape, borrowed)?;
                 retained_owned = checked_quota(maximum_owned_bytes, additional)?;
                 custody
                     .resize(checked_quota(retained_owned, diagnostics)?)
@@ -658,7 +659,10 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     }
 }
 
-fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(u64, u64)> {
+fn recovery_conversion_quota(
+    shape: acyclic_harness::JsonValueShape,
+    borrowed: bool,
+) -> Result<(u64, u64)> {
     let slot = [
         std::mem::size_of::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(),
         std::mem::size_of::<acyclic_harness::runtime::TaskAdmissionRecord>(),
@@ -682,7 +686,11 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
         .ok_or_else(|| {
             acyclic_harness::Error::from(NativeTreeMaterializationError::Work(WorkError::Overflow))
         })?;
-    let additional = acyclic_harness::json_owned_value_conversion_additional_bytes(shape)?;
+    let additional = if borrowed {
+        acyclic_harness::json_value_decode_owned_bytes(shape)?
+    } else {
+        acyclic_harness::json_owned_value_conversion_additional_bytes(shape)?
+    };
     let labels = super::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES;
     let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
         shape,
