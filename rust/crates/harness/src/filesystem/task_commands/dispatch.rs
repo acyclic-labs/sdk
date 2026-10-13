@@ -172,7 +172,7 @@ where
                         &fence,
                         command.operation_id,
                         input.deadline_unix_ms,
-                        work,
+                        io,
                     )
                     .await?;
                 if elapsed {

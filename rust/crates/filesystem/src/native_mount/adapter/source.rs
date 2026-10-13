@@ -48,31 +48,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         &self.cancellation
     }
 
-    /// The checkout's current generation, which publication advances.
-    #[cfg(all(test, target_os = "macos"))]
-    pub(super) fn generation_id(&self) -> Result<crate::GenerationId, MountSourceError>
-    where
-        A: AsyncAuthorityStore + Send + Sync,
-        O: AsyncObjectStore + Send + Sync,
-    {
-        let owner = ViewGate::callback_owner();
-        self.runtime.wait(|| async {
-            Ok(self
-                .checkout
-                .observe(
-                    owner,
-                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                        boundary_budget(),
-                        &self.cancellation,
-                    )),
-                    &self.cancellation,
-                    None,
-                )
-                .await?
-                .generation_id())
-        })
-    }
-
     /// The checkout path a mounted path names, as view changes key it.
     pub(super) fn namespace_path(
         &self,
@@ -408,7 +383,13 @@ impl<A, O> CheckoutMountSource<A, O> {
                 fs_error,
             )?;
             carrier
-                .with_work(|work| work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
+                .with_work(|work| {
+                    work.claim_allocation(
+                        bytes,
+                        u64::from(bytes != 0),
+                        crate::WorkCounters::UNCHARGED,
+                    )
+                })
                 .map_err(super::lazy::mount_demand_error)?;
             (file, None)
         };
@@ -484,18 +465,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         })
     }
 
-    /// Whether `path` still names what it named after `stamp`, whatever
-    pub(super) fn binding_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
-        let mut work = crate::demand::DemandWork::new(boundary_budget(), &self.cancellation);
-        self.checkout.view_gate.is_stable()
-            && self.path(path).is_ok_and(|path| {
-                self.checkout
-                    .ledger
-                    .binding_unchanged_since(&path, stamp, &mut work)
-                    .unwrap_or(false)
-            })
-    }
-
     /// Returns the checkout's owning volume without filesystem I/O.
     pub fn volume_id(&self) -> Result<VolumeId, MountSourceError>
     where
@@ -555,11 +524,15 @@ impl<A, O> CheckoutMountSource<A, O> {
                 &work,
                 work.cancellation(),
                 Some(&self.cancellation),
-                &mut source_publication_guard(self.native_callback_guard.clone(), Some(self.cancellation.clone())),
+                &mut source_publication_guard(
+                    self.native_callback_guard.clone(),
+                    Some(self.cancellation.clone()),
+                ),
                 None,
                 &mut None,
             )
-            .await.map_err(|(cause, _)| cause)
+            .await
+            .map_err(|(cause, _)| cause)
     }
 
     /// Safely advances a clean mounted checkout to the workspace head.

@@ -68,7 +68,7 @@ pub(super) fn host_windows_metadata(
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
-    let metadata = root.stat(&host_relative_path(path)?, &mut &*work)?;
+    let metadata = crate::native_host::with_wide_path(&host_relative_path(path)?, &mut &*work, |path, work| root.stat(path, work))?;
     Ok(HostWindowsMetadata {
         identity: crate::NativeRootIdentity {
             device: u64::from(metadata.volume_serial_number()),

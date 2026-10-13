@@ -23,11 +23,15 @@ impl<'a> StockExecution<'a> {
             summary: None,
         }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::executor) fn native_work(
-        &self,
-    ) -> Option<&acyclic_fs::NativeMaterializationWork> {
-        self.io.and_then(PreparationIo::original_native_work)
+    pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {
+        #[cfg(feature = "filesystem")]
+        {
+            self.io.and_then(PreparationIo::original_native_work)
+        }
+        #[cfg(not(feature = "filesystem"))]
+        {
+            None
+        }
     }
     pub(in crate::executor) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         self.context.map(|(context, _)| context.as_ref())

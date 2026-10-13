@@ -246,7 +246,7 @@ impl Fixture {
         let journal = runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(task, &fence, &startup)
+            .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(&startup)?))
             .await
             .unwrap();
         let provider = root_provider(
@@ -352,7 +352,7 @@ impl Fixture {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(self.request.binding.task_id, &fence, &self.startup)
+            .journal_owner(self.request.binding.task_id, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(&self.startup)?))
             .await
             .unwrap();
         let (mut resources, _custody) =

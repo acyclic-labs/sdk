@@ -190,7 +190,7 @@ mod tests {
         let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
         let owner = fixture
             .host
-            .journal_owner_with_native_work(fixture.root, &fence, &original)
+            .journal_owner(fixture.root, &fence, Some(&crate::executor::PreparationIo::from_native_work(&original)?))
             .await?
             .into_native_shared(&original)?;
         let (context, custody) = fixture

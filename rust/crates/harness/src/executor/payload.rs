@@ -42,19 +42,6 @@ pub(crate) fn retain_preparation<T>(
 }
 
 #[cfg(feature = "filesystem")]
-pub(crate) fn receive_preparation<T>(
-    io: &PreparationIo,
-    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>,
-) -> Result<T> {
-    let held = result
-        .as_ref()
-        .map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-    let value = io.receive_content(result)?;
-    io.retain_owned(held)?;
-    Ok(value)
-}
-
-#[cfg(feature = "filesystem")]
 pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
     value: &T,
     io: &'a PreparationIo,

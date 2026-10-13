@@ -48,7 +48,7 @@ impl Fixture {
             root.runtime
                 .runtime
                 .task_host()
-                .journal_owner(task, fence.clone())
+                .journal_owner(task, &(fence.clone()), None)
                 .await
                 .unwrap(),
         );

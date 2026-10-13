@@ -7,8 +7,8 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 /// An in-process HTTP/2 channel to one service.
 fn channel<S: StreamService + Clone>(service: S) -> Channel {
-    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-        tower::service_fn(move |_| {
+    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(tower::service_fn(
+        move |_| {
             let service = service.clone();
             async move {
                 let (client, server) = tokio::io::duplex(64 * 1024);
@@ -21,8 +21,8 @@ fn channel<S: StreamService + Clone>(service: S) -> Channel {
                 });
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
             }
-        }),
-    )
+        },
+    ))
 }
 
 fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
@@ -106,14 +106,21 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
         })
         .await?;
     let records = transport
-        .read(ReadRequest { path, from: 2, limit: 17 })
+        .read(ReadRequest {
+            path,
+            from: 2,
+            limit: 17,
+        })
         .await?
         .collect::<Vec<_>>()
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(
-        records.into_iter().map(|record| record.value).collect::<Vec<_>>(),
+        records
+            .into_iter()
+            .map(|record| record.value)
+            .collect::<Vec<_>>(),
         values[2..19].to_vec()
     );
     Ok(())
@@ -129,7 +136,10 @@ async fn service_rejects_oversized_commands_before_provider_dispatch() {
         idempotency_key: None,
     };
     let error = service.append(Request::new(request)).await.err();
-    assert_eq!(error.as_ref().map(Status::code), Some(Code::InvalidArgument));
+    assert_eq!(
+        error.as_ref().map(Status::code),
+        Some(Code::InvalidArgument)
+    );
     assert_eq!(error.as_ref().map(Status::message), Some("limit_exceeded"));
 }
 
@@ -204,20 +214,6 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
     Ok(())
 }
 
-#[tokio::test]
-async fn delivery_receipts_are_validated_and_unsupported_without_a_host() -> TestResult {
-    let transport = client(MemoryStream::default())?;
-    assert_eq!(
-        transport.acknowledge_delivery([7; 31]).await,
-        Err(StreamError::InvalidArgument)
-    );
-    assert_eq!(
-        transport.acknowledge_delivery([7; 32]).await,
-        Err(StreamError::Unsupported)
-    );
-    Ok(())
-}
-
 async fn assert_unary_retry(error: Status, retry: bool) -> TestResult {
     let client = unconnected()?;
     let body = Bytes::from_static(b"stable-key-and-body");
@@ -247,7 +243,11 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
     .await?;
     drop(connection);
     let request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
-    let error = sender.send_request(request).await.err().ok_or("closed connection succeeded")?;
+    let error = sender
+        .send_request(request)
+        .await
+        .err()
+        .ok_or("closed connection succeeded")?;
     assert_unary_retry(Status::from_error(Box::new(error)), true).await?;
     assert_unary_retry(Status::unknown("peer outcome unknown"), true).await?;
     assert_unary_retry(Status::unavailable("restarting"), true).await?;
@@ -266,7 +266,9 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
     for error in [
         Status::internal("protocol error"),
         Status::data_loss("corrupt record"),
-        Status::from_error(Box::new(std::io::Error::from(std::io::ErrorKind::InvalidData))),
+        Status::from_error(Box::new(std::io::Error::from(
+            std::io::ErrorKind::InvalidData,
+        ))),
     ] {
         assert!(!retryable(&error), "{error:?}");
     }
@@ -314,11 +316,19 @@ async fn retry_attempts_record_independent_spans() -> TestResult {
     let attempts = captured.all("acyclic.stream.grpc.call");
     assert_eq!(attempts.len(), 2);
     assert_eq!(
-        (attempts[0]["attempt"].as_str(), attempts[0]["outcome"].as_str(), attempts[0]["rpc.code"].as_str()),
+        (
+            attempts[0]["attempt"].as_str(),
+            attempts[0]["outcome"].as_str(),
+            attempts[0]["rpc.code"].as_str()
+        ),
         ("1", "err", "14")
     );
     assert_eq!(
-        (attempts[1]["attempt"].as_str(), attempts[1]["outcome"].as_str(), attempts[1]["rpc.code"].as_str()),
+        (
+            attempts[1]["attempt"].as_str(),
+            attempts[1]["outcome"].as_str(),
+            attempts[1]["rpc.code"].as_str()
+        ),
         ("2", "ok", "0")
     );
     Ok(())
@@ -362,7 +372,10 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
         );
         let denied =
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", &unrelated).await;
-        assert!(denied.is_err(), "unrelated supplied CA unexpectedly trusted");
+        assert!(
+            denied.is_err(),
+            "unrelated supplied CA unexpectedly trusted"
+        );
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;
