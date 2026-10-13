@@ -15,21 +15,18 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
     let agent_base = unbounded!(agent, head())?;
     agent.write_text("/shared", "agent").await?;
     let agent_head = unbounded!(agent, head())?;
-    let changes = agent.diff(&agent_base, &agent_head, 32).await?;
+    let changes = agent.diff(&agent_base, &agent_head, 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(changes.from().id(), agent_base.id());
     assert_eq!(changes.to().id(), agent_head.id());
     assert!(!changes.changes().files.is_empty());
 
     main.write_text("/shared", "main").await?;
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
-        plan.apply(
-            ApplyOptions {
+        plan.apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            crate::PublicationPermit::Unrestricted
-        )
+            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Conflicted {
             truncated: false,
@@ -51,20 +48,20 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
     workspace.write_text("/before", "body").await?;
     let middle = unbounded!(workspace, head())?;
     let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    transaction.rename("/before", "/after").await?;
+    unbounded!(transaction, rename("/before", "/after", true))?;
     let TransactionCommit::Committed(end) = commit(&mut transaction).await? else {
         return Err("rename did not commit".into());
     };
 
-    let first = workspace.diff(&base, &middle, 32).await?;
-    let second = workspace.diff(&middle, &end, 32).await?;
-    let composed = first.compose(&second, 32).await?;
-    let direct = workspace.diff(&base, &end, 32).await?;
+    let first = workspace.diff(&base, &middle, 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let second = workspace.diff(&middle, &end, 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let composed = first.compose(&second, 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let direct = workspace.diff(&base, &end, 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(composed.from().id(), base.id());
     assert_eq!(composed.to().id(), end.id());
     assert_eq!(composed.changes(), direct.changes());
     assert!(matches!(
-        second.compose(&first, 32).await,
+        second.compose(&first, 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::ChangeSetContinuity)
     ));
     Ok(())
@@ -100,7 +97,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
     let before = unbounded!(workspace, head())?;
 
     let mut changed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    changed.rename("/rename", "/renamed").await?;
+    unbounded!(changed, rename("/rename", "/renamed", true))?;
     unbounded!(changed, remove("/remove"))?;
     unbounded!(changed, hard_link("/linked", "/nested/link"))?;
     unbounded!(
@@ -116,7 +113,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
     };
 
     let diff = generation_changes(&before, &after, 64).await?;
-    let paths = unbounded!(diff, changed_paths(64))?;
+    let paths = unbounded!(diff, changed_paths(64))?.0;
     let names: Vec<_> = paths
         .iter()
         .map(|change| super::namespace_path_text(&change.path))
@@ -159,7 +156,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         unbounded!(
             generation_changes(&after, &after, 1).await?,
             changed_paths(0)
-        )?
+        )?.0
         .is_empty()
     );
     #[cfg(not(target_arch = "wasm32"))]
@@ -169,13 +166,13 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
                 .map_err(|(error, _)| error)?;
         let (native_changes, diff_guard) = before
-            .diff_to_with_native_work(&after, 64, &original, &cancellation)
+            .diff_to(&after, 64, &original, &cancellation)
             .await
-            .map_err(|(error, _)| error)?;
+            ?;
         let (native_paths, path_guard) = native_changes
-            .changed_paths_with_native_work(64, &original, &cancellation)
+            .changed_paths(64, &original, &cancellation)
             .await
-            .map_err(|(error, _)| error)?;
+            ?;
         assert_eq!(native_paths, paths);
         let before_rename = paths
             .iter()
@@ -203,13 +200,13 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         drop(native_paths);
         drop(path_guard);
         let failure = match native_changes
-            .changed_paths_with_native_work(1, &original, &cancellation)
+            .changed_paths(1, &original, &cancellation)
             .await
         {
             Err(failure) => failure,
             Ok(_) => return Err("native path bound unexpectedly succeeded".into()),
         };
-        assert!(matches!(failure.0, WorkspaceError::ChangedPathLimit));
+        assert!(matches!(failure, WorkspaceError::ChangedPathLimit));
         drop(failure);
         drop(native_changes);
         drop(diff_guard);
@@ -224,7 +221,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             let denied = crate::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
             let failure = match diff
-                .changed_paths_with_native_work(64, &denied, &cancellation)
+                .changed_paths(64, &denied, &cancellation)
                 .await
             {
                 Err(failure) => failure,

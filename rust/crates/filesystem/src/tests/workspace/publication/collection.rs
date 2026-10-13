@@ -39,7 +39,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         assert!(collected.removed >= 1, "{collected:?}");
         let again = fs.collect_local_garbage(None, &cancellation).await?;
         assert_eq!(again.removed, 0);
-        assert_eq!(unbounded!(main, read("/base.txt", 64))?, "base");
+        assert_eq!(unbounded!(main, read("/base.txt", 64))?, OwnedBytes::from_static(b"base"));
         drop((main, agent));
         close_local(fs).await?;
     }
@@ -51,7 +51,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         "the fork base went with its fork"
     );
     let main = unbounded!(fs, open_workspace("repo"))?;
-    assert_eq!(unbounded!(main, read("/base.txt", 64))?, "base");
+    assert_eq!(unbounded!(main, read("/base.txt", 64))?, OwnedBytes::from_static(b"base"));
     let content = "only the agent ".repeat(8_192);
     main.write_text("/again.txt", &content).await?;
     drop(main);
@@ -60,7 +60,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     let main = unbounded!(fs, open_workspace("repo"))?;
     assert_eq!(
         unbounded!(main, read("/again.txt", 1 << 20))?,
-        content.as_str()
+        OwnedBytes::from(content.into_bytes())
     );
     Ok(())
 }
@@ -107,7 +107,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     let main = unbounded!(fs, open_workspace("repo"))?;
     assert_eq!(
         unbounded!(main, read("/churn.txt", 1 << 20))?,
-        "23".repeat(20_000).as_str()
+        OwnedBytes::from("23".repeat(20_000).into_bytes())
     );
     assert_eq!(
         fs.collect_local_garbage(None, &cancellation).await?.removed,
@@ -125,7 +125,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     ))
     .await?;
     let store = crate::LocalCoreStateStore::open_owned(directory.path().join("core-state"))?;
-    let distributed = crate::DistributedFs::new(fs.clone(), store.clone());
+    let graph = crate::WorkspaceGraph::new(store.clone());
     let main = unbounded!(fs, create_workspace("repo"))?;
     main.write_text("/base.txt", "base").await?;
     let mut children = Vec::new();
@@ -137,8 +137,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
         )
         .await?;
-        distributed
-            .lineage()
+        graph
             .register_existing_child(&main, &child, base.id())
             .await?;
         children.push(child);
@@ -152,8 +151,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
         ForkOptions::from_generation(grandchild_base.clone(), IdempotencyKey::new()),
     )
     .await?;
-    distributed
-        .lineage()
+    graph
         .register_existing_child(&kept, &grandchild, grandchild_base.id())
         .await?;
     kept.delete(IdempotencyKey::new()).await?;
@@ -161,8 +159,8 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     let records = store.workspace_records().await?;
     assert!(records.contains_key(&deleted.id()) && records.contains_key(&kept.id()));
 
-    distributed
-        .collect_garbage(&CancellationToken::new())
+    fs
+        .collect_local_garbage(Some(&store), &CancellationToken::new())
         .await?;
     let records = store.workspace_records().await?;
     assert!(!records.contains_key(&deleted.id()));

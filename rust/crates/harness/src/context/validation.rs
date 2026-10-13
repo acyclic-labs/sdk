@@ -61,34 +61,13 @@ pub(crate) fn validate_compaction(
             }),
             None => None,
         };
-        let mut roles = Vec::new();
-        let copied = reference
-            .retention
-            .roles
-            .len()
-            .checked_mul(std::mem::size_of::<ModelRole>())
-            .ok_or_else(|| invalid("compaction retention capacity overflows"))?
-            as u64;
-        if let Some(work) = quota.work().as_deref() {
-            work.admit_copy(copied)?;
-        }
-        compaction::reserve_vector(&mut roles, reference.retention.roles.len(), quota.work())?;
-        quota.adopt((roles.capacity() * std::mem::size_of::<ModelRole>()) as u64)?;
-        if let Some(work) = quota.work().as_deref_mut() {
-            work.copy_bytes(copied)?;
-        }
-        roles.extend_from_slice(&reference.retention.roles);
-        let retention = CompactionRetention {
-            roles,
-            native_media: reference.retention.native_media,
-        };
         #[cfg(feature = "filesystem")]
         let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let (reconstructed, proof) = DurableContextProvider::compact(
             source,
             reference.maximum_messages as usize,
             summary,
-            retention,
+            &reference.retention,
             io,
         )?;
         #[cfg(feature = "filesystem")]
