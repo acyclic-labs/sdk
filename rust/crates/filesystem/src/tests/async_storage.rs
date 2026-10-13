@@ -294,7 +294,7 @@ async fn adapters_reject_cancellation_and_sequential_read_failures()
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &live);
     assert!(matches!(
         read_many_sequential(&objects, &[], &mut work).await,
-        Err(ObjectStoreError::Rejected(_))
+        Err(ObjectStoreError::EmptyReadBatch)
     ));
     assert!(matches!(
         read_many_sequential(&objects, &requests, &mut work).await,
@@ -377,7 +377,7 @@ async fn default_guarded_fork_preserves_owner_rejection_and_rejects_managed_perm
         if managed {
             assert!(matches!(
                 failure,
-                crate::FsError::Authority(AuthorityStoreError::Rejected(_))
+                crate::FsError::Authority(AuthorityStoreError::RejectedStatic(_))
             ));
             assert_eq!(work.spent(), WorkCounters::default());
             assert_eq!(calls, 0);
