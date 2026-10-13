@@ -71,15 +71,15 @@ impl TaskRunLimits {
 /// Effective runtime authority and bounds; child scopes may only narrow them.
 #[derive(Default)]
 pub struct RuntimeScope {
-    pub(super) grants: Capabilities,
+    pub(crate) grants: Capabilities,
     pub(super) limits: Limits,
     pub(super) run_limits: TaskRunLimits,
     pub(super) extensions: Option<ExtensionAdmission>,
     pub(super) extensions_sealed: bool,
     pub(super) extension_runtime: Option<Arc<ExtensionRuntime>>,
     pub(super) extension_schemas: Option<SchemaRegistry>,
-    pub(super) resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
-    pub(super) created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
+    pub(crate) resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
+    pub(crate) created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) _native_grants_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -256,7 +256,7 @@ impl RuntimeScope {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn clone_native_metadata(
+    pub(crate) fn clone_native_metadata(
         &self,
         grants: (Capabilities, acyclic_fs::NativeAllocation),
         limits: Limits,

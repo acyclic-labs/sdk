@@ -211,6 +211,8 @@ mod created;
 #[cfg(feature = "filesystem")]
 mod created_consume;
 #[cfg(feature = "filesystem")]
+mod created_scope;
+#[cfg(feature = "filesystem")]
 use created_consume::consume_receipts;
 mod dispatch;
 mod host;
