@@ -116,10 +116,11 @@ pub(in crate::filesystem) use default_tools::{
 };
 pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) use native_execution::journal::preparation_owner;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    observe_preparation,
-    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationRoot,
-    NativeViewPublicationError, NativeVolumeView,
+    BorrowedNativeVolumeBinding, NativePreparationRoot, NativeViewPublicationError,
+    NativeVolumeView,
 };
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
