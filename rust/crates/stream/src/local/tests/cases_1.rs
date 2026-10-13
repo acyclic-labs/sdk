@@ -5,11 +5,11 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let visibility = provider.inner.visibility.write().await;
-    let captured = obs::tests::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let future = tracing::subscriber::with_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
         || {
-            let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+            let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
             parent.scope(async {
                 provider
                     .read(ReadRequest {
@@ -23,7 +23,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     );
     let mut future = Box::pin(future);
     assert!(futures::poll!(future.as_mut()).is_pending());
-    let other = obs::tests::Capture::default();
+    let other = acyclic_grpc_observability::tests::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(other.clone()),
     );
