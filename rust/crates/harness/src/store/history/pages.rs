@@ -1,21 +1,6 @@
 use super::*;
 
 impl<P: StreamProvider> HistoryReader<P> {
-    pub(crate) fn logical_owned_bytes(&self, work: &Option<&mut dyn HistoryIo>) -> Result<u64> {
-        let path = if work
-            .as_deref()
-            .is_some_and(crate::store::operations::original_native_decode_mode)
-        {
-            0
-        } else {
-            self.path.as_str().len() as u64
-        };
-        self.verifier
-            .logical_owned_bytes()?
-            .checked_add(path)
-            .ok_or_else(|| Error::Invalid("history reader metadata byte count overflows".into()))
-    }
-
     /// Binds the canonical path to its authenticated verifier.
     pub fn new(
         client: &std::sync::Arc<P>,
