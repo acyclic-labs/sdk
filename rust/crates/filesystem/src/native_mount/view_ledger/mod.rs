@@ -2,6 +2,7 @@
 
 use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
+use crate::demand::NativeMountAllocationCustody;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use notifications::Observers;
 use std::cell::Cell;
@@ -109,9 +110,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation ownership for an SDK observer.
-    fn allocation_custody(
-        &self,
-    ) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
+    fn allocation_custody(&self) -> Option<Arc<NativeMountAllocationCustody>> {
         None
     }
 
@@ -179,7 +178,7 @@ pub(crate) struct ViewLedger {
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
     observers: Mutex<Observers>,
-    _custody: Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
+    _custody: Option<Arc<NativeMountAllocationCustody>>,
 }
 
 impl ViewLedger {
@@ -205,13 +204,20 @@ impl ViewLedger {
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
+        let position = ViewStamp::next();
         let observers = self
             .observers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .live(carrier)?;
-        storage::charge(carrier, scan_work(observers.0.len() as u64))?;
-        let position = ViewStamp::next();
+            .live(carrier)
+            .and_then(|observers| {
+                storage::charge(carrier, scan_work(observers.0.len() as u64))?;
+                Ok(observers)
+            })
+            .inspect_err(|_| {
+                position.record_in(&self.unconfirmed);
+                position.record_in(&self.latest);
+            })?;
         let recorded = (|| {
             match change {
                 ViewChange::Node(id) => {

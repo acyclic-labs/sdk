@@ -4,27 +4,37 @@ pub(super) struct IssuedLabel {
     pub(super) label: u64,
     pub(super) stamp: CacheStamp,
     pub(super) binding: Option<u64>,
-    pub(super) path: DarwinOwned<MountPath>,
+    pub(super) path: Arc<DarwinOwned<MountPath>>,
     pub(super) lookup: MountLookup,
 }
 
 impl DarwinMountContext {
-    pub(super) fn issued_labels(
-        &self,
-        work: &Work,
-    ) -> Result<Option<DarwinOwned<Vec<(DarwinOwned<MountPath>, MountLookup)>>>, NativeMountError>
-    {
-        let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
-
-        if labels.len() > MAXIMUM_VERIFIED_LABELS {
-            return Ok(None);
+    pub(super) fn verify_labels(&self, work: &Work) -> Result<bool, NativeMountError> {
+        let cleared = self.labels_cleared.load(Ordering::Acquire);
+        let issued = {
+            let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
+            if labels.len() > MAXIMUM_VERIFIED_LABELS {
+                return Ok(false);
+            }
+            let mut rows = vector(work, labels.len())?;
+            work.charge(copy_work(
+                (labels.len() * std::mem::size_of::<(Arc<DarwinOwned<MountPath>>, MountLookup)>())
+                    as u64,
+            ))?;
+            for issued in labels.values() {
+                rows.push((Arc::clone(&issued.path), issued.lookup));
+            }
+            rows
+        };
+        for (path, previous) in issued.iter() {
+            work.charge(scan_work(1))?;
+            match self.lookup(path, work) {
+                Ok(current) if same_attributes(current, *previous) => {}
+                Err(cause) if fatal(&cause) => return Err(cause),
+                _ => return Ok(false),
+            }
         }
-        let mut rows = vector(work, labels.len())?;
-        for issued in labels.values() {
-            let path = clone_path(&issued.path, work)?;
-            rows.push((path, issued.lookup));
-        }
-        Ok(Some(rows))
+        Ok(self.labels_cleared.load(Ordering::Acquire) == cleared)
     }
 }
 
@@ -70,7 +80,7 @@ impl DarwinMountContext {
         if !labels.contains_key(&lookup.node.file_id) {
             grow_map(&mut labels, work)?;
         }
-        let path = clone_path(path, work)?;
+        let path = shared(work, clone_path(path, work)?)?;
         let label = self.next_label.fetch_add(1, Ordering::Relaxed);
         labels.insert(
             lookup.node.file_id,

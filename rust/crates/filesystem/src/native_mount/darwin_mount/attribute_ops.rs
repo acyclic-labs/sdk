@@ -76,7 +76,10 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
             return copy_variable_result(&[], list, length, work);
         }
         let mut cursor: Option<(Vec<u8>, NativeAllocation)> = None;
-        let mut encoded = DarwinOwned::empty(Vec::new());
+        if length != 0 && list.is_null() {
+            return Err(driver_errno(libc::ERANGE));
+        }
+        let mut count = 0_usize;
         loop {
             let mut page = context.source.list_attributes_with_meter(
                 &path,
@@ -89,15 +92,29 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
                 if name.contains(&0) {
                     return Err(driver_errno(libc::EIO));
                 }
-                let required = encoded
-                    .len()
+                let next = count
                     .checked_add(name.len())
                     .and_then(|n| n.checked_add(1))
                     .ok_or(WorkError::Overflow)?;
-                grow_bytes(&mut encoded, required, work)?;
-                work.charge(copy_work(name.len() as u64 + 1))?;
-                encoded.extend_from_slice(name);
-                encoded.push(0);
+                if next > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES {
+                    return Err(driver_errno(libc::E2BIG));
+                }
+                if length != 0 {
+                    if next > length {
+                        return Err(driver_errno(libc::ERANGE));
+                    }
+                    work.charge(copy_work(name.len() as u64 + 1))?;
+                    // SAFETY: next fits the non-null bridge buffer; the name stays live.
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            name.as_ptr(),
+                            list.cast::<u8>().add(count),
+                            name.len(),
+                        );
+                        list.add(next - 1).write(0);
+                    }
+                }
+                count = next;
             }
             let Some(next) = page.0.next_cursor.take() else {
                 break;
@@ -111,7 +128,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
             }
             cursor = Some((next, next_allocation));
         }
-        copy_variable_result(&encoded, list, length, work)
+        c_int::try_from(count).map_err(|_| driver_errno(libc::EOVERFLOW))
     })
 }
 

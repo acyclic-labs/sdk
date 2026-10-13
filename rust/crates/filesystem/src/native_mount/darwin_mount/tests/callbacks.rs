@@ -271,7 +271,12 @@ fn authored_guard_context(
     )?
     .with_native_callback_guard(guard.clone());
     let source = source.into_arc_meter(&original)?;
-    let context = Arc::new(DarwinMountContext::new(source, true, 0, 0, &original)?);
+    let context = Arc::new(DarwinMountContext::new(
+        source,
+        true,
+        Path::new("."),
+        &original,
+    )?);
     Ok((context, guard, original))
 }
 
