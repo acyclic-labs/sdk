@@ -393,14 +393,30 @@ impl TaskAdmissionRecord {
 
     /// Decodes the canonical admission and reports its new container bytes.
     pub fn from_canonical_value(
-        value: Value,
+        mut value: Value,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<(Self, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let canonical = crate::store::history::canonical_bytes_with_work(
+        value.sort_all_objects();
+        let code = quota
+            .work()
+            .as_deref()
+            .is_some_and(crate::store::operations::original_native_decode_mode)
+            .then_some(crate::wire::ErrorCode::Invalid);
+        let canonical = crate::executor::json::json_bytes_bounded(
             &value,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            quota.work(),
+            crate::executor::json::JsonBounds {
+                maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+                maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
+                maximum_depth: 256,
+            },
+            code,
+            &mut |charge| {
+                quota
+                    .work()
+                    .as_deref_mut()
+                    .map_or(Ok(()), |io| io.codec_charge(charge))
+            },
         )?;
         quota.adopt(canonical.capacity() as u64)?;
         let mut body = value;
