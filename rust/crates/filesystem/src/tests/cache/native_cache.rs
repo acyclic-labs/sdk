@@ -39,7 +39,7 @@ impl AsyncObjectStore for OwnedNativeStore {
         bytes: OwnedBytes,
         context: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        context.object_fallback()?;
+        ordinary(context)?;
         self.inner.put(id, bytes, context).await
     }
     async fn contains(
@@ -47,7 +47,7 @@ impl AsyncObjectStore for OwnedNativeStore {
         id: ObjectId,
         context: &mut AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
-        context.object_fallback()?;
+        ordinary(context)?;
         self.inner.contains(id, context).await
     }
     async fn read(

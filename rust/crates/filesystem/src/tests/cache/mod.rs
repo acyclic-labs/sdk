@@ -124,7 +124,7 @@ impl AsyncObjectStore for CountingStore {
         bytes: OwnedBytes,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         self.inner.put(id, bytes, work).await
     }
     async fn contains(
@@ -132,7 +132,7 @@ impl AsyncObjectStore for CountingStore {
         id: ObjectId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         self.inner.contains(id, work).await
     }
     async fn read(
@@ -163,7 +163,7 @@ impl AsyncObjectStore for ShortBatchStore {
         bytes: OwnedBytes,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         self.inner.put(id, bytes, work).await
     }
     async fn contains(
@@ -171,7 +171,7 @@ impl AsyncObjectStore for ShortBatchStore {
         id: ObjectId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         self.inner.contains(id, work).await
     }
     async fn read(
@@ -188,7 +188,7 @@ impl AsyncObjectStore for ShortBatchStore {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         self.inner.read_many(&requests[..1], work).await
     }
 }
@@ -200,7 +200,7 @@ impl AsyncObjectStore for GatedStore {
         bytes: OwnedBytes,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         self.inner.put(id, bytes, work).await
     }
     async fn contains(
@@ -208,7 +208,7 @@ impl AsyncObjectStore for GatedStore {
         id: ObjectId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         self.inner.contains(id, work).await
     }
     async fn read(
@@ -218,7 +218,7 @@ impl AsyncObjectStore for GatedStore {
         work: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         work.read_budget()?;
-        work.object_fallback()?;
+        ordinary(work)?;
         self.reads.fetch_add(1, Ordering::AcqRel);
         self.gate.wait().await;
         self.inner.read(id, maximum, work).await
@@ -228,7 +228,7 @@ impl AsyncObjectStore for GatedStore {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        work.object_fallback()?;
+        ordinary(work)?;
         crate::async_storage::read_many_sequential(self, requests, work).await
     }
 }
@@ -240,3 +240,12 @@ mod native_cache;
 mod residency;
 
 const B: WorkBudget = WorkBudget::UNBOUNDED;
+
+fn ordinary(work: &AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if work.original.is_some() {
+        return Err(ObjectStoreError::NativeUnavailable);
+    }
+    work.work.remaining(work.budget)?;
+    Ok(())
+}
