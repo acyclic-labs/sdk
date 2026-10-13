@@ -10,6 +10,52 @@ use acyclic_harness::{
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use futures::stream;
 impl NativeSession {
+    async fn control(
+        &self,
+        request: &OperationControlRequest,
+    ) -> Result<acyclic_harness::distributed::DistributedCoordinator<LocalStream>> {
+        let verifier = self.config.owner.verifier()?;
+        request.authenticate(&verifier)?;
+        let reader = FilesystemContentVerifier::new(
+            self.files.clone(),
+            &verifier,
+            &self.config.owner.scope,
+            MAX_FRAME_BYTES as u64,
+            None,
+        )?;
+        let coordinator = acyclic_harness::distributed::DistributedCoordinator::open(
+            &self.stream,
+            reader,
+            None,
+            &mut None,
+        )
+        .await?;
+        let state = coordinator
+            .scheduler()
+            .operation(request.operation_id)
+            .ok_or_else(|| Error::NotFound("operation".into()))?;
+        let owner = match &state.spec.owner {
+            acyclic_harness::scheduler::DurableOwner::Attached { authority }
+            | acyclic_harness::scheduler::DurableOwner::Detached { authority } => authority,
+        };
+        if owner != &request.owner {
+            return Err(Error::Unauthorized(
+                "operation belongs to another owner".into(),
+            ));
+        }
+        verifier.verify(&state.spec.owner_scope, &mut None)?;
+        if !state
+            .spec
+            .owner_scope
+            .capabilities()
+            .contains("operation:declare")
+        {
+            return Err(Error::Unauthorized(
+                "operation lacks its original declaration grant".into(),
+            ));
+        }
+        Ok(coordinator)
+    }
     pub fn start_cursor(&self) -> wire::ReplayCursor {
         wire::ReplayCursor {
             authority: Some(encode_authority(&self.config.owner.authority)),
@@ -134,12 +180,7 @@ impl HarnessWireApi for NativeSession {
         &'a self,
         request: &'a OperationControlRequest,
     ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.runtime
-                .task_host()
-                .authorize_operation_control(request)
-                .await
-        })
+        Box::pin(async move { self.control(request).await.map(|_| ()) })
     }
     fn observe<'a>(
         &'a self,
@@ -147,8 +188,12 @@ impl HarnessWireApi for NativeSession {
     ) -> BoxProviderFuture<'a, Result<wire::OperationStatus>> {
         Box::pin(async move {
             let control = validate_observe_request(&request)?;
+            let coordinator = self.control(&control).await?;
             Ok(operation_status(
-                &self.runtime.task_host().observe_control(&control).await?,
+                coordinator
+                    .scheduler()
+                    .operation(control.operation_id)
+                    .ok_or_else(|| Error::NotFound("operation".into()))?,
             ))
         })
     }
@@ -158,7 +203,19 @@ impl HarnessWireApi for NativeSession {
     ) -> BoxProviderFuture<'a, Result<wire::CancelResponse>> {
         Box::pin(async move {
             let control = validate_cancel_request(&request)?;
-            let state = self.runtime.task_host().cancel_control(&control).await?;
+            let mut coordinator = self.control(&control.control).await?;
+            let (_, state) = coordinator
+                .cancel_operation(
+                    &control.control.owner,
+                    &control.control.scope,
+                    &self.config.owner.verifier()?,
+                    control.control.operation_id,
+                    control.idempotency_key.clone(),
+                    control.recursive,
+                    None,
+                    &mut None,
+                )
+                .await?;
             Ok(wire::CancelResponse {
                 status: Some(operation_status(&state)),
                 operation: Some(wire::OperationIdentity {
