@@ -799,28 +799,6 @@ impl Identity {
         url.path_segments_mut()
             .map_err(|()| Error::new("configuration_error", "invalid API endpoint"))?
             .extend(["v1", "identity", "orgs", org, "bearer"]);
-        let value = self
-            .authenticated_json(store, reqwest::Method::POST, url.path())
-            .await?;
-        let bearer = value
-            .get("bearer")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty() && !value.chars().any(char::is_whitespace));
-        let account = value
-            .get("account_id")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty());
-        let time = now()?;
-        let expires = value
-            .get("expires_at")
-            .and_then(Value::as_u64)
-            .filter(|expires| *expires > time && *expires <= time.saturating_add(3600));
-        let (Some(bearer), Some(account), Some(expires)) = (bearer, account, expires) else {
-            return Err(Error::new(
-                "invalid_response",
-                "invalid organization bearer response",
-            ));
-        };
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -828,10 +806,41 @@ impl Identity {
             use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
+        // Reserve a usable destination before spending a rotating session token.
         let mut file = options.open(output)?;
-        file.write_all(bearer.as_bytes())?;
-        file.sync_all()?;
-        Ok(json!({"account_id": account, "expires_at": expires, "bearer_file": output}))
+        let result = async {
+            let value = self
+                .authenticated_json(store, reqwest::Method::POST, url.path())
+                .await?;
+            let bearer = value
+                .get("bearer")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && !value.chars().any(char::is_whitespace));
+            let account = value
+                .get("account_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            let time = now()?;
+            let expires = value
+                .get("expires_at")
+                .and_then(Value::as_u64)
+                .filter(|expires| *expires > time && *expires <= time.saturating_add(3600));
+            let (Some(bearer), Some(account), Some(expires)) = (bearer, account, expires) else {
+                return Err(Error::new(
+                    "invalid_response",
+                    "invalid organization bearer response",
+                ));
+            };
+            file.write_all(bearer.as_bytes())?;
+            file.sync_all()?;
+            Ok(json!({"account_id": account, "expires_at": expires, "bearer_file": output}))
+        }
+        .await;
+        drop(file);
+        if result.is_err() {
+            fs::remove_file(output)?;
+        }
+        result
     }
 }
 

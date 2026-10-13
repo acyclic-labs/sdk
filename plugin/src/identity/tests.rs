@@ -9,6 +9,7 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::response::Response;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 struct Expected {
@@ -58,23 +59,28 @@ impl Expected {
 struct Fake {
     identity: Identity,
     expected: Arc<Mutex<VecDeque<Expected>>>,
+    requests: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Fake {
     async fn start(expected: Vec<Expected>) -> Self {
         let expected = Arc::new(Mutex::new(VecDeque::from(expected)));
+        let requests = Arc::new(AtomicUsize::new(0));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind fake");
         let endpoint = format!("http://{}", listener.local_addr().expect("fake address"));
-        let router = Router::new().fallback(handle).with_state(expected.clone());
+        let router = Router::new()
+            .fallback(handle)
+            .with_state((expected.clone(), requests.clone()));
         let task = tokio::spawn(async move {
             axum::serve(listener, router).await.expect("serve fake");
         });
         Self {
             identity: Identity::new(&endpoint).expect("identity"),
             expected,
+            requests,
             task,
         }
     }
@@ -91,9 +97,10 @@ impl Drop for Fake {
 }
 
 async fn handle(
-    State(expected): State<Arc<Mutex<VecDeque<Expected>>>>,
+    State((expected, requests)): State<(Arc<Mutex<VecDeque<Expected>>>, Arc<AtomicUsize>)>,
     request: Request,
 ) -> Response {
+    requests.fetch_add(1, Ordering::Relaxed);
     let expected = expected
         .lock()
         .expect("expected lock")
@@ -175,7 +182,6 @@ async fn bearer_is_private_redacted_and_never_overwrites_an_existing_file() {
     let expires = now().expect("time") + 900;
     let fake = Fake::start(vec![
         organization_bearer(json!({"bearer": "private.token.signature", "account_id": "account-1", "expires_at": expires})),
-        organization_bearer(json!({"bearer": "replacement.token.signature", "account_id": "account-1", "expires_at": expires})),
     ]).await;
     let directory = tempfile::tempdir().expect("directory");
     let store = Store::open(&directory.path().join("identity.json")).expect("store");
@@ -224,7 +230,98 @@ async fn bearer_is_private_redacted_and_never_overwrites_an_existing_file() {
         fs::read(&store.path).expect("unchanged credentials"),
         before
     );
+    assert_eq!(fake.requests.load(Ordering::Relaxed), 1);
     fake.done();
+}
+
+#[tokio::test]
+async fn bearer_refuses_unusable_output_before_consuming_an_expired_session() {
+    let fake = Fake::start(vec![]).await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    store
+        .write(&fake.identity.endpoint, session("access", "refresh", 0))
+        .expect("session");
+    let before = fs::read(&store.path).expect("credentials");
+    let occupied = directory.path().join("occupied");
+    fs::write(&occupied, "existing output").expect("output");
+    for output in [
+        occupied.clone(),
+        directory.path().to_path_buf(),
+        directory.path().join("missing/bearer"),
+    ] {
+        assert!(
+            fake.identity
+                .bearer(&store, "org-1", &output)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fs::read(&store.path).expect("unchanged credentials"),
+            before
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(occupied).expect("unchanged output"),
+        "existing output"
+    );
+    assert_eq!(fake.requests.load(Ordering::Relaxed), 0);
+    fake.done();
+}
+
+#[tokio::test]
+async fn bearer_refreshes_expiry_and_401_without_changing_the_post() {
+    for expired in [true, false] {
+        let time = now().expect("time");
+        let mut expected = Vec::new();
+        if !expired {
+            let mut refused = organization_bearer(json!({"error": "invalid_token"}));
+            refused.status = StatusCode::UNAUTHORIZED;
+            expected.push(refused);
+        }
+        expected.push(Expected::token(
+            refresh_fields("old-refresh"),
+            tokens("new-access", "new-refresh"),
+        ));
+        let mut minted = organization_bearer(
+            json!({"bearer": "private.token.signature", "account_id": "account-1", "expires_at": time + 900}),
+        );
+        minted.bearer = Some("new-access");
+        expected.push(minted);
+        let fake = Fake::start(expected).await;
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(&directory.path().join("identity.json")).expect("store");
+        store
+            .write(
+                &fake.identity.endpoint,
+                session(
+                    "access",
+                    "old-refresh",
+                    if expired { 0 } else { time + 900 },
+                ),
+            )
+            .expect("session");
+        let output = directory.path().join("bearer");
+        let result = fake
+            .identity
+            .bearer(&store, "org-1", &output)
+            .await
+            .expect("mint after rotation");
+        assert_eq!(result["account_id"], "account-1");
+        assert_eq!(
+            fs::read_to_string(output).expect("bearer"),
+            "private.token.signature"
+        );
+        let saved = store.read(&fake.identity.endpoint).expect("saved rotation");
+        assert_eq!(saved.access_token, "new-access");
+        assert_eq!(saved.refresh_token, "new-refresh");
+        assert!(saved.expires_at > time);
+        assert_eq!(
+            fake.requests.load(Ordering::Relaxed),
+            if expired { 2 } else { 3 }
+        );
+        fake.done();
+    }
 }
 
 #[tokio::test]

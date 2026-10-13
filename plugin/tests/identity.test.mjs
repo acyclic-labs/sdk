@@ -12,9 +12,9 @@ import { promisify } from 'node:util';
 const binary = process.env.ACYCLIC_TEST_BINARY;
 assert.ok(binary, 'set ACYCLIC_TEST_BINARY to the built native acyclic binary');
 
-function run(args, cwd) {
+function run(args, cwd, executable = binary) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000 });
+    const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000 });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
@@ -22,6 +22,45 @@ function run(args, cwd) {
     child.on('close', code => resolve({ code, stdout, stderr }));
   });
 }
+
+test('bearer write failure removes its new output and permits retry', { skip: process.platform === 'win32' }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'identity-bearer-failure-'));
+  const credentials = join(directory, 'identity.json'), output = join(directory, 'bearer.txt');
+  let requests = 0;
+  const secret = 'private.token.signature';
+  const server = createServer(async (request, response) => {
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/v1/identity/orgs/org-1/bearer');
+    assert.equal(request.headers.authorization, 'Bearer access');
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    assert.deepEqual(JSON.parse(body), {});
+    requests++;
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ bearer: secret, account_id: 'account-1', expires_at: Math.floor(Date.now() / 1000) + 900 }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  const saved = JSON.stringify({ endpoint, session: { access_token: 'access', refresh_token: 'refresh', expires_at: Math.floor(Date.now() / 1000) + 900 } });
+  await writeFile(credentials, saved, { mode: 0o600 });
+  const args = ['bearer', '--json', '--endpoint', endpoint, '--credentials', credentials, '--org', 'org-1', '--output', output];
+  try {
+    const failed = await run(['-c', 'trap "" XFSZ; ulimit -f 0; exec "$@"', 'identity-bearer-failure', binary, ...args], directory, 'sh');
+    assert.equal(failed.code, 1, failed.stderr);
+    assert.ok(!`${failed.stdout}${failed.stderr}`.includes(secret));
+    await assert.rejects(readFile(output), { code: 'ENOENT' });
+    assert.equal(await readFile(credentials, 'utf8'), saved);
+    const retry = await run(args, directory);
+    assert.equal(retry.code, 0, retry.stderr);
+    assert.equal(await readFile(output, 'utf8'), secret);
+    assert.ok(!`${retry.stdout}${retry.stderr}`.includes(secret));
+    assert.equal(requests, 2);
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('native JSON login, reads and explicit refresh share rotated credentials', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'acyclic-identity-'));
