@@ -147,6 +147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id,
                 generation_root: candidate,
             },
+            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             closure_limits(target.config),
             WorkBudget::UNBOUNDED,
             &cancellation,

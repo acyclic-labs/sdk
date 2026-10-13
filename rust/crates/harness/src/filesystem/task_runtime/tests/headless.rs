@@ -1,5 +1,6 @@
 use super::*;
 use crate::conversation::{ContentGrant, FileRef};
+use crate::runtime::TaskSpawner as _;
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
     FilesystemTaskRuntime::open(

@@ -187,11 +187,11 @@ where
         Ok(dirty)
     }
 
-    pub(super) async fn stage_detached_records<'a>(
-        &'a self,
-        records: &'a [(FileRecord, FileMetadata)],
-        dirty: &'a [DirtyDetachedRecord],
-        work: &'a crate::NativeMaterializationWork,
+    pub(super) async fn stage_detached_records(
+        &self,
+        records: &[(FileRecord, FileMetadata)],
+        dirty: &[DirtyDetachedRecord],
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -229,5 +229,4 @@ where
         }
         Ok(())
     }
-
 }

@@ -10,7 +10,7 @@ fn object(byte: u8) -> ObjectId {
 }
 
 fn checkout_hold() -> Held {
-    Held::Checkout(HeldRoots {
+    Held::Checkout {
         base: object(1),
         working: GenerationRoot {
             volume_id: crate::VolumeId::new(),
@@ -24,7 +24,7 @@ fn checkout_hold() -> Held {
         },
         config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
         control: crate::kernel::ProofDataClaim::default(),
-    })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -32,10 +32,10 @@ fn checkout_hold() -> Held {
 fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = crate::CancellationToken::new();
-    let Held::Checkout(mut source) = checkout_hold() else {
+    let Held::Checkout { mut working, .. } = checkout_hold() else {
         unreachable!()
     };
-    source.working.parents = vec![crate::GenerationId::new(object(7).digest)];
+    working.parents = vec![crate::GenerationId::new(object(7).digest)];
     let denied = crate::NativeMaterializationWork::new(
         WorkBudget {
             bytes_copied: 0,
@@ -47,7 +47,7 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
     let baseline = denied.live_allocation_bytes();
     let before = denied.receipt();
     let mut accounting = KernelAccounting::native(&denied, &cancellation);
-    let error = clone_generation_root_with_accounting(&source.working, &mut accounting)
+    let error = clone_generation_root_with_accounting(&working, &mut accounting)
         .err()
         .ok_or("copy-denied root unexpectedly completed")?;
     assert!(matches!(
@@ -72,11 +72,11 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
     let before = original.receipt();
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let owned = clone_generation_root_with_accounting(&source.working, &mut accounting)
+        let owned = clone_generation_root_with_accounting(&working, &mut accounting)
             .expect("actual original-funded parent copy");
-        assert_eq!(owned.0.parents, source.working.parents);
-        assert_eq!(owned.0.volume_id, source.working.volume_id);
-        assert_eq!(owned.0.file_table, source.working.file_table);
+        assert_eq!(owned.0.parents, working.parents);
+        assert_eq!(owned.0.volume_id, working.volume_id);
+        assert_eq!(owned.0.file_table, working.file_table);
         assert_eq!(
             original.live_allocation_bytes(),
             baseline + root_parent_bytes(&owned.0)
@@ -95,7 +95,7 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancelled);
     assert!(matches!(
-        clone_generation_root_with_accounting(&source.working, &mut accounting),
+        clone_generation_root_with_accounting(&working, &mut accounting),
         Err(crate::FsError::Cancelled(_))
     ));
     assert_eq!(original.live_allocation_bytes(), baseline);
@@ -143,14 +143,20 @@ async fn original_native_root_copy_and_registration_failures_retire_actual_buffe
     let baseline = original.live_allocation_bytes();
     let physical = custody.physical_retained_bytes();
     let events = custody.native_control_events();
-    let Held::Checkout(mut roots) = checkout_hold() else {
+    let Held::Checkout {
+        mut working,
+        base,
+        config,
+        ..
+    } = checkout_hold()
+    else {
         unreachable!()
     };
-    roots.working.parents = vec![crate::GenerationId::new(object(7).digest)];
+    working.parents = vec![crate::GenerationId::new(object(7).digest)];
     let foreign_token = Arc::new(crate::kernel::ProofDataCustody::default());
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     assert!(
-        clone_generation_root(&roots.working, &mut accounting, Some(&foreign_token)).is_err(),
+        clone_generation_root(&working, &mut accounting, Some(&foreign_token)).is_err(),
         "an unregistered token cannot adopt this original's root buffer"
     );
     assert_eq!(foreign_token.physical_retained_bytes(), 0);
@@ -158,9 +164,9 @@ async fn original_native_root_copy_and_registration_failures_retire_actual_buffe
     let collection = Arc::new(Collection::default());
     let source = CheckoutRoots::new(
         Some(&collection),
-        roots.config,
-        roots.base,
-        (roots.working, Default::default()),
+        config,
+        base,
+        (working, Default::default()),
         &mut KernelAccounting::borrowed_standalone(
             &mut AllocationLedger::default(),
             &mut WorkCounters::default(),
@@ -200,10 +206,10 @@ async fn original_native_root_copy_and_registration_failures_retire_actual_buffe
             .get_mut(paid.hold.as_ref().expect("paid registration").id)
             .and_then(|slot| slot.held.as_mut())
             .expect("actual held vector");
-        let Held::Checkout(roots) = held else {
+        let Held::Checkout { control, .. } = held else {
             unreachable!()
         };
-        std::mem::take(&mut roots.control)
+        std::mem::take(control)
     };
     assert!(
         !paid.same_original_scope(meter),
@@ -219,10 +225,10 @@ async fn original_native_root_copy_and_registration_failures_retire_actual_buffe
             .get_mut(paid.hold.as_ref().expect("paid registration").id)
             .and_then(|slot| slot.held.as_mut())
             .expect("actual held vector");
-        let Held::Checkout(roots) = held else {
+        let Held::Checkout { control, .. } = held else {
             unreachable!()
         };
-        roots.control = held_control;
+        *control = held_control;
     }
     assert!(paid.same_original_scope(meter));
     let root_bytes = custody.physical_retained_bytes() - physical;
@@ -243,14 +249,20 @@ async fn original_native_root_copy_and_registration_failures_retire_actual_buffe
         baseline,
         "root buffers and exclusive slot quota retire but cached slots remain"
     );
-    let Held::Checkout(empty) = checkout_hold() else {
+    let Held::Checkout {
+        working,
+        base,
+        config,
+        ..
+    } = checkout_hold()
+    else {
         unreachable!()
     };
     let empty = CheckoutRoots::new(
         None,
-        empty.config,
-        empty.base,
-        (empty.working, Default::default()),
+        config,
+        base,
+        (working, Default::default()),
         &mut KernelAccounting::borrowed_standalone(
             &mut AllocationLedger::default(),
             &mut WorkCounters::default(),
@@ -271,15 +283,21 @@ fn private_root_vector_tags_retire_actual_buffers_without_adopting_cached_slots(
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
     let cancellation = crate::CancellationToken::new();
-    let Held::Checkout(mut roots) = checkout_hold() else {
+    let Held::Checkout {
+        mut working,
+        base,
+        config,
+        ..
+    } = checkout_hold()
+    else {
         unreachable!()
     };
-    roots.working.parents = vec![crate::GenerationId::new(object(7).digest)];
+    working.parents = vec![crate::GenerationId::new(object(7).digest)];
     let original = CheckoutRoots::new(
         Some(&collection),
-        roots.config,
-        roots.base,
-        (roots.working, Default::default()),
+        config,
+        base,
+        (working, Default::default()),
         &mut KernelAccounting::borrowed_standalone(
             &mut AllocationLedger::default(),
             &mut WorkCounters::default(),
@@ -311,10 +329,10 @@ fn private_root_vector_tags_retire_actual_buffers_without_adopting_cached_slots(
             .get(measured.hold.as_ref().expect("registered clone").id)
             .and_then(|slot| slot.held.as_ref())
             .expect("live cloned roots");
-        let Held::Checkout(roots) = held else {
+        let Held::Checkout { working, .. } = held else {
             unreachable!()
         };
-        (held.clone(), root_parent_bytes(&roots.working))
+        (held.clone(), root_parent_bytes(working))
     };
     let bytes = root_parent_bytes(&measured.working) + held_bytes;
     assert_eq!(custody.physical_retained_bytes(), bytes);

@@ -41,8 +41,6 @@ pub struct GenerationProof {
     pub root: GenerationRoot,
     /// Content-addressed generation identity.
     pub generation_id: GenerationId,
-    /// Distinct authenticated objects read.
-    pub object_count: u64,
     /// Reachable path-independent file records.
     pub file_count: u64,
     /// Logical regular-file bytes, counting each file identity once, including holes.
@@ -238,42 +236,6 @@ pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
         .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
     drop(guard);
     Ok((objects, context.meter.work()))
-}
-
-pub(crate) async fn prove_record_closure_async<S: crate::AsyncObjectStore>(
-    store: &S,
-    records: &[FileRecord],
-    limits: ClosureLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<ObjectId>, WorkCounters), GenerationProofFailure> {
-    let meter = ProofMeter::standalone(budget, cancellation)
-        .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::default()))?;
-    let mut context = ProofContext::new(store, limits, meter);
-    let (objects, guard) = context
-        .prove_record_closure(records)
-        .await
-        .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
-    drop(guard);
-    Ok((objects, context.meter.work()))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn prove_record_closure_with_native_work<S: crate::AsyncObjectStore>(
-    store: &S,
-    records: &[FileRecord],
-    limits: ClosureLimits,
-    original: &crate::NativeMaterializationWork,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<ObjectId>, crate::NativeAllocation), crate::FsError> {
-    let meter = ProofMeter::Native {
-        original,
-        cancellation,
-    };
-    let mut context = ProofContext::new(store, limits, meter);
-    let mut owned = context.prove_record_closure(records).await?;
-    let allocation = owned.1.take_native()?;
-    Ok((owned.0, allocation))
 }
 
 #[cfg(all(test, feature = "memory"))]

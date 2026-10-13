@@ -61,10 +61,6 @@ pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use closure::{
-    prove_record_closure_with_native_work,
-};
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
@@ -109,7 +105,6 @@ pub use blob::{
 pub use checkpoint::{CheckpointError, CheckpointFailure, CheckpointRequest, build_checkpoint};
 #[cfg(feature = "s3-http")]
 pub(crate) use closure::prove_blob_closure_async;
-pub(crate) use closure::prove_record_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
 };
@@ -198,12 +193,11 @@ pub use probe::{
 };
 pub(crate) use publication::contextual_publication_fingerprint;
 pub use publication::{
-    PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
+    PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation,
 };
 pub(crate) use publication::{
-    PublicationIntent, decode_publication_evidence_with_accounting,
-    publish_generation_async_guarded, publish_generation_async_with_permit,
+    decode_publication_evidence_with_accounting, publish_generation_async_guarded,
 };
 pub use publication_evidence::{
     GenerationPublicationEvidence, GenerationPublicationProjection, PublicationEvidenceError,

@@ -21,13 +21,12 @@ use crate::kernel::{
     lookup_paths_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
     merge_generation_with_borrowed_resolutions_with_accounting, plan_extent_range_with_accounting,
-    prove_record_closure_async, read_blob_range_with_accounting,
+    read_blob_range_with_accounting,
     read_generation_root_with_accounting, retire_allocation, types,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{
-    prove_record_closure_with_native_work,
     publish_generation_async_guarded_with_native_work,
 };
 
@@ -67,7 +66,7 @@ use crate::kernel::{
     build_generation_export_manifest_async, contextual_publication_fingerprint,
     decode_workspace_deleted, export_generation_batch_async, import_generation_batch_async,
     merge_generation_async, prove_generation_closure, publish_generation,
-    publish_generation_async_with_permit, retention_authority_id, volume_authority_id,
+    retention_authority_id, volume_authority_id,
 };
 
 

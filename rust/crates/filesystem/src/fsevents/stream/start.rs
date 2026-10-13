@@ -7,9 +7,9 @@ impl EventStream {
         published_bytes: Option<&AtomicU64>,
         work: &mut W,
     ) -> Result<Self, DemandError> {
-        let api = Api::get_measured(work)?;
+        let api = Api::get(work)?;
         let mut ownership = Some(crate::demand::SourcePayloadOwnership::new(work)?);
-        let (paths, path_bytes) = api.path_array_measured(paths, work)?;
+        let (paths, path_bytes) = api.path_array(paths, work)?;
         let mut paths_live = true;
         let mut context = std::ptr::null::<StreamContext>();
         let mut context_bytes = 0;

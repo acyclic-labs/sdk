@@ -94,7 +94,7 @@ pub async fn capture_watch_batch<
             return Err(CaptureError::InvalidOptions);
         }
         let source_root = open_source_root(options, meter)?;
-        let mut receipt = CaptureReceipt::default();
+        let receipt = CaptureReceipt::default();
         let mut mutations = Vec::new();
         let mut ordinary = Vec::new();
         let mut rename_records = Vec::new();
@@ -293,7 +293,7 @@ pub async fn capture_watch_batch<
             release_capture_paths(lookup_paths, meter)?;
         } else {
             let lookup = checkout
-                .lookup_batch_no_follow(&lookup_paths, meter, &cancellation)
+                .lookup_batch_no_follow(&lookup_paths, meter, cancellation)
                 .await?;
 
             let lookup_paths_bytes =
@@ -311,7 +311,7 @@ pub async fn capture_watch_batch<
                     }?
                 {
                     let prior = checkout
-                        .lookup_no_follow(&prior_path, meter, &cancellation)
+                        .lookup_no_follow(&prior_path, meter, cancellation)
                         .await?;
                     record = prior.record;
                     capture_drop_path(prior_path, meter)?;
@@ -342,27 +342,23 @@ pub async fn capture_watch_batch<
                 .map_err(capture_demand_error)
         }?;
 
-        let mut host_links = Vec::new();
         // Hydration preserves ancestor depth order, so parents precede every rename.
         let rename_mutations = std::mem::take(&mut mutations);
+        let mut batch = CaptureBatch {
+            source_root: &source_root,
+            watch_epoch: Some(epoch),
+            baseline: None,
+            maximum_extent_spans: options.maximum_extent_spans,
+            meter,
+            host_links: Vec::new(),
+            mutations,
+            receipt,
+        };
         let missing_bytes = vector_bytes(&missing_ancestors);
         for (path, current) in missing_ancestors {
-            prepare_final_path(
-                checkout,
-                path,
-                current,
-                CaptureIntent::Replace,
-                &source_root,
-                None,
-                &mut host_links,
-                Some(epoch),
-                None,
-                &mut mutations,
-                &mut receipt,
-                options.maximum_extent_spans,
-                meter,
-            )
-            .await?;
+            batch
+                .prepare(checkout, (None, path, current), CaptureIntent::Replace)
+                .await?;
         }
         meter
             .clone()
@@ -370,7 +366,7 @@ pub async fn capture_watch_batch<
             .map_err(capture_demand_error)?;
         let rename_mutations_bytes =
             rename_mutations.capacity() as u64 * std::mem::size_of::<AuthoredMutation>() as u64;
-        capture_reserve(&mut mutations, rename_mutations.len(), meter)?;
+        capture_reserve(&mut batch.mutations, rename_mutations.len(), meter)?;
         {
             capture_charge(
                 meter,
@@ -379,12 +375,12 @@ pub async fn capture_watch_batch<
                 ),
             )
         }?;
-        mutations.extend(rename_mutations);
+        batch.mutations.extend(rename_mutations);
         meter
             .clone()
             .release(rename_mutations_bytes)
             .map_err(capture_demand_error)?;
-        let namespace_mutations = std::mem::take(&mut mutations);
+        let namespace_mutations = std::mem::take(&mut batch.mutations);
         let rename_records_bytes = vector_bytes(&rename_records);
         for (path, record) in rename_records {
             let Some(record) = record else {
@@ -395,22 +391,13 @@ pub async fn capture_watch_batch<
                 capture_drop_path(path, meter)?;
                 continue;
             }
-            prepare_final_path(
-                checkout,
-                path,
-                Some(record),
-                CaptureIntent::Complete,
-                &source_root,
-                None,
-                &mut host_links,
-                Some(epoch),
-                None,
-                &mut mutations,
-                &mut receipt,
-                options.maximum_extent_spans,
-                meter,
-            )
-            .await?;
+            batch
+                .prepare(
+                    checkout,
+                    (None, path, Some(record)),
+                    CaptureIntent::Complete,
+                )
+                .await?;
         }
         meter
             .clone()
@@ -460,36 +447,23 @@ pub async fn capture_watch_batch<
                 Option<HostStat>,
             )>() as u64;
         for (path, current, intent, observation) in ordinary {
-            prepare_final_path(
-                checkout,
-                path,
-                current,
-                intent,
-                &source_root,
-                observation,
-                &mut host_links,
-                Some(epoch),
-                None,
-                &mut mutations,
-                &mut receipt,
-                options.maximum_extent_spans,
-                meter,
-            )
-            .await?;
+            batch
+                .prepare(checkout, (observation, path, current), intent)
+                .await?;
         }
         meter
             .clone()
             .release(observed_bytes)
             .map_err(capture_demand_error)?;
-        release_host_links(host_links, meter)?;
+        release_host_links(batch.host_links, meter)?;
         apply_capture_transaction(checkout, namespace_mutations, meter).await?;
-        apply_capture_transaction(checkout, mutations, meter).await?;
+        apply_capture_transaction(checkout, batch.mutations, meter).await?;
         meter.clone().check().map_err(capture_demand_error)?;
         Ok(WatchCaptureReceipt {
             epoch,
             first_sequence,
             next_sequence,
-            capture: receipt,
+            capture: batch.receipt,
         })
     }
     .await;

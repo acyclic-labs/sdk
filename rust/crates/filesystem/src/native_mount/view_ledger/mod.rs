@@ -359,7 +359,7 @@ impl ViewLedger {
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
         admitted_names(path.components(), work, || {
-            let directory = path_keys(path).last().expect("path includes its root");
+            let directory = path.components().iter().fold(key_of(&()), hash_child);
             stamp.precedes_none_of(&self.unconfirmed)
                 && stamp.precedes_none_of(&self.everything)
                 && storage::unchanged_since(&self.directories, stamp, [directory])
@@ -395,7 +395,7 @@ fn path_key(
 ) -> Result<u64, MountSourceError> {
     carrier.with_work(|work| {
         admitted_names(path.components(), work, || {
-            path_keys(path).last().expect("path includes its root")
+            path.components().iter().fold(key_of(&()), hash_child)
         })
     })
 }
@@ -421,10 +421,7 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
             if let Some(units) = crate::kernel::types::utf16le_units(bytes)
                 && char::decode_utf16(units.clone()).all(|value| value.is_ok())
             {
-                hash_text(
-                    char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
-                    hasher,
-                );
+                hash_text(char::decode_utf16(units).flatten(), hasher);
                 return;
             }
         }

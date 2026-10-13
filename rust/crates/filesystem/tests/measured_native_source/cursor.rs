@@ -9,7 +9,7 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
     let source = open_source(directory.path()).await?;
     let path = requested("")?;
     let token = CancellationToken::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let mut first = source
         .list_page(source.reference(), &path, None, 1, budget, &token)
         .await?;
@@ -106,7 +106,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
         .value;
     let root = requested("")?;
     let token = CancellationToken::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let mut first = source
         .list_page(source.reference(), &root, None, 1, budget, &token)
         .await?;
@@ -176,7 +176,7 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
     let source = open_source(directory.path()).await?;
     let root = requested("")?;
     let token = CancellationToken::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let mut position = None;
     for _ in 0..2 {
         let page = source
@@ -275,7 +275,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
     let source = open_source(directory.path()).await?;
     let root = requested("")?;
     let live = CancellationToken::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     for cancelled in [false, true] {
         let mut page = source
             .list_page(source.reference(), &root, None, 2, budget, &live)

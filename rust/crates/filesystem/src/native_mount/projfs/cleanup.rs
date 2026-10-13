@@ -54,7 +54,6 @@ pub(in crate::native_mount) fn detach_projection(
     let mut packet = [0_u8; 8];
     packet[..4].copy_from_slice(&tag);
     let mut returned = 0;
-    let packet_bytes = u32::try_from(packet.len()).map_err(|_| NativeMountError::InvalidDestination)?;
     (&mut &*work)
         .attempt_io(WriteOperations.delta(1), || {
             use std::os::windows::io::AsRawHandle;
@@ -64,7 +63,8 @@ pub(in crate::native_mount) fn detach_projection(
                     windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
                     windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
                     Some(packet.as_ptr().cast()),
-                    packet_bytes,
+                    u32::try_from(packet.len())
+                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
                     None,
                     0,
                     Some(&raw mut returned),

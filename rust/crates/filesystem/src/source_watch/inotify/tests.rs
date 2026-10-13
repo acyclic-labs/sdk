@@ -36,8 +36,8 @@ fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
     let mut work = crate::native_host::ordinary_work();
     let host = crate::native_host::HostRoot::open(root, &mut work)
         .map_err(crate::native_host::ordinary_error)?;
-    let delivery = Delivery::new_with_work(Arc::new(Ignored), &mut work)
-        .map_err(crate::native_host::ordinary_error)?;
+    let delivery =
+        Delivery::new(Arc::new(Ignored), &mut work).map_err(crate::native_host::ordinary_error)?;
     NativeSourceWatch::start_driver(&host, Arc::new(delivery), &mut work)
         .map_err(crate::native_host::ordinary_error)
 }
@@ -242,7 +242,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
         ),
     )));
     let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
-    let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
+    let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -353,7 +353,7 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
         ),
     )));
     let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
-    let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
+    let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
@@ -453,7 +453,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         changed: Condvar::new(),
     });
     let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
-    let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
+    let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
     let retained_control = original.lock().live_allocation_bytes()
         - watch.shared.retained_variable_bytes.load(Ordering::Acquire);
@@ -551,7 +551,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         invoked: AtomicBool::new(false),
     });
     let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
-    let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
+    let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
     let paused = watch.paused();
@@ -663,7 +663,7 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
         invoked: AtomicBool::new(false),
     });
     let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
-    let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
+    let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
     let reader = Arc::downgrade(&watch.shared);
     *sink.watch.lock().unwrap_or_else(PoisonError::into_inner) = Some(watch);

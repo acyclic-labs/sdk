@@ -184,7 +184,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
             ..finite_budget()
         })
         .unwrap();
-    let error = WorkspaceContextStore::load_with_native_work(&store, id, &tight, &cxl)
+    let error = store.load_context(id, &tight, &cxl)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -196,7 +196,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
     assert_eq!(tight.receipt().source_bytes_read, 7);
     let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
     let work = original.native_volume_work(finite_budget()).unwrap();
-    let mut loaded = WorkspaceContextStore::load_with_native_work(&store, id, &work, &cxl)
+    let mut loaded = store.load_context(id, &work, &cxl)
         .await
         .unwrap()
         .unwrap();
@@ -209,15 +209,14 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
     loaded.0.revision += 1;
     loaded.0.state = WorkspaceContextState::Frozen;
     assert!(
-        WorkspaceContextStore::compare_and_swap_with_native_work(
-            &store, id, 1, loaded, &work, &cxl,
+        store.compare_context(id, 1, loaded, &work, &cxl,
         )
         .await
         .unwrap()
     );
     drop(store);
     let reopened = LocalCoreStateStore::new(directory.path());
-    let loaded = WorkspaceContextStore::load_with_native_work(&reopened, id, &work, &cxl)
+    let loaded = reopened.load_context(id, &work, &cxl)
         .await
         .unwrap()
         .unwrap();
@@ -307,8 +306,7 @@ proptest::proptest! {
                         selected.parent_context_id = parents.get(*destination as usize).copied();
                         if native {
                             let packet = (selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap());
-                            assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
-                                &store, child, previous, packet, &work, &cancellation,
+                            assert!(store.compare_context(child, previous, packet, &work, &cancellation,
                             ).await.unwrap());
                         } else {
                             assert!(WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone()).await.unwrap());

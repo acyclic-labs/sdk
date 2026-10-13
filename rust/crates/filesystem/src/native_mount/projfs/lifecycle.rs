@@ -17,14 +17,18 @@ impl Projector {
         drop(runtime);
         loop {
             let mut lifecycle = lock_recover(&self.lifecycle);
-            while !lifecycle.requested || lifecycle.owner.is_none() {
+            let mut owner = loop {
+                if lifecycle.requested
+                    && let Some(owner) = lifecycle.owner.take()
+                {
+                    lifecycle.requested = false;
+                    break owner;
+                }
                 lifecycle = self
                     .lifecycle_changed
                     .wait(lifecycle)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            lifecycle.requested = false;
-            let mut owner = lifecycle.owner.take().expect("original retirement owner");
+            };
             lifecycle.custody = owner.retirement_ownership();
             drop(lifecycle);
             while owner
@@ -34,7 +38,17 @@ impl Projector {
             {
                 std::thread::sleep(HELD_RETRY);
             }
-            let result = owner.stop_physical();
+            let result = owner.stop_physical().and_then(|()| {
+                let credit = owner
+                    .worker_close_credit
+                    .as_mut()
+                    .ok_or(NativeMountError::ControlPending)?;
+                credit.started_drop_io(
+                    crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                );
+                drop(lock_recover(&self.worker).take());
+                Ok(())
+            });
             let mut lifecycle = lock_recover(&self.lifecycle);
             lifecycle.custody = owner.retirement_ownership();
             lifecycle.complete = result.is_ok();
@@ -42,19 +56,6 @@ impl Projector {
             lifecycle.owner = Some(owner);
             self.lifecycle_changed.notify_all();
             if lifecycle.complete {
-                let owner = lifecycle
-                    .owner
-                    .as_mut()
-                    .expect("completed retirement owner");
-                let credit = owner
-                    .worker_close_credit
-                    .as_mut()
-                    .expect("birth close credit");
-                credit.started_drop_io(crate::WorkCounters {
-                    backend_write_operations: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                });
-                drop(lock_recover(&self.worker).take());
                 return;
             }
             if lifecycle.abandoned {

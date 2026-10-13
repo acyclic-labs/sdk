@@ -307,7 +307,7 @@ impl NativeSourceWatch {
     pub(crate) fn fence(&self) -> io::Result<()> {
         let mut work = self.shared.delivery.callback_work();
         self.shared
-            .read_events_and_deliver_with_work(std::time::Duration::MAX, &mut work)
+            .read_events_and_deliver(std::time::Duration::MAX, &mut work)
             .map(|_| ())
             .map_err(|error| {
                 self.shared.delivery.exact.store(false, Ordering::Release);
@@ -320,7 +320,7 @@ impl NativeSourceWatch {
         timeout: std::time::Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
-        self.shared.read_events_and_deliver_with_work(timeout, work)
+        self.shared.read_events_and_deliver(timeout, work)
     }
 
     pub(crate) fn delivery(&self) -> &Delivery {

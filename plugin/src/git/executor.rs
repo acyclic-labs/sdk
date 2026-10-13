@@ -48,8 +48,8 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         proof: None,
                     });
                 }
-                let workspace_generation = self.exact(*workspace_tree, "commit").await?;
-                if self.current.id() != workspace_generation.workspace_id
+                let workspace_generation = self.generation(*workspace_tree).await?;
+                if self.current.id() != workspace_generation.workspace_id()
                     || self
                         .current
                         .head(
@@ -61,18 +61,14 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         .map_err(|failure| failure.error)
                         .map_err(display)?
                         .id()
-                        != workspace_generation.generation
+                        != workspace_generation.id()
                 {
                     return Err(Self::error("Git commit workspace changed before capture"));
                 }
                 let captured = match (head_workspace_tree.as_ref(), head_tree) {
                     (Some(previous_live), Some(previous_capture)) => {
-                        let previous_live = self
-                            .generation(*previous_live, "incremental commit")
-                            .await?;
-                        let previous_capture = self
-                            .generation(*previous_capture, "incremental commit")
-                            .await?;
+                        let previous_live = self.generation(*previous_live).await?;
+                        let previous_capture = self.generation(*previous_capture).await?;
                         capture_git_compatible_generation_incremental(
                             &self.current,
                             &previous_live,
@@ -220,9 +216,9 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 to,
                 tracked_paths,
             } => {
-                let to = self.generation(*to, "diff").await?;
+                let to = self.generation(*to).await?;
                 let value = if let Some(from) = from {
-                    let from = self.generation(*from, "diff").await?;
+                    let from = self.generation(*from).await?;
                     let diff = git_compatible_diff_counts(
                         &from,
                         &to,
@@ -251,90 +247,50 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 })
             }
             GitFilesystemAction::RestoreGeneration { tree, paths } => {
-                let source_ref = self.exact(*tree, "restore").await?;
+                if let Some(paths) = paths {
+                    return self
+                        .restore_paths(
+                            operation_id,
+                            *tree,
+                            &paths.iter().cloned().collect::<Vec<_>>(),
+                        )
+                        .await;
+                }
+                let source = self.generation(*tree).await?;
+                if source.workspace_id() != self.current.id() {
+                    return Err(Self::error(
+                        "an exact workspace restore cannot use a foreign generation",
+                    ));
+                }
                 let current = self
                     .current
-                    .head(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
                     .map_err(display)?;
-                let source = self
-                    .generation(GitTreeRef::Exact(source_ref), "restore")
-                    .await?;
-                let generation = if let Some(paths) = paths {
-                    match self
-                        .current
-                        .restore_paths_from(
-                            &source,
-                            &paths.iter().cloned().collect::<Vec<_>>(),
-                            current.id(),
-                            IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                            self.permit,
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                            |_| async {
-                                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                                    acyclic_fs::OperationReceipt {
-                                        value: (),
-                                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                                    },
-                                )
-                            },
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(display)?
-                    {
-                        TransactionCommit::Committed(generation)
-                        | TransactionCommit::AlreadyCommitted(generation) => generation,
-                        TransactionCommit::Conflict { .. } => {
-                            return Err(Self::error(
-                                "Git restore raced with another workspace writer",
-                            ));
-                        }
-                        TransactionCommit::Fenced => {
-                            return Err(Self::error("Git restore was fenced"));
-                        }
-                        TransactionCommit::IdempotencyConflict => {
-                            return Err(Self::error("Git restore retry identity was reused"));
-                        }
-                    }
-                } else {
-                    if source_ref.workspace_id != self.current.id() {
+                let generation = match self
+                    .current
+                    .restore_generation(
+                        &source,
+                        current.id(),
+                        IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        self.permit,
+                    )
+                    .await
+                    .map_err(display)?
+                {
+                    WorkspaceRestore::Restored(generation)
+                    | WorkspaceRestore::AlreadyRestored(generation)
+                    | WorkspaceRestore::Current(generation) => generation,
+                    WorkspaceRestore::Stale(_) => {
                         return Err(Self::error(
-                            "an exact workspace restore cannot use a foreign generation",
+                            "Git restore raced with another workspace writer",
                         ));
                     }
-                    match self
-                        .current
-                        .restore_generation(
-                            &source,
-                            current.id(),
-                            IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                            self.permit,
-                        )
-                        .await
-                        .map_err(display)?
-                    {
-                        WorkspaceRestore::Restored(generation)
-                        | WorkspaceRestore::AlreadyRestored(generation)
-                        | WorkspaceRestore::Current(generation) => generation,
-                        WorkspaceRestore::Stale(_) => {
-                            return Err(Self::error(
-                                "Git restore raced with another workspace writer",
-                            ));
-                        }
-                        WorkspaceRestore::Fenced => {
-                            return Err(Self::error("Git restore was fenced"));
-                        }
-                        WorkspaceRestore::IdempotencyConflict => {
-                            return Err(Self::error("Git restore retry identity was reused"));
-                        }
+                    WorkspaceRestore::Fenced => return Err(Self::error("Git restore was fenced")),
+                    WorkspaceRestore::IdempotencyConflict => {
+                        return Err(Self::error("Git restore retry identity was reused"));
                     }
                 };
                 Ok(GitFilesystemResult::Applied {
@@ -343,62 +299,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 })
             }
             GitFilesystemAction::RestorePaths { tree, paths } => {
-                let source_ref = self.exact(*tree, "restore").await?;
-                let current = self
-                    .current
-                    .head(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .map_err(display)?;
-                let source = self
-                    .generation(GitTreeRef::Exact(source_ref), "restore")
-                    .await?;
-                let outcome = self
-                    .current
-                    .restore_paths_from(
-                        &source,
-                        paths,
-                        current.id(),
-                        IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                        self.permit,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                        |_| async {
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                                acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                                },
-                            )
-                        },
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .map_err(display)?;
-                let generation = match outcome {
-                    TransactionCommit::Committed(generation)
-                    | TransactionCommit::AlreadyCommitted(generation) => generation,
-                    TransactionCommit::Conflict { .. } => {
-                        return Err(Self::error(
-                            "Git path restore raced with another workspace writer",
-                        ));
-                    }
-                    TransactionCommit::Fenced => {
-                        return Err(Self::error("Git path restore was fenced"));
-                    }
-                    TransactionCommit::IdempotencyConflict => {
-                        return Err(Self::error("Git path restore retry identity was reused"));
-                    }
-                };
-                Ok(GitFilesystemResult::Applied {
-                    tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
-                    tracked_paths: None,
-                })
+                self.restore_paths(operation_id, *tree, paths).await
             }
             GitFilesystemAction::Join {
                 source_workspace,
@@ -500,11 +401,11 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 ..
             } => {
                 let base = match base {
-                    Some(base) => Some(self.generation(*base, "apply commit").await?),
+                    Some(base) => Some(self.generation(*base).await?),
                     None => None,
                 };
                 let source = match source {
-                    Some(source) => Some(self.generation(*source, "apply commit").await?),
+                    Some(source) => Some(self.generation(*source).await?),
                     None => None,
                 };
                 let current = self
@@ -569,7 +470,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 })
             }
             GitFilesystemAction::Archive { tree } => {
-                let generation = self.generation(*tree, "archive").await?;
+                let generation = self.generation(*tree).await?;
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
                     .map_err(display)?;
@@ -587,7 +488,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 path,
                 tree,
             } => {
-                let generation = self.generation(*tree, "grep").await?;
+                let generation = self.generation(*tree).await?;
                 let result = grep_git_generation(
                     &generation,
                     pattern,
@@ -606,7 +507,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             GitFilesystemAction::Blame { path, commits } => {
                 let mut history = Vec::with_capacity(commits.len());
                 for commit in commits {
-                    let generation = self.generation(commit.tree, "blame").await?;
+                    let generation = self.generation(commit.tree).await?;
                     history.push((commit.clone(), generation));
                 }
                 let lines = blame_git_generations(&history, path, 16 * 1024 * 1024)
@@ -622,23 +523,12 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 tree,
                 tracked_paths,
             } => {
-                let reference = self.exact(*tree, "clean").await?;
-                if reference.workspace_id != self.current.id() {
+                let generation = self.generation(*tree).await?;
+                if generation.workspace_id() != self.current.id() {
                     return Err(Self::error(
                         "Git clean generation is not the live workspace",
                     ));
                 }
-                let generation = self
-                    .current
-                    .generation(
-                        reference.generation,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .map_err(display)?;
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
                     .map_err(display)?;
@@ -680,77 +570,41 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         .map_err(|failure| failure.error)
                         .map_err(display)?;
                 }
-                let generation = match transaction
-                    .commit(
-                        None,
-                        self.permit,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                        |_| async {
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                                acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: acyclic_fs::WorkCounters::default(),
-                                },
-                            )
-                        },
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .map_err(display)?
-                {
-                    TransactionCommit::Committed(generation)
-                    | TransactionCommit::AlreadyCommitted(generation) => generation,
-                    TransactionCommit::Conflict { .. } => {
-                        return Err(Self::error("Git clean raced with another workspace writer"));
-                    }
-                    TransactionCommit::Fenced => {
-                        return Err(Self::error("Git clean was fenced"));
-                    }
-                    TransactionCommit::IdempotencyConflict => {
-                        return Err(Self::error("Git clean retry identity was reused"));
-                    }
-                };
-                Ok(GitFilesystemResult::Applied {
-                    tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
-                    tracked_paths: None,
-                })
+                committed(
+                    transaction
+                        .commit(
+                            None,
+                            self.permit,
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                            |_| async {
+                                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                                    acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: acyclic_fs::WorkCounters::default(),
+                                    },
+                                )
+                            },
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(display)?,
+                )
             }
-            GitFilesystemAction::ApplyPatch { patch } => {
-                let generation = match apply_git_patch(
+            GitFilesystemAction::ApplyPatch { patch } => committed(
+                apply_git_patch(
                     &self.current,
                     patch,
                     IdempotencyKey::from_bytes(operation_id.into_bytes()),
                     self.permit,
                 )
                 .await
-                .map_err(display)?
-                {
-                    TransactionCommit::Committed(generation)
-                    | TransactionCommit::AlreadyCommitted(generation) => generation,
-                    TransactionCommit::Conflict { .. } => {
-                        return Err(Self::error(
-                            "Git patch application raced with another workspace writer",
-                        ));
-                    }
-                    TransactionCommit::Fenced => {
-                        return Err(Self::error("Git patch application was fenced"));
-                    }
-                    TransactionCommit::IdempotencyConflict => {
-                        return Err(Self::error(
-                            "Git patch application retry identity was reused",
-                        ));
-                    }
-                };
-                Ok(GitFilesystemResult::Applied {
-                    tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
-                    tracked_paths: None,
-                })
-            }
+                .map_err(display)?,
+            ),
             GitFilesystemAction::CheckIgnore { paths, tree } => {
-                let reference = self.exact(*tree, "check-ignore").await?;
-                if reference.workspace_id != self.current.id()
+                let generation = self.generation(*tree).await?;
+                if generation.workspace_id() != self.current.id()
                     || self
                         .current
                         .head(
@@ -762,7 +616,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         .map_err(|failure| failure.error)
                         .map_err(display)?
                         .id()
-                        != reference.generation
+                        != generation.id()
                 {
                     return Err(Self::error(
                         "Git check-ignore live generation changed before inspection",

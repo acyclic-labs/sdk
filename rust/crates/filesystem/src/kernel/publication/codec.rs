@@ -9,7 +9,6 @@ pub(super) const EVIDENCE_DOMAIN: &[u8] = b"acyclic-fs-publication-original-evid
 pub(crate) struct BorrowedPublicationEvidence<'a> {
     pub(crate) publication: PublishedGeneration,
     pub(crate) original_evidence: Option<&'a [u8]>,
-    pub(crate) evidence_digest: Option<Digest>,
 }
 
 /// Decodes one canonical publication with before-effect admission.
@@ -60,7 +59,6 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
         return Ok(BorrowedPublicationEvidence {
             publication,
             original_evidence: None,
-            evidence_digest: None,
         });
     }
     let length = decoder.u32(&mut observe)?;
@@ -104,7 +102,6 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     Ok(BorrowedPublicationEvidence {
         publication,
         original_evidence: Some(evidence),
-        evidence_digest: Some(stored_digest),
     })
 }
 
@@ -119,7 +116,7 @@ pub(crate) fn decode_publication_evidence_with_accounting<'a>(
     .map(|(value, _guard)| value)
 }
 
-pub(crate) fn permit_context_with_accounting(
+pub(super) fn permit_context(
     context: Option<Digest>,
     permit: PublicationPermit,
     accounting: &mut KernelAccounting<'_>,
@@ -152,13 +149,7 @@ pub(crate) fn permit_context_with_accounting(
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(hashing)?;
-    let bound = permit_context(context, permit);
-    accounting.record_completed(hashing)?;
-    Ok(bound)
-}
-
-pub(super) fn permit_context(context: Option<Digest>, permit: PublicationPermit) -> Option<Digest> {
-    match permit {
+    let bound = match permit {
         PublicationPermit::Unrestricted => context,
         PublicationPermit::Lease {
             authority_id,
@@ -206,7 +197,9 @@ pub(super) fn permit_context(context: Option<Digest>, permit: PublicationPermit)
             hasher.update(expected.digest.as_bytes());
             Some(Digest::from_bytes(*hasher.finalize().as_bytes()))
         }
-    }
+    };
+    accounting.record_completed(hashing)?;
+    Ok(bound)
 }
 
 pub(super) const fn publication_payload_length() -> usize {

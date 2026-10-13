@@ -37,15 +37,13 @@ where
             }
         };
         let budget = accounting.remaining().map_err(DemandError::from)?;
-        let work = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(
-            |(error, completed)| {
-                let failure: crate::demand::DemandResult<()> = Err(crate::OperationFailure::new(
-                    demand_error(MountSourceError::NativeWork(error)),
-                    *completed,
-                ));
-                crate::demand::accept_source_result(failure, accounting).unwrap_err()
-            },
-        )?;
+        let work = match crate::NativeMaterializationWork::new(budget, &cancellation) {
+            Ok(work) => work,
+            Err((error, completed)) => {
+                crate::demand::merge_source_work(completed, accounting)?;
+                return Err(demand_error(MountSourceError::NativeWork(error)));
+            }
+        };
         let result = self.record(changes, work.clone()).map_err(demand_error);
         crate::demand::accept_source_result(
             result

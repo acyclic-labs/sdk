@@ -12,7 +12,7 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
     for memory_denial in [false, true] {
         let path = directory.path().to_path_buf();
         let input_bytes = path.capacity() as u64;
-        let mut budget = finite_budget()?;
+        let mut budget = FINITE_BUDGET;
         if memory_denial {
             budget.peak_allocation_bytes = 0;
         } else {
@@ -47,7 +47,7 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
         VolumeLimits::default(),
         Some(reference),
         None,
-        finite_budget()?,
+        FINITE_BUDGET,
         &cancellation,
     )
     .await?;
@@ -63,7 +63,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("root");
     std::fs::create_dir(&root)?;
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
     let before = work.live_allocation_bytes();

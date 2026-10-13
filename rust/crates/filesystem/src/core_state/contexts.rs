@@ -106,104 +106,9 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         self.load_logged(context_id).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn load_with_native_work(
-        &self,
-        context_id: WorkspaceContextId,
-        original: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<
-        Option<(WorkspaceContext, crate::NativeAllocation)>,
-        (
-            crate::workspace_context::WorkspaceContextError<Self::Error>,
-            Option<crate::materializer::NativeAllocation>,
-        ),
-    > {
-        native_records::check(original, cancellation).map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })?;
-        let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
-                root.with_log(|log| {
-                    native_records::load::<WorkspaceContext>(
-                        &root,
-                        log,
-                        context_id,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| {
-                (
-                    crate::workspace_context::WorkspaceContextError::Store(error),
-                    None,
-                )
-            })
-    }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn compare_and_swap_with_native_work(
-        &self,
-        context_id: WorkspaceContextId,
-        expected_revision: u64,
-        replacement: (WorkspaceContext, crate::NativeAllocation),
-        original: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<
-        bool,
-        (
-            crate::workspace_context::WorkspaceContextError<Self::Error>,
-            Option<crate::materializer::NativeAllocation>,
-        ),
-    > {
-        native_records::check(original, cancellation).map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })?;
-        let replacement = native_records::checked_packet(replacement, original, |value| {
-            native_records::native_context_owned_bytes(value, original)
-        })
-        .map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })?;
-        let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
-                root.with_log(|log| {
-                    native_records::compare_native_context(
-                        &root,
-                        log,
-                        context_id,
-                        expected_revision,
-                        replacement,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| {
-                (
-                    crate::workspace_context::WorkspaceContextError::Store(error),
-                    None,
-                )
-            })
-    }
+
+
 
     async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
         self.transaction(move |root| {
@@ -629,4 +534,108 @@ pub(super) fn load_all_contexts(
                 .ok_or(LocalCoreStateStoreError::Integrity)
         })
         .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LocalCoreStateStore {
+    /// Loads a context on the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn load_context(
+        &self,
+        context_id: WorkspaceContextId,
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<
+        Option<(WorkspaceContext, crate::NativeAllocation)>,
+        (
+            crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation).map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })?;
+        let cancellation = cancellation.clone();
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::load::<WorkspaceContext>(
+                        &root,
+                        log,
+                        context_id,
+                        work,
+                        &cancellation,
+                    )
+                })
+            })
+            .await
+            .map_err(|error| {
+                (
+                    crate::workspace_context::WorkspaceContextError::Store(error),
+                    None,
+                )
+            })
+    }
+
+    /// Compares and updates a context on the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn compare_context(
+        &self,
+        context_id: WorkspaceContextId,
+        expected_revision: u64,
+        replacement: (WorkspaceContext, crate::NativeAllocation),
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<
+        bool,
+        (
+            crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation).map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })?;
+        let replacement = native_records::checked_packet(replacement, original, |value| {
+            native_records::native_context_owned_bytes(value, original)
+        })
+        .map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })?;
+        let cancellation = cancellation.clone();
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::compare_native_context(
+                        &root,
+                        log,
+                        context_id,
+                        expected_revision,
+                        replacement,
+                        work,
+                        &cancellation,
+                    )
+                })
+            })
+            .await
+            .map_err(|error| {
+                (
+                    crate::workspace_context::WorkspaceContextError::Store(error),
+                    None,
+                )
+            })
+    }
 }

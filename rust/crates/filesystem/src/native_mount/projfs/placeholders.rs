@@ -276,9 +276,11 @@ pub(super) fn write_ordinary(
     let (Some(parent), Some(name)) = (host.parent(), host.file_name()) else {
         return Err(format!("{path:?} names no file"));
     };
-    let directory = crate::native_host::with_wide_path(parent, &mut &*work, |path, work| runtime.metadata_root.open_dir_held(path, work))
-        .map_err(NativeMountError::from)
-        .map_err(failed)?;
+    let directory = crate::native_host::with_wide_path(parent, &mut &*work, |path, work| {
+        runtime.metadata_root.open_dir_held(path, work)
+    })
+    .map_err(NativeMountError::from)
+    .map_err(failed)?;
     let direct = projection.starting && replacing.is_none();
     let mut staging = lock_recover(&runtime.staging);
     if !direct && staging.is_none() {
@@ -292,13 +294,27 @@ pub(super) fn write_ordinary(
     let from = if direct {
         &directory
     } else {
-        &staging.as_ref().expect("held original staging directory").0
+        &staging
+            .as_ref()
+            .ok_or_else(|| failed(NativeMountError::ControlPending))?
+            .0
     };
     let mut file = match crate::native_host::with_wide_path(
         std::path::Path::new(&temporary),
         &mut &*work,
         |name, work| {
-            crate::native_host::open_windows_at(from, name, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE | windows::Win32::Storage::FileSystem::DELETE, windows::Wdk::Storage::FileSystem::FILE_CREATE, windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE | windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT | windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE, work)
+            crate::native_host::open_windows_at(
+                from,
+                name,
+                windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+                    | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE
+                    | windows::Win32::Storage::FileSystem::DELETE,
+                windows::Wdk::Storage::FileSystem::FILE_CREATE,
+                windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE
+                    | windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
+                    | windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE,
+                work,
+            )
         },
     ) {
         Ok(file) => file,
@@ -359,16 +375,50 @@ pub(super) fn write_ordinary(
                             to_name,
                             acyclic_native_runtime::RenameMode::Replace,
                             None,
-                            &mut crate::NativeMaterializationWork::clone(
-                                projection.work,
-                            ))
+                            &mut crate::NativeMaterializationWork::clone(projection.work),
+                        )
                         .map_err(crate::materializer::native_materialization_work_error)
                     },
                 )
             },
         )
     } else {
-         #[cfg(unix)] { crate::native_host::rename_held(from, std::path::Path::new(&temporary), &directory, std::path::Path::new(name), acyclic_native_runtime::RenameMode::NoReplace, None, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(std::path::Path::new(&temporary), &mut &*work, |source_name, work| crate::native_host::with_wide_path(std::path::Path::new(name), work, |target, work| crate::native_host::rename_held(from, source_name, &directory, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) }
+        #[cfg(unix)]
+        {
+            crate::native_host::rename_held(
+                from,
+                std::path::Path::new(&temporary),
+                &directory,
+                std::path::Path::new(name),
+                acyclic_native_runtime::RenameMode::NoReplace,
+                None,
+                &mut &*work,
+            )
+        }
+        #[cfg(windows)]
+        {
+            crate::native_host::with_wide_path(
+                std::path::Path::new(&temporary),
+                &mut &*work,
+                |source_name, work| {
+                    crate::native_host::with_wide_path(
+                        std::path::Path::new(name),
+                        work,
+                        |target, work| {
+                            crate::native_host::rename_held(
+                                from,
+                                source_name,
+                                &directory,
+                                target,
+                                acyclic_native_runtime::RenameMode::NoReplace,
+                                None,
+                                work,
+                            )
+                        },
+                    )
+                },
+            )
+        }
     };
     match published {
         Ok(()) => {

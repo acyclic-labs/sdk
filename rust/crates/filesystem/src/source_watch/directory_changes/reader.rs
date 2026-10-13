@@ -155,7 +155,7 @@ impl Shared {
             }
             if reads.loss {
                 self.delivery
-                    .deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
+                    .deliver_wide(&[HostChangeWide::Everything], work)?;
                 reads.loss = false;
             }
             while reads.cursor < reads.filled {
@@ -176,7 +176,7 @@ impl Shared {
                     self.extended.load(Ordering::Acquire),
                 ) else {
                     self.delivery
-                        .deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
+                        .deliver_wide(&[HostChangeWide::Everything], work)?;
                     reads.cursor = reads.filled;
                     break;
                 };
@@ -185,7 +185,7 @@ impl Shared {
                     HostChangeWide::File(file.unwrap_or(0)),
                 ];
                 self.delivery
-                    .deliver_wide_with_work(&changes[..if file.is_some() { 2 } else { 1 }], work)?;
+                    .deliver_wide(&changes[..if file.is_some() { 2 } else { 1 }], work)?;
                 reads.cursor = if next == 0 {
                     reads.filled
                 } else {
@@ -239,7 +239,7 @@ impl NativeSourceWatch {
         if timeout.is_zero() {
             self.shared
                 .delivery
-                .deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
+                .deliver_wide(&[HostChangeWide::Everything], work)?;
             return Ok(false);
         }
         let started = Instant::now();
@@ -268,12 +268,12 @@ impl NativeSourceWatch {
         if matches!(result, Ok(false)) {
             self.shared
                 .delivery
-                .deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
+                .deliver_wide(&[HostChangeWide::Everything], work)?;
         }
         if matches!(result, Ok(true)) && !self.shared.complete.load(Ordering::Acquire) {
             self.shared
                 .delivery
-                .deliver_wide_with_work(&[HostChangeWide::Unconfirmed], work)?;
+                .deliver_wide(&[HostChangeWide::Unconfirmed], work)?;
             return Ok(false);
         }
         result

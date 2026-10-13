@@ -3,8 +3,6 @@
 //! Request parsing, `SigV4` verification, XML, and HTTP framing are delegated to
 //! `s3s`. This module contains no namespace or storage implementation: every
 //! accepted operation resolves one scoped workspace and invokes [`crate::S3Workspace`].
-//! Ordinary HTTP response framing retains the canonical byte carrier as its
-//! wire owner. This unbounded transport control is not a native admission.
 
 use crate::WorkBudget;
 use crate::kernel::{AsyncBlobSource, ClosureLimits, DecodeLimits};
@@ -1008,14 +1006,23 @@ where
             return Err(s3s::s3_error!(InvalidArgument));
         }
         let operation = request_operation(&request)?;
-        let transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+        let transaction = workspace
+            .begin_transaction(operation, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+            .value;
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
         let staged = transaction
-            .stage_content(&mut source, self.limits.maximum_multipart_part_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value)
-            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?;
+            .stage_content(
+                &mut source,
+                self.limits.maximum_multipart_part_bytes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+            .value;
         if request
             .input
             .content_length
@@ -1164,8 +1171,11 @@ where
             }
             MultipartCompletionIntent::Admitted(snapshot) => snapshot,
         };
-        let mut transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+        let mut transaction = workspace
+            .begin_transaction(operation, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+            .value;
         let staged = requested
             .iter()
             .map(|(number, _)| {
@@ -1182,8 +1192,24 @@ where
             .await
             .map_err(|error| s3_error(&error))?;
         let generation = committed_generation(
-            transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
+            transaction
+                .commit(
+                    None,
+                    crate::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                    |_| async {
+                        Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                            crate::OperationReceipt {
+                                value: (),
+                                work: crate::WorkCounters::default(),
+                            },
+                        )
+                    },
+                )
+                .await
+                .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+                .value,
         )?;
         let terminalized = self
             .terminalize_multipart_completion(
@@ -1310,8 +1336,11 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+                    .workspace
+                    .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+                    .value;
                 view.list_objects_at(&generation, options).await
             }
             None => view.list_objects(options).await,
@@ -1427,8 +1456,11 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+                    .workspace
+                    .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+                    .value;
                 view.list_objects_at(&generation, options).await
             }
             None => view.list_objects(options).await,
@@ -1536,8 +1568,11 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+                    .workspace
+                    .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+                    .value;
                 view.list_objects_at(&generation, options).await
             }
             None => view.list_objects(options).await,
@@ -1608,8 +1643,11 @@ where
         let head = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+                    .workspace
+                    .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+                    .value;
                 view.head_object_at(&generation, &request.input.key).await
             }
             None => view.head_object(&request.input.key).await,
@@ -1649,12 +1687,22 @@ where
         }
         let view = principal.workspace.s3();
         let generation = match principal.generation {
-            Some(id) => principal
-                .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
-            None => principal
-                .workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
+            Some(id) => {
+                principal
+                    .workspace
+                    .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+                    .value
+            }
+            None => {
+                principal
+                    .workspace
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+                    .value
+            }
         };
         let head = view
             .head_object_at(&generation, &request.input.key)
@@ -1691,9 +1739,6 @@ where
                     ));
                 }
                 Ok(Some((
-                    // This ordinary HTTP wire control owns the whole canonical
-                    // carrier, including its original allocation custody.
-                    // No raw backing alias or data copy escapes the carrier.
                     Bytes::from_owner(bytes),
                     (
                         view,
@@ -1729,14 +1774,23 @@ where
         reject_put_extensions(&request.input)?;
         let expected_crc32 = parse_crc32(request.input.checksum_crc32.as_deref())?;
         let operation = request_operation(&request)?;
-        let mut transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+        let mut transaction = workspace
+            .begin_transaction(operation, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+            .value;
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
         let staged = transaction
-            .stage_content(&mut source, self.limits.maximum_request_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value)
-            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?;
+            .stage_content(
+                &mut source,
+                self.limits.maximum_request_bytes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+            .value;
         if request
             .input
             .content_length
@@ -1750,8 +1804,24 @@ where
             .write_staged(&mut transaction, &request.input.key, &[staged])
             .await
             .map_err(|error| s3_error(&error))?;
-        let commit = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+        let commit = transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
+            .value;
         let generation = committed_generation(commit)?;
         Ok(S3Response::new(PutObjectOutput {
             checksum_crc32: expected_crc32.map(|checksum| {
@@ -2663,19 +2733,33 @@ mod tests {
     async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cancellation = CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+        let work =
+            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
         let baseline = work.live_allocation_bytes();
         let data = b"canonical HTTP chunk".to_vec();
-        let allocation = { let claim_bytes = data.capacity() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
-        let carrier = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            data, allocation, work.runtime_meter())
-            .unwrap_or_else(|failure| panic!("ordinary test carrier: {:?}", failure.into_error()));
+        let allocation = {
+            let claim_bytes = data.capacity() as u64;
+            work.claim(
+                claim_bytes,
+                u64::from(claim_bytes != 0),
+                crate::WorkCounters::UNCHARGED,
+            )
+        }?;
+        let carrier =
+            acyclic_stream::OwnedBytes::from_vec_with_guard(data, allocation, work.runtime_meter())
+                .unwrap_or_else(|failure| {
+                    panic!("ordinary test carrier: {:?}", failure.into_error())
+                });
         let pointer = carrier.as_slice().as_ptr();
         let retained = work.live_allocation_bytes();
         let mut response = body(Bytes::from_owner(carrier));
         assert_eq!(work.live_allocation_bytes(), retained);
-        let chunk = response.next().await.ok_or("missing wire chunk")?.map_err(std::io::Error::other)?;
+        let chunk = response
+            .next()
+            .await
+            .ok_or("missing wire chunk")?
+            .map_err(std::io::Error::other)?;
         assert_eq!(chunk.as_ptr(), pointer);
         assert_eq!(chunk.as_ref(), b"canonical HTTP chunk");
         let alias = chunk.slice(1..);
@@ -2771,9 +2855,10 @@ mod tests {
     ) -> S3Result<FilesystemS3Adapter<Resolver, MemoryAuthorityBackend, MemoryObjectBackend>> {
         let filesystem = Fs::memory();
         let workspace = filesystem
-            .create_workspace("s3-http", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|_| s3s::s3_error!(InternalError))?;
+            .create_workspace("s3-http", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|_| s3s::s3_error!(InternalError))?
+            .value;
         FilesystemS3Adapter::new(
             Arc::new(Resolver {
                 principal: FilesystemS3Principal {
@@ -3146,8 +3231,11 @@ mod tests {
             .headers
             .insert(IDEMPOTENCY_HEADER, HeaderValue::from_static("old"));
         S3::put_object(&writable, initial).await?;
-        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-            .map_err(|_| s3s::s3_error!(InternalError))?;
+        let generation = workspace
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|_| s3s::s3_error!(InternalError))?
+            .value;
 
         let mut replacement = request(PutObjectInput {
             body: Some(body(Bytes::from_static(b"new"))),

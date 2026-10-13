@@ -46,16 +46,14 @@ impl Shared {
             if self.stopping.load(Ordering::Acquire) {
                 return;
             }
-            if let Err(error) =
-                self.read_events_and_deliver_with_work(std::time::Duration::MAX, &mut work)
-            {
+            if let Err(error) = self.read_events_and_deliver(std::time::Duration::MAX, &mut work) {
                 self.delivery.failed_with_work(error, &mut work);
                 return;
             }
         }
     }
 
-    pub(super) fn read_events_and_deliver_with_work<W: SourceDemandReadWork>(
+    pub(super) fn read_events_and_deliver<W: SourceDemandReadWork>(
         &self,
         timeout: std::time::Duration,
         work: &mut W,
@@ -74,12 +72,12 @@ impl Shared {
             loop {
                 work.check()?;
                 if started.elapsed() >= timeout {
-                    self.delivery.invalidate_with_work(work)?;
+                    self.delivery.invalidate(work)?;
                     return Ok(false);
                 }
                 while reading.alias_cursor == 0 && !reading.cleanup.is_empty() {
                     if started.elapsed() >= timeout {
-                        self.delivery.invalidate_with_work(work)?;
+                        self.delivery.invalidate(work)?;
                         return Ok(false);
                     }
                     let path = reading.cleanup.last().expect("nonempty pending cleanup");
@@ -141,7 +139,7 @@ impl Shared {
                 work.started_io(ITEM)?;
                 let raw = &reading.buffer[reading.cursor..reading.filled];
                 let Some(header) = raw.get(..EVENT_HEADER_BYTES) else {
-                    self.delivery.invalidate_with_work(work)?;
+                    self.delivery.invalidate(work)?;
                     reading.cursor = reading.filled;
                     return Ok(false);
                 };
@@ -159,7 +157,7 @@ impl Shared {
                     .checked_add(field(12) as usize)
                     .ok_or(WorkError::Overflow)?;
                 let Some(bytes) = raw.get(EVENT_HEADER_BYTES..end) else {
-                    self.delivery.invalidate_with_work(work)?;
+                    self.delivery.invalidate(work)?;
                     reading.cursor = reading.filled;
                     return Ok(false);
                 };
@@ -173,7 +171,7 @@ impl Shared {
                 }
                 let name = OsStr::from_bytes(&bytes[..name_length]);
                 if mask & (libc::IN_Q_OVERFLOW | libc::IN_UNMOUNT) != 0 {
-                    self.delivery.invalidate_with_work(work)?;
+                    self.delivery.invalidate(work)?;
                     reading.cursor += end;
                     reading.alias_cursor = 0;
                     continue;
@@ -200,7 +198,7 @@ impl Shared {
                 }
                 if let Some(invalidated) = ancestor {
                     if invalidated {
-                        self.delivery.invalidate_with_work(work)?;
+                        self.delivery.invalidate(work)?;
                         self.delivery.exact.store(false, Ordering::Release);
                         return Ok(false);
                     }
@@ -222,7 +220,7 @@ impl Shared {
                     != 0;
                 loop {
                     if started.elapsed() >= timeout {
-                        self.delivery.invalidate_with_work(work)?;
+                        self.delivery.invalidate(work)?;
                         return Ok(false);
                     }
                     let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
@@ -241,7 +239,7 @@ impl Shared {
                     }
                     if alias.as_os_str().is_empty() && mask & libc::IN_DELETE_SELF != 0 {
                         drop(watches);
-                        self.delivery.invalidate_with_work(work)?;
+                        self.delivery.invalidate(work)?;
                         self.delivery.exact.store(false, Ordering::Release);
                         return Ok(false);
                     }
@@ -314,7 +312,7 @@ impl Shared {
                     }
                     let delivered = if self.delivery.events.is_some() {
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            self.delivery.event_with_work(&path, mask, cookie, work)
+                            self.delivery.event(&path, mask, cookie, work)
                         }))
                     } else {
                         let change = if mask
@@ -326,8 +324,7 @@ impl Shared {
                             HostChange::Altered(path)
                         };
                         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            self.delivery
-                                .deliver_with_work(std::slice::from_ref(&change), work)
+                            self.delivery.deliver(std::slice::from_ref(&change), work)
                         }));
                         path = match change {
                             HostChange::Rebound(path) | HostChange::Altered(path) => path,

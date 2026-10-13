@@ -133,7 +133,11 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         for length in 1..path.components().len() {
-            let (parent, _allocation) = copy_path(path.components().get(..length).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?, None, work)?;
+            let components = path
+                .components()
+                .get(..length)
+                .ok_or(MountSourceError::Stale)?;
+            let (parent, _allocation) = copy_path(components, None, work)?;
             self.runtime.wait(|| self.promote(&parent, work))?;
         }
         Ok(())

@@ -1616,7 +1616,7 @@ impl NativeWatch {
             None
         } else {
             let sink = Arc::clone(&shared);
-            Some(crate::source_watch::NativeSourceWatch::start_with_work(
+            Some(crate::source_watch::NativeSourceWatch::start(
                 &held_root, sink, work,
             ))
         };

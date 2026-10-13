@@ -30,7 +30,7 @@ where
         &self,
         mut carrier: adapter::NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::NativePublicationSnapshot, (MountSourceError, Option<Box<MountSourceError>>)>
+    ) -> Result<crate::NativePublicationSnapshot, (MountSourceError, Option<MountSourceError>)>
     {
         let result = async {
             let original = carrier
@@ -116,7 +116,7 @@ where
         match (result, accounting) {
             (Ok(snapshot), Ok(())) => Ok(snapshot),
             (Ok(_), Err(error)) | (Err(error), Ok(())) => Err((error, None)),
-            (Err(error), Err(accounting)) => Err((error, Some(Box::new(accounting)))),
+            (Err(error), Err(accounting)) => Err((error, Some(accounting))),
         }
     }
 

@@ -64,8 +64,12 @@ impl ProjFsRecoveryControl {
             self.directory = Some(directory);
         }
         if disposable
-            && let Some(tag) =
-                reparse_tag_held(self.directory.as_ref().expect("held recovery root"), work)?
+            && let Some(tag) = reparse_tag_held(
+                self.directory
+                    .as_ref()
+                    .ok_or(NativeMountError::ControlPending)?,
+                work,
+            )?
         {
             return Err(NativeMountError::UnsafeRecoveryDestination {
                 reparse_tag: Some(tag),
@@ -146,7 +150,9 @@ where
         }) {
             Err(error)
                 if error.raw_os_error()
-                    == Some(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0.cast_signed()) =>
+                    == Some(i32::from_ne_bytes(
+                        ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0.to_ne_bytes(),
+                    )) =>
             {
                 Ok(Some(Some(
                     windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS,

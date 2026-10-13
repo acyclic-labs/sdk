@@ -226,12 +226,11 @@ pub(super) fn source_listing(
                         .work
                         .charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
                     let middle = low + (high - low) / 2;
-                    let existing = entries.0.get(middle)
-                        .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+                    let candidate = entries.0.get(middle).ok_or(MountSourceError::Stale)?;
                     // SAFETY: both names include NUL and retain their allocations.
                     let order = unsafe {
                         PrjFileNameCompare(
-                            PCWSTR::from_raw(existing.name.as_ptr()),
+                            PCWSTR::from_raw(candidate.name.as_ptr()),
                             PCWSTR::from_raw(projected.name.as_ptr()),
                         )
                     };

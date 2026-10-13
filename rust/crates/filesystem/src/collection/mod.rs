@@ -66,25 +66,18 @@ struct State {
 #[derive(Clone, Debug)]
 pub(crate) enum Held {
     /// An open checkout's roots.
-    Checkout(HeldRoots),
+    Checkout {
+        base: ObjectId,
+        working: GenerationRoot,
+        config: crate::model::VolumeConfig,
+        // Last: the held buffer retires before its owner-local tag.
+        control: crate::kernel::ProofDataClaim,
+    },
     /// A detached file's record.
     Record {
         record: crate::kernel::FileRecord,
         config: crate::model::VolumeConfig,
     },
-}
-
-/// The roots one open checkout holds live.
-#[derive(Clone, Debug)]
-pub(crate) struct HeldRoots {
-    /// The generation the checkout is based on.
-    pub(crate) base: ObjectId,
-    /// The root of the checkout's working tree.
-    pub(crate) working: GenerationRoot,
-    /// The checkout's volume configuration, which bounds its pages.
-    pub(crate) config: crate::model::VolumeConfig,
-    // Last: the real held Vec is destroyed before its owner-local tag.
-    control: crate::kernel::ProofDataClaim,
 }
 
 /// Keeps a publication's admitted closure from being swept until its record
@@ -262,8 +255,7 @@ mod buffers;
 mod holds;
 mod roots;
 pub(crate) use buffers::{
-    charge_handle_copy, clone_generation_root, clone_generation_root_with_accounting,
-    handle_allocation_error,
+    clone_generation_root, clone_generation_root_with_accounting, handle_allocation_error,
 };
 use buffers::{held_owned_bytes, root_parent_bytes};
 pub(crate) use holds::Hold;

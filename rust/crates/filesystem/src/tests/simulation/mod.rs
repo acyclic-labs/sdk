@@ -1,7 +1,9 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::storage::{AuthorityResult, FenceOutcome, ObjectKind};
-use crate::{AuthorityFailure, AuthorityWork, WorkError};
+use crate::{
+    AuthorityFailure, AuthorityWork, CancellationToken, ObjectResult, WorkBudget, WorkError,
+};
 use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
@@ -169,10 +171,18 @@ fn assert_object_before_work<T>(
     assert!(if cancelled {
         matches!(failure.error, ObjectStoreError::Cancelled)
     } else {
-        matches!(failure.error, ObjectStoreError::Rejected(_)
-            | ObjectStoreError::Simulation("scheduled rejection" | "scheduled partition"))
+        matches!(
+            failure.error,
+            ObjectStoreError::Rejected(_)
+                | ObjectStoreError::Simulation("scheduled rejection" | "scheduled partition")
+        )
     });
-    assert_eq!(*failure.work, WorkCounters::default());
+    if cancelled {
+        assert_eq!(*failure.work, WorkCounters::default());
+    }
+    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.durability_operations, 0);
     Ok(())
 }
 
