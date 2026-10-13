@@ -51,7 +51,7 @@ pub(super) async fn stock_restart_with_publication_fault(
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
-        "private",
+        "private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -300,7 +300,7 @@ pub(super) async fn stock_restart_with_publication_fault(
             && !cancel_after_failure
         {
             assert!(
-                host.journal_owner(task, LeaseFence::from(&old.reservation))
+                host.journal_owner(task, &LeaseFence::from(&old.reservation), None)
                     .await
                     .is_err()
             );
@@ -452,7 +452,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                 .with_durable_task(host.clone(), task, fence.clone())
                 .with_task_context(&admitted_context, execution.operation_id())?;
                 let journal = FilesystemExecutionJournal::for_task(
-                    host.journal_owner(task, fence.clone()).await?,
+                    host.journal_owner(task, &fence.clone(), None).await?,
                     execution.operation_id(),
                     OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
@@ -540,7 +540,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                 assert!(terminal.reservation.is_none());
                 assert!(coordinator.pull(&worker).await?.is_none());
                 assert!(
-                    host.journal_owner(task, LeaseFence::from(&old.reservation))
+                    host.journal_owner(task, &LeaseFence::from(&old.reservation), None)
                         .await
                         .is_err()
                 );

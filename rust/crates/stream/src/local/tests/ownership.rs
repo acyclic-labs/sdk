@@ -30,7 +30,7 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
             let provider = provider.clone();
             async move {
                 let _caller_controls = caller_controls;
-                provider.native_commit(request, original).await
+                provider.native_commit(request, None, original).await
             }
         });
         tokio::task::spawn_blocking(move || {

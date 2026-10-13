@@ -287,7 +287,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             origin: allocation.origin.clone(),
             generation: allocation.generation.clone(),
             prepared_generation: allocation.prepared_generation,
-            creation_operation: allocation.creation_operation,
             reader,
             writer,
         });

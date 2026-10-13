@@ -74,7 +74,12 @@ async fn authenticate<P: StreamProvider>(
         });
     }
     owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     Ok(owner.task_id())
 }
@@ -112,7 +117,12 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     )
     .await?;
     owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     Ok((command.0, command.1))
 }
@@ -209,7 +219,10 @@ where
         });
     }
     let bytes = context
-        .read_file(&command.payload, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
+        .read_file(
+            &command.payload,
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        )
         .await?;
     let payload = decode::<MailSendTaskCommand>(bytes.as_ref(), work)?;
     drop(bytes);
@@ -230,20 +243,7 @@ where
 }
 
 const MAIL_DIAGNOSTIC_LABEL_BYTES: u64 =
-    super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
-        + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-            "PiMailKind",
-            "message",
-            "steer",
-            "PiMailEnvelope",
-            "kind",
-            "PiMailPayload",
-            "sender",
-            "envelope",
-            "MailSendTaskCommand",
-            "recipient",
-            "payload",
-        ]);
+    super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES + 146;
 
 fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8],

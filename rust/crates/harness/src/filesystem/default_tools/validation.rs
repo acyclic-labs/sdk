@@ -17,50 +17,16 @@ pub(super) fn reject_if(
     }
 }
 
-fn deny(rejected: bool, io: Option<&PreparationIo>) -> Result<()> {
-    reject_if(
-        rejected,
-        io,
-        Unauthorized,
-        "recursive operation changed its admitted authority",
-    )
-}
-
-pub(super) fn check_source_command(
-    command: &WorkflowCommand,
-    intent: &RecursiveForkSourceIntent,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    with_history_io(io, |work| command.validate(work))?;
-    deny(
-        command.kind != FORK_SOURCE_STAGE
-            || command.operation_id != derived(intent.request.operation_id, "source-stage", io)?,
-        io,
-    )
-}
-
-pub(super) fn check_command(
-    command: &WorkflowCommand,
-    stage: &str,
-    plan: &Plan,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    with_history_io(io, |work| command.validate(work))?;
-    let effect = match plan {
-        Plan::Fork(plan) => {
-            recursive_decoded::<ForkRequest, _>(&plan.request.payload, io, |request| {
-                Ok(request.operation_id)
-            })?
-        }
-        Plan::Merge(plan) => plan.operation_id,
-    };
-    deny(
-        command.kind != command_kind(stage)
-            || command.operation_id != derived(effect, stage, io)?
-            || command_reference(plan, stage)
-                .is_some_and(|reference| &command.payload != reference),
-        io,
-    )
+pub(super) fn deny(rejected: bool, io: Option<&PreparationIo>) -> Result<()> {
+    if rejected {
+        Err(recursive_reject(
+            io,
+            Unauthorized,
+            "recursive operation changed its admitted authority",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) fn validate_source_intent(
@@ -464,9 +430,29 @@ fn verify_volume(
     })
 }
 
-pub(super) fn command_reference<'a>(plan: &'a Plan, stage: &str) -> Option<&'a FileRef> {
-    match (plan, stage) {
-        (Plan::Fork(plan), "observe" | "fork-publish") => plan.request.source_checkpoint.as_ref(),
-        _ => None,
+pub(super) fn merge_result(
+    plan: &RecursiveMergeToolPlan,
+    value: &Value,
+    io: Option<&PreparationIo>,
+) -> Result<Option<ProjectMergeReceipt>> {
+    match value.get("status").and_then(Value::as_str) {
+        Some("applied") => {
+            let receipt = decode(
+                value
+                    .get("receipt")
+                    .ok_or_else(|| recursive_reject(io, Invalid, "applied merge has no receipt"))?,
+                io,
+            )?;
+            validate_merge_receipt(plan, &receipt, io)?;
+            Ok(Some(receipt))
+        }
+        Some("no_changes" | "stale_target" | "conflicted" | "fenced" | "idempotency_conflict") => {
+            Ok(None)
+        }
+        _ => Err(recursive_reject(
+            io,
+            Invalid,
+            "merge is not a provider outcome",
+        )),
     }
 }

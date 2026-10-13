@@ -6,48 +6,19 @@ pub(super) async fn capture_observed_paths_from_root<
 >(
     checkout: &mut Checkout<A, O>,
     observed: (Vec<Option<HostStat>>, Vec<NamespacePath>),
+    batch_size: usize,
     maximum_extent_spans: u32,
     source_root: &HostRoot,
     baseline: Option<&NativeViewBaseline>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
-    let states = lookup_capture_states(checkout, observed, usize::MAX, meter).await?;
+    let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
+    let bytes = vector_bytes(&states);
+    let count = states.len();
     let mut host_links = Vec::new();
-    let captured = capture_ranked_paths_from_root(
-        checkout,
-        states,
-        &mut host_links,
-        maximum_extent_spans,
-        source_root,
-        baseline,
-        meter,
-    )
-    .await;
-    let cleanup = release_host_links(host_links, meter);
-    match captured {
-        Ok(captured) => {
-            cleanup?;
-            Ok(captured)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    states: Vec<CapturePathState>,
-    host_links: &mut Vec<([u8; 16], NamespacePath)>,
-    maximum_extent_spans: u32,
-    source_root: &HostRoot,
-    baseline: Option<&NativeViewBaseline>,
-    meter: &NativeMaterializationWork,
-) -> Result<CaptureReceipt, CaptureError> {
-    let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
-    meter.clone().check().map_err(capture_demand_error)?;
     let mut receipt = CaptureReceipt::default();
     let mut mutations = Vec::new();
-    for (observation, path, current) in states {
+    for (index, (observation, path, current)) in states.into_iter().enumerate() {
         prepare_final_path(
             checkout,
             path,
@@ -55,7 +26,7 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
             CaptureIntent::Complete,
             source_root,
             observation,
-            host_links,
+            &mut host_links,
             None,
             baseline,
             &mut mutations,
@@ -64,20 +35,14 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
             meter,
         )
         .await?;
+        if (index + 1) % batch_size == 0 && index + 1 < count {
+            apply_capture_transaction(checkout, std::mem::take(&mut mutations), meter).await?;
+        }
     }
-    {
-        meter
-            .clone()
-            .release(states_bytes)
-            .map_err(capture_demand_error)?;
-    }
+    meter.clone().release(bytes).map_err(capture_demand_error)?;
     apply_capture_transaction(checkout, mutations, meter).await?;
-    {
-        meter
-            .receipt()
-            .verify(meter.with_original_leaf(|work| work.budget))
-            .map_err(CaptureError::from)?;
-    }
+    release_host_links(host_links, meter)?;
+    meter.clone().check().map_err(capture_demand_error)?;
     Ok(receipt)
 }
 

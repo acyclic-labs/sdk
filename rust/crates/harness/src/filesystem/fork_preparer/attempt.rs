@@ -1,151 +1,188 @@
-//! One bounded preparation attempt and its capture journal.
+//! Preparation ownership and the main fork journal protocol.
 use super::*;
+use crate::executor::{stock_boundary, stock_string_copy, with_history_io};
+
+impl acyclic_fs::AuthorityGuard for &TaskResourcePreparation {
+    type Error = Error;
+
+    async fn seal(
+        &mut self,
+        work: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> std::result::Result<(), acyclic_fs::AuthorityError<Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = match work.original {
+            Some(original) => PreparationIo::from_native_work(original),
+            None => PreparationIo::from_budget(work.remaining()?, work.cancellation),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let io = PreparationIo::from_budget(work.remaining()?, work.cancellation);
+        let io = io.map_err(acyclic_fs::AuthorityError::Owner)?;
+        let result = match self.verify(false, Some(&io)) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        if io.original_native_work().is_none() {
+            work.work = work
+                .work
+                .checked_add(io.receipt())
+                .map_err(acyclic_fs::AuthorityStoreError::from)?;
+        }
+        result.map_err(acyclic_fs::AuthorityError::Owner)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn native_commit<P: StreamProvider>(
+        &mut self,
+        provider: &P,
+        request: acyclic_stream::CommitRequest,
+        deadline: Option<u64>,
+        work: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> acyclic_stream::NativeStreamResult<
+        acyclic_stream::CommitOutcome,
+        acyclic_fs::AuthorityError<Error>,
+    > {
+        let owner = Arc::clone(&self.owner);
+        let expected = self
+            .native_custody
+            .as_ref()
+            .map(|allocation| allocation.work().clone());
+        acyclic_fs::NativeAuthorityGuard(move |work: &acyclic_fs::NativeMaterializationWork| {
+            let work = work.clone();
+            let owner = Arc::clone(&owner);
+            let expected = expected.clone();
+            async move {
+                if expected.is_none_or(|expected| !expected.shares_allocation_context(&work)) {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "preparation lacks original native custody",
+                    });
+                }
+                let io = PreparationIo::from_native_work(&work)?;
+                owner.verify_lease(false, Some(&io))?.await
+            }
+        })
+        .native_commit(provider, request, deadline, work)
+        .await
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkPreparer<A, O> {
-    pub(super) fn attempt<'a>(
-        &'a self,
-        task: Option<&'a Arc<TaskResourcePreparation>>,
-    ) -> Result<PreparationAttempt<'a, A, O>> {
-        let mut io = None;
+    pub(super) fn preparation_io(
+        &self,
+        task: Option<&Arc<TaskResourcePreparation>>,
+    ) -> Result<Option<PreparationIo>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(allocation) = &self.native {
-            io = Some(PreparationIo::from_native_work(allocation.work())?);
+            let io = PreparationIo::from_native_work(allocation.work())?;
+            if let Some(task) = task {
+                task.request().validate(&mut Some(&mut io.history_io()))?;
+            }
+            return Ok(Some(io));
         }
-        if io.is_none() {
-            io = task
-                .map(|task| {
-                    let cancellation =
-                        task.cancellation().ok_or_else(|| {
-                            Error::Unauthorized(
-                    "task-bound preparation has no original invocation cancellation token".into())
-                        })?;
-                    PreparationIo::new(task.request(), cancellation)
-                })
-                .transpose()?;
+        task.map(|task| {
+            let cancellation = task.cancellation().ok_or_else(|| {
+                Error::Unauthorized(
+                    "task-bound preparation has no original invocation cancellation token".into(),
+                )
+            })?;
+            PreparationIo::new(task.request(), cancellation)
+        })
+        .transpose()
+    }
+
+    fn task_attempt<'a>(
+        &'a self,
+        task: &'a Arc<TaskResourcePreparation>,
+        request: &ForkRequest,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<PreparationAttempt<'a, A, O>> {
+        if task.request().provider != self.host.provider
+            || task.request().creation_grant != capability::FORK_PUBLISH
+        {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "fork preparation task belongs to another provider or creation authority",
+            ));
         }
-        if let (Some(io), Some(task)) = (&io, task) {
-            task.request().validate(&mut Some(&mut io.history_io()))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            self.require_native_projection_work(work)?;
         }
+        self.check_request(request, io, Some(task))?;
         Ok(PreparationAttempt {
             preparer: self,
             io,
-            task_preparation: task,
+            task_preparation: Some(task),
         })
     }
 
-    /// Prepares captures under the authenticated preparation task.
+    /// Prepares captures under the authenticated task and caller's work context.
     pub async fn prepare_for_task(
         &self,
-        request: ForkRequest,
+        request: &ForkRequest,
         preparation: &Arc<TaskResourcePreparation>,
+        io: Option<&PreparationIo>,
     ) -> Result<ForkReport> {
-        if preparation.request().provider != self.host.provider
-            || preparation.request().creation_grant != capability::FORK_PUBLISH
-        {
-            return Err(Error::Unauthorized(
-                "fork preparation task belongs to another provider or creation authority".into(),
-            ));
+        let owned = if io.is_none() {
+            self.preparation_io(Some(preparation))?
+        } else {
+            None
+        };
+        let io = io.or(owned.as_ref());
+        let attempt = self.task_attempt(preparation, request, io)?;
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+            io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
         }
-        let attempt = self.attempt(Some(preparation))?;
-        self.check_request(&request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
+        let request = with_history_io(io, |work| request.copy(work).map(|copy| copy.0))?;
         attempt.prepare(request).await
     }
 
-    /// Borrows the exact admitted request and genuine current preparation owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn prepare_for_task_with_native_work<'a>(
-        &'a self,
-        preparation: &'a Arc<TaskResourcePreparation>,
-        request: &'a ForkRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ForkReport, acyclic_fs::NativeAllocation)>> {
-        self.require_native_projection_work(work)?;
-        let attempt = self.attempt(Some(preparation))?;
-        self.check_request(request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
-        crate::NativeFutureBundle::new(work, || async move {
-            preparation
-                .verify(
-                    false,
-                    Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                )?
-                .await?;
-            let io = attempt
-                .io
-                .as_ref()
-                .expect("original native preparer owns its IO");
-            io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
-            let owned = request.copy(&mut Some(&mut io.history_io()))?.0;
-            let report = attempt.prepare(owned).await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.take_native_custody(retained)?;
-            Ok((report, custody))
-        })
-    }
-
-    /// Reconciles the retained report under its settlement owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn reconcile_for_task_with_native_work<'a>(
-        &'a self,
-        preparation: &'a Arc<TaskResourcePreparation>,
-        request: &'a ForkRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ForkReport>, acyclic_fs::NativeAllocation)>>
-    {
-        self.require_native_projection_work(work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            preparation
-                .verify(
-                    true,
-                    Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                )?
-                .await?;
-            let attempt = self.attempt(Some(preparation))?;
-            let io = attempt
-                .io
-                .as_ref()
-                .expect("original native preparer owns its IO");
-            self.check_request(request, Some(io), Some(preparation.as_ref()))?;
-            let report = attempt.reconcile(request).await?;
-            preparation
-                .verify(
-                    true,
-                    Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                )?
-                .await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.take_native_custody(retained)?;
-            Ok((report, custody))
-        })
+    /// Reconciles captures under their original settlement owner.
+    pub async fn reconcile_for_task(
+        &self,
+        request: &ForkRequest,
+        preparation: &Arc<TaskResourcePreparation>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<ForkReport>> {
+        let owned = if io.is_none() {
+            self.preparation_io(Some(preparation))?
+        } else {
+            None
+        };
+        let io = io.or(owned.as_ref());
+        let attempt = self.task_attempt(preparation, request, io)?;
+        attempt.verify_task_lease(true).await?;
+        let report = attempt.reconcile(request).await?;
+        attempt.verify_task_lease(true).await?;
+        Ok(report)
     }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
     pub(super) fn journal_limit(&self, default: u64) -> u64 {
         self.task_preparation
-            .as_ref()
             .map_or(default, |task| default.min(task.request().maximum_bytes))
     }
-
     pub(super) fn clone_authority(&self, value: &Authority) -> Result<Authority> {
-        use crate::store::history::HistoryIo as _;
-        self.io.as_ref().map_or_else(
+        use crate::store::history::HistoryIo;
+        self.io.map_or_else(
             || Ok(value.clone()),
             |io| io.history_io().clone_authority(value),
         )
     }
-
     pub(super) fn clone_paths(&self, paths: &[String]) -> Result<Vec<String>> {
-        let mut values = crate::model::vec_with_capacity(paths.len(), self.io.as_ref())?;
+        let mut values = crate::model::vec_with_capacity(paths.len(), self.io)?;
         for path in paths {
-            values.push(stock_string_copy(path, self.io.as_ref())?);
+            values.push(stock_string_copy(path, self.io)?);
         }
         Ok(values)
     }
-
     pub(super) fn clone_origin(
         &self,
         origin: &ResourceCreationOrigin,
     ) -> Result<ResourceCreationOrigin> {
-        crate::executor::with_history_io(self.io.as_ref(), |work| {
+        with_history_io(self.io, |work| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let origin = ResourceCreationOrigin {
                 owner: crate::core::copy_authority(&origin.owner, &mut quota)?,
@@ -153,7 +190,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 preparation_task: origin.preparation_task,
                 intended_child: origin.intended_child,
                 admission_digest: origin.admission_digest,
-                source_grants: crate::core::copy(&origin.source_grants, &mut quota, |value: &crate::Capabilities, _| value.logical_owned_bytes())?,
+                source_grants: crate::core::copy(
+                    &origin.source_grants,
+                    &mut quota,
+                    |value: &crate::Capabilities, _| value.logical_owned_bytes(),
+                )?,
                 request_digest: origin.request_digest,
                 creation_fence: crate::scheduler::LeaseFence {
                     reservation_id: crate::core::copy_text(
@@ -170,9 +211,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             Ok(origin)
         })
     }
-
     pub(super) fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
-        crate::executor::with_history_io(self.io.as_ref(), |work| {
+        with_history_io(self.io, |work| {
             ContentGrant::verify(
                 &self.preparer.verifier,
                 &self.preparer.scope,
@@ -183,50 +223,44 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             )
         })
     }
-
     pub(super) async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
-        if let Some(preparation) = &self.task_preparation {
-            preparation.verify(settlement, self.io.as_ref())?.await?;
+        if let Some(task) = self.task_preparation {
+            task.verify(settlement, self.io)?.await?;
         }
-
         Ok(())
     }
-
     pub(super) async fn verify_task_allocations(&self, request: &ForkRequest) -> Result<()> {
-        let Some(preparation) = &self.task_preparation else {
+        let Some(task) = self.task_preparation else {
             return Ok(());
         };
-        let digest = record_digest(
-            request,
-            self.journal_limit(MAX_REQUEST_BYTES),
-            self.io.as_ref(),
-        )?;
+        let maximum = self.journal_limit(MAX_REQUEST_BYTES);
+        let digest = record_digest(request, maximum, self.io)?;
         for volume in creation_volumes(request) {
-            let journal = allocation_ref(&self.preparer.host.provider, volume, self.io.as_ref())?;
-            let retained = read_record::<A, O, AllocationClaim>(
+            let journal = allocation_ref(&self.preparer.host.provider, volume, self.io)?;
+            let claim: AllocationClaim = read_record(
                 &self.preparer.host,
                 &journal,
                 "/claim.json",
-                self.journal_limit(MAX_REQUEST_BYTES),
-                self.io.as_ref(),
+                maximum,
+                self.io,
             )
             .await?
             .ok_or_else(|| {
                 stock_boundary(
-                    self.io.as_ref(),
+                    self.io,
                     crate::wire::ErrorCode::Unauthorized,
                     "task-bound allocation is missing",
                 )
             })?;
-            if retained.operation_id != request.operation_id
-                || retained.preparation_digest != digest
-                || retained.parent != request.parent
-                || retained.child != request.child
-                || &retained.volume != volume
-                || !same_task_origin(retained.task_origin.as_ref(), Some(preparation.origin()))
+            if claim.operation_id != request.operation_id
+                || claim.preparation_digest != digest
+                || claim.parent != request.parent
+                || claim.child != request.child
+                || &claim.volume != volume
+                || !same_task_origin(claim.task_origin.as_ref(), Some(task.origin()))
             {
                 return Err(stock_boundary(
-                    self.io.as_ref(),
+                    self.io,
                     crate::wire::ErrorCode::Unauthorized,
                     "allocation belongs to another preparation task",
                 ));
@@ -234,35 +268,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         }
         Ok(())
     }
-
     pub(super) async fn reconcile(&self, request: &ForkRequest) -> Result<Option<ForkReport>> {
-        let journal = preparation_journal(
-            &self.preparer.host.provider,
-            request.operation_id,
-            self.io.as_ref(),
-        )?;
-        match bounded_io::resolve(&self.preparer.host, &journal, self.io.as_ref()).await {
+        let host = &self.preparer.host;
+        let journal = preparation_journal(&host.provider, request.operation_id, self.io)?;
+        match bounded_io::resolve(host, &journal, self.io).await {
             Ok(_) => {}
             Err(error) if journal_absent(&error) => return Ok(None),
             Err(error) => return Err(error),
         }
         if !read_claim(
-            &self.preparer.host,
+            host,
             &journal,
             request,
             self.journal_limit(MAX_REQUEST_BYTES),
-            self.io.as_ref(),
+            self.io,
         )
         .await?
         {
             return Ok(None);
         }
         let report = read_report(
-            &self.preparer.host,
+            host,
             &journal,
             request,
             self.journal_limit(MAX_REPORT_BYTES),
-            self.io.as_ref(),
+            self.io,
         )
         .await?;
         if report.is_some() {
@@ -270,82 +300,46 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         }
         Ok(report)
     }
-
     pub(super) async fn claim(&self, request: &ForkRequest) -> Result<WorkspaceRef> {
-        let journal = preparation_journal(
-            &self.preparer.host.provider,
-            request.operation_id,
-            self.io.as_ref(),
-        )?;
+        let host = &self.preparer.host;
+        let journal = preparation_journal(&host.provider, request.operation_id, self.io)?;
         let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| {
             stock_boundary(
-                self.io.as_ref(),
+                self.io,
                 crate::wire::ErrorCode::Invalid,
                 "fork journal name is not UTF-8",
             )
         })?;
-        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(
-            self.io.as_ref(),
-            |work| {
-                crate::executor::preparation_format(
-                    format_args!("fork:{}:journal", request.operation_id),
-                    work,
-                )
-            },
-        )?)?;
-        bounded_io::create(
-            &self.preparer.host,
-            name,
-            &creation_key,
-            self.io.as_ref(),
-            self.task_preparation,
-        )
-        .await?;
-        let key = IdempotencyKey::new(crate::executor::with_history_io(
-            self.io.as_ref(),
-            |work| {
-                crate::executor::preparation_format(
-                    format_args!("fork:{}:claim", request.operation_id),
-                    work,
-                )
-            },
-        )?)?;
+        let creation = self.journal_key(request.operation_id, "journal")?;
+        bounded_io::create(host, name, &creation, self.io, self.task_preparation).await?;
+        let key = self.journal_key(request.operation_id, "claim")?;
         let prior = write_once(
-            &self.preparer.host,
+            host,
             &journal,
             "/request.json",
             request,
             self.journal_limit(MAX_REQUEST_BYTES),
             &key,
             request.operation_id,
-            self.io.as_ref(),
+            self.io,
             self.task_preparation,
         )
         .await?;
         if prior != *request {
             return Err(stock_boundary(
-                self.io.as_ref(),
+                self.io,
                 crate::wire::ErrorCode::Conflict,
                 "fork operation is claimed by another request",
             ));
         }
         Ok(journal)
     }
-
     pub(super) async fn commit_report(
         &self,
         journal: &WorkspaceRef,
         report: &ForkReport,
     ) -> Result<ForkReport> {
-        let key = IdempotencyKey::new(crate::executor::with_history_io(
-            self.io.as_ref(),
-            |work| {
-                crate::executor::preparation_format(
-                    format_args!("fork:{}:report", report.request.operation_id),
-                    work,
-                )
-            },
-        )?)?;
+        let key = self.journal_key(report.request.operation_id, "report")?;
         let prior = write_once(
             &self.preparer.host,
             journal,
@@ -354,19 +348,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.journal_limit(MAX_REPORT_BYTES),
             &key,
             report.request.operation_id,
-            self.io.as_ref(),
+            self.io,
             self.task_preparation,
         )
         .await?;
         if prior != *report {
             return Err(stock_boundary(
-                self.io.as_ref(),
+                self.io,
                 crate::wire::ErrorCode::Conflict,
                 "fork operation has a different committed report",
             ));
         }
         Ok(prior)
     }
+    fn journal_key(&self, operation: OperationId, suffix: &str) -> Result<IdempotencyKey> {
+        IdempotencyKey::new(with_history_io(self.io, |work| {
+            crate::executor::preparation_format(format_args!("fork:{operation}:{suffix}"), work)
+        })?)
+    }
 }
-
-use crate::executor::{stock_boundary, stock_string_copy};

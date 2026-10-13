@@ -38,7 +38,7 @@ impl PiRootPreparation {
     pub(crate) async fn load(
         private_root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path,
-        runtime: &super::pi_native_host::PiNativeRuntime,
+        runtime: &super::pi_runtime::PiTaskRuntime,
         filesystem: &crate::pi_native_host::PiNativeFilesystem,
         binding: &PiTaskBinding,
         origin: super::pi_recovery::PiTaskOrigin<'_>,
@@ -46,7 +46,7 @@ impl PiRootPreparation {
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
-        let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
+        let owner = PiOwnerConfig::load(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
         owner.validate_root(binding, work)?;
         let admitted =
@@ -55,16 +55,16 @@ impl PiRootPreparation {
         let context = match context {
             Some(context) => context,
             None => {
-                let original = runtime
+                let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+                runtime
                     .runtime
                     .harness()
-                    .durable_context_with_native_work(
+                    .durable_context(
                         binding.task_id,
                         OperationId::from_bytes(binding.task_id.into_bytes()),
-                        work,
+                        Some(&io),
                     )
-                    .await?;
-                original.0.into_native_shared(original.1, work)?
+                    .await?
             }
         };
         if context.durable_task_id() != Some(admitted.0.binding.task_id) {
@@ -80,7 +80,8 @@ impl PiRootPreparation {
             ));
         };
         preparation.validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         if preparation.kind != EFFECT_TASK_COMMAND_KIND
             || preparation.operation_id != preparation_operation(owner.policy().root_task, work)?
         {

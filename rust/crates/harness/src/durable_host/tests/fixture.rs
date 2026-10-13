@@ -421,9 +421,9 @@ pub(super) async fn fixture() -> Result<Fixture> {
     .await
 }
 
-struct FixtureMachine {
-    identity: MachineIdentity,
-    schema: Value,
+pub(super) struct FixtureMachine {
+    pub(super) identity: MachineIdentity,
+    pub(super) schema: Value,
 }
 impl ResumableMachine for FixtureMachine {
     fn identity(&self) -> &MachineIdentity {

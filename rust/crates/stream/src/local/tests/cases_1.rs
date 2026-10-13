@@ -46,8 +46,8 @@ async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>>
     use tracing_subscriber::layer::SubscriberExt as _;
     // With one live dispatcher, a callsite that a concurrent test reaches
     let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
-    let captured = Captured::default();
-    let capture = Capture(Arc::clone(&captured), Mutex::default());
+    let captured = acyclic_grpc_observability::tests::Capture::default();
+    let capture = captured.clone();
     let _default =
         tracing::subscriber::set_default(tracing_subscriber::Registry::default().with(capture));
     let directory = tempfile::tempdir()?;
@@ -60,34 +60,28 @@ async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>>
             idempotency_key: None,
         })
         .await?;
-    let captured = captured.lock().unwrap();
-    let fields = |name: &str| {
-        captured
-            .iter()
-            .find(|(found, _)| *found == name)
-            .map(|(_, fields)| fields.clone())
-            .unwrap_or_default()
-    };
-    let append = fields("acyclic.stream.append");
-    for field in [
+    let append = captured.fields("acyclic.stream.append");
+    for (field, value) in [
         ("items", "2"),
         ("bytes", "8"),
         ("rev", "2"),
         ("outcome", "ok"),
     ] {
-        assert!(
-            append.contains(&(field.0, field.1.to_owned())),
-            "{append:?}"
-        );
+        assert_eq!(append[field], value);
     }
-    assert!(fields("acyclic.stream.open").contains(&("outcome", "ok".to_owned())));
-    assert!(captured.iter().any(|(name, fields)| {
-        *name == "event" && fields.contains(&("fsyncs", "1".to_owned()))
+    assert_eq!(captured.fields("acyclic.stream.open")["outcome"], "ok");
+    let evidence = captured.0.lock().unwrap();
+    assert!(evidence.events.iter().any(|(_, fields)| {
+        fields
+            .iter()
+            .any(|(_, field, value)| field == "fsyncs" && value == "1")
     }));
-    for (_, fields) in captured.iter() {
-        for (field, value) in fields {
+    for span in &evidence.spans {
+        for field in &span.declared_fields {
             assert!(!["path", "token", "content", "body", "authorization"].contains(field));
-            assert!(!value.contains("traced"), "{field} leaks a stream path");
+        }
+        for value in span.fields.values() {
+            assert!(!value.contains("traced"));
         }
     }
     Ok(())

@@ -54,7 +54,7 @@ mod sources;
 
 pub(crate) use codec::{
     canonical_pi_value, digest_pi_value, guarded_pi_bytes, guarded_pi_decode, guarded_pi_value,
-    native_buffer_codec_charge, pi_serde_diagnostic_labels_bytes, read_pi_input_with_native_work,
+    native_buffer_codec_charge, read_pi_input_with_native_work,
 };
 use inputs::{
     NativeInputCoordinates, observe_pi_input_at, publish_pi_input_with_native_coordinates,
@@ -65,7 +65,7 @@ pub(crate) use inputs::{
     observe_pi_root_input_with_native_work, stage_pi_input, stage_pi_operator_input,
     stage_pi_root_input_with_native_work,
 };
-pub(crate) use preparation::{bind_root_output_context_with_native_work, observe_root_allocation};
+pub(crate) use preparation::bind_root_output_context_with_native_work;
 pub(crate) use sources::{
     guard_root_preparation_source_with_native_work, prove_root_project_source_with_native_work,
 };
@@ -94,10 +94,11 @@ impl PiRootHandle {
                 reason: "root index key custody differs from original source work",
             });
         }
-        let workspace = workspace.into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        })?;
+        let workspace =
+            workspace.into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            })?;
         let mut entry = work.claim(
             std::mem::size_of::<(String, Self)>() as u64,
             0,
@@ -117,123 +118,7 @@ impl PiRootHandle {
 
 // Original Root request/allocation/attachment and their closed SDK leaves.
 pub(crate) const ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES: u64 =
-    acyclic_harness::preparation_serde_diagnostic_label_bytes()
-        + pi_serde_diagnostic_labels_bytes(&[
-            "PiRootRequest",
-            "binding",
-            "root",
-            "PiTaskBinding",
-            "native_session_id",
-            "task_id",
-            "agent_id",
-            "project_volumes",
-            "scratch",
-            "results",
-            "PiScratchBinding",
-            "volume",
-            "allocation",
-            "PiScratchAllocation",
-            "state",
-            "creation",
-            "preparing",
-            "created",
-            "PiScratchCreation",
-            "workspace_id",
-            "generation",
-            "PiRootIntent",
-            "kind",
-            "scratch_only",
-            "project",
-            "context_id",
-            "root_id",
-            "paths",
-            "PiRootAllocation",
-            "roots",
-            "RootCreation",
-            "repository_workspace_id",
-            "source_identity",
-            "source_epoch",
-            "native_root_identity",
-            "task",
-            "command",
-            "effect",
-            "attempt",
-            "digest",
-            "provider",
-            "effect_kind",
-            "native_path",
-            "source",
-            "native_identity",
-            "budget",
-            "SourceReference",
-            "identity",
-            "epoch",
-            "TaskEffectPlan",
-            "guarantee",
-            "request",
-            "result_schema",
-            "exactly_once",
-            "at_least_once",
-            "at_most_once",
-            "ProviderRefWire",
-            "namespace",
-            "family",
-            "version",
-            "ResourceRefWire",
-            "key",
-            "workspace",
-            "generation",
-            "artifact",
-            "sandbox",
-            "checkpoint",
-            "stream",
-            "context",
-            "run",
-            "VolumeRefWire",
-            "id",
-            "class",
-            "owner",
-            "agent_private",
-            "session_shared",
-            "agent",
-            "session",
-            "FileRefWire",
-            "path",
-            "descriptor",
-            "display_name",
-            "FileDescriptorWire",
-            "sha256",
-            "byte_length",
-            "media_type",
-            "SHA-256 digest must contain exactly 32 bytes",
-            "file byte length exceeds cross-language precision",
-            "media type is invalid",
-            "WorkCounters",
-            "authorityRecordsRead",
-            "authorityRecordsAppended",
-            "authorityBytesRead",
-            "authorityBytesWritten",
-            "objectProbes",
-            "backendReadOperations",
-            "backendWriteOperations",
-            "durabilityOperations",
-            "pageReads",
-            "pageWrites",
-            "objectBytesRead",
-            "objectBytesWritten",
-            "bytesHashed",
-            "bytesCopied",
-            "bytesEncoded",
-            "sourceBytesRead",
-            "sourcePathComponents",
-            "sourceEntriesVisited",
-            "outputBytes",
-            "itemsExamined",
-            "itemsReturned",
-            "allocationOperations",
-            "peakAllocationBytes",
-            "materializations",
-        ]);
+    acyclic_harness::preparation_serde_diagnostic_label_bytes() + 1191;
 
 /// Finite allowance for native attachment plus first-party metadata processing.
 pub(crate) fn allocation_budget() -> WorkBudget {
@@ -283,7 +168,7 @@ pub(crate) fn service_resources_with_native_work(
     resources: &ServiceResources,
     work: &NativeMaterializationWork,
 ) -> Result<(ServiceResources, NativeAllocation)> {
-    let data = work.copy_path(&resources.data)?;
+    let data = work.path(&resources.data, None)?;
     let mut binary = work.display(&resources.binary_identity)?;
     let mut instance = work.display(&resources.instance_id)?;
     let mut owned = (
@@ -367,7 +252,9 @@ pub(crate) fn root_provider(
         .chain(std::iter::once(&request.binding.scratch.volume))
     {
         let grant = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?,
+            );
             let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -381,7 +268,9 @@ pub(crate) fn root_provider(
         }
     }
     let grant = {
-        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?);
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?,
+        );
         let value = request
             .binding
             .scratch

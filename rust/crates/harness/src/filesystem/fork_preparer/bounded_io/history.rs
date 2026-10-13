@@ -93,10 +93,15 @@ impl HistoryIo for &PreparationIo {
             return Ok(());
         }
         let old = text.capacity();
-        self.retain_owned((capacity - old) as u64)?;
-        self.allocation_attempt((capacity - old) as u64)?;
-        text.try_reserve_exact(capacity - text.len())
-            .map_err(Error::Allocation)?;
+        let claimed = (capacity - old) as u64;
+        self.retain_owned(claimed)?;
+        if let Err(error) = self.allocation_attempt(claimed).and_then(|()| {
+            text.try_reserve_exact(capacity - text.len())
+                .map_err(Error::Allocation)
+        }) {
+            self.release(claimed)?;
+            return Err(error);
+        }
         self.retain_owned((text.capacity() - capacity) as u64)
     }
 
@@ -104,7 +109,8 @@ impl HistoryIo for &PreparationIo {
         self.preflight(WorkCounters {
             bytes_copied: bytes,
             ..Default::default()
-        }).map_err(Into::into)
+        })
+        .map_err(Into::into)
     }
     fn copy_bytes(&mut self, bytes: u64) -> Result<()> {
         self.charged(WorkCounters {
@@ -116,23 +122,26 @@ impl HistoryIo for &PreparationIo {
         self.charge(WorkCounters {
             bytes_encoded: bytes,
             ..Default::default()
-        }).map_err(Into::into)
+        })
+        .map_err(Into::into)
     }
     fn admit_encoding(&self, bytes: u64) -> Result<()> {
         self.preflight(WorkCounters {
             bytes_encoded: bytes,
             ..Default::default()
-        }).map_err(Into::into)
+        })
+        .map_err(Into::into)
     }
     fn codec_charge(&mut self, charge: crate::executor::json::JsonCodecCharge) -> Result<()> {
         match charge {
             crate::executor::json::JsonCodecCharge::Admission {
                 maximum_owned_bytes,
                 value_shape,
-            } => self.retain_owned(
-                maximum_owned_bytes
-                    .max(crate::executor::json::json_value_decode_owned_bytes(value_shape)?),
-            ).map_err(Into::into),
+            } => self
+                .retain_owned(maximum_owned_bytes.max(
+                    crate::executor::json::json_value_decode_owned_bytes(value_shape)?,
+                ))
+                .map_err(Into::into),
             charge => PreparationIo::codec_charge(self, charge, true),
         }
     }
@@ -147,21 +156,24 @@ impl HistoryIo for &PreparationIo {
             authority_bytes_written: bytes,
             authority_records_appended: count,
             ..Default::default()
-        }).map_err(Into::into)
+        })
+        .map_err(Into::into)
     }
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.charge(WorkCounters {
             authority_bytes_written: bytes,
             authority_records_appended: count,
             ..Default::default()
-        }).map_err(Into::into)
+        })
+        .map_err(Into::into)
     }
     fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
         self.preflight(WorkCounters {
             output_bytes: bytes,
             items_returned: count,
             ..Default::default()
-        }).map_err(Into::into)
+        })
+        .map_err(Into::into)
     }
     fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.admit_output(bytes, count)
