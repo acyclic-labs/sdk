@@ -17,6 +17,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.task_id() == task && &self.fence == fence
     }
 
+    pub(crate) fn admission(&self) -> &TaskAdmissionRecord {
+        &self.admission
+    }
+
     pub(crate) fn input_limits(&self) -> crate::conversation::Limits {
         self.admission.limits
     }

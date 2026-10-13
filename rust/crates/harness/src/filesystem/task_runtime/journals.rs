@@ -16,7 +16,6 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
         let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self
             .host
@@ -26,6 +25,11 @@ where
                 Some(&crate::executor::PreparationIo::from_native_work(work)?),
             )
             .await?;
+        let admission = owner.admission();
+        let maximum_payload_bytes = self.maximum_payload_bytes.min(admission.limits.file_bytes);
+        let interaction = admission
+            .grants
+            .contains(crate::contract::capability::INTERACTION_ROUTE);
         let journal = FilesystemExecutionJournal::for_task(
             owner,
             operation,
@@ -34,13 +38,10 @@ where
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum_payload_bytes,
             Some(&io),
         )?;
-        let journal = if admission
-            .grants
-            .contains(crate::contract::capability::INTERACTION_ROUTE)
-        {
+        let journal = if interaction {
             if let Some(owner) = &self.interaction_owner {
                 journal.with_interaction_owner(
                     &owner.verifier,
@@ -67,9 +68,11 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
         let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self.host.readonly_journal_owner(task, work).await?;
+        let maximum_payload_bytes = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         let journal = FilesystemExecutionJournal::for_task(
             owner,
             operation,
@@ -78,7 +81,7 @@ where
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum_payload_bytes,
             Some(&io),
         )?;
         Ok((journal.into_native_shared(work)?, operation))
