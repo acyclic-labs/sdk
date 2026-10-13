@@ -212,10 +212,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
-    pub(in crate::filesystem) async fn apply_generation(
-        &self, reference: &WorkspaceRef, expected: Option<&GenerationRef>, mutations: &[WorkspaceMutation],
-        key: IdempotencyKey, io: Option<&PreparationIo>, preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
-    ) -> Result<Generation<A,O>> {
+    pub(in crate::filesystem) fn apply_generation<'a>(
+        &'a self, reference: &'a WorkspaceRef, expected: Option<&'a GenerationRef>, mutations: &'a [WorkspaceMutation],
+        key: IdempotencyKey, io: Option<&'a PreparationIo>, preparation: Option<&'a crate::resource_preparation::TaskResourcePreparation>,
+    ) -> impl std::future::Future<Output = Result<Generation<A,O>>> + acyclic_stream::ProviderTask + 'a {
+        async move {
         let Some(io) = io else {
             return self.apply_generation_guarded(reference, expected, mutations, &key, &mut || std::future::ready(Ok(()))).await;
         };
@@ -273,6 +274,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
             TransactionCommit::Conflict { .. } | TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict =>
                 Err(stock_boundary(Some(io), crate::wire::ErrorCode::Conflict, "workspace publication conflicted or was fenced")),
+        }
         }
     }
     pub(in crate::filesystem) async fn operation_generation(&self, reference: &WorkspaceRef, key: &IdempotencyKey, io: Option<&PreparationIo>) -> Result<Option<Generation<A,O>>> {

@@ -331,47 +331,53 @@ where
 }
 
 /// Passive wait uses only the original admitted task and bounded own inbox.
-pub(crate) async fn wait<P, A, O, F>(
-    runtime: &FilesystemTaskRuntime<P, A, O>,
-    caller: &super::PiTaskBinding,
+pub(crate) fn wait<'a, P, A, O, F>(
+    runtime: &'a FilesystemTaskRuntime<P, A, O>,
+    caller: &'a super::PiTaskBinding,
     requested: TaskId,
     after: u64,
     authorize: F,
-    work: &NativeMaterializationWork,
-) -> Result<(PiWaitObservation, NativeAllocation)>
+    work: &'a NativeMaterializationWork,
+) -> impl std::future::Future<Output = Result<(PiWaitObservation, NativeAllocation)>>
++ Send
++ 'a
++ use<'a, P, A, O, F>
 where
     P: StreamProvider + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
     F: FnOnce(TaskId, TaskId) -> Result<()>,
 {
-    authorize(caller.task_id, requested)?;
-    let mut mail = receive(runtime, caller, after, 1, work).await?;
-    let mut outcome = runtime
-        .task_host()
-        .outcome_with_native_work(requested, work)?
-        .await?;
-    let state = match &outcome.0 {
-        None | Some(Outcome::Indeterminate { .. }) => "pending",
-        Some(_) => "completed",
-    };
-    if let Err(cause) = mail.1.absorb(&mut outcome.1) {
-        drop(outcome);
-        drop(mail.0);
-        return Err(Error::NativeWork {
-            cause,
-            custody: Some(mail.1),
-        });
+    let authorized = authorize(caller.task_id, requested);
+    async move {
+        authorized?;
+        let mut mail = receive(runtime, caller, after, 1, work).await?;
+        let mut outcome = runtime
+            .task_host()
+            .outcome_with_native_work(requested, work)?
+            .await?;
+        let state = match &outcome.0 {
+            None | Some(Outcome::Indeterminate { .. }) => "pending",
+            Some(_) => "completed",
+        };
+        if let Err(cause) = mail.1.absorb(&mut outcome.1) {
+            drop(outcome);
+            drop(mail.0);
+            return Err(Error::NativeWork {
+                cause,
+                custody: Some(mail.1),
+            });
+        }
+        Ok((
+            PiWaitObservation {
+                task: requested,
+                state,
+                outcome: outcome.0,
+                mail: mail.0,
+            },
+            mail.1,
+        ))
     }
-    Ok((
-        PiWaitObservation {
-            task: requested,
-            state,
-            outcome: outcome.0,
-            mail: mail.0,
-        },
-        mail.1,
-    ))
 }
 
 #[cfg(test)]
