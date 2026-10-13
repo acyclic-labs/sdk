@@ -75,18 +75,23 @@ impl TaskContext {
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<&'a Arc<dyn ContentPublisher>> {
-        let content =
-            binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-        let writer = content
-            .writer
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
-        let capability = crate::executor::with_history_io(io, |work| {
-            writer.volume().capability(VolumeOperation::Write, work)
+        let content = binding.ok_or_else(|| {
+            content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
         })?;
-        if !scope.grants.contains(&capability) {
-            return Err(Error::Unauthorized(
-                "task scope cannot write this volume".into(),
+        let writer = content.writer.as_ref().ok_or_else(|| {
+            content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "task has no owner-bound content writer",
+            )
+        })?;
+        if !crate::executor::with_history_io(io, |work| {
+            contains_content_grant_with_work(&scope.grants, writer.volume(), "volume:write:", work)
+        })? {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "task scope cannot write this volume",
             ));
         }
         Ok(writer)

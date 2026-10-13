@@ -373,16 +373,11 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
     )?;
-    let digest = blake3::Hash::from(digest).to_hex();
-    let mut capability = [0; "directory:read:".len() + 64];
-    let end = prefix.len() + digest.len();
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-        io.copy_bytes(end as u64)?;
+        io.copy_bytes((prefix.len() + 64) as u64)?;
     }
-    capability[..prefix.len()].copy_from_slice(prefix.as_bytes());
-    capability[prefix.len()..end].copy_from_slice(digest.as_bytes());
-    let capability = std::str::from_utf8(&capability[..end])
-        .expect("canonical capability prefixes and hash are ASCII");
-    Ok(grants.contains(capability))
+    Ok(crate::conversation::contains_content_label(
+        grants, prefix, digest,
+    ))
 }
