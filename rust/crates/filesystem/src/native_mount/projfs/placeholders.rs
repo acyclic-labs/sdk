@@ -276,9 +276,7 @@ pub(super) fn write_ordinary(
     let (Some(parent), Some(name)) = (host.parent(), host.file_name()) else {
         return Err(format!("{path:?} names no file"));
     };
-    let directory = runtime
-        .metadata_root
-        .open_dir_held(parent, &mut &*work)
+    let directory = crate::native_host::with_wide_path(parent, &mut &*work, |name, work| runtime.metadata_root.open_dir_held(name, work))
         .map_err(NativeMountError::from)
         .map_err(failed)?;
     let direct = projection.starting && replacing.is_none();
@@ -370,7 +368,7 @@ pub(super) fn write_ordinary(
             },
         )
     } else {
-        { #[cfg(unix)] { crate::native_host::rename_held(from, std::path::Path::new(&temporary), &directory, std::path::Path::new(name), acyclic_native_runtime::RenameMode::NoReplace, None, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(std::path::Path::new(&temporary), &mut &*work, |name, work| crate::native_host::with_wide_path(std::path::Path::new(name), work, |target, work| crate::native_host::rename_held(from, name, &directory, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) } }
+        { #[cfg(unix)] { crate::native_host::rename_held(from, std::path::Path::new(&temporary), &directory, std::path::Path::new(name), acyclic_native_runtime::RenameMode::NoReplace, None, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(std::path::Path::new(&temporary), &mut &*work, |temporary_name, work| crate::native_host::with_wide_path(std::path::Path::new(name), work, |target, work| crate::native_host::rename_held(from, temporary_name, &directory, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) } }
     };
     match published {
         Ok(()) => {
