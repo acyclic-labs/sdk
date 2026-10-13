@@ -282,7 +282,7 @@ impl super::PreparationRecord for NativeProcessRequest {
         typed + 2 * content
     }
 
-    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::NativeProcessRequest
     }
 }

@@ -274,7 +274,7 @@ impl PreparationIo {
         &self,
         value: &serde_json::Value,
         code: crate::wire::ErrorCode,
-        schema: Schema,
+        schema: &'static Schema,
         labels: u64,
         mut owned: impl FnMut(crate::executor::json::JsonValueShape) -> Result<u64>,
     ) -> Result<(T, DecodeReservation<'_>)> {

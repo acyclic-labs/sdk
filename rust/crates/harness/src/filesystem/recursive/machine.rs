@@ -45,7 +45,7 @@ impl PreparationRecord for CommandResults {
         crate::filesystem::default_tools::recursive_decode_slot_bytes::<Self>()
             + std::mem::size_of::<CommandResult>() as u64
     }
-    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ForkPreparationCommandResults
     }
 }

@@ -18,7 +18,7 @@ pub(crate) fn decode_preclaimed_json_with_mode<T, F>(
     maximum_owned_bytes: u64,
     code: crate::wire::ErrorCode,
     native: bool,
-    value_schema: crate::executor::json::JsonValueSchema,
+    value_schema: &'static crate::executor::json::JsonValueSchema,
     charge: &mut F,
 ) -> Result<T>
 where

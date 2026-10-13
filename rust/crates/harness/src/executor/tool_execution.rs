@@ -183,28 +183,18 @@ impl StockExecution<'_> {
                                     (prompt, None),
                                     None,
                                 )?;
-                            let approval =
-                                crate::executor::with_history_io(self.io, |work| crate::durable_host::task_interaction_id(task, approval_operation, work))?;
-                            journal
-                                .open_interaction(approval, &request, self.io)?
-                                .await?;
-                            let Some(outcome) =
-                                journal.interaction_outcome(approval, self.io)?.await?
-                            else {
-                                if started.is_some() {
-                                    return Err(Error::Indeterminate(invocation.operation_id));
-                                }
-                                return Ok(ExecutionProgress::Pending(invocation.operation_id));
-                            };
-                            match check_tool_approval(outcome) {
-                                Ok(()) => {}
-                                Err(Error::InteractionRejected(reason)) if started.is_none() => {
-                                    return Ok(ExecutionProgress::Rejected(reason));
-                                }
-                                Err(Error::InteractionRejected(_)) => {
-                                    return Err(Error::Indeterminate(invocation.operation_id));
-                                }
-                                Err(error) => return Err(error),
+                            if let Some(progress) = self
+                                .settle_approval(
+                                    journal,
+                                    operation_id,
+                                    approval_operation,
+                                    &request,
+                                    &invocation,
+                                    started.is_some(),
+                                )
+                                .await?
+                            {
+                                return Ok(progress);
                             }
                         }
                     }

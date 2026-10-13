@@ -98,7 +98,7 @@ impl ResourcePreparationRequest {
 }
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ResourcePreparationRequest {
-    fn json_value_schema() -> JsonValueSchema {
+    fn json_value_schema() -> &'static JsonValueSchema {
         JsonValueSchema::ResourcePreparationRequest
     }
 }

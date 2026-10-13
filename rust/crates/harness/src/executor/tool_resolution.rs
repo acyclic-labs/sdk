@@ -1,6 +1,63 @@
 use super::*;
 
 impl StockExecution<'_> {
+    pub(super) async fn settle_approval(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        approval_operation: OperationId,
+        request: &Interaction,
+        invocation: &ToolInvocation,
+        started: bool,
+    ) -> Result<Option<ExecutionProgress<()>>> {
+        if !self
+            .stock
+            .tool_scope
+            .grants()
+            .contains(capability::INTERACTION_ROUTE)
+        {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "stock tool approval requires interaction:route",
+            ));
+        }
+        let task = self.stock.task.as_ref().map_or(
+            TaskId::from_bytes(operation.into_bytes()),
+            |(_, task, _)| *task,
+        );
+        let approval = with_history_io(self.io, |work| {
+            crate::durable_host::task_interaction_id(task, approval_operation, work)
+        })?;
+        journal
+            .open_interaction(approval, request, self.io)?
+            .await?;
+        let Some(outcome) = journal.interaction_outcome(approval, self.io)?.await? else {
+            return if started {
+                Err(Error::Indeterminate(invocation.operation_id))
+            } else {
+                Ok(Some(ExecutionProgress::Pending(invocation.operation_id)))
+            };
+        };
+        if stock_is_native(self.io) && matches!(outcome, InteractionOutcome::Answered { .. }) {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Conflict,
+                "approval resolved with a question answer",
+            ));
+        }
+        match check_tool_approval(outcome) {
+            Ok(()) => Ok(None),
+            Err(Error::InteractionRejected(reason)) if !started => {
+                Ok(Some(ExecutionProgress::Rejected(reason)))
+            }
+            Err(Error::InteractionRejected(_)) => {
+                Err(Error::Indeterminate(invocation.operation_id))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(super) async fn record_tool_failure(
         &self,
         journal: &dyn ExecutionJournal,

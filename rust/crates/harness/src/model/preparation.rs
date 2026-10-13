@@ -29,7 +29,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
             .max(<crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
             .max(std::mem::size_of::<Self>() as u64)
     }
-    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ToolResultContent
     }
 }
@@ -41,7 +41,7 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.payload_bytes()
     }
-    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ToolResultContent
     }
 }

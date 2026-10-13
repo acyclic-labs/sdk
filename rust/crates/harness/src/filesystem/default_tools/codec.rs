@@ -80,7 +80,7 @@ macro_rules! recursive_preparation_records {
     ($($record:ty => $schema:ident),+ $(,)?) => {$(
         impl crate::filesystem::PreparationRecord for $record {
             fn maximum_slot_bytes() -> u64 { recursive_decode_slot_bytes::<Self>() }
-            fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+            fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
                 crate::executor::json::JsonValueSchema::$schema
             }
         }

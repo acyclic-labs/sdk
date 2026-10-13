@@ -36,7 +36,7 @@ use tool::was_dispatched;
 macro_rules! command_record {
     ($($record:ty $(=> $schema:ident)?),+ $(,)?) => {
         $(impl super::PreparationRecord for $record {
-            $(fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+            $(fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
                 crate::executor::json::JsonValueSchema::$schema
             })?
         })+
