@@ -625,7 +625,8 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
                 value_shape,
             } = charge
             {
-                let (additional, diagnostics) = recovery_conversion_quota(value_shape, borrowed)?;
+                let (additional, diagnostics) =
+                    recovery_conversion_quota::<T>(value_shape, borrowed)?;
                 retained_owned = checked_quota(maximum_owned_bytes, additional)?;
                 custody
                     .resize(checked_quota(retained_owned, diagnostics)?)
@@ -659,7 +660,7 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     }
 }
 
-fn recovery_conversion_quota(
+fn recovery_conversion_quota<T>(
     shape: acyclic_harness::JsonValueShape,
     borrowed: bool,
 ) -> Result<(u64, u64)> {
@@ -678,14 +679,22 @@ fn recovery_conversion_quota(
     ]
     .into_iter()
     .fold(0, usize::max) as u64;
-    let typed = shape
-        .lexical_items()
-        .checked_add(shape.virtual_items())
-        .and_then(|nodes| nodes.checked_mul(8))
-        .and_then(|nodes| nodes.checked_mul(slot))
-        .ok_or_else(|| {
-            acyclic_harness::Error::from(NativeTreeMaterializationError::Work(WorkError::Overflow))
-        })?;
+    let nodes = checked_quota(shape.lexical_items(), shape.virtual_items())?;
+    let typed = if borrowed {
+        super::pi_task::native_metadata_quota::<T>(
+            shape.input_bytes(),
+            checked_quota(nodes, nodes)?,
+        )?
+    } else {
+        nodes
+            .checked_mul(8)
+            .and_then(|nodes| nodes.checked_mul(slot))
+            .ok_or_else(|| {
+                acyclic_harness::Error::from(NativeTreeMaterializationError::Work(
+                    WorkError::Overflow,
+                ))
+            })?
+    };
     let additional = if borrowed {
         acyclic_harness::json_value_decode_owned_bytes(shape)?
     } else {
