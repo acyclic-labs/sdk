@@ -394,20 +394,7 @@ impl FuseProjection {
                 None
             }
         };
-        let ProjectionState {
-            by_inode,
-            inode_by_path,
-            inode_by_file,
-            ..
-        } = &mut *state;
-        bind_path(
-            by_inode,
-            inode_by_path,
-            inode_by_file,
-            to.key(),
-            inode,
-            work,
-        )?;
+        state.bind_path(to.key(), inode, work)?;
         let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         if let Some(binding) = binding {
             entry.bindings.push(binding);
