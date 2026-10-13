@@ -111,7 +111,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                     .unwrap();
             }
             assert_eq!(host_state(&service).await.root_context_id, context);
-            service.shutdown().await.unwrap();
+            let _ = service.shutdown().await.unwrap();
         }
     });
 }

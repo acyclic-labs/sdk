@@ -2,11 +2,7 @@
 use acyclic_harness::runtime::TaskSpawner as _;
 
 use super::{PiScratchAllocation, PiTaskBinding, pi_caller};
-use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork, PublicationPermit, WorkBudget, WorkCounters,
-};
-#[cfg(test)]
-use acyclic_harness::IdempotencyKey;
+use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use acyclic_harness::JsonValueSchema;
 use acyclic_harness::{
     Capabilities,

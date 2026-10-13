@@ -86,14 +86,6 @@ impl PiScratchCreation {
         self.validate_inner(volume, None)
     }
 
-    pub(crate) fn validate_with_native_work(
-        &self,
-        volume: &VolumeRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<()> {
-        self.validate_inner(volume, Some(work))
-    }
-
     fn validate_inner(
         &self,
         volume: &VolumeRef,

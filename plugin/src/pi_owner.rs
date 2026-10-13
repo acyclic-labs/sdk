@@ -572,10 +572,6 @@ fn native_owner_io(source: io::Error) -> Error {
     acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Io(source))
 }
 
-fn invalid(message: &str) -> Error {
-    Error::Invalid(message.to_owned())
-}
-
 #[cfg(test)]
 #[path = "pi_owner_tests.rs"]
 pub(crate) mod tests;

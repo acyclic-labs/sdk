@@ -8,10 +8,9 @@ use crate::{AdapterState, PiTaskBinding, PluginTaskBinding};
 use acyclic_harness::{
     AgentId, Capabilities, TaskId,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    distributed::{WorkPull, Worker},
+    distributed::WorkPull,
     filesystem::FilesystemHost,
-    runtime::{TaskSpawner as _, TaskStateProvider},
-    scheduler::ResourceRequest,
+    runtime::TaskStateProvider,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};

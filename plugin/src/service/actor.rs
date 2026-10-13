@@ -28,10 +28,6 @@ pub(crate) enum SessionCloseState {
 pub(crate) enum SessionSnapshot {
     HostManaged(AdapterState),
     Pi {
-        original_task_id: acyclic_harness::TaskId,
-        pending_root_registration: bool,
-        roots_created: bool,
-        scratch_created: bool,
         routes: usize,
         leases: usize,
         pending_recovery: bool,
@@ -42,17 +38,7 @@ impl SessionSnapshot {
     fn observe(control: &SessionController) -> Self {
         let state = control.state();
         match &state.task_binding {
-            PluginTaskBinding::Pi(binding) => Self::Pi {
-                original_task_id: binding.task_id,
-                pending_root_registration: state.pending_root_registration,
-                roots_created: state
-                    .roots
-                    .values()
-                    .all(|root| matches!(root.allocation, RootAllocation::Created(_))),
-                scratch_created: matches!(
-                    binding.scratch.allocation,
-                    PiScratchAllocation::Created(_)
-                ),
+            PluginTaskBinding::Pi(_) => Self::Pi {
                 routes: state.routes.len(),
                 leases: state.leases.len(),
                 pending_recovery: !state.pending_discards.is_empty() || !state.pending.is_empty(),

@@ -5,7 +5,6 @@ use acyclic_harness::{
     runtime::TaskRunLimits,
     scheduler::SessionLimits,
 };
-use std::path::PathBuf;
 
 pub(crate) struct Fixture {
     pub(crate) root_handle: crate::pi_root_provider::PiRootHandle,

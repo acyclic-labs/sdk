@@ -12,7 +12,6 @@ use crate::{
 use acyclic_fs::{
     CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork,
 };
-use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
@@ -24,7 +23,7 @@ use acyclic_harness::{
     filesystem::{FORK_PREPARE_TASK_COMMAND_KIND, ForkPreparationLimits},
     fork::{ForkReport, ForkRequest},
     resource_preparation::ResourcePreparationRequest,
-    runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
+    runtime::{TaskAdmissionRecord, task_id_for_admission},
     scheduler::{LeaseFence, ResourceRequest},
     source_authorization::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,

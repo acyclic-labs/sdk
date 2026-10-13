@@ -14,7 +14,6 @@ use acyclic_harness::{
     conversation::FileRef,
     distributed::{WorkLease, WorkPull},
     filesystem::FilesystemTaskRuntime,
-    runtime::DurableTaskHost,
 };
 
 struct PiTaskSelection<'a> {
@@ -26,6 +25,7 @@ struct PiTaskSelection<'a> {
 
 /// The caller's retained origin must match both immutable admission lineage and execution mode.
 pub(crate) enum PiTaskOrigin<'a> {
+    #[cfg(test)]
     Root(&'a PiRootIntent),
     RootState(&'a AdapterState),
     Child(TaskId),
@@ -34,8 +34,8 @@ pub(crate) enum PiTaskOrigin<'a> {
 impl PiTaskOrigin<'_> {
     fn parent(&self) -> Option<TaskId> {
         match self {
-            Self::Root(_) | Self::RootState(_) => None,
             Self::Child(parent) => Some(*parent),
+            _ => None,
         }
     }
 }
@@ -517,6 +517,7 @@ where
         ));
     }
     match (&admitted.0.execution, origin) {
+        #[cfg(test)]
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::Root(retained))
             if original == retained =>
         {

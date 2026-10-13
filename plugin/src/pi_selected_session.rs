@@ -146,7 +146,6 @@ impl PiSession {
             },
             &work,
         )?;
-        let cancellation = work.cancellation();
         let mut root_cut_custody = None;
         let mut root_cut = None;
         if source == owner.policy().root_task && caller != source {

@@ -1,6 +1,5 @@
 use super::*;
 use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
-use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Admission, IdempotencyKey, OperationId, effect_host::TaskEffectPlan, workflow::WorkflowCommand,
 };

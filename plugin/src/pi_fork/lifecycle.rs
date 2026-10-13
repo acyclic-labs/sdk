@@ -68,7 +68,6 @@ impl<'a> PiForkCoordinator<'a> {
         })?;
         self.authenticate_launch(context, plan).await?;
         let preparer = self.native_preparer(shared, owner, plan, source).await?;
-        let host = self.runtime.runtime.task_host();
         (owner)
             .verify(
                 false,
@@ -213,7 +212,6 @@ impl<'a> PiForkCoordinator<'a> {
         else {
             return Ok(None);
         };
-        let host = self.runtime.runtime.task_host();
         (owner)
             .verify(
                 false,

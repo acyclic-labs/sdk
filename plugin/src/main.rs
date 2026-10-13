@@ -128,7 +128,7 @@ enum CliFailure {
     Native(acyclic_harness::Error),
     NativeControl(ControlRequestError),
     Ordinary(Box<dyn std::error::Error + Send + Sync>),
-    ClosedFailed(service::SessionCloseState),
+    ClosedFailed,
 }
 
 impl std::fmt::Display for CliFailure {
@@ -137,7 +137,7 @@ impl std::fmt::Display for CliFailure {
             Self::Native(error) => std::fmt::Display::fmt(error, formatter),
             Self::NativeControl(error) => std::fmt::Display::fmt(error, formatter),
             Self::Ordinary(error) => std::fmt::Display::fmt(error, formatter),
-            Self::ClosedFailed(_) => formatter.write_str("service shutdown state is failed"),
+            Self::ClosedFailed => formatter.write_str("service shutdown state is failed"),
         }
     }
 }
@@ -763,7 +763,7 @@ async fn run() -> Result<(), CliFailure> {
     {
         return match run_service(default_data_directory()).await? {
             service::SessionCloseState::Closed => Ok(()),
-            failed @ service::SessionCloseState::Failed => Err(CliFailure::ClosedFailed(failed)),
+            service::SessionCloseState::Failed => Err(CliFailure::ClosedFailed),
         };
     }
     let commandless = arguments

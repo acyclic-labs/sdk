@@ -464,6 +464,7 @@ fn shutdown_pending(
     Ok(true)
 }
 
+#[cfg(test)]
 pub(crate) async fn shutdown_pending_with_native_work<F, G>(
     registry: &SharedRootRegistry,
     root: &Path,
