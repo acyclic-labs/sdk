@@ -136,24 +136,13 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             reserve(&mut items, maximum as usize, io)?;
             let mut message_id = String::new();
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                io.retain_owned(36)?;
-                io.allocation_attempt(36)?;
-            }
-            message_id
-                .try_reserve_exact(36)
-                .map_err(Error::Allocation)?;
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                if message_id.capacity() >= 36 {
-                    io.retain_owned(message_id.capacity() as u64 - 36)?;
-                } else {
-                    io.release(36 - message_id.capacity() as u64)?;
-                }
-            }
             if let Some(observer) = work.as_deref_mut() {
+                observer.reserve_text(&mut message_id, 36)?;
                 observer.encoded_bytes(36)?;
+            } else {
+                message_id
+                    .try_reserve_exact(36)
+                    .map_err(Error::Allocation)?;
             }
             let mut id_text = [0; 36];
             message_id.push_str(

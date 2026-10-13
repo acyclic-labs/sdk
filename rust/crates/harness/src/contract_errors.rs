@@ -157,20 +157,6 @@ pub enum Error {
         /// Existing custody for any SDK-owned diagnostic payload.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
-    /// The bytes committed, but their frozen publication proof could not be retained.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[error("source publication {generation:?} is indeterminate: {source}")]
-    NativeSourcePublicationUncertain {
-        /// The actual generation returned by the completed SDK transaction.
-        generation: acyclic_fs::GenerationId,
-        /// The complete typed failure in the slot allocated before publication.
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-        /// A distinct retention failure after the primary proof failure, if both occurred.
-        retention_failure: Option<Box<acyclic_fs::LazyWorkspaceError>>,
-        /// Original slot custody, released after both original causes are dropped.
-        custody: Option<acyclic_fs::NativeAllocation>,
-    },
     /// An actual native workspace failure, moved without diagnostic conversion.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -313,8 +299,6 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeSourcePublicationUncertain { .. } => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
             | Self::NativeDiagnostic { code, .. }

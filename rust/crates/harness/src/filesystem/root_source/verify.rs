@@ -116,27 +116,6 @@ impl crate::filesystem::PreparationRecord for LazySnapshotRef {
     }
 }
 
-pub(super) fn source_snapshot<'a>(
-    value: &serde_json::Value,
-    bounds: JsonBounds,
-    io: &'a PreparationIo,
-) -> Result<(LazySnapshotRef, crate::filesystem::DecodeReservation<'a>)> {
-    crate::executor::json::json_owned_value_shape_bounded(
-        value,
-        bounds,
-        crate::executor::json::JsonValueSchema::None,
-        &mut |charge| io.codec_charge(charge, false),
-    )?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.original_native_work().is_some() {
-        io.check_json_byte_bound(value, bounds.maximum_bytes)?;
-        return io.value_decode_preparation(value, ErrorCode::Invalid);
-    }
-    let bytes = io.encode(value, bounds.maximum_bytes, true)?;
-    let _bytes = io.guard_bytes(&bytes)?;
-    io.decode(std::marker::PhantomData, &bytes, ErrorCode::Invalid)
-}
-
 pub(super) fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
     if [maximum_work, maximum_bytes]
         .into_iter()
