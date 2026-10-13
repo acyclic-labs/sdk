@@ -73,7 +73,7 @@ where
                 let owner = self
                     .runtime
                     .task_host()
-                    .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                    .journal_owner(task, fence, Some(io))
                     .await?
                     .into_native_shared(work)?;
                 let preparation = owner
@@ -84,7 +84,7 @@ where
             let owner = self
                 .runtime
                 .task_host()
-                .journal_owner(task, fence.clone())
+                .journal_owner(task, fence, io)
                 .await?
                 .with_invocation_cancellation(&cancellation);
             Arc::new(
