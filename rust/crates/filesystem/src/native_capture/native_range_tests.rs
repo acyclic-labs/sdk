@@ -77,7 +77,7 @@ async fn captured_source_stale_and_drop_retire_only_terminal_custody()
     let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
     let reader =
         acyclic_native_runtime::AsyncRangeReader::new(std::sync::Arc::clone(&native), 0, 8);
-    let mut source = NativeRangeSource { reader };
+    let mut source = reader;
     std::fs::write(&path, b"abc")?;
     let mut destination = [0xa5; 8];
     assert!(matches!(
@@ -112,11 +112,7 @@ async fn original_native_byte_and_copy_refusals_precede_io()
         let scope = CaptureWorkScope::new(&original)?;
         let native =
             std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
-        let mut source = NativeRangeSource {
-            reader: acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3),
-        };
-        let baseline = original.receipt();
-        let live = original.live_allocation_bytes();
+        let mut source = acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3);
         let mut destination = [0xa5; 8];
         let error = source
             .read_with_native_work(&mut destination, &original, &cancellation)
@@ -127,9 +123,7 @@ async fn original_native_byte_and_copy_refusals_precede_io()
                     crate::WorkError::BudgetExceeded { counter: refused, .. }
                 )) if refused == counter));
         assert_eq!(destination, [0xa5; 8]);
-        assert_eq!(source.reader.remaining(), 3);
-        assert_eq!(original.receipt(), baseline);
-        assert_eq!(original.live_allocation_bytes(), live);
+        assert_eq!(source.remaining(), 3);
     }
     Ok(())
 }

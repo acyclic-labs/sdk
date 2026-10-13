@@ -1,7 +1,6 @@
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &Checkout<A, O>,
     source_root: &HostRoot,
@@ -12,104 +11,71 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     meter: &CaptureWorkScope,
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
-    let opened = (|| {
-        cancellation.check()?;
-        #[cfg(unix)]
-        let file = source_root
-            .open_file(host_path, &mut meter.native.clone())
-            .map_err(capture_demand_error)?;
-        #[cfg(windows)]
-        let file = source_root
-            .open_file(
-                host_path,
-                windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
-                &mut meter.native.clone(),
-            )
-            .map_err(capture_demand_error)?;
-        let file = file.into_std();
-        let metadata = source_root
-            .stat_file(&file, &mut meter.native.clone())
-            .map_err(capture_demand_error)?;
-        if !metadata.file_type().is_file() {
-            return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
-        }
-        ensure_same_host_node(snapshot, &metadata)?;
-        let logical_bytes = metadata.len();
-        let ranges = allocated_data_ranges(
-            &file,
-            0,
-            logical_bytes,
-            maximum_extent_spans,
+    cancellation.check()?;
+    #[cfg(unix)]
+    let file = source_root
+        .open_file(host_path, &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
+    #[cfg(windows)]
+    let file = source_root
+        .open_file(
+            host_path,
+            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
             &mut meter.native.clone(),
         )
         .map_err(capture_demand_error)?;
-        let positional = native_positional_file(file, &meter.native)?;
-        capture_allocate(
-            meter,
-            std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64,
-        )?;
-        let native = std::sync::Arc::new(positional);
-        Ok((metadata, ranges, native))
-    })();
-
-    let (metadata, ranges, native) = opened?;
-    #[cfg(windows)]
-    let ranges = {
-        let ranges = settled_sparse_ranges(
-            &native,
-            &metadata,
-            ranges,
-            maximum_extent_spans,
-            cancellation,
-            meter,
-        )
-        .await?;
-
-        ranges
-    };
-    #[cfg(unix)]
-    let _ = metadata;
-    let staged = stage_host_ranges(stager, &native, &ranges, meter, staged_file_bytes).await;
-    let content = staged?;
-    let verified = (|| {
-        cancellation.check()?;
-        let after = source_root
-            .stat_file(native.as_file(), &mut meter.native.clone())
-            .map_err(capture_demand_error)?;
-        ensure_same_host_node(snapshot, &after)?;
-        let current = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
-        ensure_same_host_node(snapshot, &current)?;
-        cancellation.check()?;
-        meter.native.clone().check().map_err(capture_demand_error)
-    })();
-    let ranges_bytes = ranges.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64;
+    let file = file.into_std();
+    let metadata = source_root
+        .stat_file(&file, &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
+    if !metadata.file_type().is_file() {
+        return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
+    }
+    ensure_same_host_node(snapshot, &metadata)?;
+    let ranges = allocated_data_ranges(
+        &file,
+        0,
+        metadata.len(),
+        maximum_extent_spans,
+        &mut meter.native.clone(),
+    )
+    .map_err(capture_demand_error)?;
+    let positional = native_positional_file(file, &meter.native)?;
     let native_bytes = std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64;
+    capture_allocate(meter, native_bytes)?;
+    let native = std::sync::Arc::new(positional);
+    #[cfg(windows)]
+    let ranges = settled_sparse_ranges(
+        &native,
+        &metadata,
+        ranges,
+        maximum_extent_spans,
+        cancellation,
+        meter,
+    )
+    .await?;
+    let content = stage_host_ranges(stager, &native, &ranges, meter, staged_file_bytes).await?;
+    cancellation.check()?;
+    let after = source_root
+        .stat_file(native.as_file(), &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &after)?;
+    let current = source_root
+        .stat(host_path, &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &current)?;
+    cancellation.check()?;
+    meter.native.clone().check().map_err(capture_demand_error)?;
+    let bytes = vector_bytes(&ranges)
+        .checked_add(native_bytes)
+        .ok_or(WorkError::Overflow)?;
     drop(ranges);
     drop(native);
-    {
-        meter
-            .native
-            .clone()
-            .release(ranges_bytes)
-            .map_err(capture_demand_error)?;
-        meter
-            .native
-            .clone()
-            .release(native_bytes)
-            .map_err(capture_demand_error)
-    }?;
-    if let Err(error) = verified {
-        let bytes = content.capacity() as u64
-            * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        drop(content);
-        meter
-            .native
-            .clone()
-            .release(bytes)
-            .map_err(capture_demand_error)?;
-        return Err(error);
-    }
-
+    meter
+        .native
+        .clone()
+        .release(bytes)
+        .map_err(capture_demand_error)?;
     Ok(content)
 }
 
@@ -177,13 +143,11 @@ pub(super) async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStor
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     let mut staged = capture_vec(ranges.len(), meter)?;
     for range in ranges {
-        let mut bounded = NativeRangeSource {
-            reader: acyclic_native_runtime::AsyncRangeReader::new(
-                std::sync::Arc::clone(native),
-                range.offset,
-                range.length,
-            ),
-        };
+        let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
+            std::sync::Arc::clone(native),
+            range.offset,
+            range.length,
+        );
         let stage_cancellation = meter.native.cancellation().clone();
         let mut accounting =
             crate::kernel::KernelAccounting::native(&meter.native, &stage_cancellation);
@@ -207,10 +171,6 @@ pub(super) async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStor
         staged.push((*range, content));
     }
     Ok(staged)
-}
-
-pub(super) struct NativeRangeSource {
-    pub(super) reader: acyclic_native_runtime::AsyncRangeReader,
 }
 
 #[allow(
@@ -247,7 +207,7 @@ pub(super) fn native_positional_file(
     })
 }
 
-impl crate::kernel::AsyncBlobSource for NativeRangeSource {
+impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader {
     async fn read<'a>(
         &'a mut self,
         _destination: &'a mut [u8],
@@ -269,7 +229,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
     ) -> Result<usize, crate::FsError> {
         cancellation.check()?;
         original.admit(WorkCounters::UNCHARGED)?;
-        let reader = &mut self.reader;
+        let reader = self;
         let maximum = destination
             .len()
             .min(usize::try_from(reader.remaining()).unwrap_or(usize::MAX));

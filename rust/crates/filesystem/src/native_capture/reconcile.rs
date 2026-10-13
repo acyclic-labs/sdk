@@ -206,7 +206,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
         Some(observation) => {
             let metadata = observation;
             let host_kind = host_kind(&metadata)?;
-            let snapshot = HostSnapshot::from_metadata(&metadata)?;
+            let snapshot = HostSnapshot::from_metadata(&metadata);
             let linked_regular = host_kind == FileKind::Regular
                 && checkout.volume_config().hard_links
                 && metadata.nlink() > 1;
