@@ -215,6 +215,7 @@ use error::validate_volume_capabilities;
 use extents::regular_range_regions;
 pub use fs::EmbeddedCapabilities;
 pub use fs::Fs;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use fs::FsInner;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use fs::LocalAuthorityBackend;

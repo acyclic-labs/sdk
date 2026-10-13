@@ -57,7 +57,25 @@ pub enum WorkPull {
 impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Pulls and atomically admits one dependency- and resource-ready operation.
     pub async fn pull(&mut self, worker: &Worker) -> Result<Option<WorkLease>> {
-        match self.pull_for(worker, None, None, &mut None).await? {
+        match self.pull_for(worker, None, None, None, &mut None).await? {
+            WorkPull::Idle => Ok(None),
+            WorkPull::Claimed(lease) => Ok(Some(lease)),
+            WorkPull::Unresolved { error, .. } => Err(error),
+        }
+    }
+
+    /// Recovers an active admission under a durable retry identity.
+    pub async fn pull_with_identity(
+        &mut self,
+        worker: &Worker,
+        identity: IdempotencyKey,
+    ) -> Result<Option<WorkLease>> {
+        let bytes = crate::contract::canonical_json_bytes(worker)?;
+        let fingerprint = blake3::hash(&bytes).to_hex().to_string();
+        match self
+            .pull_for(worker, None, None, Some((identity, fingerprint)), &mut None)
+            .await?
+        {
             WorkPull::Idle => Ok(None),
             WorkPull::Claimed(lease) => Ok(Some(lease)),
             WorkPull::Unresolved { error, .. } => Err(error),
@@ -84,7 +102,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "owned pull requires operation:declare and operation:observe",
             ));
         }
-        self.pull_for(worker, Some((owner, verifier)), operation_id, work)
+        self.pull_for(worker, Some((owner, verifier)), operation_id, None, work)
             .await
     }
 
@@ -93,6 +111,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         worker: &Worker,
         authorization: Option<(&Authority, &AuthorityVerifier)>,
         target: Option<OperationId>,
+        identity: Option<(IdempotencyKey, String)>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<WorkPull> {
         let owner = authorization.map(|(owner, _)| owner);
@@ -103,6 +122,46 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 wire::ErrorCode::Invalid,
                 "worker identity is empty",
             ));
+        }
+        if let Some((key, fingerprint)) = &identity
+            && let Some((_, event, _, _)) =
+                read_intent(&self.client, key.as_str(), Some(self.revision), work).await?
+        {
+            let SchedulerEvent::Admitted {
+                operation_id,
+                reservation,
+            } = event
+            else {
+                return Err(Error::Conflict(
+                    "pull identity belongs to another scheduler mutation".into(),
+                ));
+            };
+            if reservation.placement != worker.id
+                || !reservation.id.starts_with(&format!("pull:{fingerprint}:"))
+            {
+                return Err(Error::Conflict(
+                    "pull retry identity reused with different worker declaration".into(),
+                ));
+            }
+            let state = self
+                .scheduler
+                .operation(operation_id)
+                .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+            if state.reservation.as_ref() != Some(&reservation)
+                || !matches!(
+                    state.phase,
+                    crate::scheduler::OperationPhase::Admitted
+                        | crate::scheduler::OperationPhase::Running
+                )
+            {
+                return Ok(WorkPull::Idle);
+            }
+            return Ok(WorkPull::Claimed(WorkLease {
+                operation: state.spec.clone(),
+                reservation,
+                checkpoint: state.checkpoint.clone(),
+                operation_revision: state.revision,
+            }));
         }
         if let Some(target) = target {
             let state = self
@@ -220,11 +279,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let revision = next_revision(self.revision)?;
         let revision_digits = revision.checked_ilog10().unwrap_or(0) as usize + 1;
-        let reservation_id = formatted_text(
-            worker.id.len() + 1 + 36 + 1 + revision_digits,
-            format_args!("{}:{operation_id}:{revision}", worker.id),
-            custody.work(),
-        )?;
+        let reservation_id = match &identity {
+            Some((_, fingerprint)) => {
+                format!("pull:{fingerprint}:{}:{operation_id}:{revision}", worker.id)
+            }
+            None => formatted_text(
+                worker.id.len() + 1 + 36 + 1 + revision_digits,
+                format_args!("{}:{operation_id}:{revision}", worker.id),
+                custody.work(),
+            )?,
+        };
         if custody.work().is_some() {
             custody.adopt(reservation_id.capacity() as u64)?;
         }
@@ -249,17 +313,23 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if attempt.work().is_some() {
                 attempt.adopt(reservation.logical_owned_bytes()?)?;
             }
-            let key = formatted_text(
-                "pull:".len() + worker.id.len() + 1 + 36 + 1 + revision_digits,
-                format_args!("pull:{}:{operation_id}:{revision}", worker.id),
-                attempt.work(),
-            )?;
-            if attempt.work().is_some() {
-                attempt.adopt(key.capacity() as u64)?;
-            }
-            validate_idempotency_key(&key, attempt.work())?;
+            let key = match identity {
+                Some((key, _)) => key,
+                None => {
+                    let key = formatted_text(
+                        "pull:".len() + worker.id.len() + 1 + 36 + 1 + revision_digits,
+                        format_args!("pull:{}:{operation_id}:{revision}", worker.id),
+                        attempt.work(),
+                    )?;
+                    if attempt.work().is_some() {
+                        attempt.adopt(key.capacity() as u64)?;
+                    }
+                    validate_idempotency_key(&key, attempt.work())?;
+                    IdempotencyKey(key)
+                }
+            };
             self.apply(
-                IdempotencyKey(key),
+                key,
                 SchedulerEvent::Admitted {
                     operation_id,
                     reservation,

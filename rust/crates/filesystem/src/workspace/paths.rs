@@ -119,8 +119,8 @@ pub(super) fn merge_workspace_backend<T, E: Into<WorkspaceError>>(
     *work = work
         .with_backend(backend, live)
         .map_err(|error| WorkspaceError::WorkMerge {
-            prior: *work,
-            backend,
+            prior: Box::new(*work),
+            backend: Box::new(backend),
             error,
         })?;
     result.map_err(|failure| failure.error.into())

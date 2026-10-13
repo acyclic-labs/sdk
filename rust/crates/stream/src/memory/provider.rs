@@ -70,7 +70,7 @@ impl StreamProvider for MemoryStream {
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
         self.reserve_retained(&mut state)?;
-        publish(&mut state, paths, histories, &envelope);
+        publish(&mut state, paths, histories, &envelope)?;
         state.decision = decision;
         retain(
             &mut state,
@@ -263,7 +263,8 @@ impl StreamProvider for MemoryStream {
             if request.from > path.tail {
                 return Ok(Err(StreamError::OutOfRange));
             }
-            let count = (path.tail - request.from).min(u64::from(request.limit)) as usize;
+            let count = usize::try_from((path.tail - request.from).min(u64::from(request.limit)))
+                .map_err(|_| std::io::ErrorKind::InvalidInput)?;
             let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
             let mut windows = crate::native::vector(count, &meter, &mut allocation)?;
             let end = path
@@ -292,7 +293,13 @@ impl StreamProvider for MemoryStream {
                     let Some(window) = cursor.windows.front() else {
                         return Ok(None);
                     };
-                    let length = window.records.records[window.start].value.len();
+                    let length = window
+                        .records
+                        .records
+                        .get(window.start)
+                        .ok_or(std::io::ErrorKind::InvalidData)?
+                        .value
+                        .len();
                     meter.check()?;
                     let mut bytes = NativeByteReservation::new(
                         Arc::clone(&meter),
@@ -301,7 +308,9 @@ impl StreamProvider for MemoryStream {
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let record = cursor.next_record().expect("visible history record");
+                    let record = cursor
+                        .next_record()
+                        .ok_or(std::io::ErrorKind::InvalidData)?;
                     let examined = meter.record_examination(1, copied);
                     let read = bytes.record(length);
                     examined?;
@@ -429,12 +438,9 @@ impl StreamProvider for MemoryStream {
                         }
                     }
                     before().await?;
-                    let mut state = match provider.state.try_write() {
-                        Ok(state) => state,
-                        Err(_) => {
-                            drop(provider.state.write().await);
-                            continue;
-                        }
+                    let Ok(mut state) = provider.state.try_write() else {
+                        drop(provider.state.write().await);
+                        continue;
                     };
                     if state.replay(request.idempotency_key.as_bytes()).is_none() {
                         let bytes = request
@@ -509,11 +515,10 @@ impl StreamProvider for MemoryStream {
                 Some(key) => provider.has_replay(key).await,
                 None => false,
             };
-            if !existing {
-                if let Err(error) = work.reserve_write(request.records.iter().map(Bytes::len).sum())
-                {
-                    return work.finish(Err(error));
-                }
+            if !existing
+                && let Err(error) = work.reserve_write(request.records.iter().map(Bytes::len).sum())
+            {
+                return work.finish(Err(error));
             }
             work.finish(provider.append_inner(request).await)
         })

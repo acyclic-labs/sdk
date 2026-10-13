@@ -630,7 +630,7 @@ where
     let mut output = ProvenPublication { proof, guard };
     match &output.guard {
         PublicationProofGuard::Standalone(guard) => {
-            accounting.retain(guard.retained_bytes()).map_err(E::from)?
+            accounting.retain(guard.retained_bytes()).map_err(E::from)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         PublicationProofGuard::Native(_) => {}
@@ -694,10 +694,10 @@ where
         PublicationAccounting::Native(original) => {
             let __object_args = (scope, original, cancellation);
             let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = objects
+
+            objects
                 .flush_before_publish(__object_args.0, &mut __object_work)
-                .await;
-            __object_result
+                .await
         }
         .map_err(native_object_error).map_err(E::from)?,
     };
@@ -1044,7 +1044,7 @@ fn write_fingerprint_input(
     operation_context: Option<Digest>, payload: &[u8],
 ) {
     feed_fingerprint_input(request, operation_context, payload, |part| {
-        bytes.extend_from_slice(part)
+        bytes.extend_from_slice(part);
     });
 }
 

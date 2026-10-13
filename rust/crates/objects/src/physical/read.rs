@@ -68,7 +68,7 @@ async fn read_body_at_inner_async(
                 move || root.read_journal_body(offset, &digest, expected_length),
                 None,
             )
-            .expect("unmetered task construction cannot fail")
+            .map_err(|_| Error::from(Unavailable))?
             .await
             .map_err(|_| Error::from(Unavailable))??;
             return Ok(body.slice(start..end));
@@ -83,7 +83,7 @@ async fn read_body_at_inner_async(
         },
         None,
     )
-    .expect("unmetered task construction cannot fail")
+    .map_err(|_| Error::from(Unavailable))?
     .await
     .map_err(|_| Error::from(Unavailable))?
     .map_err(|_| Error::from(Unavailable))?;
@@ -162,65 +162,7 @@ async fn read_body_at_native_inner(
         }
         LocalBodyLocation::Journal { .. } => None,
     };
-    let (root, location) = (Arc::clone(root), location.clone());
-    let open_meter = Arc::clone(&meter);
-    let opened = acyclic_native_runtime::run_blocking_io(
-        move || {
-            open_meter.check()?;
-            let file = match &location {
-                LocalBodyLocation::Journal { .. } => {
-                    let mut journal = root
-                        .journal
-                        .write()
-                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
-                    if journal.is_none() {
-                        let path = local_path(&root.path, JOURNAL_FILE, Some(&open_meter))?;
-                        open_meter.admit_read(0)?;
-                        *journal = Some(File::open(&path.value)?);
-
-                        drop(path);
-                    }
-                    open_meter.admit_read(0)?;
-                    journal
-                        .as_ref()
-                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?
-                        .try_clone()?
-                }
-                LocalBodyLocation::Segment { id, .. } => {
-                    const HEX: &[u8; 16] = b"0123456789abcdef";
-                    let mut name = [0u8; 72];
-                    open_meter.admit_codec(64, 0, 0)?;
-                    for (index, byte) in id.iter().copied().enumerate() {
-                        name[index * 2] = HEX[(byte >> 4) as usize];
-                        name[index * 2 + 1] = HEX[(byte & 15) as usize];
-                    }
-                    name[64..].copy_from_slice(b".segment");
-                    open_meter.record_codec(64, 0, 0)?;
-                    let name = std::str::from_utf8(&name)
-                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-                    let path = local_path(&root.path, "segments", Some(&open_meter))?;
-                    let file_path = local_path(&path.value, name, Some(&open_meter))?;
-                    open_meter.admit_read(0)?;
-                    let file = File::open(&file_path.value)?;
-                    drop(path);
-                    file
-                }
-            };
-            open_meter.admit_read(0)?;
-            let file_length = file.metadata()?.len();
-            let file = acyclic_native_runtime::NativeFile::from_file(
-                file,
-                Some(acyclic_native_runtime::NativeFileMeter::Owned(open_meter)),
-            )
-            .map_err(|(error, file)| {
-                drop(file);
-                error
-            })?;
-            Ok::<_, NativeObjectsError>((file, file_length, location))
-        },
-        Some((Arc::clone(&meter), false)),
-    )?;
-    let (file, file_length, location) = opened.await.map_err(|_| unavailable())??;
+    let (file, file_length, location) = open_native_body(root, location, &meter).await?;
     match location {
         LocalBodyLocation::Journal { offset } => {
             let (storage, actual) = file
@@ -320,4 +262,77 @@ pub(super) fn read_exact_at_unsequenced(
         }
         Ok(())
     }
+}
+
+async fn open_native_body(
+    root: &Arc<LocalRoot>,
+    location: &LocalBodyLocation,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<(acyclic_native_runtime::NativeFile, u64, LocalBodyLocation), NativeObjectsError> {
+    let (root, location) = (Arc::clone(root), location.clone());
+    let open_meter = Arc::clone(meter);
+    let opened = acyclic_native_runtime::run_blocking_io(
+        move || {
+            open_meter.check()?;
+            let file = match &location {
+                LocalBodyLocation::Journal { .. } => {
+                    let mut journal = root
+                        .journal
+                        .write()
+                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
+                    if journal.is_none() {
+                        let path = local_path(&root.path, JOURNAL_FILE, Some(&open_meter))?;
+                        open_meter.admit_read(0)?;
+                        *journal = Some(File::open(&path.value)?);
+
+                        drop(path);
+                    }
+                    open_meter.admit_read(0)?;
+                    journal
+                        .as_ref()
+                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?
+                        .try_clone()?
+                }
+                LocalBodyLocation::Segment { id, .. } => {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    let mut name = [0u8; 72];
+                    open_meter.admit_codec(64, 0, 0)?;
+                    for (pair, byte) in name.as_chunks_mut::<2>().0.iter_mut().zip(id) {
+                        let [high, low] = pair;
+                        *high = *HEX
+                            .get(usize::from(byte >> 4))
+                            .ok_or(std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+                        *low = *HEX
+                            .get(usize::from(byte & 15))
+                            .ok_or(std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+                    }
+                    name[64..].copy_from_slice(b".segment");
+                    open_meter.record_codec(64, 0, 0)?;
+                    let name = std::str::from_utf8(&name)
+                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+                    let path = local_path(&root.path, "segments", Some(&open_meter))?;
+                    let file_path = local_path(&path.value, name, Some(&open_meter))?;
+                    open_meter.admit_read(0)?;
+                    let file = File::open(&file_path.value)?;
+                    drop(path);
+                    file
+                }
+            };
+            open_meter.admit_read(0)?;
+            let file_length = file.metadata()?.len();
+            let file = acyclic_native_runtime::NativeFile::from_file(
+                file,
+                Some(acyclic_native_runtime::NativeFileMeter::Owned(open_meter)),
+            )
+            .map_err(|(error, file)| {
+                drop(file);
+                error
+            })?;
+            Ok::<_, NativeObjectsError>((file, file_length, location))
+        },
+        Some((Arc::clone(meter), false)),
+    )?;
+    opened
+        .await
+        .map_err(|_| NativeObjectsError::from(Error::from(Unavailable)))?
 }

@@ -54,7 +54,7 @@ pub(crate) use ownership::SourcePayloadOwnership;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_work::SourceDemandReadWork;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 mod paths;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) use paths::*;
