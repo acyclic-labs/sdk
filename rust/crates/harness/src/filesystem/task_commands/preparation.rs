@@ -254,29 +254,22 @@ where
                             )
                         })?;
                     let custody = io.take_native_custody(input_bytes)?;
-                    let (admission, custody) = self
+                    io.absorb_native_custody(custody)?;
+                    let (admission, _) = self
                         .runtime
                         .harness()
                         .registered_admission(
                             operation,
                             &input.name,
                             &input.version,
-                            (input.input, custody),
+                            input.input,
                             Some((task, context.scope())),
                             None,
-                            work,
+                            Some(io),
                         )?;
-                    io.absorb_native_custody(custody)?;
                     break 'admission admission;
                 }
-                self.runtime.harness().registered_child_admission(
-                    operation,
-                    &input.name,
-                    &input.version,
-                    input.input,
-                    task,
-                    context.scope(),
-                )?
+                self.runtime.harness().registered_admission(operation, &input.name, &input.version, input.input, Some((task, context.scope())), None, None)?.0
             };
             return self
                 .admit(

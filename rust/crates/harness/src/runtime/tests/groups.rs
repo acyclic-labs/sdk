@@ -2,91 +2,56 @@ use super::*;
 
 #[test]
 fn batch_members_have_stable_indexed_identities_and_pinned_authority() -> Result<()> {
-    let task = ComponentIdentity {
-        name: "test.batch".into(),
-        version: "1".into(),
-        digest: [3; 32],
-    };
+    let admission = admission_fixture()?;
     let scope = RuntimeScope::new(
-        Capabilities::new(["task:spawn:test.batch@1"]),
+        Capabilities::new(["task:spawn:test.task@1"]),
         Limits::default(),
     )?;
-    require_descendant_grant(scope.grants(), &task)?;
+    require_descendant_grant(scope.grants(), &admission.task)?;
     assert!(matches!(
-        require_descendant_grant(&Capabilities::new([] as [String; 0]), &task),
+        require_descendant_grant(&Capabilities::default(), &admission.task),
         Err(Error::Unauthorized(_))
     ));
     let mut request = DurableBatchRequest {
         group_id: GroupId::from_bytes([1; 16]),
         batch_id: BatchId::from_bytes([2; 16]),
         group_policy: BatchGroupPolicy::CollectAll,
-        task,
-        machine: MachineIdentity {
-            name: "test.batch".into(),
-            version: "1".into(),
-            digest: [4; 32],
-        },
-        inputs: vec![
-            serde_json::json!({"value": 1}),
-            serde_json::json!({"value": 2}),
-        ],
-        input_schema: serde_json::json!({"type": "object"}),
-        output_schema: serde_json::json!({"type": "integer"}),
+        task: admission.task,
+        machine: admission.machine,
+        inputs: vec![Value::from(1), Value::from(2)],
+        input_schema: admission.input_schema,
+        output_schema: admission.output_schema,
         parent: Some(TaskId::from_bytes([5; 16])),
         scope,
         policy: None,
         execution: None,
     };
     assert_ne!(request.operation_id(0), request.operation_id(1));
-    let original = crate::executor::json::canonical_json_digest(
-        &request.canonical_value(),
-        u64::MAX,
-        &mut None,
-    )?;
+    let original = crate::contract::canonical_json_digest(&request.canonical_value())?;
     let restored = DurableBatchRequest::from_canonical_value(request.canonical_value())?;
     assert_eq!(restored.canonical_value(), request.canonical_value());
-    let mut unknown = request.canonical_value();
-    unknown
-        .as_object_mut()
-        .ok_or_else(|| Error::Invalid("batch object".into()))?
-        .insert("legacy_manifest".into(), Value::Null);
-    assert!(DurableBatchRequest::from_canonical_value(unknown).is_err());
-    let mut missing_policy = request.canonical_value();
-    missing_policy
-        .as_object_mut()
-        .ok_or_else(|| Error::Invalid("batch object".into()))?
-        .remove("group_policy");
-    assert!(DurableBatchRequest::from_canonical_value(missing_policy).is_err());
-    let mut invalid_input = request.canonical_value();
-    invalid_input
-        .as_object_mut()
-        .ok_or_else(|| Error::Invalid("batch object".into()))?
-        .insert("inputs".into(), serde_json::json!([1]));
-    assert!(DurableBatchRequest::from_canonical_value(invalid_input).is_err());
-    let mut invalid_schema = request.canonical_value();
-    invalid_schema
-        .as_object_mut()
-        .ok_or_else(|| Error::Invalid("batch object".into()))?
-        .insert("input_schema".into(), serde_json::json!({}));
-    assert!(DurableBatchRequest::from_canonical_value(invalid_schema).is_err());
+    for (key, value) in [
+        ("legacy_manifest", Value::Null),
+        ("inputs", serde_json::json!([false])),
+        ("input_schema", serde_json::json!({})),
+    ] {
+        let mut invalid = request.canonical_value();
+        invalid[key] = value;
+        assert!(DurableBatchRequest::from_canonical_value(invalid).is_err());
+    }
+    let mut missing = request.canonical_value();
+    missing.as_object_mut().unwrap().remove("group_policy");
+    assert!(DurableBatchRequest::from_canonical_value(missing).is_err());
     request.inputs.swap(0, 1);
     assert_ne!(
         original,
-        crate::executor::json::canonical_json_digest(
-            &request.canonical_value(),
-            u64::MAX,
-            &mut None
-        )?
+        crate::contract::canonical_json_digest(&request.canonical_value())?
     );
     request.inputs.swap(0, 1);
     request.scope = RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?;
     assert_ne!(
         original,
-        crate::executor::json::canonical_json_digest(
-            &request.canonical_value(),
-            u64::MAX,
-            &mut None
-        )?
+        crate::contract::canonical_json_digest(&request.canonical_value())?
     );
     Ok(())
 }
@@ -101,12 +66,7 @@ async fn batch_join_keeps_rejection_and_unknown_admission_in_original_slots() ->
         policy: BatchGroupPolicy::CollectAll,
         spawner: Arc::new(SplitState {
             task_id: TaskId::from_bytes([23; 16]),
-            record: TaskAdmissionRecord::from_canonical_value(
-                serde_json::from_str(include_str!("../../../fixtures/v2/task-admission.json"))
-                    .map_err(|error| Error::Invalid(format!("fixture is invalid: {error}")))?,
-                &mut None,
-            )?
-            .0,
+            record: admission_fixture()?,
         }),
         extensions: None,
         entries: vec![
@@ -161,16 +121,7 @@ async fn recursive_child_admission_does_not_consume_the_parent_permit() -> Resul
             }
         })?;
     tasks.register(definition)?;
-    let harness = Bindings {
-        tasks,
-        scope: RuntimeScope::new(
-            Capabilities::new(["task:spawn:test.recursive@1"]),
-            Limits::default(),
-        )?,
-        concurrency: 1,
-        ..Bindings::local()
-    }
-    .build(None)?;
+    let harness = local_runtime(tasks, &["task:spawn:test.recursive@1"], 1)?;
     let definition = harness.task::<u32, u32>("test.recursive")?;
     let observed = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -244,16 +195,7 @@ async fn group_map_preserves_input_order_and_partial_failure() -> Result<()> {
             Ok(Vec::new())
         },
     )?)?;
-    let harness = Bindings {
-        tasks,
-        scope: RuntimeScope::new(
-            Capabilities::new(["task:spawn:test.map.leaf@1"]),
-            Limits::default(),
-        )?,
-        concurrency: 1,
-        ..Bindings::local()
-    }
-    .build(None)?;
+    let harness = local_runtime(tasks, &["task:spawn:test.map.leaf@1"], 1)?;
     let parent = harness.task::<Vec<u32>, Vec<u32>>("test.map.parent")?;
     assert_eq!(
         harness
@@ -293,13 +235,7 @@ async fn ordered_join_polls_later_tasks_while_first_is_waiting() -> Result<()> {
         }
     })?;
     tasks.register(definition)?;
-    let harness = Bindings {
-        tasks,
-        scope: RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?,
-        concurrency: 2,
-        ..Bindings::local()
-    }
-    .build(None)?;
+    let harness = local_runtime(tasks, &[], 2)?;
     let definition = harness.task::<bool, bool>("test.join")?;
     let first = harness.spawn(&definition, true).await?;
     let second = harness.spawn(&definition, false).await?;

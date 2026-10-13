@@ -2291,14 +2291,10 @@ async fn stock_restart_with_publication_fault(
             );
         }
         assert!(
-            harness
-                .open_task(
-                    task,
-                    &definition,
-                    fence.clone(),
-                    Arc::new(MemoryWorkflowJournal::default())
-                )
-                .await
+            definition.open(
+                harness.durable_context(task, operation, None).await?,
+                &fence, Arc::new(MemoryWorkflowJournal::default()),
+            )?.await
                 .is_err()
         );
         let compaction_policy = if fault.is_none() {
@@ -2539,16 +2535,14 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(session.checkpoint().revision, 1);
             assert_eq!(session.checkpoint().state, json!(1));
             assert_eq!(
-                session.latest_transition().await?.map(|value| value.status),
+                session.latest_transition(None).await?.0.map(|value| value.status),
                 Some(MachineStatus::Suspended)
             );
         } else {
-            assert!(session.latest_transition().await?.is_none());
+            assert!(session.latest_transition(None).await?.0.is_none());
             let invalid_input = json!("bad");
             let prior = session.checkpoint().clone();
-            let (_, transition, _, _) = machines.step(
-                &prior, std::borrow::Cow::Borrowed(&invalid_input), None,
-            )?;
+            let (_, transition, _, _) = machines.step(&prior, std::borrow::Cow::Borrowed(&invalid_input), None, None)?;
             let invalid_record = WorkflowRecord {
                 operation_id: OperationId::from_bytes([8; 16]),
                 idempotency_key: IdempotencyKey::new("direct-invalid-output")?,
@@ -2565,11 +2559,7 @@ async fn stock_restart_with_publication_fault(
             assert!(journal.replay(0, 64, None)?.await?.0.is_empty());
             assert!(
                 session
-                    .step(
-                        OperationId::from_bytes([5; 16]),
-                        IdempotencyKey::new("invalid-output")?,
-                        json!("bad")
-                    )
+                    .step(OperationId::from_bytes([5; 16]), IdempotencyKey::new("invalid-output")?, json!("bad"), None)
                     .await
                     .is_err()
             );
@@ -2577,8 +2567,8 @@ async fn stock_restart_with_publication_fault(
         }
         assert_eq!(
             session
-                .step(step, IdempotencyKey::new("suspend")?, Value::Null)
-                .await?
+                .step(step, IdempotencyKey::new("suspend")?, Value::Null, None)
+                .await?.0
                 .status,
             MachineStatus::Suspended
         );
@@ -2586,7 +2576,7 @@ async fn stock_restart_with_publication_fault(
         assert_eq!(journal.replay(0, 64, None)?.await?.0.len(), 1);
         assert!(
             session
-                .step(step, IdempotencyKey::new("suspend")?, json!(9))
+                .step(step, IdempotencyKey::new("suspend")?, json!(9), None)
                 .await
                 .is_err()
         );
@@ -2594,8 +2584,8 @@ async fn stock_restart_with_publication_fault(
             let completed_step = OperationId::from_bytes([6; 16]);
             assert_eq!(
                 session
-                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7))
-                    .await?
+                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7), None)
+                    .await?.0
                     .status,
                 MachineStatus::Completed { value: json!(7) }
             );
@@ -2612,7 +2602,7 @@ async fn stock_restart_with_publication_fault(
                 .await?;
             assert!(
                 session
-                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7))
+                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7), None)
                     .await
                     .is_err()
             );
@@ -2627,14 +2617,14 @@ async fn stock_restart_with_publication_fault(
                 .await?;
             assert_eq!(
                 recovered
-                    .latest_transition()
-                    .await?
+                    .latest_transition(None)
+                    .await?.0
                     .map(|value| value.status),
                 Some(MachineStatus::Completed { value: json!(7) })
             );
             assert!(
                 recovered
-                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7))
+                    .step(completed_step, IdempotencyKey::new("complete")?, json!(7), None)
                     .await
                     .is_err()
             );

@@ -382,19 +382,21 @@ impl<'a> PiForkCoordinator<'a> {
             self.owner.policy().maximum_payload_bytes,
             work,
         )?;
-        let mut child = self
+        let admission_io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        acyclic_harness::store::HistoryIo::absorb_native_custody(&mut &admission_io, input.1)?;
+        let (child, retained) = self
             .runtime
             .runtime
             .harness()
-            .registered_admission(
-                operations.child,
+            .registered_admission(operations.child,
                 "acyclic.pi",
                 "1",
-                input,
+                input.0,
                 Some((owner.task_id(), context.scope())),
                 None,
-                work,
+                Some(&admission_io),
             )?;
+        let mut child = (child, admission_io.take_native_custody(retained)?);
         let mut child_grants = Capabilities::new_with_native_work(
             child
                 .0
@@ -472,19 +474,21 @@ impl<'a> PiForkCoordinator<'a> {
             self.owner.policy().maximum_payload_bytes,
             work,
         )?;
-        let mut prepared_admission = self
+        let admission_io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        acyclic_harness::store::HistoryIo::absorb_native_custody(&mut &admission_io, input.1)?;
+        let (prepared_admission, retained) = self
             .runtime
             .runtime
             .harness()
-            .registered_admission(
-                operations.preparation,
+            .registered_admission(operations.preparation,
                 "acyclic.fork_preparation",
                 "1",
-                input,
+                input.0,
                 Some((owner.task_id(), context.scope())),
                 None,
-                work,
+                Some(&admission_io),
             )?;
+        let mut prepared_admission = (prepared_admission, admission_io.take_native_custody(retained)?);
         request_custody.absorb(&mut prepared_request.1)?;
         request_custody.absorb(&mut prepared_admission.1)?;
         request_custody.absorb(&mut child.1)?;

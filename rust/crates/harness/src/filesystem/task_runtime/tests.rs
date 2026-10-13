@@ -1007,12 +1007,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     fixture.clock.0.store(20, Ordering::SeqCst);
     assert!(matches!(
         session
-            .step_with_native_work(
-                OperationId::from_bytes([118; 16]),
-                IdempotencyKey::new("native-unsupported-machine")?,
-                Value::Null,
-                custody,
-            )
+            .step(OperationId::from_bytes([118; 16]), IdempotencyKey::new("native-unsupported-machine")?, Value::Null, Some(&crate::filesystem::PreparationIo::from_native_custody(custody)))
             .await,
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -1034,6 +1029,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
             OperationId::from_bytes([119; 16]),
             IdempotencyKey::new("ordinary-custom-machine")?,
             Value::Null,
+            None,
         )
         .await?;
     assert_eq!(session.checkpoint().revision, 1);

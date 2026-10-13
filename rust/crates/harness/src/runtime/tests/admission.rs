@@ -5,7 +5,14 @@ fn v2_task_admission_and_execution_placement_fixtures_are_canonical() -> Result<
     let admission_fixture = include_str!("../../../fixtures/v2/task-admission.json").trim();
     let admission_value: Value = serde_json::from_str(admission_fixture)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let admission = TaskAdmissionRecord::from_canonical_value(admission_value, &mut None)?.0;
+    let admission =
+        TaskAdmissionRecord::from_canonical_value(admission_value.clone(), &mut None)?.0;
+    let mut unknown = admission_value;
+    unknown
+        .as_object_mut()
+        .unwrap()
+        .insert("legacy_content".into(), Value::Null);
+    assert!(TaskAdmissionRecord::from_canonical_value(unknown, &mut None).is_err());
     assert_eq!(
         crate::contract::canonical_json_bytes(&admission.canonical_value())?,
         admission_fixture.as_bytes()
@@ -96,23 +103,14 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
             .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone(), &mut None)?.0;
     let provider = ProviderRef::new("test".into(), "creator".into(), "1".into(), &mut None)?;
+    let resource = |kind, id: &[u8]| {
+        ResourceRef::new(kind, provider.clone(), id.to_vec().into(), None, &mut None)
+    };
     let proof = ResourceCreationProofRef {
         provider: provider.clone(),
         preparation: TaskId::from_bytes([71; 16]),
-        resource: ResourceRef::new(
-            ResourceKind::Sandbox,
-            provider.clone(),
-            b"child".to_vec().into(),
-            None,
-            &mut None,
-        )?,
-        evidence: ResourceRef::new(
-            ResourceKind::Stream,
-            provider,
-            b"allocation".to_vec().into(),
-            None,
-            &mut None,
-        )?,
+        resource: resource(ResourceKind::Sandbox, b"child")?,
+        evidence: resource(ResourceKind::Stream, b"allocation")?,
     };
     assert!(
         admission
@@ -136,8 +134,8 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
     changed.preparation = TaskId::from_bytes([73; 16]);
     let changed_child = child.clone().with_resource_proofs(vec![changed])?;
     assert_ne!(
-        crate::executor::json::canonical_json_digest(&canonical, u64::MAX, &mut None)?,
-        crate::executor::json::canonical_json_digest(&changed_child.canonical_value(), u64::MAX, &mut None)?
+        crate::contract::canonical_json_digest(&canonical)?,
+        crate::contract::canonical_json_digest(&changed_child.canonical_value())?
     );
     let mut missing = wire;
     missing
