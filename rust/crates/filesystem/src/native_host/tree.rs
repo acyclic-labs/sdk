@@ -3,8 +3,7 @@ use super::*;
 impl HostRoot {
     pub(crate) fn open_child<W: SourceDemandReadWork>(
         &self,
-        #[cfg(unix)] name: &Path,
-        #[cfg(windows)] name: &[u16],
+        name: &NativePath,
         work: &mut W,
     ) -> Result<HostRoot, DemandError> {
         let directory = self.open_dir_held(name, work)?;
@@ -16,8 +15,7 @@ impl HostRoot {
     }
     pub(crate) fn remove<W: SourceDemandReadWork>(
         &self,
-        #[cfg(unix)] name: &Path,
-        #[cfg(windows)] name: &[u16],
+        name: &NativePath,
         expected: Option<NativeRootIdentity>,
         work: &mut W,
     ) -> Result<(), DemandError> {
@@ -38,8 +36,7 @@ impl HostRoot {
         if stat.identity() != expected {
             return Err(DemandError::StaleVersion);
         }
-        let real_directory = (stat.file_type() == crate::demand::SourceNodeKind::Directory)
-            && (stat.file_type() != crate::demand::SourceNodeKind::SymbolicLink);
+        let real_directory = stat.file_type() == crate::demand::SourceNodeKind::Directory;
         #[cfg(windows)]
         let real_directory =
             real_directory && stat.raw.FileAttributes & fs::FILE_ATTRIBUTE_REPARSE_POINT.0 == 0;
