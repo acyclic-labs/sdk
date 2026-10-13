@@ -36,8 +36,8 @@ test("Windows Rust tests run independently without changing workspace or ignored
   assert.ok(body.includes("finally"));
   const packages = script.slice(script.indexOf("& .\\scripts\\test-qualify-ci-windows.ps1"));
   assert.doesNotMatch(packages, /cargo test/);
-  assert.ok(packages.includes("bun test --reporter=junit"));
-  assert.doesNotMatch(packages, /bun test[^\n]*--parallel/);
+  assert.ok(packages.includes("bun test --isolate --reporter=junit"));
+  assert.doesNotMatch(packages, /--parallel/);
   assert.ok(packages.includes('--reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages'));
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   for (const marker of ["Find windows-rust marker", "Record windows-rust", "Find windows-fork-join marker", "Record windows-fork-join"])

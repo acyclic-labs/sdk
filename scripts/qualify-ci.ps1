@@ -164,6 +164,6 @@ foreach ($family in @('actors')) {
 cargo build --offline --locked -p acyclic-actors --example conformance-certificate
 
 # Bun's Windows isolated test worker crashed while loading the Pi native bridge.
-bun test --reporter=junit `
+bun test --isolate --reporter=junit `
     --reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
