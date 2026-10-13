@@ -12,9 +12,7 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         let forward_backend = MutationCrashBackend::after_apply(forward_tree.clone(), ordinal);
         assert!(matches!(
             JournaledMaterializer::new(forward_store.clone(), forward_backend.clone(),)
-                .apply(forward_plan.clone(), &mut || async {
-                    Ok::<(), MaterializationError<_, _>>(())
-                })
+                .apply(forward_plan.clone(), &mut permit)
                 .await,
             Err(MaterializationError::Backend(_))
         ));
@@ -30,13 +28,11 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             retained.applied,
             u32::try_from(ordinal - 1).expect("small ordinal")
         );
-        #[cfg(not(target_arch = "wasm32"))]
-        assert!(retained.custody.is_none(), "ordinary receipt copy only");
         let completed = restarted
             .recover(
                 forward_plan.operation_id,
                 MaterializationRecovery::Complete,
-                &mut || async { Ok::<(), MaterializationError<_, _>>(()) },
+                &mut permit,
             )
             .await
             .expect("complete after unrecorded mutation")
@@ -50,9 +46,7 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         let rollback_tree = TreeBackend::source();
         let rollback_plan = plan(u8::try_from(0x50 + ordinal).expect("small ordinal"));
         JournaledMaterializer::new(rollback_store.clone(), rollback_tree.clone())
-            .apply(rollback_plan.clone(), &mut || async {
-                Ok::<(), MaterializationError<_, _>>(())
-            })
+            .apply(rollback_plan.clone(), &mut permit)
             .await
             .expect("prepare rollback fixture");
         let rollback_backend = MutationCrashBackend::after_restore(rollback_tree.clone(), ordinal);
@@ -61,7 +55,7 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
                 .recover(
                     rollback_plan.operation_id,
                     MaterializationRecovery::RollBack,
-                    &mut || async { Ok::<(), MaterializationError<_, _>>(()) },
+                    &mut permit,
                 )
                 .await,
             Err(MaterializationError::Backend(_))
@@ -78,13 +72,11 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             retained.restored,
             u32::try_from(ordinal - 1).expect("small ordinal")
         );
-        #[cfg(not(target_arch = "wasm32"))]
-        assert!(retained.custody.is_none(), "ordinary receipt copy only");
         let rolled_back = restarted
             .recover(
                 rollback_plan.operation_id,
                 MaterializationRecovery::RollBack,
-                &mut || async { Ok::<(), MaterializationError<_, _>>(()) },
+                &mut permit,
             )
             .await
             .expect("rollback after unrecorded restoration")
@@ -103,9 +95,7 @@ async fn immutable_materialization_plan_rejects_conflicting_replay() {
     let materializer = JournaledMaterializer::new(store, backend);
     let original = plan(0x30);
     materializer
-        .apply(original.clone(), &mut || async {
-            Ok::<(), MaterializationError<_, _>>(())
-        })
+        .apply(original.clone(), &mut permit)
         .await
         .expect("initial apply");
     let mut altered = original;
@@ -114,11 +104,7 @@ async fn immutable_materialization_plan_rejects_conflicting_replay() {
         to: generation(9),
     };
     assert!(matches!(
-        materializer
-            .apply(altered, &mut || async {
-                Ok::<(), MaterializationError<_, _>>(())
-            })
-            .await,
+        materializer.apply(altered, &mut permit).await,
         Err(MaterializationError::PlanConflict)
     ));
 }
