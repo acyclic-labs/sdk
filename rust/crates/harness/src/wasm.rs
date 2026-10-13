@@ -3409,3 +3409,6 @@ impl WasmContentStore {
         Ok(generation)
     }
 }
+
+#[cfg(feature = "browser")]
+mod task_runtime;

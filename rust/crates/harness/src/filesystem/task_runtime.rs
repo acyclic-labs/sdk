@@ -65,6 +65,8 @@ enum CommandDispatch {
 /// Resume hint for one finite coordinator discovery sweep. It conveys no
 /// execution authority and can be serialized by the caller across restarts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct TaskWakeCursor {
     /// Last inspected coordinator revision.

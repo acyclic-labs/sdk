@@ -80,6 +80,7 @@ impl Authority {
 
 /// Immutable authorization scope captured at admission.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct Scope {
     /// Stable scope identity.
@@ -87,10 +88,12 @@ pub struct Scope {
     /// Effective capabilities after policy intersection.
     capabilities: Capabilities,
     /// Host-attested agent on whose behalf this operation runs, if any.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     agent: Option<AgentId>,
     /// Trusted issuer identity.
     issuer: String,
     /// Parent proof, present for attenuated scopes.
+    #[cfg_attr(feature = "wasm", tsify(type = "number[] | null"))]
     parent_proof: Option<[u8; 32]>,
     /// Keyed proof over the complete grant.
     proof: [u8; 32],

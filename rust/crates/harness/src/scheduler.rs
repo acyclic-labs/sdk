@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Versioned resumable entrypoint for durable work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct EntrypointRef {
     /// Stable namespaced entrypoint name.
     pub name: String,
@@ -19,11 +20,17 @@ pub struct EntrypointRef {
     /// Digest of the state/input schema and implementation contract.
     pub digest: [u8; 32],
     /// JSON Schema for the durable result value.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub result_schema: Value,
 }
 
 /// Logical resource quantities; providers decide how they map to capacity.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(large_number_types_as_bigints, hashmap_as_object)
+)]
 pub struct ResourceRequest(pub BTreeMap<String, u64>);
 
 impl ResourceRequest {
@@ -44,6 +51,11 @@ fn covers(held: &BTreeMap<String, u64>, request: &ResourceRequest) -> bool {
 
 /// Available logical resources advertised to admission policy.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(large_number_types_as_bigints, hashmap_as_object)
+)]
 pub struct ResourceSnapshot(pub BTreeMap<String, u64>);
 
 /// Immutable ceilings for one root task and its complete descendant session.
@@ -79,6 +91,7 @@ impl SessionLimits {
 
 /// Explicit lifetime owner for durable work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DurableOwner {
     /// Child remains structurally owned by this authority.
@@ -103,8 +116,10 @@ impl DurableOwner {
 
 /// Stable parent link and child slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ParentLink {
     /// Parent operation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Stable logical slot, independent of observation order.
     pub slot: String,
@@ -112,6 +127,7 @@ pub struct ParentLink {
 
 /// Durable orchestration behavior represented as data.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Orchestration {
     /// Executor produces the result directly.
@@ -134,10 +150,14 @@ pub enum Orchestration {
 
 /// Immutable durable operation declaration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(hashmap_as_object))]
 pub struct OperationSpec {
     /// Stable operation identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Optional structured parent.
+    #[cfg_attr(feature = "wasm", tsify(type = "ParentLink | null"))]
     pub parent: Option<ParentLink>,
     /// Explicit durable owner.
     pub owner: DurableOwner,
@@ -147,6 +167,7 @@ pub struct OperationSpec {
     /// Restartable implementation identity.
     pub entrypoint: EntrypointRef,
     /// Dependencies that must succeed before admission.
+    #[cfg_attr(feature = "wasm", tsify(type = "string[]"))]
     pub dependencies: BTreeSet<OperationId>,
     /// Logical capacity requirements.
     pub resources: ResourceRequest,
@@ -155,6 +176,7 @@ pub struct OperationSpec {
     /// Orchestration behavior.
     pub orchestration: Orchestration,
     /// Immutable, provider-owned initial state bytes.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub state: FileRef,
 }
 
@@ -208,6 +230,7 @@ pub enum OperationPhase {
 
 /// Pinned resource allocation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Reservation {
     /// Provider-owned stable lease identity.
     pub id: String,
@@ -1818,14 +1841,18 @@ impl SchedulerEvent {
 
 /// One ref-only durable inbox item with a gapless per-task sequence.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct InboxItem {
     /// Owning task.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub task_id: TaskId,
     /// Gapless one-based sequence.
     pub sequence: u64,
     /// Sender-defined idempotency identity.
     pub message_id: String,
     /// Immutable payload bytes staged before Stream publication.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub payload: FileRef,
 }
 

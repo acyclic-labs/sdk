@@ -1549,7 +1549,7 @@ async fn worker_restart_with_options(
                     ));
                     assert_eq!(
                         stream
-                            .stream(format!("harness/v2/mail/{task}"))?
+                            .stream(format!("harness/v2/mail/by-recipient/{task}"))?
                             .bounds()
                             .await?
                             .tail,
@@ -1781,7 +1781,7 @@ async fn worker_restart_with_options(
             ));
             assert!(
                 stream
-                    .stream(format!("harness/v2/mail/{task}"))?
+                    .stream(format!("harness/v2/mail/by-recipient/{task}"))?
                     .bounds()
                     .await
                     .is_err()

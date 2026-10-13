@@ -11,6 +11,7 @@ use std::{
 
 /// Immutable component implementation identity.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ComponentIdentity {
     /// Stable local or namespaced logical name.
     pub name: String,

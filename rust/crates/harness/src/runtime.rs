@@ -3264,6 +3264,16 @@ impl AgentHarness {
         self.tasks.get(name)
     }
 
+    /// Resolves a registered task by separate exact name and version, without
+    /// encoding either component into a textual selector.
+    pub fn task_version<I: 'static, O: 'static>(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Arc<TaskDefinition<I, O>>> {
+        self.tasks.get_version(name, version)
+    }
+
     /// Resolves one model-visible tool definition by exact registered name.
     pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
         self.tools
