@@ -196,10 +196,10 @@ impl DriverState {
                 };
                 match job {
                     Job::Read(file, overlapped, reads, finish) => {
-                        self.submit_read_job(&file, overlapped, &reads, finish)
+                        self.submit_read_job(&file, overlapped, &reads, finish);
                     }
                     Job::Write(file, overlapped, writes, finish) => {
-                        self.submit_write_job(&file, overlapped, writes, finish)
+                        self.submit_write_job(&file, overlapped, writes, finish);
                     }
                 }
                 admitted += 1;
@@ -505,7 +505,7 @@ impl DriverState {
                 BatchResult::Reads(values, _) => {
                     *values
                         .get_mut(index)
-                        .unwrap_or_else(|| std::process::abort()) = Some(bytes)
+                        .unwrap_or_else(|| std::process::abort()) = Some(bytes);
                 }
                 BatchResult::Writes(_) => unreachable!("read result in write batch"),
             },

@@ -256,7 +256,10 @@ impl NativeReadMeter for ReadBudgetMeter {
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "the fixture opens the required overlapped handle"
+)]
 fn bounded_write_file(path: &Path, writable: bool) -> io::Result<NativeFile> {
     initialize_native_io_services()?;
     let mut options = OpenOptions::new();

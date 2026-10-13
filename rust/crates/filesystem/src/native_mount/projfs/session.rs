@@ -239,10 +239,13 @@ impl ProjFsSession {
                 .sdk_stop_credit
                 .as_mut()
                 .ok_or(NativeMountError::ControlPending)?;
-            credit.started_io(crate::WorkCounters {
-                backend_write_operations: 1,
-                ..crate::WorkCounters::UNCHARGED
-            }, None)?;
+            credit.started_io(
+                crate::WorkCounters {
+                    backend_write_operations: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                },
+                None,
+            )?;
             // SAFETY: the projection loop has drained; SDK stop drains every callback.
             unsafe { PrjStopVirtualizing(context) };
             self.context = None;
@@ -251,13 +254,16 @@ impl ProjFsSession {
         let cleanup_failure =
             lock_recover(&runtime.staging)
                 .take()
-                .and_then(|(directory, mut credit)| {
+                .and_then(|(directory, credit)| {
                     let result = delete_through(&directory, || {
                         credit
-                            .started_io(crate::WorkCounters {
-                                backend_write_operations: 1,
-                                ..crate::WorkCounters::UNCHARGED
-                            }, None)
+                            .started_io(
+                                crate::WorkCounters {
+                                    backend_write_operations: 1,
+                                    ..crate::WorkCounters::UNCHARGED
+                                },
+                                None,
+                            )
                             .map_err(NativeMountError::from)
                     });
                     credit.started_drop_io(crate::WorkCounters {
@@ -383,8 +389,11 @@ impl ProjFsSession {
                 let mut exact = Vec::new();
                 for (path, subtree) in paths {
                     let _guard = MetadataProbeGuard::enter(&runtime.metadata_probes, path);
-                    let present = match crate::native_host::with_wide_path(&host_relative_path(path)?, &mut &*work, |path, work| runtime.metadata_root.stat(path, work))
-                    {
+                    let present = match crate::native_host::with_wide_path(
+                        &host_relative_path(path)?,
+                        &mut &*work,
+                        |path, work| runtime.metadata_root.stat(path, work),
+                    ) {
                         Ok(_) => {
                             capture_missing_host_ancestors(runtime, path, work)?;
                             true

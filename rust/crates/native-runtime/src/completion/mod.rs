@@ -92,9 +92,9 @@ impl<T> NativeCompletion<T> {
             return result;
         }
         let meter =
-            measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
+            measured_completion_meter(self.state.as_ref().ok_or(io::ErrorKind::InvalidInput)?)?;
         let wake = self.prepared_wake.take();
-        wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
+        wait_measured_completion(self, &meter, wake, deadline, cancellation, on_deadline)
     }
 }
 
@@ -173,10 +173,10 @@ impl<T> Future for NativeCompletion<T> {
             Poll::Ready(Ok(())) => {}
             Poll::Pending => return Poll::Pending,
         }
-        let mut state = this
-            .state
-            .as_ref()
-            .expect("pending native completion")
+        let Some(state) = this.state.as_ref() else {
+            return Poll::Ready(Err(io::ErrorKind::InvalidInput.into()));
+        };
+        let mut state = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.task_pending

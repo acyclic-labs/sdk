@@ -22,11 +22,12 @@ impl NativeFile {
         file: File,
         accounting: Option<NativeFileMeter<'_>>,
     ) -> Result<Self, (io::Error, File)> {
-        let (meter, owner) = match &accounting {
-            Some(NativeFileMeter::Borrowed(meter)) => (Some(*meter), None),
-            Some(NativeFileMeter::Owned(meter)) => (Some(meter.as_ref()), Some(meter)),
+        let (borrowed, owner) = match accounting {
+            Some(NativeFileMeter::Borrowed(meter)) => (Some(meter), None),
+            Some(NativeFileMeter::Owned(meter)) => (None, Some(meter)),
             None => (None, None),
         };
+        let meter = borrowed.or(owner.as_deref());
         if let Some(meter) = meter {
             if let Err(error) = meter.check() {
                 return Err((error, file));
@@ -41,19 +42,18 @@ impl NativeFile {
             return Err((io::ErrorKind::Unsupported.into(), file));
         }
         let bytes = std::mem::size_of::<NativeFilePayload>();
-        let allocation = match owner {
-            Some(owner) => match ReadAllocation::new(owner, bytes) {
+        let allocation = if let Some(owner) = &owner {
+            match ReadAllocation::new(owner, bytes) {
                 Ok(allocation) => Some(allocation),
                 Err(error) => return Err((error, file)),
-            },
-            None => {
-                if let Some(meter) = meter
-                    && let Err(error) = meter.allocate(bytes as u64)
-                {
-                    return Err((error, file));
-                }
-                None
             }
+        } else {
+            if let Some(meter) = meter
+                && let Err(error) = meter.allocate(bytes as u64)
+            {
+                return Err((error, file));
+            }
+            None
         };
         let payload = Arc::new(NativeFilePayload {
             file,
@@ -75,9 +75,8 @@ impl NativeFile {
                 overlapped: false,
             }),
             Err(error) => {
-                let NativeFilePayload { file, _allocation } = Arc::try_unwrap(payload)
-                    .ok()
-                    .expect("unpublished file import");
+                let NativeFilePayload { file, _allocation } =
+                    Arc::try_unwrap(payload).unwrap_or_else(|_| std::process::abort());
                 if _allocation.is_none()
                     && let Some(meter) = meter
                 {
@@ -102,7 +101,7 @@ impl NativeFile {
     /// Imports a Windows handle for overlapped I/O.
     ///
     /// # Safety
-    /// The caller transfers sole I/O ownership of an idle FILE_FLAG_OVERLAPPED handle associated with no completion port.
+    /// The caller transfers sole I/O ownership of an idle `FILE_FLAG_OVERLAPPED` handle associated with no completion port.
     #[cfg(windows)]
     #[allow(unsafe_code, reason = "the caller supplies an idle overlapped handle")]
     pub unsafe fn from_overlapped_file_unchecked(
@@ -178,7 +177,7 @@ impl NativeFile {
         &self.file
     }
 
-    /// Reads storage whose AsMut exposes the same initialized slice without allocating.
+    /// Reads storage whose `AsMut` exposes the same initialized slice without allocating.
     pub fn read_prepared_bounded_async<B>(
         &self,
         offset: u64,
@@ -378,7 +377,7 @@ impl NativeFile {
                     file,
                     offset,
                     owned.0.as_ref(),
-                    meter.expect("bounded write meter"),
+                    meter.ok_or(io::ErrorKind::InvalidInput)?,
                 );
                 drop(owned);
                 result

@@ -195,7 +195,7 @@ pub use content_model::ContentChange;
 pub use content_model::ContentTimes;
 pub use content_model::FileCloneRequest;
 use content_model::content_input_path_bytes;
-pub(crate) use content_model::{ContentAddress, ContentFile};
+pub use content_model::{ContentAddress, ContentFile};
 pub use detached::DetachedFile;
 pub use diff::DirectoryBindingChange;
 pub use diff::FileRecordChange;

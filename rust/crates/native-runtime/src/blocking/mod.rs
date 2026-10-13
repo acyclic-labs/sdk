@@ -111,7 +111,7 @@ pub(crate) fn task_completion<T: Send + 'static>(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .result = Some(result);
-        })
+        });
     };
     let allocation = allocation_meter
         .map(|meter| ReadAllocation::new(meter, std::mem::size_of_val(&operation)))

@@ -118,7 +118,7 @@ impl DemandSource for NativeDemandSource {
             let before = provider
                 .metadata(path, context)?
                 .ok_or(DemandError::Absent)?;
-            if (before.file_type() != crate::demand::SourceNodeKind::SymbolicLink) {
+            if before.file_type() != crate::demand::SourceNodeKind::SymbolicLink {
                 return Err(DemandError::InvalidRequest);
             }
             if version(&before) != expected {

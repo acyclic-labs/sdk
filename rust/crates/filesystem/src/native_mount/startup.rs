@@ -4,7 +4,7 @@ use super::*;
 pub struct NativeMountStartupFailure {
     pub(super) error: NativeMountError,
     pub(super) owner: NativeMountSession,
-    pub(super) custody: crate::NativeAllocation,
+    pub(super) _custody: crate::NativeAllocation,
 }
 
 impl NativeMountStartupFailure {
@@ -73,7 +73,7 @@ impl PreparedNativeMountStart {
             NativeMountStartupFailure {
                 error,
                 owner,
-                custody,
+                _custody: custody,
             },
         )
     }
