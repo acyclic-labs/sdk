@@ -364,6 +364,30 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             .with_replayed_extensions(admission.extensions)
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn resume_scope_with_native_work<'a>(
+        &'a self,
+        task: TaskId,
+        operation: OperationId,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            if task.into_bytes() != operation.into_bytes() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "task identity does not match its admission",
+                });
+            }
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let admission = self.admission(operation, &mut Some(&mut io.history_io())).await?;
+            let (scope, retained) = self
+                .authenticated_scope(&admission, &mut Some(&mut io.history_io()))
+                .await?;
+            drop(admission);
+            Ok((scope, io.into_native_custody(retained)?))
+        })
+    }
+
     async fn outcome(&self, task_id: TaskId) -> Result<Option<Outcome<Value>>> {
         self.task_outcome(task_id, None).await
     }
