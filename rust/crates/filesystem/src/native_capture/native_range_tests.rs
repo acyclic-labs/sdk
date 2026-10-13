@@ -53,7 +53,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
     cancellation.cancel();
     assert!(matches!(
         native_positional_file(file, &scope.native),
-        Err(CaptureError::Kernel(crate::FsError::Cancelled(_)))
+        Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::Cancelled(_))
     ));
     assert_eq!(
         unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },

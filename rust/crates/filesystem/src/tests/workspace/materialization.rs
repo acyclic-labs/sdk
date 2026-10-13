@@ -141,7 +141,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
             Path::new("nested/file"),
             crate::HostPathReplacement::Atomic,
             &options,
-            crate::WorkBudget::UNBOUNDED,
+            selected_transaction_budget(),
             &crate::CancellationToken::new(),
         )
         .await?;
@@ -161,7 +161,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
             Path::new("missing"),
             crate::HostPathReplacement::Atomic,
             &options,
-            crate::WorkBudget::UNBOUNDED,
+            selected_transaction_budget(),
             &crate::CancellationToken::new(),
         )
         .await?;
@@ -174,7 +174,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
                     invalid,
                     crate::HostPathReplacement::Atomic,
                     &options,
-                    crate::WorkBudget::UNBOUNDED,
+                    selected_transaction_budget(),
                     &crate::CancellationToken::new(),
                 )
                 .await

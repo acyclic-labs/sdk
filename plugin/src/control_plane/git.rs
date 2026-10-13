@@ -237,19 +237,19 @@ impl ControlPlane {
                 .cloned()
                 .ok_or_else(|| "root binding is unavailable".to_owned())?;
             let workspace = lazy_workspace.workspace().clone();
-            let before_tree = git_workspace_tree(&lazy_workspace, &argv, None).await?;
-            let apply_patch = git_apply_patch(&lazy_workspace, &root_binding.path, &argv).await?;
+            let before_tree = git_workspace_tree(lazy_workspace, &argv, None).await?;
+            let apply_patch = git_apply_patch(lazy_workspace, &root_binding.path, &argv).await?;
             let repository_id = repository_id(
                 workspace.id().into_bytes(),
                 root_binding.created()?.repository_workspace_id,
             );
-            let (ignore, merge_drivers) = git_policy(&lazy_workspace).await?;
+            let (ignore, merge_drivers) = git_policy(lazy_workspace).await?;
             let executor = RootMaterializingGitExecutor {
                 inner: PluginGitExecutor {
                     fs: &self.fs,
                     store: &self.store,
                     current: workspace.clone(),
-                    lazy_current: &lazy_workspace,
+                    lazy_current: lazy_workspace,
                     repository_id,
                     ignore,
                     permit: PublicationPermit::Unrestricted,

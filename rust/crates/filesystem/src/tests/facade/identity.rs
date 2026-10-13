@@ -223,6 +223,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
             1
         );
     }
+    metadata = checkout.read_metadata(id, B, &cancel).await?.value;
     for (mode, size) in [(0o100_640, None), (0o100_600, Some(12))] {
         metadata.posix_mode = MetadataField::Value(mode);
         checkout
@@ -320,7 +321,10 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
     .await?;
     commit(&mut source, &cancel).await?;
     let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
-    let mut candidate = source.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancel), &cancel)?;
+    let mut candidate = source.private_candidate(
+        &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancel),
+        &cancel,
+    )?;
     candidate
         .change_content(
             id,
@@ -334,7 +338,10 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
         read(&mut source, id, 0, 19, &cancel).await?.as_ref(),
         b"actual source bytes"
     );
-    let before = candidate.read_file_record_by_id(id, B, &cancel).await?.value;
+    let before = candidate
+        .read_file_record_by_id(id, B, &cancel)
+        .await?
+        .value;
     cancel.cancel();
     assert!(
         candidate
@@ -408,7 +415,7 @@ async fn detached_payload_bounds_and_authority_volume_identity_fail_closed() -> 
     let mut limited = config();
     limited.limits.maximum_read_bytes = 1;
     let (_, mut checkout) = fixture(limited, &cancel).await?;
-    create(&mut checkout, "bounded", OwnedBytes::new(), &cancel).await?;
+    let id = create(&mut checkout, "bounded", OwnedBytes::new(), &cancel).await?;
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.bounded".to_vec(),
@@ -416,7 +423,7 @@ async fn detached_payload_bounds_and_authority_volume_identity_fail_closed() -> 
     )?;
     checkout
         .change_named_attribute(
-            path("bounded")?,
+            id,
             &attribute,
             Some((
                 &OwnedBytes::from_static(b"xx"),

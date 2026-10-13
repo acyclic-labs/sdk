@@ -78,7 +78,7 @@ pub(super) async fn observe_writeback(
                 crate::pi_fork_host::native_lazy_error(source)
             }
             source => Error::NativeWorkspacePublication {
-                source: acyclic_fs::NativeWorkspacePublicationError::State(source),
+                source: Box::new(acyclic_fs::NativeWorkspacePublicationError::State(source)),
                 custody: None,
             },
         })?;

@@ -355,6 +355,7 @@ impl PiRootProvider {
         Ok(state)
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel(&self) {
         self.creation_cancelled
             .store(true, std::sync::atomic::Ordering::SeqCst);

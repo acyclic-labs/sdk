@@ -126,7 +126,7 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
                         source_identity: [2; 16],
                         source_epoch: 0,
                         native_root_identity: [3; 16],
-                    })
+                    });
             }
         }
         assert!(validate_state_bounds(&changed).is_err());

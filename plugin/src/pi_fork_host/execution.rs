@@ -27,9 +27,9 @@ impl crate::pi_host::PiControlHost<'_> {
             self.protected.policy().root_task,
             owner.task_id(),
             &input.commit.sdk_operation,
-            &work,
+            work,
         )?;
-        let operations = PiForkOperations::new(original, &work)?;
+        let operations = PiForkOperations::new(original, work)?;
         if command.operation_id != original
             || input.commit.caller != owner.task_id()
             || input.commit.launch.source.parent_session_id != caller.binding.native_session_id
@@ -52,8 +52,8 @@ impl crate::pi_host::PiControlHost<'_> {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi requested alias already belongs to another admitted child" });
         }
-        let coordinator = self.coordinator(&work)?;
-        let existing = coordinator.load_plan(&context, original).await?;
+        let coordinator = self.coordinator(work)?;
+        let existing = coordinator.load_plan(context, original).await?;
         if reconcile && existing.is_none() {
             return Ok(TaskCommandProgress::Pending);
         }
@@ -122,7 +122,7 @@ impl crate::pi_host::PiControlHost<'_> {
         } else {
             let reservation = self.reservation(&plan, work)?;
             coordinator
-                .admit_preparation(&context, &owner, &fence, &plan)
+                .admit_preparation(context, owner, &fence, &plan)
                 .await?;
             *self
                 .pending
@@ -131,7 +131,7 @@ impl crate::pi_host::PiControlHost<'_> {
             return Ok(TaskCommandProgress::Pending);
         }
         let Some(prepared) = coordinator
-            .advance(shared, &owner, &fence, &plan, source)
+            .advance(shared, owner, &fence, &plan, source)
             .await?
         else {
             return Ok(TaskCommandProgress::Pending);
@@ -143,7 +143,7 @@ impl crate::pi_host::PiControlHost<'_> {
                 binding: &prepared.binding,
                 state: "prepared",
             },
-            &work,
+            work,
         )
     }
 }

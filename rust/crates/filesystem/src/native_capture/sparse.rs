@@ -41,7 +41,7 @@ pub(super) async fn settled_sparse_ranges(
                     if let Some(cause) = meter.state.take_native_io_failure() {
                         capture_demand_error(cause)
                     } else if error.kind() == std::io::ErrorKind::UnexpectedEof {
-                        CaptureError::Kernel(crate::FsError::SourceSnapshotStale)
+                        CaptureError::from(crate::FsError::SourceSnapshotStale)
                     } else {
                         error.into()
                     }
@@ -50,7 +50,7 @@ pub(super) async fn settled_sparse_ranges(
                 .checked_add(chunk.0.len() as u64)
                 .ok_or(WorkError::Overflow)?;
             if read_end == position || read_end > end {
-                return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
+                return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
             }
             let mut start = position;
             while start < read_end {

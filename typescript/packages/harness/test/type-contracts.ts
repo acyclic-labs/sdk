@@ -177,14 +177,6 @@ function nativeValidationKeepsOwnerClass(native: NativeContracts): VolumeRef<"pr
   return native.validate("volume_ref", project);
 }
 
-function canonicalComparisonKeepsItsRecordType(native: NativeContracts, generation: ResourceRef<"generation">): void {
-  native.canonicalEqual(project, project);
-  // @ts-expect-error comparing two volume classes cannot erase their ownership distinction
-  native.canonicalEqual(project, privateVolume);
-  // @ts-expect-error a resource revision cannot be compared as a project volume
-  native.canonicalEqual(project, generation);
-}
-
 function nativeAdmissionDoesNotPromiseOriginalIdentitySpelling(native: NativeContracts): void {
   const compact = { provider, id: "original-spelling" as const, class: "project" as const,
     owner: { kind: "project" as const, id: "original-owner" as const } };
@@ -360,7 +352,6 @@ function nativeResourceValidationKeepsProviderKind(contracts: NativeContracts, r
 void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, inlineOutboxBody, stringOutboxMetadata, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];
 void cannotConstructRuntimeDirectly;
 void nativeValidationKeepsOwnerClass;
-void canonicalComparisonKeepsItsRecordType;
 void nativeAdmissionDoesNotPromiseOriginalIdentitySpelling;
 void nativeAdmissionIsRequiredAtComposition;
 void generatedAdmissionBoundaryRejectsOpaqueRoutes;

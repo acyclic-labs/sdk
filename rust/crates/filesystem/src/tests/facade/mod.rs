@@ -589,7 +589,6 @@ impl AsyncObjectStore for PostPutObjectStore {
         id: ObjectId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
-        object_context(work)?;
         self.inner.contains(id, work).await
     }
     async fn put_hashed(

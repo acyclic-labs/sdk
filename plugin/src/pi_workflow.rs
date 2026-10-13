@@ -6,7 +6,7 @@ use acyclic_harness::{
     conversation::FileRef,
     distributed::{WorkPull, Worker},
     filesystem::{TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
-    runtime::{DurableTaskHost, TaskContext},
+    runtime::TaskContext,
     scheduler::LeaseFence,
     workflow::{MachineTransition, WorkflowCommand},
 };

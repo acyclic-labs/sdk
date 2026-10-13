@@ -80,7 +80,7 @@ pub(crate) enum PiOperatorBody {
         file_evidence: Option<PiOperatorFileEvidence>,
     },
     Approval {
-        prepared: PiPreparedApproval,
+        prepared: Box<PiPreparedApproval>,
         digest: String,
         decision: PiOperatorDecision,
     },
@@ -225,7 +225,7 @@ pub(crate) fn build_control_request(
         .issuer
         .issue(
             &format!("pi:operator:{}:{hash}", body.session()),
-            &Capabilities::new([capability(&body, &hash)]),
+            &Capabilities::new([capability(&body, hash)]),
             Some(owner.policy().agent),
             None,
             &mut None,
@@ -278,7 +278,7 @@ pub(crate) fn verify_request(
         || request.body.session() != session
         || request.operator.agent() != Some(owner.policy().agent)
         || request.operator.id() != format!("pi:operator:{session}:{hash}")
-        || request.operator.capabilities() != &Capabilities::new([capability(&request.body, &hash)])
+        || request.operator.capabilities() != &Capabilities::new([capability(&request.body, hash)])
     {
         return Err(Error::Unauthorized(
             "operator response differs from its original protected Root and exact body".into(),
@@ -430,7 +430,7 @@ pub(crate) fn parse_digest(digest: &str) -> Result<[u8; 32]> {
 // Audited closed prepared-approval diagnostic allowance.
 pub(crate) const PREPARED_LABEL_BYTES: u64 = 2468;
 
-/// Audited closed operator DTO quota, including its internally tagged body and adjacent VolumeOwner content.
+/// Audited closed operator DTO quota, including its internally tagged body and adjacent `VolumeOwner` content.
 fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u64> {
     let body_labels_bytes = 266;
     let diagnostic_static_bytes =
@@ -560,7 +560,10 @@ pub(crate) async fn run_cli(
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &cancellation)
         .map_err(|(cause, work)| {
-            ControlRequestError::NativeWork(Error::NativeConstruction { cause, work })
+            ControlRequestError::NativeWork(Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })
         })?;
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;
     let directory = crate::service::session_directory(data, &cli.session);
@@ -610,7 +613,7 @@ pub(crate) async fn run_cli(
     }
     let body = if let Some((digest, decision)) = cli.approval {
         PiOperatorBody::Approval {
-            prepared,
+            prepared: Box::new(prepared),
             digest,
             decision,
         }

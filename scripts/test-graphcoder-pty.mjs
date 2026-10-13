@@ -14,7 +14,7 @@ const [binary, ...options] = process.argv.slice(2);
 const flags = new Map();
 while (options.length) {
   const key = options.shift(), value = options.shift();
-  assert.ok(["--fresh", "--manifest", "--evidence"].includes(key) && value && !flags.has(key), "invalid PTY lane arguments");
+  assert.ok(key && ["--fresh", "--manifest", "--evidence"].includes(key) && value && !flags.has(key), "invalid PTY lane arguments");
   flags.set(key, value);
 }
 assert.ok(binary && isAbsolute(binary) && statSync(binary).isFile(), "absolute installed binary required");
@@ -30,7 +30,9 @@ const json = path => {
   return JSON.parse(readFileSync(path, "utf8"));
 };
 const report = { format_version: 1, qualified: false, platform: process.platform, binary,
-  binary_sha256: hash(binary), suite_sha256: hash(suitePath), evidence: "actual OS slave PTY / actual Win32 ConPTY, installed --session, no --headless", launches: [], files: [], observations: {} };
+  binary_sha256: hash(binary), suite_sha256: hash(suitePath), evidence: "actual OS slave PTY / actual Win32 ConPTY, installed --session, no --headless",
+  launches: /** @type {PtySession["record"][]} */ ([]),
+  files: /** @type {{path: string, sha256: string, bytes: number}[]} */ ([]), observations: {} };
 const env = { PATH: "", TERM: "xterm-256color", LANG: "C.UTF-8" };
 for (const key of ["SystemRoot", "WINDIR", "TEMP", "TMP"]) if (process.env[key] !== undefined) env[key] = process.env[key];
 function bind(path) {
@@ -99,7 +101,7 @@ class PtySession {
     this.pid = null; this.intentionalKill = false;
     this.raw = join(evidence, `${name}.pty.raw`); this.host = join(evidence, `${name}.host.raw`);
     writeFileSync(this.raw, "", { mode: 0o600 }); writeFileSync(this.host, "", { mode: 0o600 });
-    this.record = { name, executable: launcher, argv: launchArgs(config), runtime_argv: [binary, "--session", config], stdin: [], raw: this.raw, host: this.host };
+    this.record = { name, executable: launcher, argv: launchArgs(config), runtime_argv: [binary, "--session", config], stdin: /** @type {string[]} */ ([]), raw: this.raw, host: this.host };
     report.launches.push(this.record);
     this.child = spawn(launcher, this.record.argv, { env, cwd: dirname(config), windowsHide: true,
       detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
@@ -168,7 +170,7 @@ class PtySession {
     const from = this.text.length;
     const response = this.expect(pattern, from);
     const prompt = this.expect(/graphcoder> /, from);
-    const write = new Promise((resolveWrite, reject) => this.child.stdin.write(line + (process.platform === "win32" ? "\r" : "\n"), error => error ? reject(error) : resolveWrite()));
+    const write = /** @type {Promise<void>} */ (new Promise((resolveWrite, reject) => this.child.stdin.write(line + (process.platform === "win32" ? "\r" : "\n"), error => error ? reject(error) : resolveWrite())));
     const [, , match] = await Promise.all([write, prompt, response]); return match;
   }
   async commandJson(line, kind) {
@@ -183,12 +185,13 @@ class PtySession {
     assert.deepEqual(exited, { code: 0, signal: null }, "actual PTY process successful exit");
   }
   async killOriginal() {
-    assert.ok(this.pid, "actual original runtime PID required for process fault");
-    this.intentionalKill = true; this.record.runtime_requested_signal = "SIGKILL"; process.kill(this.pid, "SIGKILL");
+    const pid = this.pid;
+    assert.ok(pid, "actual original runtime PID required for process fault");
+    this.intentionalKill = true; this.record.runtime_requested_signal = "SIGKILL"; process.kill(pid, "SIGKILL");
     await this.exited;
     if (this.failure) throw this.failure;
     // BSD script can return zero even when its slave process was killed.
-    assert.throws(() => process.kill(this.pid, 0), error => error.code === "ESRCH", "actual original runtime PID must be gone");
+    assert.throws(() => process.kill(pid, 0), error => error instanceof Error && "code" in error && error.code === "ESRCH", "actual original runtime PID must be gone");
   }
 }
 let requestIndex = 0;

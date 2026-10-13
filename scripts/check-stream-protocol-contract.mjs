@@ -29,13 +29,14 @@ try {
   assert.ok(service, "StreamService is missing");
   assert.deepEqual(service.method.map(method => method.name), [
     "InspectIdempotency", "Append", "Tail", "Fork", "Read", "Follow",
-    "AcknowledgeDelivery", "Children", "ChildrenPage", "Commit", "ReadCommit",
+    "Children", "ChildrenPage", "Commit", "ReadCommit",
   ]);
   assert.equal(service.method.find(method => method.name === "Read").serverStreaming, true);
   assert.equal(service.method.find(method => method.name === "Follow").serverStreaming, true);
 
   for (const name of ["TrimRequest", "TrimReceipt", "DeleteRequest", "DeleteReceipt",
-    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict"]) {
+    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict",
+    "AcknowledgeDeliveryRequest", "AcknowledgeDeliveryResponse"]) {
     assert.equal(messages.has(name), false, `${name} must not be published`);
   }
 
@@ -50,12 +51,7 @@ try {
     assert.deepEqual(message.reservedName, names);
   };
   assertFields("TailResponse", [["tail", 1]]);
-  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["delivery_token", 5]]);
-  const deliveryToken = messages.get("ReadResponse").field.find(field => field.name === "delivery_token");
-  assert.equal(deliveryToken.proto3Optional, true);
-  assert.equal(deliveryToken.type, "TYPE_BYTES");
-  assertFields("AcknowledgeDeliveryRequest", [["delivery_token", 1]]);
-  assertFields("AcknowledgeDeliveryResponse", []);
+  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4]]);
   assertReserved("ReadResponse", [[1, 2]], ["record"]);
   assertFields("RecordBatch", [["records", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4]]);

@@ -251,7 +251,7 @@ pub enum CapabilityIn {
     LiveMovement,
     DiskFork,
 }
-fn capability(value: CapabilityIn) -> Capability {
+fn capability(value: &CapabilityIn) -> Capability {
     match value {
         CapabilityIn::ElasticCpu => Capability::ElasticCpu,
         CapabilityIn::ElasticMemory => Capability::ElasticMemory,
@@ -268,7 +268,7 @@ fn compatibility_in(value: CompatibilityIn) -> Result<CompatibilityPolicy, JsVal
         CompatibilityIn::Require { capabilities } => {
             let values = capabilities
                 .iter()
-                .map(|&v| capability(v))
+                .map(capability)
                 .collect::<BTreeSet<_>>();
             if values.len() != capabilities.len() {
                 return Err(err("capability set contains duplicates"));

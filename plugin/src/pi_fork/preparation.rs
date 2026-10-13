@@ -163,7 +163,9 @@ impl<'a> PiForkCoordinator<'a> {
                     code: acyclic_harness::wire::ErrorCode::Unauthorized,
                     reason: "Pi caller has no actual project binding",
                 })?;
-            let source_read = if commit.source_task != owner.task_id() {
+            let source_read = if commit.source_task == owner.task_id() {
+                None
+            } else {
                 Some(
                     self.authorize_selected_project_with_native_work(
                         context,
@@ -178,8 +180,6 @@ impl<'a> PiForkCoordinator<'a> {
                     )
                     .await?,
                 )
-            } else {
-                None
             };
             if commit.child.project_volumes.len() != 1 {
                 return Err(Error::NativeBoundary {
@@ -373,7 +373,7 @@ impl<'a> PiForkCoordinator<'a> {
                 history_limits,
                 source_read.as_ref().map(|pair| &pair.0),
                 resolver,
-                &cancel,
+                cancel,
             )
             .await?;
             source

@@ -353,6 +353,7 @@ impl SharedRootRegistry {
 
     /// Explicitly settles a failed cold admission using the original source
     /// owner's legitimate cleanup span. False retains the actual SDK owners.
+    #[cfg(test)]
     pub(crate) async fn shutdown_pending_with_native_work<F, G>(
         &self,
         root: &Path,

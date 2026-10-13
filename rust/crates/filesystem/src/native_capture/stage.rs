@@ -28,7 +28,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         .stat_file(&file, &mut meter.clone())
         .map_err(capture_demand_error)?;
     if metadata.file_type() != crate::demand::SourceNodeKind::RegularFile {
-        return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
+        return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
     }
     ensure_same_host_node(snapshot, &metadata)?;
     let ranges = allocated_data_ranges(
@@ -66,7 +66,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
 
         let content = content?;
         if content.logical_bytes() != range.length {
-            return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
+            return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
         }
         *staged_file_bytes = staged_file_bytes
             .checked_add(range.length)

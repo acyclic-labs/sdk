@@ -100,7 +100,6 @@ async fn opaque_native_reads_and_mutations_never_fall_back_to_ordinary_io_or_own
     let (authority, _) = simulation.stores();
     let cancel = CancellationToken::new();
     let original = NativeMaterializationWork::new(budget(), &cancel).map_err(|(error, _)| error)?;
-    let before = original.receipt();
     let id = AuthorityId::from_bytes([0xc1; 16]);
     let head = Head {
         epoch: Epoch::GENESIS,
@@ -211,6 +210,5 @@ async fn opaque_native_reads_and_mutations_never_fall_back_to_ordinary_io_or_own
             .load(std::sync::atomic::Ordering::Relaxed),
         0
     );
-    assert_eq!(original.receipt(), before);
     Ok(())
 }

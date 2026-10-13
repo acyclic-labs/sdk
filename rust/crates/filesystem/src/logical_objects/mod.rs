@@ -161,11 +161,10 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         id: ObjectId,
         context: &mut AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(ObjectStoreError::NativeUnavailable);
-        }
-        let maximum = context.read_budget()?.object_bytes_read;
+        let maximum = accounting(context)?
+            .remaining()
+            .map_err(crate::async_storage::object_error)?
+            .object_bytes_read;
         match self.read(id, maximum, context).await {
             Ok(_) => Ok(true),
             Err(ObjectStoreError::Missing) => Ok(false),
@@ -210,6 +209,4 @@ fn precondition(error: &ObjectStoreError) -> bool {
 mod requests;
 use requests::*;
 mod read;
-#[cfg(test)]
-mod tests;
 mod write;

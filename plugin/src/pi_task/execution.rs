@@ -85,7 +85,7 @@ impl ResumableMachine for PiTaskMachine {
                     work,
                 )?;
                 state_metadata.1.absorb(&mut decoded.1)?;
-                TransitionInput::Control(decoded.0)
+                TransitionInput::Control(Box::new(decoded.0))
             }
             PiTaskState::Controlling { .. } => {
                 require_single_command(&input)?;

@@ -142,7 +142,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
             ..WorkBudget::default()
         };
         let native = NativeMaterializationWork::new(budget, &CancellationToken::new())
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         let retained = {
             let io = crate::filesystem::PreparationIo::from_native_work(&native)?;
             CompositeForkVerifier::new(&[], &mut Some(&mut io.history_io()))?

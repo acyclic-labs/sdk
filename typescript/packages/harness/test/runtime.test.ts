@@ -680,7 +680,13 @@ test("cancels hanging siblings as soon as a cancel-on-failure group fails", asyn
     return "late";
   });
   const runtime = (await Harness.builder(contracts).task(task).build());
-  await expect(runtime.group<string>({ kind: "cancel-on-failure" }).map<"fail" | "hang">(task, ["hang", "fail"])).rejects.toThrow();
+  const group = runtime.group<string>({ kind: "cancel-on-failure" });
+  await group.spawnMany(task, { id: "batch:cancel-on-failure" as BatchId, inputs: ["hang", "fail"] as const });
+  expect(await group.join()).toMatchObject({
+    complete: true,
+    cancellation: "requested",
+    entries: [{ outcome: { kind: "cancelled" } }, { outcome: { kind: "failed" } }],
+  });
   expect(aborted).toBeTrue();
 });
 
