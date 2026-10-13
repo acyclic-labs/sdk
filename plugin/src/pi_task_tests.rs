@@ -327,11 +327,7 @@ async fn selected_root_recovery_requires_original_admission() {
             .map(|(key, root)| (key.clone(), root.path.to_str().unwrap().to_owned()))
             .collect(),
     };
-    assert!(
-        observe_pi_session(&runtime.runtime, &state, &work)
-            .await
-            .is_err()
-    );
+    assert!(observe_pi_session(&runtime, &state, &work).await.is_err());
     runtime
         .admit_root(&binding, &intent, &preparation(), &work)
         .await
@@ -357,11 +353,7 @@ async fn selected_root_recovery_requires_original_admission() {
                 root.native_session_id = changed.root_session_id.clone();
             }
         }
-        assert!(
-            observe_pi_session(&runtime.runtime, &changed, &work)
-                .await
-                .is_err()
-        );
+        assert!(observe_pi_session(&runtime, &changed, &work).await.is_err());
         if mutation < 2 {
             assert!(
                 runtime
@@ -410,7 +402,7 @@ async fn selected_root_recovery_requires_original_admission() {
     let query = crate::pi_fork::tests::work();
     query.cancellation().cancel();
     assert!(
-        observe_pi_session(&reopened.0.runtime, &state, &query)
+        observe_pi_session(&reopened.0, &state, &query)
             .await
             .is_err()
     );

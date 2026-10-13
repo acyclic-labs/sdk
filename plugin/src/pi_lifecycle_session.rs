@@ -86,7 +86,7 @@ impl PiSession {
     ) -> RootResult<()> {
         let work = query_work;
         let _graph_receipt =
-            pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, query_work).await?;
+            pi_recovery::observe_pi_session(&self.runtime, &self.state, query_work).await?;
         self.binding(caller)?;
         self.authorize_subtree(caller, target)?;
         let caller_admission = self
@@ -243,8 +243,7 @@ impl PiSession {
         async move {
             let cancellation = query_work.cancellation().clone();
             let _graph_receipt =
-                pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, query_work)
-                    .await?;
+                pi_recovery::observe_pi_session(&self.runtime, &self.state, query_work).await?;
             if self.state.routes.is_empty() {
                 return Ok(());
             }
@@ -411,7 +410,7 @@ impl PiSession {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
         let mut failure = None;
-        let graph = pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, work).await;
+        let graph = pi_recovery::observe_pi_session(&self.runtime, &self.state, work).await;
         let authenticated = graph.is_ok();
         let _graph_receipt = match graph {
             Ok(receipt) => Some(receipt),

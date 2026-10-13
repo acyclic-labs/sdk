@@ -144,7 +144,7 @@ impl PiTaskRuntime {
         )
         .await?;
         let (observed, custody) =
-            super::pi_recovery::observe_pi_session(&runtime.runtime, state, work).await?;
+            super::pi_recovery::observe_pi_session(&runtime, state, work).await?;
         Ok((runtime, observed, custody))
     }
 

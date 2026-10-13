@@ -1,7 +1,7 @@
 //! Service recovery over original task admissions and retained reservations.
 
 use super::pi_root::PiRootIntent;
-use super::pi_task::{PiTaskExecution, PiTaskInput, PiTaskMachine};
+use super::pi_task::{PiTaskExecution, PiTaskInput};
 use super::{AdapterState, PiTaskBinding, PluginTaskBinding};
 use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
@@ -195,19 +195,14 @@ fn serialize_lease_task<S: serde::Serializer>(
 }
 
 /// The same complete graph observer, supplied the caller's ORIGINAL native work.
-pub(crate) async fn observe_pi_session<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>,
+pub(crate) async fn observe_pi_session(
+    registered: &super::pi_runtime::PiTaskRuntime,
     state: &AdapterState,
     work: &NativeMaterializationWork,
-) -> Result<(Vec<PiTaskObservation>, NativeAllocation)>
-where
-    P: acyclic_stream::StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-{
+) -> Result<(Vec<PiTaskObservation>, NativeAllocation)> {
+    let runtime = &registered.runtime;
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut tasks = session_tasks(state, work)?;
-    let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
         Some(
             std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new())
@@ -281,7 +276,7 @@ where
             task.binding,
             origin,
             work,
-            pi_definition.identity(),
+            registered.definition.identity(),
         )
         .await?;
         authenticate_original_alias(
