@@ -833,8 +833,7 @@ impl PiSession {
                     original_native_work.cancellation(),
                 )
                 .await
-                .map_err(|(source, custody)| RootError::NativeLineage { source, custody })?
-                .into_parts();
+                .map_err(|(source, custody)| RootError::NativeLineage { source, custody })?;
             drop(lineage.0);
             drop(lineage.1);
             let mut workspace_name = {
@@ -894,8 +893,7 @@ impl PiSession {
                 original_native_work.cancellation(),
             )
             .await
-            .map_err(|(source, custody)| RootError::NativeContext { source, custody })?
-            .into_parts();
+            .map_err(|(source, custody)| RootError::NativeContext { source, custody })?;
         drop(context.0);
         drop(context.1);
         self.state.pending_root_registration = false;
