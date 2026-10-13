@@ -1,14 +1,14 @@
 use super::*;
-use std::mem::MaybeUninit;
 
-pub(super) struct MountProbe {
-    parent: DarwinOwned<CString>,
-    pub(super) mounts: DarwinOwned<Vec<MaybeUninit<libc::statfs>>>,
-}
+pub(super) static MOUNT_TABLE: Mutex<()> = Mutex::new(());
+pub(super) struct MountProbe(pub(super) Arc<DarwinOwned<CString>>);
 
 pub(super) enum ProbeWork<'a> {
     Live(&'a Work),
-    Cleanup(&'a crate::NativeWorkReservation, Option<&'a crate::CancellationToken>),
+    Cleanup(
+        &'a crate::NativeWorkReservation,
+        Option<&'a crate::CancellationToken>,
+    ),
 }
 
 impl ProbeWork<'_> {
@@ -18,7 +18,6 @@ impl ProbeWork<'_> {
             Self::Cleanup(credit, _) => credit.work(),
         }
     }
-
     pub(super) fn check(&self) -> Result<(), NativeMountError> {
         match self {
             Self::Live(work) => work.admit(WorkCounters::UNCHARGED)?,
@@ -26,7 +25,6 @@ impl ProbeWork<'_> {
         }
         Ok(())
     }
-
     pub(super) fn read(&self) -> Result<(), NativeMountError> {
         match self {
             Self::Live(work) => work.charge(READ_WORK)?,
@@ -34,70 +32,36 @@ impl ProbeWork<'_> {
         }
         Ok(())
     }
-
-    pub(super) fn copy(&self, bytes: u64) -> Result<(), NativeMountError> {
-        let delta = copy_work(bytes);
-        match self {
-            Self::Live(work) => work.charge(delta)?,
-            Self::Cleanup(credit, wait) => credit.partition_work(delta, *wait)?.record_completed(delta)?,
-        }
-        Ok(())
-    }
 }
 
 impl MountProbe {
-    pub(super) fn new(destination: &Path, original: &Work) -> Result<Self, NativeMountError> {
-        let parent = destination
-            .parent()
-            .ok_or(NativeMountError::InvalidDestination)?;
-        Ok(Self {
-            parent: native_name(parent.as_os_str().as_bytes(), original)?,
-            mounts: DarwinOwned::empty(Vec::new()),
-        })
-    }
-
-    pub(super) fn preallocate(&mut self, original: &Work) -> Result<(), NativeMountError> {
-        original.charge(READ_WORK)?;
-        // SAFETY: a null buffer requests the current mount count.
-        let count = unsafe { libc::getfsstat(ptr::null_mut(), 0, libc::MNT_NOWAIT) };
-        if count < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        // Reserve the future mount and a truncation sentinel before birth.
-        self.mounts = vector(
-            original,
-            (count as usize).checked_add(2).ok_or(WorkError::Overflow)?,
+    pub(super) fn new(destination: &Path, work: &Work) -> Result<Self, NativeMountError> {
+        let parent = native_name(
+            destination
+                .parent()
+                .ok_or(NativeMountError::InvalidDestination)?
+                .as_os_str()
+                .as_bytes(),
+            work,
         )?;
-        Ok(())
-    }
-
-    pub(super) fn mounted(
-        &mut self,
-        destination: &Path,
-        work: &ProbeWork<'_>,
-    ) -> Result<bool, NativeMountError> {
-        let mut path = [0_u8; libc::PATH_MAX as usize];
-        let mut close = match work {
-            ProbeWork::Cleanup(credit, wait) => credit.partition_work(WRITE_WORK, *wait)?,
-            ProbeWork::Live(original) => original.reserve_work(WRITE_WORK)?,
-        };
-        work.read()?;
-        // SAFETY: parent is terminated and retained through open.
-        let fd = unsafe { libc::open(self.parent.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
+        let close = work.reserve_work(WRITE_WORK)?;
+        work.charge(READ_WORK)?;
+        // SAFETY: parent is terminated and remains live through open.
+        let fd = unsafe { libc::open(parent.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
         if fd < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
         let normalized = (|| {
-            work.read()?;
-            // SAFETY: F_GETPATH initializes the path through its terminator in PATH_MAX bytes.
+            let mut path = [0_u8; libc::PATH_MAX as usize];
+            work.charge(READ_WORK)?;
+            // SAFETY: F_GETPATH writes a terminated path into PATH_MAX bytes.
             if unsafe { libc::fcntl(fd, libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            let mut length = CStr::from_bytes_until_nul(&path)
-                .map_err(|_| crate::NativeTreeMaterializationError::InvalidLayout)?
+            let length = CStr::from_bytes_until_nul(&path)
+                .map_err(|_| driver_errno(libc::EIO))?
                 .to_bytes()
                 .len();
-            work.check()?;
             let name = destination
                 .file_name()
                 .ok_or(NativeMountError::InvalidDestination)?
@@ -107,70 +71,48 @@ impl MountProbe {
                 .checked_add(separator)
                 .and_then(|n| n.checked_add(name.len()))
                 .ok_or(WorkError::Overflow)?;
-            if end > path.len() {
+            if end >= path.len() {
                 return Err(driver_errno(libc::ENAMETOOLONG));
             }
-            work.copy(name.len() as u64)?;
+            work.charge(copy_work(name.len() as u64))?;
             if separator != 0 {
                 path[length] = b'/';
-                length += 1;
             }
-            path[length..end].copy_from_slice(name);
-
-            Ok::<_, NativeMountError>(end)
+            path[length + separator..end].copy_from_slice(name);
+            shared(work, native_name(&path[..end], work)?).map(Self)
         })();
         close.started_drop_io(WRITE_WORK);
-        // SAFETY: closes exactly the descriptor opened above, including error paths.
+        // SAFETY: closes the descriptor opened here on every result path.
         let closed = unsafe { libc::close(fd) };
-        let close_error = (closed != 0).then(std::io::Error::last_os_error);
-        let end = normalized?;
-        if let Some(error) = close_error {
-            return Err(error.into());
+        match normalized {
+            Ok(value) if closed != 0 => Err(std::io::Error::last_os_error().into()),
+            result => result,
         }
-        let normalized = &path[..end];
-        if self.mounts.capacity() == 0 {
-            self.preallocate(work.original())?;
+    }
+
+    pub(super) fn mounted(
+        &self,
+        destination: &Path,
+        work: &ProbeWork<'_>,
+    ) -> Result<bool, NativeMountError> {
+        let _table = MOUNT_TABLE.lock().unwrap_or_else(PoisonError::into_inner);
+        work.read()?;
+        let mut mounts = ptr::null_mut();
+        // SAFETY: libc owns the returned table; serialized SDK queries consume it before the next call.
+        let count = unsafe { libc::getmntinfo(&raw mut mounts, libc::MNT_NOWAIT) };
+        if count <= 0 || mounts.is_null() {
+            return Err(std::io::Error::last_os_error().into());
         }
-        loop {
-            let bytes = self
-                .mounts
-                .capacity()
-                .checked_mul(std::mem::size_of::<libc::statfs>())
-                .and_then(|n| c_int::try_from(n).ok())
-                .ok_or(WorkError::Overflow)?;
-            work.read()?;
-            // SAFETY: bytes is the funded writable backing capacity.
-            let count = unsafe {
-                libc::getfsstat(self.mounts.as_mut_ptr().cast(), bytes, libc::MNT_NOWAIT)
-            };
-            if count < 0 {
-                return Err(std::io::Error::last_os_error().into());
+        // SAFETY: positive count is the initialized table length, retained under MOUNT_TABLE.
+        let mounts = unsafe { std::slice::from_raw_parts(mounts, count as usize) };
+        for mount in mounts {
+            work.check()?;
+            // SAFETY: Darwin terminates f_mntonname.
+            let name = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) }.to_bytes();
+            if name == destination.as_os_str().as_bytes() || name == self.0.as_bytes() {
+                return Ok(true);
             }
-            if count as usize >= self.mounts.capacity() {
-                if matches!(work, ProbeWork::Cleanup(..)) {
-                    return Err(NativeMountError::Lifecycle(
-                        "Darwin mount table exceeds its prepaid capacity",
-                    ));
-                }
-                self.preallocate(work.original())?;
-                continue;
-            }
-            // SAFETY: successful fill initialized exactly count entries.
-            let table = unsafe {
-                std::slice::from_raw_parts(
-                    self.mounts.as_ptr().cast::<libc::statfs>(),
-                    count as usize,
-                )
-            };
-            for mount in table {
-                work.check()?;
-                // SAFETY: Darwin terminates f_mntonname.
-                let name = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) }.to_bytes();
-                if name == destination.as_os_str().as_bytes() || name == normalized {
-                    return Ok(true);
-                }
-            }
-            return Ok(false);
         }
+        Ok(false)
     }
 }
