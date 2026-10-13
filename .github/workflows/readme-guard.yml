@@ -1,9 +1,11 @@
 # README changes must be approved by a human owner who did not open the PR.
-# Required on main by the "README guard" ruleset.
+# Required on main by the "README guard" ruleset. pull_request_target runs this
+# file from main, so a PR can't change the guard it is checked by. The job only
+# reads PR metadata through the API and never checks out PR code.
 name: README guard
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, edited, ready_for_review]
   pull_request_review:
     types: [submitted, dismissed]
@@ -12,21 +14,28 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: readme-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   readme-guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const owners = ['ramstar3000', 'Var1377'];
             const pr = context.payload.pull_request;
             const { owner, repo } = context.repo;
 
+            // Any file whose name starts with README (README.md, README.en.md, README-zh.md, readme.rst),
+            // including the old name of a renamed README.
+            const isReadme = path => /^readme([._-]|$)/i.test(path.split('/').pop()) && !path.startsWith('.github/workflows/');
             const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number });
-            const readmes = files.map(f => f.filename).filter(f => /(^|\/)README(\.[A-Za-z]+)?$/i.test(f));
+            const readmes = files.flatMap(f => [f.filename, f.previous_filename]).filter(p => p && isReadme(p));
             if (readmes.length === 0) return core.info('No README changes.');
-            core.info(`README changes: ${readmes.join(', ')}`);
+            core.info(`README changes: ${[...new Set(readmes)].join(', ')}`);
 
             if (!/- \[x\] README text written by a human/i.test(pr.body || '')) {
               core.setFailed('Tick "README text written by a human" in the PR description.');
