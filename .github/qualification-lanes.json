@@ -101,8 +101,8 @@
   },
   {
     "lane": "windows",
-    "runner": "blacksmith-4vcpu-windows-2025",
-    "workers": 4,
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
     "artifact": "stream-native-windows",
     "artifact_path": "stream-native-bundle",
     "inputs": "product",

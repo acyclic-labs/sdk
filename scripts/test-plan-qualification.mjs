@@ -679,3 +679,24 @@ test("ARM workspace compilation uses the larger runner's complete CPU allocation
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(arm.runner));
 });
+
+
+test("Windows workspace compilation uses sixteen CPUs while audit runners stay bounded", () => {
+  const matrix = chooseLanes(lanes, { mainPush: false, force: true, marker: everywhere, retained: retainedAll }).matrix;
+  const windows = matrix.find(lane => lane.lane === "windows");
+  assert.equal(windows.runner, "blacksmith-16vcpu-windows-2025");
+  assert.equal(windows.workers, 16);
+  assert.equal(windows.scope, "full");
+  assert.equal(windows.artifact, "stream-native-windows");
+  assert.equal(windows.artifact_path, "stream-native-bundle");
+  for (const name of ["windows-napi", "windows-arm64", "windows-clippy"]) {
+    const audit = matrix.find(lane => lane.lane === name);
+    assert.equal(audit.runner, "blacksmith-4vcpu-windows-2025");
+    assert.equal(audit.workers, 4);
+  }
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
+  for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
+    assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
+  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(windows.runner));
+});
