@@ -296,9 +296,7 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspace(
-        source, custody,
-    ))
+    Error::NativeWorkspace { source, custody }
 }
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {

@@ -78,7 +78,11 @@ pub(crate) fn pi_native_vec<T>(
 ) -> Result<(Vec<T>, acyclic_fs::NativeAllocation)> {
     let bytes = capacity
         .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| acyclic_harness::Error::from(acyclic_fs::WorkError::Overflow.into()))?;
+        .ok_or_else(|| {
+            acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::Overflow,
+            ))
+        })?;
     let mut custody = if bytes == 0 {
         work.claim(0, 0, acyclic_fs::WorkCounters::default())
     } else {

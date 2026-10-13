@@ -27,9 +27,9 @@ use acyclic_harness::{
     effects::EffectRegistry,
     filesystem::{
         BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
-        NativeProcessAuthority, NativeProcessProvider, NativeRecordedPreparation,
-        NativeVolumeNamespace, NativeVolumeView, RecursiveSourceSnapshot, TaskCommandHost,
-        TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt, workspace_ref,
+        NativeProcessAuthority, NativeProcessProvider, NativeVolumeNamespace, NativeVolumeView,
+        RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection,
+        TaskWorkerAttempt, workspace_ref,
     },
     fork::ForkReport,
     resources::GenerationRef,

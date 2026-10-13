@@ -2,6 +2,7 @@
 use super::*;
 use crate::pi_host::invalid;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
+use acyclic_harness::conversation::ContentResidencyVerifier as _;
 use acyclic_harness::{
     Error, OperationId, Result,
     filesystem::{PreparationIo, TaskCommandProgress},
@@ -386,7 +387,10 @@ impl PiSession {
             match host
                 .run(
                     live.context.clone(),
-                    live.context.owned_task_fence()?,
+                    live.context
+                        .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
+                        .1
+                        .clone(),
                     command.clone(),
                     payload.0,
                     retry,
@@ -467,11 +471,9 @@ impl PiSession {
             maximum,
             Some(&io),
         )?;
-        let bytes = reader
-            .read_with_native_work(&reference.0, maximum, work)
-            .await?;
+        let bytes = reader.read(&reference.0, maximum, Some(&io))?.await?;
         Ok(Some(pi_root_provider::guarded_pi_decode(
-            &bytes.0,
+            bytes.as_ref(),
             maximum,
             std::mem::size_of::<T>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,

@@ -257,53 +257,6 @@ impl PiNativeCommandHost {
         self.register_prepared(prepared).await
     }
 
-    /// Reads only the SDK-authenticated original preparation journal.
-    pub(crate) async fn observe_preparation_journal(
-        &self,
-        task: TaskId,
-        owner: &TaskJournalOwner<LocalStream>,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<NativeRecordedPreparation>> {
-        let _admission = self.child_admission(task, work).await?;
-        if owner.task_id() != task {
-            return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Conflict,
-                reason: "Pi native journal observer selected another original task",
-            });
-        }
-        let witness = self
-            .runtime
-            .runtime
-            .task_host()
-            .task_admission_readonly_witness_with_native_work(task, work)
-            .await?;
-        acyclic_harness::filesystem::observe_preparation(&witness, work)?.await
-    }
-
-    pub(super) async fn original_allocation(
-        &self,
-        owner: &TaskJournalOwner<LocalStream>,
-        command: OperationId,
-        work: &NativeMaterializationWork,
-    ) -> Result<(
-        acyclic_harness::filesystem::NativePreparationRoot,
-        acyclic_fs::NativeAllocation,
-    )> {
-        let observation = self
-            .observe_preparation_journal(owner.task_id(), owner, work)
-            .await?;
-        let Some(recorded) = observation else {
-            return Err(Error::Indeterminate(command));
-        };
-        let (allocation, custody) =
-            acyclic_harness::filesystem::NativeVolumeView::<
-                LocalAuthorityBackend,
-                LocalObjectBackend,
-            >::recover_allocation(owner, &recorded.manifest.options, work)?
-            .await?;
-        Ok((allocation.ok_or(Error::Indeterminate(command))?, custody))
-    }
-
     pub(crate) fn live_view(&self, task: TaskId) -> Option<Arc<PiNativeLiveView>> {
         let entry = self.find_entry(task)?;
         let view = entry

@@ -27,7 +27,12 @@ impl<'a> PiForkCoordinator<'a> {
             (value, allocation)
         };
         if context.durable_task_id() != Some(owner.task_id())
-            || context.owned_task_fence()? != *fence
+            || context
+                .owned_task_binding(Some(
+                    &acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+                ))?
+                .1
+                != fence
             || admission.0.grants != *context.scope().grants()
             || admission.0.limits != context.scope().limits()
             || admission.0.run_limits != context.scope().run_limits()

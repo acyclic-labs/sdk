@@ -17,7 +17,9 @@ impl PiNativeCommandHost {
         self.hydrate_child(
             &shared,
             &owner,
-            &context.owned_task_fence()?,
+            context
+                .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
+                .1,
             work.cancellation(),
             work,
         )
@@ -103,14 +105,6 @@ impl PiNativeCommandHost {
             if handles.root.as_ref().is_none_or(|root| root.view.is_none()) {
                 let cancellation = work.cancellation();
                 let budget = crate::pi_root_provider::allocation_budget();
-                let _recovered = if existing_only {
-                    Some(
-                        self.original_allocation(&owner, command.operation_id, work)
-                            .await?,
-                    )
-                } else {
-                    None
-                };
                 let scratch_context = Arc::clone(&shared)
                     .with_output_volume(&prepared.binding.scratch.volume)
                     .await?;
@@ -148,19 +142,18 @@ impl PiNativeCommandHost {
                 let (_, _, scope) = conversation.0;
                 let authority = (verifier.0, scope, conversation.1);
                 let namespace = NativeVolumeNamespace::MaterializedDirectory;
-                let scratch_workspace = accept(
-                    self.filesystem
-                        .open_measured(
-                            &workspace_ref(
-                                prepared.binding.scratch.volume.provider().clone(),
-                                &prepared.binding.scratch.volume.storage_name()?,
-                            )?,
-                            remaining(work)?,
-                            cancellation,
-                        )
-                        .await,
-                    work,
-                )?;
+                let io = PreparationIo::from_native_work(work)?;
+                let mut history = &io;
+                let scratch_name = prepared
+                    .binding
+                    .scratch
+                    .volume
+                    .storage_name(&mut Some(&mut history))?;
+                let scratch_workspace = self
+                    .resources
+                    .fs
+                    .open_workspace(&scratch_name, work, cancellation)
+                    .await?;
                 let scratch_generation = GenerationId::new(Digest::from_bytes(
                     generation
                         .0
@@ -236,7 +229,7 @@ impl PiNativeCommandHost {
                         .0;
                     root.as_mut()
                         .ok_or(Error::Indeterminate(command.operation_id))?
-                        .create_directories_into_with_work(
+                        .create_directories(
                             &owner,
                             &shared,
                             &prepared.binding,

@@ -295,11 +295,10 @@ impl PiControlHost<'_> {
                 .journal_owner(
                     task,
                     &fence,
-                    Some(&acyclic_harness::executor::PreparationIo::from_native_work(
-                        work,
-                    )?),
+                    Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
                 )
-                .await?;
+                .await?
+                .into_native_shared(work)?;
             journal_owner
                 .verify(
                     false,
@@ -320,7 +319,6 @@ impl PiControlHost<'_> {
                 });
             }
             drop(expected);
-            let journal_owner = journal_owner.into_native_shared(work)?;
             let content = acyclic_harness::runtime::content_residency_verifier(
                 Arc::clone(&context),
                 Arc::clone(&journal_owner),
@@ -378,11 +376,10 @@ impl PiControlHost<'_> {
                 .journal_owner(
                     task,
                     &fence,
-                    Some(&acyclic_harness::executor::PreparationIo::from_native_work(
-                        work,
-                    )?),
+                    Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
                 )
-                .await?;
+                .await?
+                .into_native_shared(work)?;
             journal_owner
                 .verify(
                     false,

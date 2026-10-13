@@ -80,7 +80,7 @@ impl crate::pi_host::PiControlHost<'_> {
         };
         let rebound = actual
             .workspace
-            .rebind_source(&mut accounting)
+            .state(&mut accounting)
             .await
             .map_err(native_lazy_error)?;
         guard().await?;
