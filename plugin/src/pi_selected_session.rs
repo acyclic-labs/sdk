@@ -268,12 +268,11 @@ impl PiSession {
             drop(value);
             return Err(acyclic_harness::Error::from(cause));
         }
-        if let Some(mut source_custody) = root_cut_custody {
-            if let Err(cause) = custody.absorb(&mut source_custody) {
+        if let Some(mut source_custody) = root_cut_custody
+            && let Err(cause) = custody.absorb(&mut source_custody) {
                 drop(value);
                 return Err(acyclic_harness::Error::from(cause));
             }
-        }
         Ok((value, custody))
     }
 }

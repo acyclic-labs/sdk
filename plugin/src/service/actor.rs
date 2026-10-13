@@ -158,7 +158,7 @@ impl SessionHandle {
                                         &cancellation,
                                     )
                                     .map_err(
-                                        |(cause, work)| Error::NativeConstruction { cause, work },
+                                        |(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) },
                                     )?,
                                 );
                             }
@@ -252,11 +252,9 @@ impl SessionHandle {
                             *snapshot = next;
                         }
                         if let Err((Err(error), _)) = response.send((result, original_native_work))
-                        {
-                            if undelivered_close_failure.is_none() {
+                            && undelivered_close_failure.is_none() {
                                 undelivered_close_failure = Some(error);
                             }
-                        }
                     }
                     #[cfg(test)]
                     SessionCommand::Pause { entered, resume } => {

@@ -106,7 +106,7 @@ impl PiControlHost<'_> {
                         crate::pi_fork_host::native_lazy_error(source)
                     }
                     source => Error::NativeWorkspacePublication {
-                        source: acyclic_fs::NativeWorkspacePublicationError::State(source),
+                        source: Box::new(acyclic_fs::NativeWorkspacePublicationError::State(source)),
                         custody: None,
                     },
                 })?;

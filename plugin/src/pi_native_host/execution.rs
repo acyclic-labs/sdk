@@ -251,7 +251,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                 let recovery = self
                     .bind_recovery(
                         Arc::clone(&shared),
-                        &input,
+                        input,
                         owner.clone(),
                         command.operation_id,
                         effect,
@@ -262,7 +262,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     let bound = self
                         .prepare_effect(
                             Arc::clone(&shared),
-                            &input,
+                            input,
                             owner,
                             &command,
                             intent,
@@ -307,7 +307,7 @@ impl TaskCommandHost for PiNativeCommandHost {
             let bound = self
                 .prepare_effect(
                     Arc::clone(&shared),
-                    &input,
+                    input,
                     owner,
                     &command,
                     intent,
@@ -362,7 +362,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                 return Ok(TaskCommandProgress::Ready(Value::Null));
             };
             let bound = self
-                .bind_recovery(shared, &input, owner, command.operation_id, effect, work)
+                .bind_recovery(shared, input, owner, command.operation_id, effect, work)
                 .await?;
             let progress = self
                 .effect_progress(

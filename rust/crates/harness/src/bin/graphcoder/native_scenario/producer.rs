@@ -55,7 +55,7 @@ impl Producer {
         let verifier = caller.binding.verifier()?;
         let budget = self.config.tools.content_budget;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         let io = PreparationIo::from_native_work(&work)?;
         let fence = LeaseFence::from(&caller.lease.reservation);
         let owner = self

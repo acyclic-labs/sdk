@@ -6,6 +6,11 @@
     reason = "the CLI entry points dispatch every subcommand in one place"
 )]
 
+#![allow(
+    clippy::manual_async_fn,
+    reason = "explicit Send future bounds avoid higher-ranked lifetime errors in native commands"
+)]
+
 mod adapter_state;
 mod cli_output;
 mod codex_hook_mcp;

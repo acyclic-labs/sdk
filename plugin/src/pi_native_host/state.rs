@@ -227,12 +227,12 @@ impl PiNativeCommandHost {
 
     pub(super) fn prepared(&self, task: TaskId) -> Option<Arc<PreparedPiFork>> {
         let entry = self.find_entry(task)?;
-        let prepared = entry
+
+        entry
             .prepared
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        prepared
+            .clone()
     }
 
     pub(super) async fn bind_invocation_work(

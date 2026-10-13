@@ -238,7 +238,7 @@ impl<'a> PiControlHost<'a> {
             .protected
             .policy()
             .maximum_payload_bytes
-            .min(crate::MAXIMUM_ADAPTER_STATE_BYTES) as u64;
+            .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&admission.0.input, maximum, work)?;
         drop(admission);
         let result = crate::pi_root_provider::guarded_pi_decode(

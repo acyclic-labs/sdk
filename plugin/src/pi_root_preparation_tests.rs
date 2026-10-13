@@ -193,7 +193,7 @@ impl Fixture {
                         "application/schema+json",
                         br#"{"type":"object"}"#,
                     )
-                    .await
+                    .await;
             }
             "encoding" | "duplicate_schema" => {
                 let schema = crate::pi_root_allocation::PiRootAllocation::schema(
@@ -451,7 +451,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
         let private = other.path();
         assert!(matches!(
             PiRootPreparation::load(
-                &private,
+                private,
                 Path::new(""),
                 &fixture.runtime,
                 &fixture.filesystem,

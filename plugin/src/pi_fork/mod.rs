@@ -268,7 +268,7 @@ impl<'a> PiForkCoordinator<'a> {
     }
 }
 
-/// RootService's explicit same-session selected-PROJECT policy.
+/// `RootService`'s explicit same-session selected-PROJECT policy.
 struct PiProjectSourcePolicy<'a> {
     coordinator: &'a PiForkCoordinator<'a>,
     source: Arc<LocalLazyWorkspace>,
@@ -288,7 +288,7 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    Error::NativeWorkspace { source, custody }
+    Error::NativeWorkspace { source: Box::new(source), custody }
 }
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {

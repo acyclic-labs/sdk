@@ -136,9 +136,9 @@ fn session_tasks<'a>(
                             root.task_id,
                             parent_task(&pending.parent_agent_id)?,
                             &pending.tool_use_id,
-                            &work,
+                            work,
                         )?,
-                        &work,
+                        work,
                     )?
                     .preparation
                     .into_bytes(),
@@ -521,12 +521,12 @@ where
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::Root(retained))
             if original == retained =>
         {
-            original.validate(binding, work)?
+            original.validate(binding, work)?;
         }
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::RootState(retained))
             if root_matches_state(original, retained) =>
         {
-            original.validate(binding, work)?
+            original.validate(binding, work)?;
         }
         (PiTaskExecution::Child { .. }, PiTaskOrigin::Child(_)) => {}
         _ => {
@@ -723,7 +723,7 @@ fn checked_quota(left: u64, right: u64) -> Result<u64> {
 
 fn binding_metadata_quota(binding: &PiTaskBinding) -> Result<u64> {
     let mut bytes = checked_quota(4096, binding.native_session_id.len() as u64)?;
-    for (key, _) in &binding.project_volumes {
+    for key in binding.project_volumes.keys() {
         bytes = checked_quota(bytes, key.len() as u64)?;
     }
     for volume in binding

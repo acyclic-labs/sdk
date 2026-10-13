@@ -146,13 +146,7 @@ where
         let actual = work.root_identity(root)?;
         authenticate(work, &mut guard, expected).await?;
         let live = registration.live.upgrade();
-        if actual.to_bytes() != identity {
-            if live.is_some() || matches!(admission, SharedRootAdmission::Resume(_)) {
-                return Err(rejection(ROOT_IDENTITY));
-            }
-            *registration = SharedRootRegistration::default();
-            retained = None;
-        } else {
+        if actual.to_bytes() == identity {
             let retained = retained.ok_or_else(|| rejection(MISSING_REFERENCE))?;
             if let Some(shared) = live {
                 if shared.source.root_identity() != expected {
@@ -172,6 +166,12 @@ where
                 drop(observed);
                 return Ok(shared);
             }
+        } else {
+            if live.is_some() || matches!(admission, SharedRootAdmission::Resume(_)) {
+                return Err(rejection(ROOT_IDENTITY));
+            }
+            *registration = SharedRootRegistration::default();
+            retained = None;
         }
     }
     let reference = retained
@@ -334,7 +334,7 @@ pub(crate) fn native_source_error(source: acyclic_fs::DemandError) -> RootError 
             native_work_error(acyclic_fs::NativeTreeMaterializationError::Cancelled)
         }
         source => RootError::NativeSource {
-            source: acyclic_fs::LazyWorkspaceError::Demand(source),
+            source: Box::new(acyclic_fs::LazyWorkspaceError::Demand(source)),
             custody: None,
         },
     }

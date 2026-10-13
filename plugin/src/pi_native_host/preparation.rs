@@ -79,7 +79,7 @@ impl PiNativeCommandHost {
         )?;
         let root_session = &root.0.binding.native_session_id;
         let caller_environment =
-            pi_caller::issued_environment(&self.protected, &root_session, &prepared.binding, work)?;
+            pi_caller::issued_environment(&self.protected, root_session, &prepared.binding, work)?;
         let mut invocation = self.protected.native_runtime()?.bind_invocation(
             intent,
             &caller_environment.0,

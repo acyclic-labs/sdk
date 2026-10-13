@@ -250,7 +250,7 @@ impl<'a> PiForkCoordinator<'a> {
                 report.0,
                 admission.0,
                 source,
-                &cancel,
+                cancel,
                 report.1,
                 admission.1,
             )
@@ -467,7 +467,7 @@ impl<'a> PiForkCoordinator<'a> {
             ._metadata_custody
             .absorb(&mut admission_allocation)?;
         prepared._metadata_custody.absorb(&mut binding.1)?;
-        return Ok(prepared);
+        Ok(prepared)
     }
 
     pub(super) async fn publish(
@@ -643,6 +643,6 @@ impl<'a> PiForkCoordinator<'a> {
             bound?;
             released?;
         }
-        return Ok(());
+        Ok(())
     }
 }

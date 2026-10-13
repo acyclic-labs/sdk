@@ -45,7 +45,7 @@ fn validate_pi_input_media(
     Ok(())
 }
 
-/// Same original upload key and protected bootstrap grant as stage_pi_input, with the caller's original native ledger owning both codec and publication.
+/// Same original upload key and protected bootstrap grant as `stage_pi_input`, with the caller's original native ledger owning both codec and publication.
 pub(crate) fn stage_pi_input<'a, T: Serialize + Sync>(
     owner: &'a PiOwnerConfig,
     filesystem: &'a Host,

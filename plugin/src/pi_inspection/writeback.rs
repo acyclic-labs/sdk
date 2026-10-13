@@ -45,7 +45,7 @@ pub(crate) async fn prepare_writeback(
         }
         Err((source, spent)) => {
             native_work.spent(spent)?;
-            return Err(Error::NativeWorkspacePublication { source, custody: None });
+            return Err(Error::NativeWorkspacePublication { source: Box::new(source), custody: None });
         }
     };
     if journal.root_identity != Some(root.identity.to_bytes())
@@ -132,7 +132,7 @@ pub(crate) fn publish_writeback<'a>(
                             }
                         }
                         source => Error::NativeWorkspacePublication {
-                            source,
+                            source: Box::new(source),
                             custody: None,
                         },
                     }));
@@ -162,7 +162,7 @@ pub(crate) fn validate_applied_writeback(
             "completed writeback differs from its original root and generations",
         ));
     }
-    require_selected_edits(&journal.plan.edits, &generations.paths)?;
+    require_selected_edits(&journal.plan.edits, generations.paths)?;
     let digest = crate::pi_root_provider::digest_pi_value(
         &writeback_digest_value(root, generations, journal),
         native_work.budget().bytes_encoded,
