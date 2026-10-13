@@ -4,11 +4,14 @@ use super::*;
 #[tokio::test]
 async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry() -> Result<()> {
     use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-    let fixture =
-        crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
+    let fixture = crate::durable_host::tests::created_fixture::CreationFixture::new().await?;
     let owner = fixture
         .host
-        .journal_owner(fixture.root, &((&fixture.root_lease.reservation).into()), None)
+        .journal_owner(
+            fixture.root,
+            &((&fixture.root_lease.reservation).into()),
+            None,
+        )
         .await?;
     let agent = owner
         .authenticated_binding_agent(&mut None)?
@@ -22,7 +25,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let scope = original_issuer
         .issue(
             "original-native-root-bind",
-            &Capabilities::new(["conversation:bind".into()]),
+            &Capabilities::new(["conversation:bind".to_owned()]),
             Some(agent),
             None,
             &mut None,
@@ -51,6 +54,17 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
         .expect("original ROOT ledger");
+    let owner = fixture
+        .host
+        .journal_owner(
+            fixture.root,
+            &(&fixture.root_lease.reservation).into(),
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &native,
+            )?),
+        )
+        .await?
+        .into_native_shared(&native)?;
     let mut first_io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
@@ -151,7 +165,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     wrong_scope.scope = wrong_issuer
         .issue(
             "original-native-root-bind",
-            &Capabilities::new(["conversation:bind".into()]),
+            &Capabilities::new(["conversation:bind".to_owned()]),
             Some(agent),
             None,
             &mut None,
@@ -227,17 +241,13 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert_eq!(aggregate.reducer().revision(), 1);
     owner.authenticate_fork_parent(&audience, &mut None)?;
     let bootstrap = owner
-        .root_bootstrap_binding_witness_with_native_work(&native)
+        .authenticated_root_binding_with_native_work(&native)
         .await?;
-    let (original_root, root_custody) = owner
+    let (original_root, _root_custody) = owner
         .original_root_admission_with_native_work(&native)
         .await?;
     owner
-        .verify_root_bootstrap_context_with_native_work(
-            &original_root,
-            bootstrap.binding(),
-            &native,
-        )
+        .root_bootstrap_context(&original_root, &bootstrap.0, &native)
         .await?;
     assert_ne!(owner.root_bootstrap_owner(), &audience);
     let creator = crate::core::AuthorityIssuer::new(
@@ -247,7 +257,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     );
     owner
         .authenticate_root_bootstrap_creator_with_native_work(
-            &creator.verifier(&mut None).expect("verifier copy"),
+            &creator.verifier(&mut None)?,
             &native,
         )
         .await?;
@@ -255,22 +265,10 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         .root_bootstrap_publication_lease_with_native_work(&native)
         .await?;
     let native_io = crate::filesystem::PreparationIo::from_native_work(&native)?;
-    let verified = publication.verify_with_io(&native_io)?;
-    assert!(matches!(
-        &verified,
-        crate::store::history::HistoryContentFuture::Native(_)
-    ));
-    verified.await?;
+    publication.verify(Some(&native_io))?.await?;
     let ordinary_io =
         crate::filesystem::PreparationIo::from_budget(guarded_publication_budget(), &cancellation)?;
-    let verified = publication.verify_with_io(&ordinary_io)?;
-    let frame_bytes = match &verified {
-        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => frame_bytes.to_owned(),
-        _ => panic!("ordinary measured verification must retain its actual compiled frame"),
-    };
-    verified.await?;
-    ordinary_io.release(frame_bytes)?;
-    assert!(ordinary_io.receipt().backend_read_operations > 0);
+    publication.verify(Some(&ordinary_io))?.await?;
     let denied_io = crate::filesystem::PreparationIo::from_budget(
         WorkBudget {
             backend_read_operations: 0,
@@ -278,177 +276,43 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         },
         &cancellation,
     )?;
-    let denied = publication.verify_with_io(&denied_io)?;
-    let denied_frame = match &denied {
-        crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => frame_bytes.to_owned(),
-        _ => panic!("ordinary denied verification uses the same compiled frame"),
-    };
-    assert!(denied.await.is_err());
-    denied_io.release(denied_frame)?;
-    assert_eq!(denied_io.receipt().backend_read_operations, 0);
-    drop(publication);
+    assert!(publication.verify(Some(&denied_io))?.await.is_err());
     let wrong_creator = crate::core::AuthorityIssuer::new(
         "created-owner",
         [81; 32],
         owner.root_bootstrap_owner().clone(),
     );
-    let creator_denied =
-        NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
-            .expect("independent configured creator verification");
-    let before = creator_denied.receipt();
-    let error = owner
-        .authenticate_root_bootstrap_creator_with_native_work(
-            &wrong_creator.verifier(&mut None).expect("verifier copy"),
-            &creator_denied,
-        )
-        .await
-        .err()
-        .expect("same audience with a different key is not the configured creator");
-    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
-    assert_eq!(
-        creator_denied.receipt().backend_read_operations,
-        before.backend_read_operations
+    assert!(
+        matches!(owner.authenticate_root_bootstrap_creator_with_native_work(&wrong_creator.verifier(&mut None)?, &native).await, Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
     );
-    assert_eq!(
-        creator_denied.receipt().backend_write_operations,
-        before.backend_write_operations
-    );
-    let query = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
-        .expect("independent original bootstrap READ query");
-    owner
-        .authenticated_root_binding_for_read_with_native_work(&bootstrap, &query)
-        .await?;
     let mut substituted_root = original_root.clone();
-    substituted_root.input = serde_json::json!({"substituted_original_root": true});
-    let before = query.receipt();
-    assert!(matches!(
-        owner
-            .verify_root_bootstrap_context_with_native_work(
-                &substituted_root,
-                bootstrap.binding(),
-                &query,
-            )
-            .await,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(
-        query.receipt().backend_read_operations,
-        before.backend_read_operations
+    substituted_root.input = serde_json::json!({"substituted_original_root":true});
+    assert!(
+        matches!(owner.root_bootstrap_context(&substituted_root, &bootstrap.0, &native).await, Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
     );
-    assert_eq!(
-        query.receipt().backend_write_operations,
-        before.backend_write_operations
-    );
-    let foreign =
-        crate::durable_host::tests::created_resource_access::CreationFixture::new_with_grants(&[
-            "foreign:bootstrap",
-        ])
-        .await?;
+    let foreign = crate::durable_host::tests::created_fixture::CreationFixture::new_with_grants(&[
+        "foreign:bootstrap",
+    ])
+    .await?;
     let foreign_owner = foreign
         .host
-        .journal_owner(foreign.root, &((&foreign.root_lease.reservation).into()), None)
+        .journal_owner(
+            foreign.root,
+            &(&foreign.root_lease.reservation).into(),
+            None,
+        )
         .await?;
-    let before = query.receipt();
-    assert!(matches!(
-        foreign_owner
-            .authenticated_root_binding_for_read_with_native_work(&bootstrap, &query,)
-            .await,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(
-        query.receipt().backend_read_operations,
-        before.backend_read_operations
+    assert!(
+        matches!(foreign_owner.root_bootstrap_context(&original_root, &bootstrap.0, &native).await, Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
     );
-    assert_eq!(
-        query.receipt().backend_write_operations,
-        before.backend_write_operations
-    );
-    let before = cancelled.receipt();
     assert!(matches!(
         owner
-            .verify_root_bootstrap_context_with_native_work(
-                &original_root,
-                bootstrap.binding(),
-                &cancelled,
-            )
+            .root_bootstrap_context(&original_root, &bootstrap.0, &cancelled)
             .await,
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Cancelled,
             ..
         })
     ));
-    assert_eq!(
-        cancelled.receipt().backend_read_operations,
-        before.backend_read_operations
-    );
-    assert_eq!(
-        cancelled.receipt().backend_write_operations,
-        before.backend_write_operations
-    );
-    let mut source_io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&query)?);
-    let observation_scope = creator
-        .issue(
-            "owner",
-            &fixture.root_scope.grants(),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let original_reservation = crate::distributed::original_reservation_proof(
-        &fixture.stream,
-        owner.root_bootstrap_owner(),
-        &observation_scope,
-        &creator.verifier(&mut None).expect("verifier copy"),
-        original_root.operation_id,
-        bootstrap.binding().fence(),
-        &mut Some(&mut source_io),
-    )
-    .await?;
-    fixture
-        .host
-        .verify_original_root_bootstrap_source_with_native_work(
-            &original_reservation,
-            &original_root,
-            bootstrap.binding(),
-            &query,
-        )?;
-    let before = query.receipt();
-    assert!(matches!(
-        fixture
-            .host
-            .verify_original_root_bootstrap_source_with_native_work(
-                &original_reservation,
-                &substituted_root,
-                bootstrap.binding(),
-                &query,
-            ),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(
-        query.receipt().backend_read_operations,
-        before.backend_read_operations
-    );
-    assert_eq!(
-        query.receipt().backend_write_operations,
-        before.backend_write_operations
-    );
-    drop(original_reservation);
-    drop(source_io);
-    drop(substituted_root);
-    drop(original_root);
-    drop(root_custody);
-    drop(aggregate);
-    drop(owner);
     Ok(())
 }

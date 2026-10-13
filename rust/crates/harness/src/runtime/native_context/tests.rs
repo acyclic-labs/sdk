@@ -1,5 +1,5 @@
 use super::*;
-use crate::durable_host::tests::created_resource_access::CreationFixture;
+use crate::durable_host::tests::created_fixture::CreationFixture;
 
 const BUDGET: acyclic_fs::WorkBudget =
     acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
@@ -13,7 +13,7 @@ fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializ
 
 #[tokio::test]
 async fn protected_tool_acceptance_enables_original_admission() -> Result<()> {
-    use crate::durable_host::tests::created_resource_access::{
+    use crate::durable_host::tests::created_fixture::{
         NativeCustomerFixture, NativeCustomerRuntime,
     };
     let fixture =
@@ -96,7 +96,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
         matches!(fixture.admit_child(created.request.child.clone()).await?,
         crate::Admission::Accepted(admitted) if admitted == task)
     );
-    let observation = fixture.host.observe_task(task).await?;
+    let observation = fixture.observation(task).await?;
     let reservation = observation
         .reservation
         .ok_or_else(|| Error::NotFound("created native context lease".into()))?;
