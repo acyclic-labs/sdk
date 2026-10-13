@@ -60,6 +60,18 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         TaskStateProvider::policy_identity_with_native_work(self, work)
     }
 
+    async fn admit_owned(
+        &self,
+        admission: TaskAdmissionRecord,
+        fence: crate::scheduler::LeaseFence,
+    ) -> Result<Admission<TaskId>> {
+        let parent = admission
+            .parent
+            .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
+        self.verify_owner(parent, &fence, false, &mut None).await?;
+        self.admit_record(admission, Some(fence)).await
+    }
+
     async fn reconcile_admission(
         &self,
         operation_id: OperationId,
