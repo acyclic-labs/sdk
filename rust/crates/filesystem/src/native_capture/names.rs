@@ -134,19 +134,8 @@ pub(crate) fn namespace_host_units_with_work<W: crate::native_host::NativeHostWo
         ..WorkCounters::UNCHARGED
     };
     work.admit(copied)?;
-    let mut allocation = work.claim(bytes as u64)?;
-    let mut buffer = Vec::new();
-    if let Err(error) = buffer.try_reserve_exact(count) {
-        drop(buffer);
-        let _retirement = work.release(allocation);
-        return Err(W::allocation_failed(error));
-    }
+    let (mut buffer, allocation) = crate::native_host::buffer(count, work)?;
     let result = (|| {
-        let actual = buffer
-            .capacity()
-            .checked_mul(width)
-            .ok_or(WorkError::Overflow)?;
-        work.reconcile_allocation(&mut allocation, actual as u64)?;
         for (index, component) in path.components().iter().enumerate() {
             work.check()?;
             let examined = WorkCounters {

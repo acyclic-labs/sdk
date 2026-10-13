@@ -62,16 +62,15 @@ pub(super) fn ensure_current_host_node(
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     expected: &HostSnapshot,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    cancellation.check()?;
+    meter.cancellation().check()?;
     meter.clone().check().map_err(capture_demand_error)?;
     let observed = source_root
         .stat(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
-    cancellation.check()?;
+    meter.cancellation().check()?;
     meter.clone().check().map_err(capture_demand_error)
 }
 
@@ -113,27 +112,27 @@ pub(super) fn test_host_path(path: &Path) -> CaptureHostPath {
 
 pub(super) fn host_kind(metadata: &HostStat) -> Result<FileKind, CaptureError> {
     let kind = metadata.file_type();
-    if kind.is_file() {
+    if (kind == crate::demand::SourceNodeKind::RegularFile) {
         return Ok(FileKind::Regular);
     }
-    if kind.is_dir() {
+    if (kind == crate::demand::SourceNodeKind::Directory) {
         return Ok(FileKind::Directory);
     }
-    if kind.is_symlink() {
+    if (kind == crate::demand::SourceNodeKind::SymbolicLink) {
         return Ok(FileKind::SymbolicLink);
     }
     #[cfg(unix)]
     {
-        if kind.is_fifo() {
+        if (kind == crate::demand::SourceNodeKind::Fifo) {
             return Ok(FileKind::Fifo);
         }
-        if kind.is_socket() {
+        if (kind == crate::demand::SourceNodeKind::Socket) {
             return Ok(FileKind::Socket);
         }
-        if kind.is_char_device() {
+        if (kind == crate::demand::SourceNodeKind::CharacterDevice) {
             return Ok(FileKind::CharacterDevice);
         }
-        if kind.is_block_device() {
+        if (kind == crate::demand::SourceNodeKind::BlockDevice) {
             return Ok(FileKind::BlockDevice);
         }
     }

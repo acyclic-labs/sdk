@@ -123,7 +123,6 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
     source_root: &HostRoot,
     epoch: u64,
     maximum_paths: usize,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, Option<FileRecord>)>, CaptureError> {
     let mut missing = Vec::new();
@@ -133,7 +132,7 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
             None
         } else {
             checkout
-                .lookup_no_follow(&path, meter, cancellation)
+                .lookup_no_follow(&path, meter, meter.cancellation())
                 .await?
                 .record
         };
@@ -216,7 +215,6 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     source_root: &HostRoot,
     maximum_paths: u32,
     policy: &CapturePolicy,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let maximum = usize::try_from(maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
@@ -242,17 +240,19 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
             capture_drop_host_path(host_path, meter)?;
             continue;
         }
+        capture_drop_host_path(host_path, meter)?;
         collect_host_walk_measured(
             source_root,
             profile,
             limits,
-            host_path,
             clone_capture_path(path, meter)?,
             policy,
             meter,
             |path, _, meter| append_scanned_path(&mut paths, path, maximum, meter),
         )?;
-        let lookup = checkout.lookup_no_follow(path, meter, cancellation).await?;
+        let lookup = checkout
+            .lookup_no_follow(path, meter, meter.cancellation())
+            .await?;
         if lookup
             .record
             .is_some_and(|record| record.kind == FileKind::Directory)
@@ -264,7 +264,6 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
                 policy,
                 maximum,
                 &mut paths,
-                cancellation,
                 meter,
             )
             .await?;

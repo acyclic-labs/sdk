@@ -290,7 +290,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         &source_root,
         options.maximum_paths,
         policy,
-        &cancellation,
         meter,
     )
     .await?;
@@ -320,7 +319,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         &source_root,
         epoch,
         maximum_paths.saturating_sub(rename_records.len()),
-        &cancellation,
         meter,
     )
     .await?;
@@ -402,7 +400,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             &mut mutations,
             &mut receipt,
             options.maximum_extent_spans,
-            &cancellation,
             meter,
         )
         .await?;
@@ -449,7 +446,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             &mut mutations,
             &mut receipt,
             options.maximum_extent_spans,
-            &cancellation,
             meter,
         )
         .await?;
@@ -515,7 +511,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             &mut mutations,
             &mut receipt,
             options.maximum_extent_spans,
-            &cancellation,
             meter,
         )
         .await?;

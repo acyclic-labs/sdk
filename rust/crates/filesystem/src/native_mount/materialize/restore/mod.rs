@@ -15,17 +15,6 @@ pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     task.await
 }
 
-pub(super) fn restore_demand_error(error: crate::demand::DemandError) -> MaterializeError {
-    match error {
-        crate::demand::DemandError::Work(error) => MaterializeError::Work(error),
-        crate::demand::DemandError::Io(error) => MaterializeError::Io(error),
-        crate::demand::DemandError::Cancelled => {
-            MaterializeError::Cancelled(crate::CancellationError)
-        }
-        _ => MaterializeError::InvalidDestination,
-    }
-}
-
 pub(super) struct PreparedRestore {
     pub(super) root: HostRoot,
     pub(super) destination_parent: HostRoot,
@@ -46,7 +35,7 @@ pub(super) fn prepare_restore(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<PreparedRestore, MaterializeError> {
     let allocation_work = destination_root.1.work().clone();
-    let root = HostRoot::open(&destination_root.0, work).map_err(restore_demand_error)?;
+    let root = HostRoot::open(&destination_root.0, work).map_err(MaterializeError::from)?;
     let actual = root.identity();
     if let Some(expected) = expected_root_identity {
         if actual != expected {
@@ -68,7 +57,7 @@ pub(super) fn prepare_restore(
             Path::new(destination_name),
             work,
         )
-        .map_err(restore_demand_error)?,
+        .map_err(MaterializeError::from)?,
         HostPathReplacement::LiveMount => recover_live_mount_replacement(
             &destination_parent,
             Path::new(destination_name),
@@ -91,7 +80,7 @@ pub(super) fn prepare_restore(
     };
     let stage_owner = match replacement {
         HostPathReplacement::Atomic => {
-            HostRoot::open(&stage_parent_path.0, work).map_err(restore_demand_error)?
+            HostRoot::open(&stage_parent_path.0, work).map_err(MaterializeError::from)?
         }
         HostPathReplacement::LiveMount => {
             #[cfg(unix)]
@@ -105,7 +94,7 @@ pub(super) fn prepare_restore(
                 })
             }
         }
-        .map_err(restore_demand_error)?,
+        .map_err(MaterializeError::from)?,
     };
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
     let stage_path = match allocation_work
@@ -157,7 +146,7 @@ pub(super) fn publish_restore(
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
     match crate::native_host::entry_identity(&destination_parent.directory, name, work)
-        .map_err(restore_demand_error)?
+        .map_err(MaterializeError::from)?
     {
         Some(_) => match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(
@@ -167,7 +156,7 @@ pub(super) fn publish_restore(
                 name,
                 work,
             )
-            .map_err(restore_demand_error)?,
+            .map_err(MaterializeError::from)?,
             HostPathReplacement::LiveMount => replace_live_mount(
                 &stage_parent,
                 name,
@@ -206,11 +195,11 @@ pub(super) fn publish_restore(
                     })
                 }
             }
-            .map_err(restore_demand_error)?;
+            .map_err(MaterializeError::from)?;
             crate::native_host::sync_directory_held(&destination_parent.directory, work)
-                .map_err(restore_demand_error)?;
+                .map_err(MaterializeError::from)?;
             crate::native_host::sync_directory_held(&stage_parent.directory, work)
-                .map_err(restore_demand_error)?;
+                .map_err(MaterializeError::from)?;
         }
     }
     Ok(())
@@ -235,7 +224,7 @@ pub(super) fn held_parent(
             )
         }
     }
-    .map_err(restore_demand_error)
+    .map_err(MaterializeError::from)
 }
 
 pub(super) fn create_restore_stage(
@@ -259,7 +248,7 @@ pub(super) fn create_restore_stage(
             bytes_encoded: bytes as u64,
             ..WorkCounters::UNCHARGED
         };
-        work.admit(delta).map_err(restore_demand_error)?;
+        work.admit(delta).map_err(MaterializeError::from)?;
         let allocation = allocation_work.claim(
             bytes as u64,
             u64::from((bytes as u64) != 0),
@@ -268,7 +257,7 @@ pub(super) fn create_restore_stage(
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}")
             .expect("String formatting cannot fail");
-        work.record(delta).map_err(restore_demand_error)?;
+        work.record(delta).map_err(MaterializeError::from)?;
         let name = (PathBuf::from(name), allocation);
         match {
             #[cfg(unix)]
@@ -298,10 +287,10 @@ pub(super) fn create_restore_stage(
                     Ok(root) => root,
                     // Without the stage capability no identity authorizes
                     // deleting this name, which may already have been swapped.
-                    Err(error) => return Err(restore_demand_error(error)),
+                    Err(error) => return Err(MaterializeError::from(error)),
                 };
                 if let Err(error) = crate::native_host::sync_directory_held(&parent.directory, work)
-                    .map_err(restore_demand_error)
+                    .map_err(MaterializeError::from)
                 {
                     let identity = root.identity();
                     drop(root);
@@ -329,7 +318,7 @@ pub(super) fn create_restore_stage(
             {
                 drop(name);
             }
-            Err(error) => return Err(restore_demand_error(error)),
+            Err(error) => return Err(MaterializeError::from(error)),
         }
     }
     Err(MaterializeError::Io(std::io::Error::new(
