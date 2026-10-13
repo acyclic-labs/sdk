@@ -265,7 +265,10 @@ where
     let work_per_volume: WorkBudget = serde_json::from_value(allowances)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(work_per_volume, &cancellation)
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
     let fence = LeaseFence::from(&lease.reservation);
     let owner = runtime

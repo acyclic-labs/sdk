@@ -333,7 +333,6 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
         drop(transport);
         drop(callback);
-        drop(callback);
         drop(disk);
         drop(tool);
         let (disk, issuer, _) = journal(root.path(), false).await?;
