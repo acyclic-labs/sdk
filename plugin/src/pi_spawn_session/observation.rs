@@ -29,72 +29,77 @@ struct Observation<'a> {
     outcome: &'a Option<Outcome<Value>>,
 }
 impl PiSession {
-    pub(super) async fn spawn_observation(
+    pub(super) fn spawn_observation<'a>(
         &self,
-        commit: &RetainedSpawnCommit,
+        commit: &'a RetainedSpawnCommit,
         operations: PiForkOperations,
         created: bool,
-        work: &NativeMaterializationWork,
+        work: &'a NativeMaterializationWork,
         maximum: u64,
-    ) -> Result<(Value, NativeAllocation)> {
-        let host = self.runtime.runtime.task_host();
-        let preparation = acyclic_harness::runtime::task_id_for_admission(operations.preparation);
-        let preparation_outcome = match host.outcome_with_native_work(preparation, work)?.await {
-            Ok(outcome) => Some(outcome),
-            Err(Error::NotFound(_)) if !created => None,
-            Err(error) => return Err(error),
-        };
-        let outcome = if created {
-            Some(
-                host.outcome_with_native_work(commit.child.task_id, work)?
-                    .await?,
-            )
-        } else {
-            None
-        };
-        let preparation_value = preparation_outcome
-            .as_ref()
-            .map(|entry| &entry.0)
-            .unwrap_or(&None);
-        let outcome_value = outcome.as_ref().map(|entry| &entry.0).unwrap_or(&None);
-        let native_effect = acyclic_harness::effect_host::task_effect_id(
-            commit.child.task_id,
-            operations.native,
-            &mut Some(&mut HistoryWork::new(PreparationIo::from_native_work(
-                work,
-            )?)),
-        )?;
-        let observation = Observation {
-            operation: &commit.sdk_operation,
-            state: if outcome_value
-                .as_ref()
-                .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
+    ) -> impl std::future::Future<Output = Result<(Value, NativeAllocation)>> + Send + 'a + use<'a>
+    {
+        let host = self.runtime.runtime.task_host().clone();
+        async move {
+            let preparation =
+                acyclic_harness::runtime::task_id_for_admission(operations.preparation);
+            let preparation_outcome = match host.outcome_with_native_work(preparation, work)?.await
             {
-                "completed"
-            } else if created {
-                "pending"
+                Ok(outcome) => Some(outcome),
+                Err(Error::NotFound(_)) if !created => None,
+                Err(error) => return Err(error),
+            };
+            let outcome = if created {
+                Some(
+                    host.outcome_with_native_work(commit.child.task_id, work)?
+                        .await?,
+                )
             } else {
-                "preparing"
-            },
-            uncertain: !created,
-            child: Child {
-                id: &commit.alias,
-                task: commit.child.task_id,
-                native_session_id: &commit.child.native_session_id,
-                cwd: &commit.launch.invocation.cwd,
-                session_file: &commit.launch.invocation.session_file,
-                session_directory: commit.launch.invocation.session_file.parent(),
-            },
-            preparation: Preparation {
-                task: preparation,
-                operation: operations.preparation,
-                outcome: preparation_value,
-            },
-            fork_operation: operations.fork,
-            native_operation: operations.native,
-            native_effect,
-            outcome: outcome_value,
-        };
-        pi_root_provider::guarded_pi_value(&observation, maximum, work)
+                None
+            };
+            let preparation_value = preparation_outcome
+                .as_ref()
+                .map(|entry| &entry.0)
+                .unwrap_or(&None);
+            let outcome_value = outcome.as_ref().map(|entry| &entry.0).unwrap_or(&None);
+            let native_effect = acyclic_harness::effect_host::task_effect_id(
+                commit.child.task_id,
+                operations.native,
+                &mut Some(&mut HistoryWork::new(PreparationIo::from_native_work(
+                    work,
+                )?)),
+            )?;
+            let observation = Observation {
+                operation: &commit.sdk_operation,
+                state: if outcome_value
+                    .as_ref()
+                    .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
+                {
+                    "completed"
+                } else if created {
+                    "pending"
+                } else {
+                    "preparing"
+                },
+                uncertain: !created,
+                child: Child {
+                    id: &commit.alias,
+                    task: commit.child.task_id,
+                    native_session_id: &commit.child.native_session_id,
+                    cwd: &commit.launch.invocation.cwd,
+                    session_file: &commit.launch.invocation.session_file,
+                    session_directory: commit.launch.invocation.session_file.parent(),
+                },
+                preparation: Preparation {
+                    task: preparation,
+                    operation: operations.preparation,
+                    outcome: preparation_value,
+                },
+                fork_operation: operations.fork,
+                native_operation: operations.native,
+                native_effect,
+                outcome: outcome_value,
+            };
+            pi_root_provider::guarded_pi_value(&observation, maximum, work)
+        }
     }
 }

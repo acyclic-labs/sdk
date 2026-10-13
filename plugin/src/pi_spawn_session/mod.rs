@@ -139,12 +139,14 @@ impl PiSession {
                 .await?;
             Some(live)
         };
-        let key = commit
+        let (key, _key_custody) = work.display(
+            commit
             .child
             .project_volumes
             .keys()
             .next()
-            .ok_or_else(|| invalid("Pi child has no selected project"))?;
+            .ok_or_else(|| invalid("Pi child has no selected project"))?
+        )?;
         let root_source = if commit.source_task != owner.policy().root_task {
             None
         } else if let Some(plan) = &plan {
@@ -163,7 +165,7 @@ impl PiSession {
             {
                 if observed.0.caller != caller
                     || observed.0.sdk_operation != commit.sdk_operation
-                    || observed.0.root_key != *key
+                    || observed.0.root_key != key
                 {
                     return Err(invalid("Pi retry changed its Root source observation"));
                 }
@@ -203,7 +205,7 @@ impl PiSession {
                 let observed: pi_fork_host::PiRootSource =
                     serde_json::from_value(acknowledgement.0)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
-                if observed.root_key != *key {
+                if observed.root_key != key {
                     return Err(invalid(
                         "Pi Root source acknowledgement changed its project",
                     ));
@@ -216,12 +218,14 @@ impl PiSession {
             root_source,
         };
         let commit = &payload.commit;
-        let key = commit
+        let (key, _key_custody) = work.display(
+            commit
             .child
             .project_volumes
             .keys()
             .next()
-            .ok_or_else(|| invalid("Pi child has no project"))?;
+            .ok_or_else(|| invalid("Pi child has no project"))?
+        )?;
         let command = self
             .spawn_command(
                 owner,
@@ -272,7 +276,7 @@ impl PiSession {
             .spawn_step(
                 &native,
                 live.as_ref(),
-                &command.0,
+                command.0.clone(),
                 &payload,
                 live.is_some() && plan.is_some(),
                 &work,
@@ -283,7 +287,7 @@ impl PiSession {
         if newly_saved || (saved_pending && acknowledgement.is_none()) {
             drop(acknowledgement.take());
             let result = self
-                .spawn_step(&native, live.as_ref(), &command.0, &payload, true, &work)
+                .spawn_step(&native, live.as_ref(), command.0.clone(), &payload, true, &work)
                 .await?;
             acknowledgement = result.0;
             self.spawn_save_pending(result.1, commit, operations, &work)?;
@@ -291,7 +295,7 @@ impl PiSession {
         let prepared = if let Some(plan) = coordinator.load_original_plan(original).await? {
             let source = if plan.commit.source_task == owner.policy().root_task {
                 self.roots
-                    .get(key)
+                    .get(&key)
                     .ok_or_else(|| invalid("Pi Root source handle is unavailable"))?
                     .workspace
                     .clone()
@@ -360,7 +364,7 @@ impl PiSession {
         &self,
         native: &Arc<PiNativeCommandHost>,
         live: Option<&PiNativeLiveSource>,
-        command: &WorkflowCommand,
+        command: WorkflowCommand,
         input: &pi_fork_host::PiForkCommand,
         retry: bool,
         work: &NativeMaterializationWork,
@@ -390,7 +394,7 @@ impl PiSession {
                         .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
                         .1
                         .clone(),
-                    command.clone(),
+                    command,
                     payload.0,
                     retry,
                     work,
@@ -410,75 +414,89 @@ impl PiSession {
                 TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => None,
             }
         } else {
-            host.control_step_with_native_work(command.clone(), retry)
+            host.control_step_with_native_work(command, retry)
                 .await?
         };
         Ok((reply, host.pending_to_save()?))
     }
 
-    async fn spawn_command<T: Serialize>(
+    fn spawn_command<'a, T: Serialize + Sync>(
         &self,
-        owner: &pi_owner::PiOwnerConfig,
+        owner: &'a pi_owner::PiOwnerConfig,
         operation: OperationId,
         kind: &str,
-        input: &T,
-        work: &NativeMaterializationWork,
-    ) -> Result<(WorkflowCommand, NativeAllocation)> {
-        let payload = pi_root_provider::stage_pi_input(
-            owner,
-            &self.filesystem,
-            operation,
-            "command",
-            input,
-            work,
-        )
-        .await?;
-        Ok((
-            WorkflowCommand {
-                operation_id: operation,
-                kind: kind.into(),
-                payload: payload.0,
-            },
-            payload.1,
-        ))
+        input: &'a T,
+        work: &'a NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<(WorkflowCommand, NativeAllocation)>>
+    + Send
+    + 'a
+    + use<'a, T> {
+        let filesystem = self.filesystem.clone();
+        let kind = work.display(kind);
+        async move {
+            let kind = kind?;
+            let mut payload = pi_root_provider::stage_pi_input(
+                owner,
+                &filesystem,
+                operation,
+                "command",
+                input,
+                work,
+            )
+            .await?;
+            let mut kind_custody = kind.1;
+            payload.1.absorb(&mut kind_custody)?;
+            Ok((
+                WorkflowCommand {
+                    operation_id: operation,
+                    kind: kind.0,
+                    payload: payload.0,
+                },
+                payload.1,
+            ))
+        }
     }
 
-    async fn spawn_input<T: DeserializeOwned>(
+    fn spawn_input<'a, T: DeserializeOwned + Send>(
         &self,
-        owner: &pi_owner::PiOwnerConfig,
+        owner: &'a pi_owner::PiOwnerConfig,
         operation: OperationId,
-        label: &str,
+        label: &'a str,
         schema_bytes: u64,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<(T, NativeAllocation)>> {
-        let Some(reference) =
-            pi_root_provider::observe_pi_input(owner, &self.filesystem, operation, label, work)
-                .await?
-        else {
-            return Ok(None);
-        };
-        let authority = owner.authority(work)?;
-        let maximum = owner
-            .policy()
-            .maximum_payload_bytes
-            .min(MAXIMUM_ADAPTER_STATE_BYTES);
-        let io = PreparationIo::from_native_work(work)?;
-        let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
-            self.filesystem.clone(),
-            &authority.verifier,
-            &authority.signed,
-            maximum,
-            Some(&io),
-        )?;
-        let bytes = reader.read(&reference.0, maximum, Some(&io))?.await?;
-        Ok(Some(pi_root_provider::guarded_pi_decode(
-            bytes.as_ref(),
-            maximum,
-            std::mem::size_of::<T>() as u64,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            acyclic_harness::JsonValueSchema::None,
-            schema_bytes,
-            work,
-        )?))
+        work: &'a NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<Option<(T, NativeAllocation)>>> + Send + 'a + use<'a, T>
+    {
+        let filesystem = self.filesystem.clone();
+        async move {
+            let Some(reference) =
+                pi_root_provider::observe_pi_input(owner, &filesystem, operation, label, work)
+                    .await?
+            else {
+                return Ok(None);
+            };
+            let authority = owner.authority(work)?;
+            let maximum = owner
+                .policy()
+                .maximum_payload_bytes
+                .min(MAXIMUM_ADAPTER_STATE_BYTES);
+            let io = PreparationIo::from_native_work(work)?;
+            let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
+                filesystem,
+                &authority.verifier,
+                &authority.signed,
+                maximum,
+                Some(&io),
+            )?;
+            let bytes = reader.read(&reference.0, maximum, Some(&io))?.await?;
+            Ok(Some(pi_root_provider::guarded_pi_decode(
+                bytes.as_ref(),
+                maximum,
+                std::mem::size_of::<T>() as u64,
+                acyclic_harness::wire::ErrorCode::Invalid,
+                acyclic_harness::JsonValueSchema::None,
+                schema_bytes,
+                work,
+            )?))
+        }
     }
 }

@@ -55,10 +55,10 @@ impl ControlPlane {
             let mut roots = BTreeMap::new();
             let mut resolutions = BTreeMap::new();
             let mut target_heads = BTreeMap::new();
-            for (root_id, child_root) in &child_context.roots {
+            for (root_id, child_root) in child_context.roots {
                 let parent_root = parent_context
                     .roots
-                    .get(root_id)
+                    .get(&root_id)
                     .ok_or_else(|| "child context contains a root absent from its parent".to_owned())?;
                 if child_root.parent_workspace_id != Some(parent_root.workspace_id) {
                     return Err("child root is not forked from its direct parent root".to_owned());
@@ -69,14 +69,14 @@ impl ControlPlane {
                 let target = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, parent_root.workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                     .map_err(display)?;
-                let lazy_source = self.lazy_workspace_root(&route, *root_id).await?;
+                let lazy_source = self.lazy_workspace_root(&route, root_id).await?;
                 // The child's generation holds exactly what it authored; what it
                 // only reads from the physical root is no change of its own, as
                 // the parent's generations hold only what the parent authored.
                 // Source paths the child deleted travel as source deletions.
                 let plan = source.join_into(&target).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| display(failure.error))?;
                 let target_head = plan.target_head();
-                let parent_repository_id = self.parent_repository_id(caller, *root_id, target.id())?;
+                let parent_repository_id = self.parent_repository_id(caller, root_id, target.id())?;
                 let tracked = GitCompatRepository::new(parent_repository_id, self.store.clone())
                     .tracked_paths()
                     .await
@@ -102,7 +102,7 @@ impl ControlPlane {
                     .await
                     .map_err(display)?;
                 roots.insert(
-                    *root_id,
+                    root_id,
                     MultiRootMergeRoot {
                         source_workspace_id: source.id(),
                         merge_workspace_id: None,
@@ -113,8 +113,8 @@ impl ControlPlane {
                         child_wins_bindings,
                     },
                 );
-                resolutions.insert(*root_id, BTreeMap::new());
-                target_heads.insert(*root_id, target_head);
+                resolutions.insert(root_id, BTreeMap::new());
+                target_heads.insert(root_id, target_head);
             }
             if roots.is_empty() {
                 return Err("child context has no roots to merge".to_owned());
@@ -208,13 +208,13 @@ impl ControlPlane {
                 .await?;
             let mut generations = BTreeMap::new();
             let mut changed = false;
-            for (root_id, parent_root) in &parent_context.roots {
+            for (root_id, parent_root) in parent_context.roots {
                 let target = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, parent_root.workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                     .map_err(display)?;
                 let generation = target.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?.id();
                 changed |= target_heads
-                    .get(root_id)
+                    .get(&root_id)
                     .is_some_and(|before| *before != generation);
                 generations.insert(
                     hex::encode(root_id.into_bytes()),
