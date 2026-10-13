@@ -3,7 +3,6 @@ use super::*;
 #[tokio::test]
 async fn overlapped_sparse_control_finishes_before_native_writes()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
     let mut receipt = GenerationReceipt::new(

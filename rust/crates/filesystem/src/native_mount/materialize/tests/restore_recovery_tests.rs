@@ -43,7 +43,6 @@ fn replaced_root_is_rejected_before_destination_enumeration()
 async fn multipath_failure_retains_completed_host_and_lookup_work()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
-    acyclic_native_runtime::initialize_native_io_services()?;
     let cancellation = CancellationToken::new();
     let limits = VolumeLimits::default();
     let volume = super::super::tests::memory_volume(
@@ -285,7 +284,6 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
 #[tokio::test]
 async fn restore_removes_missing_path() -> Result<(), Box<dyn std::error::Error>> {
     use crate::model::{Lifecycle, VolumeConfig};
-    acyclic_native_runtime::initialize_native_io_services()?;
     let cancellation = CancellationToken::new();
     let volume = super::super::tests::memory_volume(
         crate::VolumeId::new(),
@@ -356,7 +354,6 @@ async fn native_materialization_rejects_unrepresentable_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::MetadataField;
 
-    acyclic_native_runtime::initialize_native_io_services()?;
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"data")?;
     let cancellation = CancellationToken::new();
@@ -520,7 +517,6 @@ fn same_path_restores_are_serialized_by_a_process_crash_safe_lock()
 #[tokio::test]
 async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let temporary = tempfile::tempdir()?;
     let relative = Path::new("entry");
     let mut work = restoration_work();

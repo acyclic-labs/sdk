@@ -6,6 +6,7 @@ use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId
 pub(super) fn unbounded_accounting(
     cancellation: &crate::CancellationToken,
 ) -> crate::kernel::KernelAccounting<'_> {
+    crate::initialize_test_native_io();
     crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation)
 }
 

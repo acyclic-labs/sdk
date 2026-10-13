@@ -76,20 +76,20 @@ pub(crate) fn validate_policy_identity(
 )]
 pub(crate) fn check_tool_approval(outcome: InteractionOutcome) -> Result<()> {
     match outcome {
-        InteractionOutcome::Approved => Ok(()),
+        InteractionOutcome::Approved {} => Ok(()),
         InteractionOutcome::Indeterminate { operation_id } => {
             Err(Error::Indeterminate(operation_id))
         }
-        InteractionOutcome::Declined => Err(Error::InteractionRejected(
+        InteractionOutcome::Declined {} => Err(Error::InteractionRejected(
             crate::InteractionRejection::Declined,
         )),
-        InteractionOutcome::Cancelled => Err(Error::InteractionRejected(
+        InteractionOutcome::Cancelled {} => Err(Error::InteractionRejected(
             crate::InteractionRejection::Cancelled,
         )),
-        InteractionOutcome::Expired => Err(Error::InteractionRejected(
+        InteractionOutcome::Expired {} => Err(Error::InteractionRejected(
             crate::InteractionRejection::Expired,
         )),
-        InteractionOutcome::Denied => Err(Error::InteractionRejected(
+        InteractionOutcome::Denied {} => Err(Error::InteractionRejected(
             crate::InteractionRejection::Denied,
         )),
         InteractionOutcome::Answered { .. } => Err(Error::Conflict(

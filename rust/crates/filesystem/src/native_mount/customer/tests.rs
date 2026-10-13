@@ -8,7 +8,6 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();
     let fixture_work = test_work(crate::WorkBudget::UNBOUNDED, &fixture_token)?;
-    acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let physical = tempfile::tempdir()?;
     std::fs::create_dir(physical.path().join("selected"))?;
@@ -121,7 +120,6 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
 #[tokio::test]
 async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_capture()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let token = crate::CancellationToken::new();
     let setup = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
@@ -199,7 +197,6 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let fixture_work = test_work(crate::WorkBudget::UNBOUNDED, &fixture_token)?;
     let default_token = crate::CancellationToken::new();
     let default_work = test_work(crate::WorkBudget::UNBOUNDED, &default_token)?;
-    acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let fs = Fs::memory();
     let workspace = fs
@@ -304,7 +301,6 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let default_token = crate::CancellationToken::new();
     let default_work = test_work(crate::WorkBudget::UNBOUNDED, &default_token)?;
     let cancellation = crate::CancellationToken::new();
-    acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let source = tempfile::tempdir()?;
     std::fs::create_dir(source.path().join("hot"))?;
