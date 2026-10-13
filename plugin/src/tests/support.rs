@@ -32,6 +32,7 @@ pub(crate) async fn configured_test_service_bootstrap(
 ) -> acyclic_harness::Result<(
     ServiceLock,
     ServiceConfiguredInfrastructure,
+    PathBuf,
     acyclic_fs::NativeMaterializationWork,
 )> {
     let lock = acquire_service_lock(data)
@@ -43,16 +44,17 @@ pub(crate) async fn configured_test_service_bootstrap(
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
-    Ok((lock, configured, work))
+    let root = data.to_path_buf();
+    Ok((lock, configured, root, work))
 }
 
 pub(super) async fn test_concurrent_service(
     data: PathBuf,
 ) -> acyclic_harness::Result<(ServiceLock, ConcurrentServiceControl)> {
-    let (lock, configured, work) = configured_test_service_bootstrap(&data).await?;
+    let (lock, configured, root, work) = configured_test_service_bootstrap(&data).await?;
     Ok((
         lock,
-        ConcurrentServiceControl::open(data, configured, &work).await?,
+        ConcurrentServiceControl::open(data, configured, root, &work).await?,
     ))
 }
 

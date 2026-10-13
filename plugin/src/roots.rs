@@ -272,7 +272,7 @@ impl SharedPhysicalRoot {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(SharedRootObservation, NativeAllocation)> {
-        use native_root_source::{native_source_error, native_watch_error};
+        use native_root_source::native_watch_error;
 
         self.observe_transaction(
             || acyclic_harness::Error::NativeBoundary {
@@ -292,6 +292,7 @@ impl SharedPhysicalRoot {
                 let (batch, allocation) = watcher
                     .poll_with_native_work_guarded(65_536, work, |batch| {
                         if observation_consumes_changes(batch) {
+                            work.cancellation().check().map_err(|_| acyclic_fs::DemandError::Cancelled)?;
                             source = self.source.invalidate();
                             // The SDK source epoch has really advanced. Keep
                             // shared state aligned even if later publication
@@ -311,7 +312,7 @@ impl SharedPhysicalRoot {
     /// Serializes the complete watcher/source publication across every session
     /// sharing this root. Native and ordinary instrumentation use this same
     /// reference transaction rather than independent observation caches.
-    fn observe_transaction<T, E>(
+    pub(crate) fn observe_transaction<T, E>(
         &self,
         poisoned: impl FnOnce() -> E,
         observe: impl FnOnce(SourceReference, &mut SourceReference) -> Result<T, E>,
@@ -370,7 +371,7 @@ impl SharedRootRegistry {
             if Arc::strong_count(registration) != 1 {
                 return true;
             }
-            registration.try_lock().map_or(true, |state| {
+            registration.state.try_lock().map_or(true, |state| {
                 state.live.strong_count() != 0
                     || state.pending_raw_watcher.is_some()
                     || state.pending_watcher.is_some()
@@ -488,7 +489,7 @@ impl LocalMount {
 
     pub(crate) fn abandon(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.abandon().map_err(display)?;
+            mount.retire(&CancellationToken::new()).map(drop).map_err(display)?;
         }
         Ok(())
     }

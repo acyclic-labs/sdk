@@ -35,11 +35,13 @@ impl ConcurrentServiceControl {
     pub(crate) async fn open(
         data: PathBuf,
         configured: ServiceConfiguredInfrastructure,
+        private_state_root: PathBuf,
         original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Self> {
         let (resources, sessions) = ServiceResources::open(
             data,
             configured,
+            private_state_root,
             original_bootstrap_work,
         )
         .await?;
@@ -66,7 +68,7 @@ impl ConcurrentServiceControl {
                 session_id,
                 Arc::new(SessionHandle::new(
                     key,
-                    SessionController::HostManaged(Box::new(control)),
+                    control,
                     (actor_resources.0, Some(actor_resources.1)),
                 )),
             );
@@ -238,7 +240,7 @@ impl ConcurrentServiceControl {
                         .await
                         .map(|value| (value, None))
                         .map_err(Error::Storage);
-                    Ok((control.into(), opened, (self.resources.clone(), None)))
+                    Ok((SessionController::HostManaged(Box::new(control)), opened, (self.resources.clone(), None)))
                 }
             }
             .await;

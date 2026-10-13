@@ -155,20 +155,6 @@ pub(super) fn compare_and_swap<T: DeserializeOwned + Serialize + Revisioned>(
     })
 }
 
-pub(super) fn compare_and_delete<T: DeserializeOwned + Revisioned>(
-    paths: &mut RecordPaths,
-    expected_revision: u64,
-) -> Result<bool, LocalCoreStateStoreError> {
-    with_lock(paths, |paths| {
-        let current = read_recoverable::<T>(paths)?;
-        if current.as_ref().map_or(0, |(value, _)| value.revision()) != expected_revision {
-            return Ok(false);
-        }
-        remove_record(paths)?;
-        Ok(true)
-    })
-}
-
 /// Removes a record with its recovery copies.
 pub(super) fn remove_record(paths: &RecordPaths) -> Result<(), LocalCoreStateStoreError> {
     paths.remove(&paths.temporary)?;

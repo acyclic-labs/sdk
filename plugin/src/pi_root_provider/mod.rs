@@ -179,6 +179,7 @@ pub(crate) fn service_resources_with_native_work(
             shared_roots: resources.shared_roots.clone(),
             binary_identity: binary.0,
             instance_id: instance.0,
+            private_state_root: resources.private_state_root.clone(),
         },
         data.1,
     );

@@ -14,6 +14,7 @@ pub(crate) struct ServiceResources {
     pub(crate) shared_roots: SharedRootRegistry,
     pub(crate) binary_identity: String,
     pub(crate) instance_id: String,
+    pub(crate) private_state_root: PathBuf,
 }
 
 pub(crate) type ServiceConfiguredInfrastructure = (LocalFs, LocalCoreStateStore, String, String);
@@ -45,6 +46,7 @@ impl ServiceResources {
     pub(crate) async fn open(
         data: PathBuf,
         configured: ServiceConfiguredInfrastructure,
+        private_state_root: PathBuf,
         original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, BTreeMap<String, SessionController>)> {
         fs::create_dir_all(data.join("sessions")).map_err(|error| Error::Storage(display(error)))?;
@@ -56,6 +58,7 @@ impl ServiceResources {
             instance_id,
             data,
             fs,
+            private_state_root,
         };
         resources
             .shared_roots
@@ -132,7 +135,7 @@ impl ServiceResources {
                 retained_sources.extend(roots);
                 let (session_id, key_custody) =
                     original_bootstrap_work.display(&control.state.root_session_id)?;
-                let control = SessionController::from(control)
+                let control = SessionController::HostManaged(Box::new(control))
                     .retain_original_input(key_custody)?;
                 sessions.insert(session_id, control);
             }

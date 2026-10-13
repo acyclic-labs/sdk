@@ -154,8 +154,7 @@ mod tests {
             .first_key_value()
             .unwrap();
         fixture.journal.require_volume_grant(
-            project,
-            acyclic_harness::conversation::VolumeOperation::Read,
+            project, acyclic_harness::conversation::VolumeOperation::Read,
             &mut Some(&mut acyclic_harness::store::HistoryWork::new(
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
             )),
@@ -418,7 +417,7 @@ mod tests {
         assert!(prefix.allocation_operations > 1);
         registry.prune().await;
         let slot = registry.roots.lock().await.get(path).cloned().unwrap();
-        assert!(slot.lock().await.pending_watcher.is_some());
+        assert!(slot.state.lock().await.pending_watcher.is_some());
         assert_eq!(registry.live_roots().await, 0);
         let cleanup = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
         assert!(
@@ -429,7 +428,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let state = slot.lock().await;
+        let state = slot.state.lock().await;
         assert!(state.pending_raw_watcher.is_none());
         assert!(state.pending_watcher.is_none());
         assert!(state.pending_source.is_none());
@@ -633,9 +632,11 @@ mod tests {
             let observed = watcher.poll_with_native_work_guarded(65_536, work, |batch| {
                 assert!(!matches!(batch, acyclic_fs::WatchBatch::Changes { changes, .. } if changes.is_empty()));
                 cancellation.cancel();
-                work.admit(WorkCounters::UNCHARGED)?;
+                // Fail in the genuine native source invalidation, not an
+                // invented error or a facade around the numeric poll API.
+                work.cancellation().check().map_err(|_| acyclic_fs::DemandError::Cancelled)?;
                 physical.source.invalidate();
-                Ok::<_, acyclic_fs::NativeTreeMaterializationError>(())
+                Ok(())
             }).map_err(native_watch_error)?;
             drop(observed);
             Ok(())

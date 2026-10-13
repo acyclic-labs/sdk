@@ -1,12 +1,11 @@
 //! Explicit authenticated provider bindings for the shared portable default tools.
 use crate::store::history::HistoryIo;
 use crate::{
-    Capabilities, Error, OperationId, Result, TaskId,
+    Capabilities, Error, Result, TaskId,
     conversation::{
         ContentGrant, ConversationMessage, Limits, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{Authority, AuthorityIssuer, AuthorityVerifier, Reducer, SchemaRegistry, Scope},
-    durable_tool::ResumableTool,
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
@@ -22,7 +21,6 @@ use crate::{
         ProjectSourceReadHandle, ProjectSourceSnapshot, RootProjectSourceProvider,
     },
     store::{HistoryReadLimits, StreamAggregate},
-    tool::ToolInvocation,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
 use acyclic_stream::StreamProvider;
@@ -279,28 +277,13 @@ where
     pub(in crate::filesystem) async fn owner(
         &self,
         context: &ToolContext,
-        tool: &ResumableTool,
-        invocation: &ToolInvocation,
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
-    ) -> Result<(
-        Arc<FilesystemTaskRuntime<P, A, O>>,
-        Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>,
-    )> {
+    ) -> Result<(Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::durable_host::TaskJournalOwner<P>>)> {
         native_io(io)?;
-        if io.is_none() {
-            self.authenticate(context, None, false, cancellation, None)
-                .await?;
-        }
-        let owner = self
-            .runtime(io)?
-            .recursive_tool_owner(context, tool, invocation, cancellation, io)
-            .await?;
-        if io.is_some() {
-            self.authenticate(context, owner.1.owner.as_deref(), false, cancellation, io)
-                .await?;
-        }
-        Ok(owner)
+        let owner = self.source_owner(context.task(), cancellation, io).await?;
+        self.authenticate(context, Some(&owner), false, cancellation, io).await?;
+        Ok((self.runtime(io)?, owner))
     }
 }
 

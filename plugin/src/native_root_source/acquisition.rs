@@ -99,7 +99,7 @@ where
         if let Some(registration) = roots.get(root) {
             Arc::clone(registration)
         } else {
-            let (key, key_custody) = work.copy_path(root)?;
+            let (key, key_custody) = work.path(root, None)?;
             let slot_custody = work.claim(
                 std::mem::size_of::<SharedRootSlot>() as u64,
                 1,
@@ -253,6 +253,7 @@ where
     let excluded = native_reserved_paths(work)?;
     let source = source.exclude(excluded.0, work, work.cancellation())
         .map_err(native_source_error)?;
+    drop(excluded.1);
     let source = Arc::new(source);
     registration.pending_source = Some(Arc::clone(&source));
     authenticate(work, &mut guard, expected).await?;
@@ -262,6 +263,7 @@ where
         return Err(rejection(ROOT_IDENTITY));
     }
     if matches!(admission, SharedRootAdmission::Resume(_)) {
+        work.remaining()?;
         source.invalidate();
     }
     let reference = Arc::clone(

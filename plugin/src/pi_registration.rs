@@ -95,6 +95,14 @@ pub(crate) async fn register(
         &mut Some(&mut metadata),
     )?;
     let provider = &provider_metadata;
+    let [journal_provider, scratch_provider, project_provider] = [(); 3].map(|_| {
+        ProviderRef::new(
+            metadata.clone_text(provider.namespace())?,
+            metadata.clone_text(provider.family())?,
+            metadata.clone_text(provider.version())?,
+            &mut Some(&mut metadata),
+        )
+    });
     let task = TaskId::from_bytes(identity("task", session, work)?);
     let agent = AgentId::from_bytes(identity("agent", session, work)?);
     let root_id = identity("root", session, work)?;
@@ -102,7 +110,7 @@ pub(crate) async fn register(
     let root_label = work.display(&format_args!("{:032x}", u128::from_be_bytes(root_id)))?;
     let owner_label = work.display(&root_label.0)?;
     let journal_metadata = VolumeRef::new(
-        provider.copy(&mut Some(&mut metadata))?,
+        journal_provider?,
         metadata.clone_text("journal")?,
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
@@ -110,7 +118,7 @@ pub(crate) async fn register(
     )?;
     let journal = &journal_metadata;
     let scratch_metadata = VolumeRef::new(
-        provider.copy(&mut Some(&mut metadata))?,
+        scratch_provider?,
         metadata.clone_text("scratch")?,
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
@@ -119,7 +127,7 @@ pub(crate) async fn register(
     let scratch = &scratch_metadata;
     let project_owner = VolumeOwner::Project(owner_label.0);
     let project_metadata = VolumeRef::new(
-        provider.copy(&mut Some(&mut metadata))?,
+        project_provider?,
         metadata.clone_text("project")?,
         VolumeClass::Project,
         project_owner,

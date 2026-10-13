@@ -13,10 +13,10 @@ async fn changed_paths_into(
     }
     for change in base
         .diff_to(head, u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-        .await.map_err(|failure| failure.error)
+        .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
         .map_err(display)?
         .changed_paths(u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+        .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
         .map_err(display)?
     {
         changed.insert(namespace_path_text(&change.path)?);
@@ -154,9 +154,7 @@ impl ControlPlane {
                     .map_err(display)?;
                 let fork_point = upper_source
                     .join_into(&upper_target)
-                    .plan()
-                    .await
-                    .map_err(display)?
+                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| display(failure.error))?
                     .common_ancestor();
                 changed_paths_into(
                     &upper_target.generation(fork_point, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?,

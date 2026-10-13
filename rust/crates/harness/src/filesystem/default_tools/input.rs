@@ -1,6 +1,6 @@
-//! Builds the next durable input from the original selection and command.
+//! Immutable selections over the existing operation-bound content publisher.
 use super::*;
-use crate::wire::ErrorCode::{Invalid, Unauthorized};
+use crate::wire::ErrorCode::Unauthorized;
 use crate::{
     executor::{stock_string_copy, with_history_io},
     filesystem::PreparationIo,
@@ -9,187 +9,168 @@ use crate::{
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     RecursiveExecutor<P, A, O>
 {
-    pub(super) async fn input(
+    pub(super) async fn pinned_plan(
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
         owner: &(
             Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<FilesystemWorkflowJournal<P, A, O>>,
+            Arc<TaskJournalOwner<P>>,
         ),
-        state: State,
         cancellation: &CancellationToken,
-        output_io: Option<&PreparationIo>,
-    ) -> Result<Option<Value>> {
-        let temporary = recursive_temporary_io(output_io)?;
-        let io = temporary.as_ref();
-        let caller = context.durable_task_id().expect("admitted caller");
-        let (arguments, intent) = match state {
-            State::Ready { arguments } if self.durable.definition.name == "acyclic.fork" => {
-                let original: ForkToolArguments = decode(&arguments, io)?;
-                with_history_io(io, |work| {
-                    original.source_task(caller, context.effective_scope().limits(), work)
-                })?;
-                let payload = stage(
-                    context,
-                    derived(invocation.operation_id, "source-arguments", io)?,
-                    "source-arguments",
-                    &arguments,
-                    self.maximum_request_bytes,
-                    cancellation,
-                    io,
-                )
-                .await?;
-                let intent = self
-                    .source
-                    .as_ref()
-                    .expect("authorized source")
-                    .select(context, &original, cancellation, io)
-                    .await?;
-                validate_source_intent(&intent, io)?;
-                reject_if(
-                    !recursive_encoded_equal(&intent.arguments, &arguments, io)?
-                        || intent.caller != caller
-                        || intent.request.operation_id != invocation.operation_id,
-                    io,
-                    Unauthorized,
-                    "source selector changed original caller, arguments or effect",
-                )?;
-                return encode(
-                    &State::SourcePinned {
-                        intent,
-                        command: WorkflowCommand {
-                            operation_id: derived(invocation.operation_id, "source-stage", io)?,
-                            kind: stock_string_copy(FORK_SOURCE_STAGE, io)?,
-                            payload,
-                        },
-                    },
-                    output_io,
-                )
-                .map(Some);
-            }
-            State::Ready { arguments } => (arguments, None),
-            State::SourcePinned { intent, command } => {
-                validate_source_intent(&intent, io)?;
-                check_source_command(&command, &intent, io)?;
-                let retained = retained_payload(
-                    context,
-                    &command.payload,
-                    self.maximum_request_bytes,
-                    cancellation,
-                    io,
-                )
-                .await?;
-                reject_if(
-                    retained != invocation.arguments
-                        || !recursive_encoded_equal(&intent.arguments, &retained, io)?,
-                    io,
-                    Unauthorized,
-                    "source command changed original arguments",
-                )?;
-                (retained, Some(intent))
-            }
-            State::Waiting {
-                plan,
-                command,
-                report,
-                receipt,
-            } => {
-                let report = report.as_deref();
-                let receipt = receipt.as_deref();
-                let stage = command_stage(&command, report, io)?;
-                validate_plan(&plan, io)?;
-                require_plan_arguments(&plan, &invocation.arguments, io)?;
-                check_command(&command, stage, &plan, io)?;
-                reject_if(
-                    command.operation_id != derived(invocation.operation_id, stage, io)?,
-                    io,
-                    Unauthorized,
-                    "outbox changed original effect",
-                )?;
-                if let Plan::Merge(merge) = &plan {
-                    let before = io.map(PreparationIo::owned_bytes).transpose()?;
-                    let retained = retained_payload(
-                        context,
-                        &command.payload,
-                        self.maximum_request_bytes,
-                        cancellation,
-                        io,
-                    )
-                    .await?;
-                    reject_if(
-                        !recursive_encoded_equal(merge, &retained, io)?,
-                        io,
-                        Unauthorized,
-                        "outbox changed original merge plan",
-                    )?;
-                    drop(retained);
-                    recursive_release_since(io, before)?;
-                }
-                let Some(value) = self
-                    .dispatch(
-                        context,
-                        owner,
-                        &plan,
-                        stage,
-                        &command,
-                        report,
-                        receipt,
-                        cancellation,
-                        io,
-                    )
-                    .await?
-                else {
-                    return Ok(None);
-                };
-                let next = match next_stage(stage, &value) {
-                    Some(next_stage) => Some(
-                        self.command(context, next_stage, &plan, cancellation, io)
-                            .await?,
-                    ),
-                    None => None,
-                };
-                return encode(
-                    &Receipt {
-                        operation_id: command.operation_id,
-                        value: Outcome::Succeeded(value),
-                        next,
-                    },
-                    output_io,
-                )
-                .map(Some);
-            }
-            State::Complete { .. } => unreachable!("completed protocol returns before input"),
-        };
-        let stage = if intent.is_some() {
-            "prepare"
+        io: Option<&PreparationIo>,
+    ) -> Result<Plan> {
+        let scope = context.effective_scope();
+        let digest = crate::executor::preparation_digest(
+            &(
+                context.durable_task_id(),
+                &self.definition,
+                invocation,
+                scope.grants(),
+                scope.limits(),
+                scope.run_limits(),
+                scope.extensions(),
+            ),
+            io,
+        )?;
+        stage(
+            context,
+            derived(invocation.operation_id, "binding-v5", io)?,
+            "binding-v5",
+            &digest,
+            self.maximum_request_bytes,
+            cancellation,
+            io,
+        )
+        .await?;
+        let operation = derived(invocation.operation_id, "plan-v5", io)?;
+        let (original, _) = context.observe_staged_file_once(operation, io).await?;
+        let plan = if let Some(file) = original {
+            retained_payload::<Plan>(context, &file, self.maximum_request_bytes, cancellation, io)
+                .await?
         } else {
-            "merge-apply"
-        };
-        let plan = self
-            .plan(
+            let intent = if self.definition.name == "acyclic.fork" {
+                Some(
+                    self.pinned_source(context, invocation, cancellation, io)
+                        .await?,
+                )
+            } else {
+                None
+            };
+            let plan = self
+                .plan(
+                    context,
+                    owner,
+                    context.durable_task_id().expect("authorized caller"),
+                    &invocation.arguments,
+                    intent.as_ref(),
+                    cancellation,
+                    io,
+                )
+                .await?;
+            stage(
                 context,
-                owner,
-                caller,
-                &arguments,
-                intent.as_ref(),
+                operation,
+                "plan-v5",
+                &plan,
+                self.maximum_request_bytes,
                 cancellation,
                 io,
             )
             .await?;
-        let command = self
-            .command(context, stage, &plan, cancellation, io)
-            .await?;
-        encode(
-            &State::Waiting {
-                plan,
-                command,
-                report: None,
-                receipt: None,
-            },
-            output_io,
-        )
-        .map(Some)
+            plan
+        };
+        validate_plan(&plan, io)?;
+        require_plan_arguments(&plan, &invocation.arguments, io)?;
+        let (caller, effect) = match &plan {
+            Plan::Fork(plan) => (
+                plan.caller,
+                recursive_decoded::<ForkRequest, _>(&plan.request.payload, io, |request| {
+                    Ok(request.operation_id)
+                })?,
+            ),
+            Plan::Merge(plan) => (plan.caller, plan.operation_id),
+        };
+        deny(
+            Some(caller) != context.durable_task_id() || effect != invocation.operation_id,
+            io,
+        )?;
+        Ok(plan)
+    }
+
+    async fn pinned_source(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        cancellation: &CancellationToken,
+        io: Option<&PreparationIo>,
+    ) -> Result<RecursiveForkSourceIntent> {
+        let operation = super::super::recursive::derive_operation(
+            b"harness/v2/configured-recursive-checkpoint\0",
+            &[invocation.operation_id.into_bytes()],
+            io,
+        )?;
+        let (original, _) = context.observe_staged_file_once(operation, io).await?;
+        let intent = if let Some(file) = original {
+            retained_payload(context, &file, self.maximum_request_bytes, cancellation, io).await?
+        } else {
+            let arguments: ForkToolArguments = decode(&invocation.arguments, io)?;
+            let intent = self
+                .source
+                .as_ref()
+                .expect("authorized source")
+                .select(context, &arguments, cancellation, io)
+                .await?;
+            let ordinary;
+            let observer = match io {
+                Some(io) => io,
+                None => {
+                    ordinary = PreparationIo::from_budget(
+                        acyclic_fs::performance::work_budget(
+                            self.maximum_request_bytes,
+                            self.maximum_request_bytes,
+                        ),
+                        cancellation,
+                    )?;
+                    &ordinary
+                }
+            };
+            let bytes = observer.encode(
+                &intent,
+                self.maximum_request_bytes
+                    .min(context.effective_scope().limits().file_bytes),
+                false,
+            )?;
+            let path = with_history_io(Some(observer), |work| {
+                crate::executor::preparation_format(
+                    format_args!(
+                        "recursive-tools/{}/source-checkpoint.json",
+                        context.operation_id()
+                    ),
+                    work,
+                )
+            })?;
+            let _path = observer.guard_owned(path.capacity() as u64)?;
+            context
+                .stage_file_once(
+                    operation,
+                    &path,
+                    &bytes,
+                    "application/json",
+                    "source-checkpoint.json",
+                    Some(observer),
+                )
+                .await?;
+            intent
+        };
+        validate_source_intent(&intent, io)?;
+        deny(
+            !recursive_encoded_equal(&intent.arguments, &invocation.arguments, io)?
+                || Some(intent.caller) != context.durable_task_id()
+                || intent.request.operation_id != invocation.operation_id,
+            io,
+        )?;
+        Ok(intent)
     }
 
     pub(super) async fn plan(
@@ -197,7 +178,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         context: &ToolContext,
         owner: &(
             Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<FilesystemWorkflowJournal<P, A, O>>,
+            Arc<TaskJournalOwner<P>>,
         ),
         caller: TaskId,
         arguments: &Value,
@@ -205,10 +186,9 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<Plan> {
-        let (runtime, workflow) = owner;
-        let journal_owner = workflow.owner.as_ref().expect("validated tool owner");
+        let (runtime, journal_owner) = owner;
         let source = self.source.as_ref().expect("authorized source");
-        let plan = if self.durable.definition.name == "acyclic.fork" {
+        let plan = if self.definition.name == "acyclic.fork" {
             let original: ForkToolArguments = decode(arguments, io)?;
             with_history_io(io, |work| {
                 original.source_task(caller, context.effective_scope().limits(), work)
@@ -218,12 +198,10 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             let binding = source
                 .fork(context, &original, intent, None, cancellation, io)
                 .await?;
-            reject_if(
+            deny(
                 binding.source.request != intent.request
                     || binding.child.operation_id != intent.child_operation_id,
                 io,
-                Unauthorized,
-                "staging changed original source or allocation",
             )?;
             validate_fork_binding(context, &original, &binding, cancellation, io).await?;
             let operation = derived(context.operation_id(), "preparation-task", io)?;
@@ -261,17 +239,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                         input,
                         input_io.take_native_custody(input_io.owned_bytes()?)?,
                     );
-                    let (admission, custody) = runtime
-                        .harness()
-                        .registered_admission(
-                            operation,
-                            "acyclic.fork_preparation",
-                            "1",
-                            input,
-                            Some((caller, context.scope())),
-                            None,
-                            work,
-                        )?;
+                    let (admission, custody) = runtime.harness().registered_admission(
+                        operation,
+                        "acyclic.fork_preparation",
+                        "1",
+                        input,
+                        Some((caller, context.scope())),
+                        None,
+                        work,
+                    )?;
                     io.expect("native admission")
                         .absorb_native_custody(custody)?;
                     break 'admission admission;
@@ -385,69 +361,5 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             )?;
         }
         Ok(plan)
-    }
-
-    pub(super) async fn command(
-        &self,
-        context: &ToolContext,
-        stage_kind: &str,
-        plan: &Plan,
-        cancellation: &CancellationToken,
-        io: Option<&PreparationIo>,
-    ) -> Result<WorkflowCommand> {
-        #[derive(Serialize)]
-        struct Admission<'a> {
-            admission: &'a TaskAdmissionRecord,
-        }
-        let operation_id = derived(context.operation_id(), stage_kind, io)?;
-        let payload = match command_reference(plan, stage_kind) {
-            Some(reference) => with_history_io(io, |work| reference.copy(work))?,
-            None => {
-                if let Plan::Merge(merge) = plan {
-                    let operation = derived(context.operation_id(), "merge-apply", io)?;
-                    let payload = stage(
-                        context,
-                        derived(operation, "payload", io)?,
-                        "merge-apply",
-                        merge,
-                        self.maximum_request_bytes,
-                        cancellation,
-                        io,
-                    )
-                    .await?;
-                    return Ok(WorkflowCommand {
-                        operation_id,
-                        kind: stock_string_copy(command_kind(stage_kind), io)?,
-                        payload,
-                    });
-                }
-                let admission = match (plan, stage_kind) {
-                    (Plan::Fork(plan), "prepare") => &plan.preparation,
-                    (Plan::Fork(plan), "child-admit") => &plan.request.child,
-                    _ => {
-                        return Err(recursive_reject(
-                            io,
-                            Invalid,
-                            "command does not match its plan",
-                        ));
-                    }
-                };
-                stage(
-                    context,
-                    derived(operation_id, "payload", io)?,
-                    stage_kind,
-                    &Admission { admission },
-                    self.maximum_request_bytes,
-                    cancellation,
-                    io,
-                )
-                .await?
-            }
-        };
-        Ok(WorkflowCommand {
-            operation_id,
-            kind: stock_string_copy(command_kind(stage_kind), io)?,
-            payload,
-        })
     }
 }

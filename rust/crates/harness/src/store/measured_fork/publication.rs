@@ -222,7 +222,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.child.clone())
             .issue(
                 "wrong-child-agent",
-                &Capabilities::new(["conversation:bind".into()]),
+                &Capabilities::new(["conversation:bind".to_owned()]),
                 Some(AgentId::from_bytes([96; 16])),
                 None,
                 &mut None,

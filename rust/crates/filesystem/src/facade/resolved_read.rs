@@ -112,24 +112,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         work.finish_owned(result, &accounting)
     }
 
-    /// Describes an ordered path batch while sharing namespace and object traversal.
-    pub async fn describe_files(
-        &self,
-        paths: &[NamespacePath],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Vec<Option<FileDescription>>> {
-        let resolved = self.resolve_files(paths, budget, cancellation).await?;
-        let descriptions = resolved
-            .value
-            .into_iter()
-            .map(|file| file.map(|file| file.description))
-            .collect();
-        Ok(OperationReceipt {
-            value: descriptions,
-            work: resolved.work,
-        })
-    }
     /// Reads ordered ranges with bounded concurrency and one cumulative work context.
     pub async fn read_resolved_ranges<W: FsWork>(
         &self,

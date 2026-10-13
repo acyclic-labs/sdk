@@ -182,7 +182,7 @@ impl PiSession {
                     || observer.verify_created_source(key, &allocation.0.1, work),
                 )
                 .await?;
-            if physical.source.inner().root_identity().to_bytes() != creation.native_root_identity {
+            if physical.source.root_identity().to_bytes() != creation.native_root_identity {
                 return Err(invalid("Pi native root identity changed after allocation"));
             }
             let volume = binding
@@ -201,6 +201,13 @@ impl PiSession {
             if workspace.id().into_bytes() != creation.repository_workspace_id {
                 return Err(invalid("Pi selected project workspace was substituted"));
             }
+            let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+                &self.resources.store, workspace.id(), &mut accounting,
+            ).await?.ok_or(RootError::NativeSource {
+                source: acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                custody: None,
+            })?;
+            original.validate_root_binding(workspace.id(), expected)?;
             let resumed = LazyWorkspace::open(
                 workspace,
                 Arc::clone(&physical.source),
@@ -220,7 +227,7 @@ impl PiSession {
         for (key, handle) in &self.roots {
             let rebound = handle
                 .workspace
-                .rebind_source(&mut accounting)
+                .state(&mut accounting)
                 .await
                 .map_err(|source| RootError::NativeSource {
                     source,
@@ -250,7 +257,8 @@ impl PiSession {
                 .ok_or_else(|| invalid("Pi allocated root disappeared"))?
                 .allocation = RootAllocation::Created(creation);
         }
-        self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(RootError::Storage)?;
+        self.slots.save(&self.directory, &self.state, Survives::PowerLoss)
+            .map_err(RootError::Storage)?;
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(invalid("Pi root binding changed during allocation"));
         };
@@ -271,7 +279,7 @@ impl PiSession {
                     )
                     .await
                     .map_err(|(source, custody)| match source {
-                        acyclic_fs::WorkspaceLineageError::NativeFilesystem(source) => RootError::NativeFilesystem { source, custody },
+                        acyclic_fs::WorkspaceLineageError::Workspace(source) => RootError::NativeWorkspace { source, custody },
                         source => RootError::Storage(display(source)),
                     })?,
             );
@@ -313,6 +321,7 @@ impl PiSession {
         self.state.pending_root_registration = false;
         drop(allocation.0.0);
         drop(allocation.1);
-        self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(RootError::Storage)
+        self.slots.save(&self.directory, &self.state, Survives::PowerLoss)
+            .map_err(RootError::Storage)
     }
 }

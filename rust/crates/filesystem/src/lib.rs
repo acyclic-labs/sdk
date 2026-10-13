@@ -178,9 +178,9 @@ pub use distributed::StreamAuthorityStore;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     ContentChange, ContentTimes, DetachedFile,
-    DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
+    DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
-    FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
+    FsResult, GenerationDiff, JoinCommitWitness,
     LiveMutationOutcome, LivePublicationObservation, MergeConflict, MergePreparation, NamedAttributeWriteMode,
     PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
     ResolvedFileRangeReadRequest, StagedContent, Volume,

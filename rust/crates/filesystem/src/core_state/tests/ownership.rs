@@ -2,10 +2,10 @@ use super::*;
 
 #[test]
 fn local_transactions_work_without_a_tokio_runtime() {
-    let directory = tempfile::tempdir().expect("local state directory");
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
     let result = futures::executor::block_on(WorkspaceLineageStore::load(&store, workspace()));
-    assert!(result.expect("runtime-independent transaction").is_none());
+    assert!(result.unwrap().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -17,14 +17,12 @@ async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_
     let (release_tx, release_rx) = mpsc::channel();
     let (finished_tx, finished_rx) = mpsc::channel();
     let observer = tokio::spawn(async move {
-        let directory = tempfile::tempdir().expect("local state directory");
+        let directory = tempfile::tempdir().unwrap();
         LocalCoreStateStore::new(directory.path())
             .transaction(move |_| {
-                entered_tx.send(()).expect("test observer is alive");
-                release_rx.recv().expect("test permits completion");
-                finished_tx
-                    .send(())
-                    .expect("test completion observer is alive");
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                finished_tx.send(()).unwrap();
                 Ok(())
             })
             .await
@@ -36,7 +34,7 @@ async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_
     }
     tokio::task::yield_now().await;
     observer.abort();
-    release_tx.send(()).expect("transaction remains admitted");
+    release_tx.send(()).unwrap();
     while finished_rx.try_recv().is_err() {
         assert!(Instant::now() < deadline, "admitted transaction was lost");
         tokio::task::yield_now().await;
@@ -44,46 +42,51 @@ async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_
 }
 
 #[tokio::test]
-    async fn owner_excludes_every_other_store_in_its_process() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
-        let clone = owner.clone();
-        let shared = LocalCoreStateStore::new(directory.path());
-        assert!(is_ownership_conflict(&LocalCoreStateStore::open_owned(
-            directory.path()
-        )));
-        assert!(is_ownership_conflict(
-            &WorkspaceLineageStore::load(&shared, workspace()).await
-        ));
-        assert!(matches!(
-            shared.load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await,
-            Err(crate::LazyWorkspaceError::NativeRecordOwnershipConflict(..))
-        ));
+async fn owner_excludes_every_other_store_in_its_process() {
+    let directory = tempfile::tempdir().unwrap();
+    let owner = LocalCoreStateStore::open_owned(directory.path()).unwrap();
+    let clone = owner.clone();
+    let shared = LocalCoreStateStore::new(directory.path());
+    assert!(is_ownership_conflict(&LocalCoreStateStore::open_owned(
+        directory.path()
+    )));
+    assert!(is_ownership_conflict(
+        &WorkspaceLineageStore::load(&shared, workspace()).await
+    ));
+    assert!(matches!(
+        shared
+            .load_lazy_workspace(
+                workspace(),
+                &mut unbounded_accounting(&crate::CancellationToken::new())
+            )
+            .await,
+        Err(crate::LazyWorkspaceError::NativeRecordOwnershipConflict(..))
+    ));
 
-        drop(owner);
-        assert!(
-            is_ownership_conflict(&WorkspaceLineageStore::load(&shared, workspace()).await),
-            "a clone keeps the namespace owned"
-        );
-        drop(clone);
-        assert!(
-            WorkspaceLineageStore::load(&shared, workspace())
-                .await
-                .expect("released namespace")
-                .is_none()
-        );
+    drop(owner);
+    assert!(
+        is_ownership_conflict(&WorkspaceLineageStore::load(&shared, workspace()).await),
+        "a clone keeps the namespace owned"
+    );
+    drop(clone);
+    assert!(
+        WorkspaceLineageStore::load(&shared, workspace())
+            .await
+            .unwrap()
+            .is_none()
+    );
 
-        let admitted = shared.namespace().expect("shared admission");
-        let concurrent = LocalCoreStateStore::new(directory.path())
-            .namespace()
-            .expect("shared admissions coexist");
-        assert!(is_ownership_conflict(&LocalCoreStateStore::open_owned(
-            directory.path()
-        )));
-        drop(admitted);
-        drop(concurrent);
-        LocalCoreStateStore::open_owned(directory.path()).expect("owner after admissions end");
-    }
+    let admitted = shared.namespace().unwrap();
+    let concurrent = LocalCoreStateStore::new(directory.path())
+        .namespace()
+        .unwrap();
+    assert!(is_ownership_conflict(&LocalCoreStateStore::open_owned(
+        directory.path()
+    )));
+    drop(admitted);
+    drop(concurrent);
+    LocalCoreStateStore::open_owned(directory.path()).unwrap();
+}
 
 #[test]
 fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::error::Error>> {
