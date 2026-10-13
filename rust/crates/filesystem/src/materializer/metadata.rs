@@ -121,23 +121,19 @@ fn hash_native_entry(
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
     hash_native_metadata_edit(metadata, None, hasher, work)?;
-    for value in [
+    #[cfg(unix)]
+    let facts = [
         metadata.len(),
-        #[cfg(unix)]
         metadata.nlink(),
-        #[cfg(unix)]
         u64::from(metadata.uid()),
-        #[cfg(unix)]
         u64::from(metadata.gid()),
-        #[cfg(unix)]
         metadata.rdev(),
-        #[cfg(unix)]
         metadata.mtime() as u64,
-        #[cfg(unix)]
         metadata.mtime_nsec() as u64,
-        #[cfg(windows)]
-        metadata.last_write_time(),
-    ] {
+    ];
+    #[cfg(windows)]
+    let facts = [metadata.len(), metadata.last_write_time()];
+    for value in facts {
         hash_bytes(&value.to_le_bytes(), hasher, work)?;
     }
     let kind = metadata.file_type();
