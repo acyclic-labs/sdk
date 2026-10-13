@@ -6,7 +6,7 @@ impl NativeSourceWatch {
         delivery: Arc<Delivery>,
         work: &mut W,
     ) -> Result<Self, DemandError> {
-        Self::start_reader(root.directory_handle(), delivery, true, None, true, work)
+        Self::open_driver(root.directory_handle(), delivery, true, None, true, work)
     }
     pub(crate) fn start_directory_driver<W: SourceDemandReadWork>(
         root: &cap_std::fs::Dir,
@@ -15,7 +15,7 @@ impl NativeSourceWatch {
         work: &mut W,
     ) -> Result<Self, DemandError> {
         use std::os::windows::io::AsHandle;
-        Self::start_reader(
+        Self::open_driver(
             root.as_handle(),
             delivery,
             false,
@@ -31,7 +31,7 @@ impl NativeSourceWatch {
         recursive: bool,
         work: &mut W,
     ) -> Result<Self, DemandError> {
-        Self::start_reader(
+        Self::open_driver(
             root.directory_handle(),
             delivery,
             false,
@@ -40,7 +40,7 @@ impl NativeSourceWatch {
             work,
         )
     }
-    fn start_reader<W: SourceDemandReadWork>(
+    fn open_driver<W: SourceDemandReadWork>(
         root: std::os::windows::io::BorrowedHandle<'_>,
         delivery: Arc<Delivery>,
         pin_name: bool,

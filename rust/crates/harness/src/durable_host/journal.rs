@@ -1,4 +1,5 @@
 //! Original owner checks and fenced journal publication.
+#[cfg(feature = "filesystem")]
 use super::*;
 
 #[cfg(feature = "filesystem")]
