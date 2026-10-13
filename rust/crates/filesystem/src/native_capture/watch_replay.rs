@@ -571,7 +571,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         apply_capture_transaction(checkout, mutations, meter).await?;
     } else {
         // Compile binding changes before final-state mutations on one atomic candidate.
-        let mut candidate = checkout.private_candidate(meter, &cancellation)?;
+        let mut candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(meter, &cancellation), &cancellation)?;
         let final_state = {
             let count = mutations.len() - namespace_boundary;
             let bytes = count

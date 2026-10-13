@@ -101,8 +101,8 @@ if context.is_none() { return Box::pin(async { Err(Error::Unauthorized("task con
                 return futures::future::pending().await;
             }
             let (value, custody) =
-                crate::tool::value(&"original receipt", work.remaining()?.bytes_encoded, work)?;
-            Ok((Some(ToolResult { value }), custody))
+                crate::tool::value(&"original receipt", work.remaining()?.bytes_encoded, Some(work))?;
+            Ok((Some(ToolResult { value }), custody.expect("native tool result")))
         })
     }
 }
@@ -125,9 +125,8 @@ impl ToolProjection for PendingTool {
                     value: &result.value,
                 },
                 work.remaining()?.bytes_encoded,
-                work,
-            )
-            .map(|(value, custody)| (value, Some(custody)));
+                Some(work),
+            );
         }
         Ok((json!({"kind":"json","value":result.value}), None))
     }
@@ -354,6 +353,11 @@ impl Fixture {
             tool,
             machine,
         })
+    }
+    async fn scheduler_state(&self, task: TaskId) -> Result<crate::scheduler::OperationState> {
+        let reader = crate::filesystem::FilesystemContentVerifier::new(self.filesystem.clone(), &self.issuer.verifier(&mut None)?, &self.signed, self.scope.limits().file_bytes, None)?;
+        let coordinator = crate::distributed::DistributedCoordinator::open(&self.stream, reader, None, &mut None).await?;
+        coordinator.scheduler().operation(OperationId::from_bytes(task.into_bytes())).cloned().ok_or_else(||Error::NotFound("fixture task".into()))
     }
     async fn runtime(&self) -> Result<Runtime> {
         FilesystemTaskRuntime::open(
@@ -597,7 +601,7 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
     assert_eq!(commands.calls.load(Ordering::SeqCst), 1);
     assert_eq!(commands.work.receipt().items_examined, 0);
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
-    let state = runtime.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(!state.cancellation_requested);
     assert_eq!(state.reservation, Some(lease.reservation));
     assert!(state.outcome.is_none());
@@ -625,7 +629,7 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
     ));
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
-    let state = reopened.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(state.cancellation_requested);
     assert_eq!(state.reservation, Some(lease.reservation.clone()));
     assert!(state.outcome.is_none());
@@ -666,9 +670,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
         .checkpoint()
         .revision;
     assert!(
-        runtime
-            .task_host()
-            .observe_task(task)
+        fixture.scheduler_state(task)
             .await?
             .outcome
             .is_none()
@@ -681,7 +683,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
             .await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { .. })
     ));
-    let unresolved = reopened.task_host().observe_task(task).await?;
+    let unresolved = fixture.scheduler_state(task).await?;
     assert!(unresolved.outcome.is_none());
     assert_eq!(unresolved.reservation, Some(lease.reservation.clone()));
     fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
@@ -700,9 +702,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
         Some(Outcome::Cancelled)
     ));
     assert!(
-        reopened
-            .task_host()
-            .observe_task(task)
+        fixture.scheduler_state(task)
             .await?
             .reservation
             .is_none()
@@ -857,7 +857,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
             provider.generated.load(Ordering::SeqCst),
             usize::from(!expired_before_dispatch)
         );
-        let state = runtime.task_host().observe_task(task).await?;
+        let state = fixture.scheduler_state(task).await?;
         assert!(state.cancellation_requested);
         assert_eq!(state.reservation, Some(lease.reservation.clone()));
         assert!(state.outcome.is_none());
@@ -905,9 +905,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
             usize::from(!expired_before_dispatch)
         );
         assert!(
-            reopened
-                .task_host()
-                .observe_task(task)
+            fixture.scheduler_state(task)
                 .await?
                 .outcome
                 .is_none()
@@ -963,7 +961,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
         }
     ));
     assert_eq!(
-        reopened.task_host().observe_task(task).await?.reservation,
+        fixture.scheduler_state(task).await?.reservation,
         Some(lease.reservation.clone())
     );
     assert!(matches!(
@@ -1025,7 +1023,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     assert_eq!(session.checkpoint().revision, 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
-    let state = runtime.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(!state.cancellation_requested);
     assert_eq!(state.reservation, Some(lease.reservation));
     assert!(state.outcome.is_none());
@@ -1128,9 +1126,7 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
         assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
-        let state = runtime
-            .task_host()
-            .observe_task(TaskId::from_bytes(
+        let state = fixture.scheduler_state(TaskId::from_bytes(
                 original.operation.operation_id.into_bytes(),
             ))
             .await?;
@@ -1249,7 +1245,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         }
     };
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
-    let state = reopened.task_host().observe_task(task).await?;
+    let state = fixture.scheduler_state(task).await?;
     assert!(state.outcome.is_none());
     assert_eq!(state.reservation, Some(original.reservation.clone()));
     fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
@@ -1269,9 +1265,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         Some(Outcome::Cancelled)
     ));
     assert!(
-        reopened
-            .task_host()
-            .observe_task(task)
+        fixture.scheduler_state(task)
             .await?
             .reservation
             .is_none()

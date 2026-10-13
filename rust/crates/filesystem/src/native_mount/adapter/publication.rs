@@ -64,12 +64,12 @@ impl<A, O> SharedCheckoutState<A, O> {
         Ok(CheckoutCandidate {
             base: self
                 .checkout
-                .private_candidate(&work, cancellation)
-                .map_err(fs_error)?,
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
             checkout: self
                 .checkout
-                .private_candidate(&work, cancellation)
-                .map_err(fs_error)?,
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
             operation,
         })
     }

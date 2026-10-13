@@ -9,22 +9,19 @@ pub(crate) struct AlgorithmWork {
 }
 
 impl AlgorithmWork {
-    pub(crate) fn ordinary() -> Self {
-        Self {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            custody: None,
-        }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn native(
-        work: &acyclic_fs::NativeMaterializationWork,
-        bytes: usize,
-    ) -> Result<Self> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        io.retain_owned(bytes as u64)?;
+    pub(crate) fn new(work: crate::NativeWork<'_>, bytes: usize) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = work
+            .map(|work| {
+                let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+                io.retain_owned(bytes as u64)?;
+                io.into_native_custody(bytes as u64)
+            })
+            .transpose()?;
+        let _ = (work, bytes);
         Ok(Self {
-            custody: Some(io.into_native_custody(bytes as u64)?),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            custody,
         })
     }
 
@@ -249,54 +246,45 @@ mod tests {
 
     #[test]
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
+        let mut work = AlgorithmWork::new(None, 0)?;
         assert_eq!(
-            exact_replace(
-                "before 🦀 after",
-                "🦀",
-                "日本語",
-                64,
-                &mut AlgorithmWork::ordinary()
-            )?,
+            exact_replace("before 🦀 after", "🦀", "日本語", 64, &mut work)?,
             "before 日本語 after"
         );
         assert_eq!(
-            exact_replace("a\r\nb\n", "\r\n", "\n", 8, &mut AlgorithmWork::ordinary())?,
+            exact_replace("a\r\nb\n", "\r\n", "\n", 8, &mut work)?,
             "a\nb\n"
         );
         assert!(matches!(
-            exact_replace("aaa", "aa", "b", 8, &mut AlgorithmWork::ordinary()),
+            exact_replace("aaa", "aa", "b", 8, &mut work),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            exact_replace("ééé", "éé", "b", 8, &mut AlgorithmWork::ordinary()),
+            exact_replace("ééé", "éé", "b", 8, &mut work),
             Err(Error::Conflict(_))
         ));
-        assert!(exact_replace("one one", "one", "two", 8, &mut AlgorithmWork::ordinary()).is_err());
-        assert!(exact_replace("one", "missing", "two", 8, &mut AlgorithmWork::ordinary()).is_err());
-        assert!(exact_replace("one", "", "two", 8, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(exact_replace("one one", "one", "two", 8, &mut work).is_err());
+        assert!(exact_replace("one", "missing", "two", 8, &mut work).is_err());
+        assert!(exact_replace("one", "", "two", 8, &mut work).is_err());
         Ok(())
     }
 
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
-        assert_eq!(
-            exact_replace("abc", "b", "", 3, &mut AlgorithmWork::ordinary())?,
-            "ac"
-        );
-        assert_eq!(
-            exact_replace("abc", "abc", "xyz", 3, &mut AlgorithmWork::ordinary())?,
-            "xyz"
-        );
-        assert!(exact_replace("abc", "b", "long", 4, &mut AlgorithmWork::ordinary()).is_err());
-        assert!(exact_replace("abc", "abc", "a", 2, &mut AlgorithmWork::ordinary()).is_err());
-        assert!(exact_replace("abc", "a", "a", 0, &mut AlgorithmWork::ordinary()).is_err());
-        assert!(exact_replace("abc", "a", "a", u64::MAX, &mut AlgorithmWork::ordinary()).is_err());
-        assert!(exact_replace("é", "é", "🦀", 3, &mut AlgorithmWork::ordinary()).is_err());
+        let mut work = AlgorithmWork::new(None, 0)?;
+        assert_eq!(exact_replace("abc", "b", "", 3, &mut work)?, "ac");
+        assert_eq!(exact_replace("abc", "abc", "xyz", 3, &mut work)?, "xyz");
+        assert!(exact_replace("abc", "b", "long", 4, &mut work).is_err());
+        assert!(exact_replace("abc", "abc", "a", 2, &mut work).is_err());
+        assert!(exact_replace("abc", "a", "a", 0, &mut work).is_err());
+        assert!(exact_replace("abc", "a", "a", u64::MAX, &mut work).is_err());
+        assert!(exact_replace("é", "é", "🦀", 3, &mut work).is_err());
         Ok(())
     }
 
     #[test]
     fn bounded_matching_agrees_with_all_utf8_start_positions() {
+        let mut work = AlgorithmWork::new(None, 0).unwrap();
         for alphabet in [['a', 'b'], ['é', '🦀']] {
             for length in 1..=6 {
                 for bits in 0..(1 << length) {
@@ -316,13 +304,7 @@ mod tests {
                                         .map(|_| offset)
                                 })
                                 .collect();
-                            let result = exact_replace(
-                                &source,
-                                &needle,
-                                "X",
-                                64,
-                                &mut AlgorithmWork::ordinary(),
-                            );
+                            let result = exact_replace(&source, &needle, "X", 64, &mut work);
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {

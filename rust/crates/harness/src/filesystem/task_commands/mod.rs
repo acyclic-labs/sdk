@@ -4,16 +4,15 @@ use crate::runtime::TaskSpawner as _;
 use super::{
     FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, task_runtime::WorkerContext,
 };
-use crate::runtime::TaskStateProvider;
 use crate::{
     Error, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
     conversation::FileRef,
     durable_tool::DurableToolRunner,
-    executor::{ExecutionJournal, ExecutionProgress, TurnInput},
+    executor::{ExecutionJournal, TurnInput},
     model::{Model, ModelContent, ModelProvider},
     projection::SelectedModelContext,
-    runtime::{DurableTaskHost, TaskContext, ToolContext},
+    runtime::{TaskContext, ToolContext},
     scheduler::LeaseFence,
     tool::ToolInvocation,
     workflow::WorkflowCommand,
@@ -36,7 +35,7 @@ use tool::was_dispatched;
 macro_rules! command_record {
     ($($record:ty $(=> $schema:ident)?),+ $(,)?) => {
         $(impl super::PreparationRecord for $record {
-            $(fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+            $(fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
                 crate::executor::json::JsonValueSchema::$schema
             })?
         })+

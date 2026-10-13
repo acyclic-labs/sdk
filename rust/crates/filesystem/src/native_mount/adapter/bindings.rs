@@ -22,7 +22,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut inspector = candidate.checkout.inspector(work, work.cancellation())?;
+            let mut inspector = candidate.checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
             let node = inspector
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -67,7 +67,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut inspector = candidate.checkout.inspector(work, work.cancellation())?;
+            let mut inspector = candidate.checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
             let moved = inspector
                 .lookup_no_follow(&source, work, work.cancellation())
                 .await?
@@ -122,7 +122,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut inspector = candidate.checkout.inspector(work, work.cancellation())?;
+            let mut inspector = candidate.checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
             let node = inspector
                 .lookup_no_follow(&source, work, work.cancellation())
                 .await?

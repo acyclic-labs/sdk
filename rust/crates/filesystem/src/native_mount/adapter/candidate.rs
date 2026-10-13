@@ -94,7 +94,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
                 .clone_namespace(&path.components()[..length], base.volume_config().limits)?;
             for checkout in [base, candidate] {
                 if let Some(record) = checkout
-                    .inspector(&native, cancellation)?
+                    .inspector(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)?
                     .lookup_no_follow(&prefix, &native, cancellation)
                     .await?
                     .record

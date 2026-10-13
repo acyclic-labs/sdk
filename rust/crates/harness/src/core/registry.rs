@@ -24,10 +24,7 @@ impl SchemaRegistry {
     pub const fn new() -> Self {
         Self { schemas: None }
     }
-    pub(crate) fn copy(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
+    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| copying::is_native(&**io)) {
             io.check_cancellation()?;
         }
@@ -115,7 +112,7 @@ impl SchemaRegistry {
     pub fn activation_order(
         &self,
         selected: &[ExtensionDependency],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Vec<ExtensionDependency>, u64)> {
         let mut owned = crate::fork::CodecQuota::observed(work)?;
         let mut chosen = BTreeMap::<&str, &ExtensionDependency>::new();
@@ -201,7 +198,7 @@ impl SchemaRegistry {
         name: &str,
         version: u32,
         expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&ExtensionBinding> {
         let mut selected = None;
         if let Some(schemas) = &self.schemas {
@@ -265,7 +262,7 @@ impl SchemaRegistry {
         &self,
         extension: &ExtensionDependency,
         content: &FileRef,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<ExtensionConfiguration> {
         extension.validate()?;
         let binding =
@@ -289,7 +286,7 @@ impl SchemaRegistry {
         &self,
         name: &str,
         version: u32,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         Ok(self
             .pinned_binding(name, version, None, work)?

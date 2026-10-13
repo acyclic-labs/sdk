@@ -190,7 +190,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         if u64::from(maximum_bytes) > self.limits.maximum_read_bytes {
-            return Err(fs_error(FsError::FileRead(
+            return Err(MountSourceError::from(FsError::FileRead(
                 crate::kernel::FileRangeReadError::InvalidRange,
             )));
         }

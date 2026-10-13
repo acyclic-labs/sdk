@@ -41,7 +41,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             IdempotencyKey::from_bytes(operation.into_bytes()),
             false,
         );
-        let candidate = checkout.private_candidate_with_accounting(ctx, cancellation(ctx))?;
+        let candidate = checkout.private_candidate(ctx, cancellation(ctx))?;
         let mut transaction = crate::Transaction::from_checkout(
             &self.workspace,
             candidate,

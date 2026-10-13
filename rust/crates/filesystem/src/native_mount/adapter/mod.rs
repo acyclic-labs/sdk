@@ -17,6 +17,7 @@ use crate::native_capture::{
     MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched,
     capture_subtrees_with_native_work,
 };
+use crate::performance::BOUNDARY_BUDGET;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, NamedAttributeWriteMode,
@@ -117,34 +118,27 @@ pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
 }
 
 fn facade_error(error: OperationFailure<FsError>) -> MountSourceError {
-    fs_error(error.error)
-}
-
-fn fs_error(error: FsError) -> MountSourceError {
-    match error {
-        FsError::CreationRejected | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
-            MountSourceError::AlreadyExists
-        }
-        FsError::NotFound
-        | FsError::Mutation(
-            GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
-        ) => MountSourceError::NotFound,
-        FsError::Work(error) => MountSourceError::Work(error),
-        FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
-        FsError::Cancelled(_) => MountSourceError::Cancelled,
-        FsError::SourceSnapshotStale => MountSourceError::Stale,
-        other => MountSourceError::Filesystem(other),
-    }
+    MountSourceError::from(error.error)
 }
 
 impl From<FsError> for MountSourceError {
     fn from(error: FsError) -> Self {
-        fs_error(error)
+        match error {
+            FsError::CreationRejected
+            | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
+                MountSourceError::AlreadyExists
+            }
+            FsError::NotFound
+            | FsError::Mutation(
+                GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
+            ) => MountSourceError::NotFound,
+            FsError::Work(error) => MountSourceError::Work(error),
+            FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
+            FsError::Cancelled(_) => MountSourceError::Cancelled,
+            FsError::SourceSnapshotStale => MountSourceError::Stale,
+            other => MountSourceError::Filesystem(other),
+        }
     }
-}
-
-fn boundary_budget() -> WorkBudget {
-    crate::performance::BOUNDARY_BUDGET
 }
 
 mod runtime;

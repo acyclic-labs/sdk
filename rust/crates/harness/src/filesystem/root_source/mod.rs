@@ -5,7 +5,7 @@ use crate::{
     conversation::{VolumeClass, VolumeRef},
     core::Authority,
     executor::json::JsonBounds,
-    executor::{stock_boundary, with_history_io},
+    executor::with_history_io,
     source_authorization::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
     },

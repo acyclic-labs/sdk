@@ -39,7 +39,7 @@ impl ForkRequest {
         mut self,
         parent: &crate::core::Reducer,
         policy: ForkHistoryPolicy,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
@@ -82,10 +82,7 @@ impl ForkRequest {
     }
 
     /// Checks identities, resource selections and optional attestation metadata.
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         let mut work = CodecQuota::observed(work)?;
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
             || self.selections.len() as u64 > MAX_FORK_RESOURCES as u64

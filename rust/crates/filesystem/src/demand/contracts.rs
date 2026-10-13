@@ -356,10 +356,17 @@ pub(crate) fn accept_source_result<T>(
         Ok(receipt) => (Ok(receipt.value), receipt.work),
         Err(failure) => (Err(failure.error), *failure.work),
     };
+    merge_source_work(completed, accounting)?;
+    result
+}
+
+pub(crate) fn merge_source_work(
+    completed: WorkCounters,
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<(), DemandError> {
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
         .ok_or(DemandError::NativeWorkUnavailable)?;
     *work = work.with_backend(completed, allocations.live_bytes())?;
-    work.verify(budget)?;
-    result
+    Ok(work.verify(budget)?)
 }

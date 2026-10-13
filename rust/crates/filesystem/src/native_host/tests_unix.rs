@@ -6,9 +6,7 @@ fn a_local_root_is_classified_local() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     assert!(
         filesystem_is_local(
-            &HostRoot::open(temporary.path(), &mut ordinary_work())
-                .map_err(ordinary_error)?
-                .directory,
+            &test_root(temporary.path())?.directory,
             &mut ordinary_work()
         )
         .map_err(ordinary_error)?
@@ -30,7 +28,7 @@ fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
     for path in [&file, &directory, &root_path] {
         std::fs::File::open(path)?.set_times(std::fs::FileTimes::new().set_accessed(old))?;
     }
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(temporary.path())?;
     let mut body = String::new();
     root.open_file(Path::new("directory/file"), &mut ordinary_work())
         .map_err(ordinary_error)?
@@ -59,7 +57,7 @@ fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::
     std::fs::create_dir(&outside_path)?;
     std::fs::write(outside_path.join("secret"), b"outside")?;
     symlink(&outside_path, root_path.join("pivot"))?;
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     assert!(
         root.open_file(Path::new("pivot/secret"), &mut ordinary_work())
             .map_err(ordinary_error)
@@ -93,7 +91,7 @@ fn held_special_metadata_rejects_intermediate_symlink_escape() -> std::io::Resul
     std::fs::write(&target, b"outside")?;
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
     symlink(&outside_path, root_path.join("pivot"))?;
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     #[cfg(target_os = "linux")]
     assert!(
         root.open_linux_metadata_target(Path::new("pivot/target"), &mut ordinary_work())
@@ -141,7 +139,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
     let original = root_path.join("original");
     let moved = root_path.join("moved");
     std::fs::write(&original, b"old")?;
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     let target = root.open_linux_metadata_target(Path::new("original"), &mut work)?;
     std::fs::rename(&original, &moved)?;
     std::fs::write(&original, b"new")?;
@@ -200,7 +198,7 @@ fn held_linux_symlink_metadata_does_not_mutate_target() -> Result<(), Box<dyn st
     let link = root_path.join("link");
     symlink(&outside, &link)?;
     let outside_before = std::fs::metadata(&outside)?;
-    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(&root_path)?;
     let target = root.open_linux_metadata_target(Path::new("link"), &mut work)?;
     let desired = 1_700_000_000_456_789_123_i64;
     apply_linux_metadata(
@@ -230,11 +228,7 @@ fn root_symbolic_link_is_never_admitted() -> std::io::Result<()> {
     let link = temporary.path().join("link");
     std::fs::create_dir(&real)?;
     symlink(&real, &link)?;
-    assert!(
-        HostRoot::open(&link, &mut ordinary_work())
-            .map_err(ordinary_error)
-            .is_err()
-    );
+    assert!(test_root(&link).is_err());
     Ok(())
 }
 #[test]
@@ -242,7 +236,7 @@ fn bound_unix_socket_lands_inside_the_held_root() -> std::io::Result<()> {
     use std::os::unix::fs::FileTypeExt;
     let temporary = tempfile::tempdir()?;
     std::fs::create_dir(temporary.path().join("nested"))?;
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(temporary.path())?;
     root.bind_unix_socket(Path::new("root.sock"), &mut ordinary_work())
         .map_err(ordinary_error)?;
     root.bind_unix_socket(Path::new("nested/child.sock"), &mut ordinary_work())
@@ -257,7 +251,7 @@ fn bound_unix_socket_lands_inside_the_held_root() -> std::io::Result<()> {
 #[test]
 fn bound_unix_socket_rejects_paths_beyond_sun_path() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
-    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let root = test_root(temporary.path())?;
     let name = format!("{}.sock", "n".repeat(128));
     match root
         .bind_unix_socket(Path::new(&name), &mut ordinary_work())

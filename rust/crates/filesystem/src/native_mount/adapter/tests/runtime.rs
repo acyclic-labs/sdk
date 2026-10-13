@@ -161,7 +161,7 @@ fn abandoning_a_blocked_change_never_applies_and_leaves_other_callers_live()
     let source = Arc::new(source(FilesystemProfile::Portable)?);
     let abandoned = native_test_path("abandoned");
     let kept = native_test_path("kept");
-    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let create = |path| AuthoredMutation::CreateFile {
         path,
         metadata: metadata(),
