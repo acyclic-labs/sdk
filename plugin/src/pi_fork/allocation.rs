@@ -307,16 +307,13 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let checkpoint = context
-            .read_file_with_native_work(
-                plan.request
+            .read_file(plan.request
                     .source_checkpoint
                     .as_ref()
                     .ok_or(Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Unauthorized,
                         reason: "Pi fork plan lacks its original source checkpoint",
-                    })?,
-                work,
-            )
+                    })?, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
             .await?;
         (owner)
             .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))

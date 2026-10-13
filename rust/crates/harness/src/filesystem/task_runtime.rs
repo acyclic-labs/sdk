@@ -1070,7 +1070,7 @@ where
                 }
                 _ => {
                     for file in message.content.file_refs() {
-                        context.read_file(file).await?;
+                        context.read_file(file, None).await?;
                     }
                 }
             }
@@ -2147,7 +2147,7 @@ where
             })?;
             let body = context
                 .context()
-                .read_file_with_native_work(&command.payload, work)
+                .read_file(&command.payload, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                 .await?;
             crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<Value>,
@@ -2155,12 +2155,12 @@ where
                 crate::wire::ErrorCode::Storage,
             )?)
         } else {
-            crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+            crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
         };
         #[cfg(target_arch = "wasm32")]
         let payload =
-            crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
+            crate::contract::json_from_slice(&context.context().read_file(&command.payload, None).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?;
         if !self
             .commands()
@@ -2641,7 +2641,7 @@ where
                         });
                     }
                     let body = shared
-                        .read_file_with_native_work(&command.payload, work)
+                        .read_file(&command.payload, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                         .await?;
                     let payload = crate::filesystem::retain_decoded(io.decode(
                         std::marker::PhantomData::<Value>,
@@ -2661,7 +2661,7 @@ where
                 }
                 WorkerContext::Ordinary(context) => {
                     let payload = crate::contract::json_from_slice(
-                        &context.read_file(&command.payload).await?,
+                        &context.read_file(&command.payload, None).await?,
                     )
                     .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                     commands
@@ -3042,13 +3042,13 @@ async fn verify_native_model_file(
     policy: &crate::model::FileProjectionPolicy,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let body = context.read_file_with_native_work(file, work).await?;
+    let body = context.read_file(file, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
     drop(body);
     if let crate::model::FileProjectionPolicy::Native(policy) = policy
         && let Some(binding) = &policy.configuration
     {
         let body = context
-            .read_file_with_native_work(&binding.configuration.content, work)
+            .read_file(&binding.configuration.content, Some(&crate::executor::PreparationIo::from_native_work(work)?))
             .await?;
         drop(body);
     }

@@ -298,7 +298,7 @@ impl super::native::NativeSession {
         for _ in &request.view.volumes {
             guards.push(
                 native_context
-                    .volume_callback_guard_with_native_work(&owner, &work)
+                    .volume_callback_guard(&owner, &work)
                     .await?,
             );
         }

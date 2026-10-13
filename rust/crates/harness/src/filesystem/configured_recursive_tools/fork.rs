@@ -141,36 +141,9 @@ where
                 let path_hold = io
                     .map(|io| io.guard_owned(path.capacity() as u64))
                     .transpose()?;
-                let file = 'staged: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = observer.original_native_work() {
-                        let (file, custody) = context
-                            .stage_file_once_with_native_work(
-                                operation,
-                                &path,
-                                &bytes,
-                                "application/json",
-                                "source-checkpoint.json",
-                                work,
-                            )
-                            .await?;
-                        observer.absorb_native_custody(custody)?;
-                        break 'staged file;
-                    }
-                    observer.receive_content(
-                        context
-                            .stage_file_once_measured(
-                                operation,
-                                &path,
-                                &bytes,
-                                "application/json",
-                                "source-checkpoint.json",
-                                observer.remaining()?,
-                                observer.cancellation(),
-                            )
-                            .await,
-                    )?
-                };
+                let (file, _) = context.stage_file_once(
+                    operation, &path, &bytes, "application/json", "source-checkpoint.json", Some(observer),
+                ).await?;
                 drop((path, path_hold));
                 drop(bytes);
                 drop(bytes_hold);

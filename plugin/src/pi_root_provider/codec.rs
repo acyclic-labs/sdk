@@ -192,7 +192,7 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
     };
     let reference = (reference, custody);
     let bytes = context
-        .read_file_with_native_work(&reference.0, work)
+        .read_file(&reference.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
         .await?;
     let maximum = owner
         .policy()
