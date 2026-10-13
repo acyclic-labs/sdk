@@ -372,16 +372,19 @@ impl MutationPlan {
         if operations.is_empty() {
             return Err(error(MutationPlanError::Empty));
         }
-        if u32::try_from(operations.len()).unwrap_or(u32::MAX) > limits.maximum_mutations_per_batch {
+        if u32::try_from(operations.len()).unwrap_or(u32::MAX) > limits.maximum_mutations_per_batch
+        {
             return Err(error(MutationPlanError::TooManyMutations));
         }
         for operation in &operations {
             operation.validate().map_err(&error)?;
         }
-        let maximum_uses = path_use_count(&operations)
+        let maximum_uses =
+            path_use_count(&operations).ok_or_else(|| error(MutationPlanError::IndexOverflow))?;
+        let requested = maximum_uses
+            .checked_mul(size_of::<PathUse>())
+            .map(usize_to_u64)
             .ok_or_else(|| error(MutationPlanError::IndexOverflow))?;
-        let requested = maximum_uses.checked_mul(size_of::<PathUse>())
-            .map(usize_to_u64).ok_or_else(|| error(MutationPlanError::IndexOverflow))?;
         let mut allocation = accounting.claim_owned(requested, u64::from(maximum_uses != 0))?;
         let mut ordered_paths = Vec::new();
         if let Err(cause) = ordered_paths.try_reserve_exact(maximum_uses) {
@@ -389,33 +392,46 @@ impl MutationPlan {
             accounting.release_owned(&mut allocation, requested)?;
             #[cfg(not(target_arch = "wasm32"))]
             if original {
-                return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(cause)));
+                return Err(crate::FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::AllocationFailed(cause),
+                ));
             }
             let _ = (cause, original);
             return Err(error(MutationPlanError::AllocationFailed));
         }
-        let allocation_bytes = ordered_paths.capacity().checked_mul(size_of::<PathUse>())
-            .map(usize_to_u64).ok_or_else(|| error(MutationPlanError::IndexOverflow))?;
-        if let Err(cause) = accounting.reconcile_owned(&mut allocation, requested, allocation_bytes) {
+        let allocation_bytes = ordered_paths
+            .capacity()
+            .checked_mul(size_of::<PathUse>())
+            .map(usize_to_u64)
+            .ok_or_else(|| error(MutationPlanError::IndexOverflow))?;
+        if let Err(cause) = accounting.reconcile_owned(&mut allocation, requested, allocation_bytes)
+        {
             drop(ordered_paths);
             accounting.release_owned(&mut allocation, allocation_bytes)?;
             return Err(cause);
         }
         for (index, operation) in operations.iter().enumerate() {
-            let operation_index = u32::try_from(index)
-                .map_err(|_| error(MutationPlanError::IndexOverflow))?;
+            let operation_index =
+                u32::try_from(index).map_err(|_| error(MutationPlanError::IndexOverflow))?;
             let Some(paths) = operation.paths() else {
                 continue;
             };
-            ordered_paths.push(PathUse { operation: operation_index, endpoint: 0 });
+            ordered_paths.push(PathUse {
+                operation: operation_index,
+                endpoint: 0,
+            });
             if paths[1] != paths[0] {
-                ordered_paths.push(PathUse { operation: operation_index, endpoint: 1 });
+                ordered_paths.push(PathUse {
+                    operation: operation_index,
+                    endpoint: 1,
+                });
             }
         }
         let comparisons = Cell::new(0_u64);
         ordered_paths.sort_unstable_by(|left, right| {
             comparisons.set(comparisons.get().saturating_add(1));
-            path_for(&operations, *left).cmp(path_for(&operations, *right))
+            path_for(&operations, *left)
+                .cmp(path_for(&operations, *right))
                 .then_with(|| left.operation.cmp(&right.operation))
                 .then_with(|| left.endpoint.cmp(&right.endpoint))
         });
@@ -424,15 +440,18 @@ impl MutationPlan {
         let mut component_visits = 0_u64;
         for path_use in &ordered_paths {
             let path = path_for(&operations, *path_use);
-            component_visits = component_visits.checked_add(usize_to_u64(path.depth()))
+            component_visits = component_visits
+                .checked_add(usize_to_u64(path.depth()))
                 .ok_or_else(|| error(MutationPlanError::IndexOverflow))?;
             let shared = prior.map_or(0, |previous| shared_prefix(previous, path));
-            path_nodes = path_nodes.checked_add(usize_to_u64(path.depth() - shared))
+            path_nodes = path_nodes
+                .checked_add(usize_to_u64(path.depth() - shared))
                 .ok_or_else(|| error(MutationPlanError::IndexOverflow))?;
             prior = Some(path);
         }
         let delta = WorkCounters {
-            items_examined: component_visits.checked_add(comparisons.get())
+            items_examined: component_visits
+                .checked_add(comparisons.get())
                 .ok_or_else(|| error(MutationPlanError::IndexOverflow))?,
             ..WorkCounters::default()
         };
@@ -441,7 +460,16 @@ impl MutationPlan {
             accounting.release_owned(&mut allocation, allocation_bytes)?;
             return Err(cause);
         }
-        Ok((Self { operations, ordered_paths, path_nodes, retained_allocation_bytes: allocation_bytes, work: accounting.spent() }, allocation))
+        Ok((
+            Self {
+                operations,
+                ordered_paths,
+                path_nodes,
+                retained_allocation_bytes: allocation_bytes,
+                work: accounting.spent(),
+            },
+            allocation,
+        ))
     }
 
     /// Ordered operations retained for atomic replay.
@@ -602,8 +630,8 @@ mod tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod original_controls {
-    use super::*;
     use super::super::allocation::{KernelAccounting, KernelOwnedAllocation};
+    use super::*;
     use crate::kernel::{LogicalName, NameEncoding};
 
     struct Funded<T> {
@@ -611,12 +639,31 @@ mod original_controls {
         allocation: KernelOwnedAllocation,
     }
 
-    fn funded_vec<T>(count: usize, accounting: &mut KernelAccounting<'_>) -> Result<Funded<T>, crate::FsError> {
-        let requested = usize_to_u64(count.checked_mul(size_of::<T>()).ok_or(WorkError::Overflow)?);
+    fn funded_vec<T>(
+        count: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Funded<T>, crate::FsError> {
+        let requested = usize_to_u64(
+            count
+                .checked_mul(size_of::<T>())
+                .ok_or(WorkError::Overflow)?,
+        );
         let allocation = accounting.claim_owned(requested, u64::from(count != 0))?;
-        let mut funded = Funded { values: Vec::new(), allocation };
-        funded.values.try_reserve_exact(count).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
-        let actual = usize_to_u64(funded.values.capacity().checked_mul(size_of::<T>()).ok_or(WorkError::Overflow)?);
+        let mut funded = Funded {
+            values: Vec::new(),
+            allocation,
+        };
+        funded
+            .values
+            .try_reserve_exact(count)
+            .map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
+        let actual = usize_to_u64(
+            funded
+                .values
+                .capacity()
+                .checked_mul(size_of::<T>())
+                .ok_or(WorkError::Overflow)?,
+        );
         accounting.reconcile_owned(&mut funded.allocation, requested, actual)?;
         Ok(funded)
     }
@@ -635,17 +682,31 @@ mod original_controls {
             drop(bytes);
             return Err(error);
         }
-        let delta = WorkCounters { bytes_copied: 6, ..WorkCounters::default() };
+        let delta = WorkCounters {
+            bytes_copied: 6,
+            ..WorkCounters::default()
+        };
         accounting.admit(delta)?;
         bytes.values.extend_from_slice(b"native");
         accounting.record_completed(delta)?;
         let limits = VolumeLimits::default();
-        components.values.push(LogicalName::new(NameEncoding::Utf8, std::mem::take(&mut bytes.values), limits.maximum_component_bytes)
-            .map_err(|error| crate::FsError::Path(super::super::PathLookupError::NamespacePath(
-                super::super::NamespacePathError::Name(error),
-            )))?);
-        operations.values.push(Mutation::ValidateRegular { path: NamespacePath::new(std::mem::take(&mut components.values), limits)
-            .map_err(|error| crate::FsError::Path(super::super::PathLookupError::NamespacePath(error)))? });
+        components.values.push(
+            LogicalName::new(
+                NameEncoding::Utf8,
+                std::mem::take(&mut bytes.values),
+                limits.maximum_component_bytes,
+            )
+            .map_err(|error| {
+                crate::FsError::Path(super::super::PathLookupError::NamespacePath(
+                    super::super::NamespacePathError::Name(error),
+                ))
+            })?,
+        );
+        operations.values.push(Mutation::ValidateRegular {
+            path: NamespacePath::new(std::mem::take(&mut components.values), limits).map_err(
+                |error| crate::FsError::Path(super::super::PathLookupError::NamespacePath(error)),
+            )?,
+        });
         Ok((operations.values, operations.allocation))
     }
 
@@ -653,19 +714,36 @@ mod original_controls {
     fn original_planner_refuses_index_before_allocating_on_another_ledger()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(
-            WorkBudget { allocation_operations: 3, ..WorkBudget::UNBOUNDED }, &cancellation,
-        ).map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (operations, input_guard) = funded_operation(&mut accounting)?;
+        drop(accounting);
+        let limited = original.native_volume_work(WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        })?;
+        let mut accounting = KernelAccounting::native(&limited, &cancellation);
         let before = original.receipt();
-        let error = MutationPlan::compile_with_accounting(operations, VolumeLimits::default(), &mut accounting)
-            .err().ok_or("planner created an unaccounted path index")?;
-        assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }))));
+        let error = MutationPlan::compile_with_accounting(
+            operations,
+            VolumeLimits::default(),
+            &mut accounting,
+        )
+        .err()
+        .ok_or("planner created an unaccounted path index")?;
+        assert!(matches!(
+            error,
+            crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { .. }
+            ))
+        ));
         assert_eq!(original.receipt(), before);
         drop(error);
         drop(input_guard);
+        drop(accounting);
+        drop(limited);
         assert_eq!(original.live_allocation_bytes(), baseline);
         Ok(())
     }
@@ -679,15 +757,29 @@ mod original_controls {
         let baseline = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (operations, input_guard) = funded_operation(&mut accounting)?;
-        let KernelOwnedAllocation::NativeOriginal(input_guard) = input_guard else { return Err("input guard is not original".into()); };
-        let (plan, index_guard) = MutationPlan::compile_with_accounting(operations, VolumeLimits::default(), &mut accounting)?;
-        let KernelOwnedAllocation::NativeOriginal(index_guard) = index_guard else { return Err("index guard is not original".into()); };
+        let KernelOwnedAllocation::NativeOriginal(input_guard) = input_guard else {
+            return Err("input guard is not original".into());
+        };
+        let (plan, index_guard) = MutationPlan::compile_with_accounting(
+            operations,
+            VolumeLimits::default(),
+            &mut accounting,
+        )?;
+        let KernelOwnedAllocation::NativeOriginal(index_guard) = index_guard else {
+            return Err("index guard is not original".into());
+        };
         assert!(index_guard.shares_ledger(&input_guard));
         assert_eq!(index_guard.bytes(), plan.retained_allocation_bytes());
-        assert_eq!(index_guard.bytes(), usize_to_u64(plan.ordered_paths.capacity()) * size_of::<PathUse>() as u64);
+        assert_eq!(
+            index_guard.bytes(),
+            usize_to_u64(plan.ordered_paths.capacity()) * size_of::<PathUse>() as u64
+        );
         assert_eq!(plan.ordered_paths().count(), 1);
         assert_eq!(plan.path_nodes(), 2);
-        assert_eq!(original.live_allocation_bytes(), baseline + input_guard.bytes() + index_guard.bytes());
+        assert_eq!(
+            original.live_allocation_bytes(),
+            baseline + input_guard.bytes() + index_guard.bytes()
+        );
         drop(plan);
         drop(index_guard);
         drop(input_guard);

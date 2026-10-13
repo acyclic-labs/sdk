@@ -269,9 +269,9 @@ impl AgentHarness {
     ) -> bool {
         self.host
             .as_ref()
-            .is_some_and(|bound| std::ptr::eq(bound.as_ref(), host))
+            .is_some_and(|bound| std::ptr::addr_eq(bound.as_ref(), host))
             && match (self.policy.as_deref(), policy) {
-                (Some(bound), Some(policy)) => std::ptr::eq(bound, policy),
+                (Some(bound), Some(policy)) => std::ptr::addr_eq(bound, policy),
                 (None, None) => true,
                 _ => false,
             }

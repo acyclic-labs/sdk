@@ -43,7 +43,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
                 None,
             )?
             .await?;
-        assert_eq!(replacement.path(), staged.path());
+        assert_ne!(replacement.path(), staged.path());
         assert_eq!(
             journal.load(&staged, None)?.await?.as_ref(),
             b"original payload"

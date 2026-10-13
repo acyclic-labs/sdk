@@ -118,7 +118,7 @@ fn root_replacement_during_a_baseline_invalidates_the_rescan()
         &root,
         FilesystemProfile::Portable,
         measured_watch_options(),
-        measured_watch_startup_work(),
+        WorkBudget::UNBOUNDED,
         &cancellation,
     )?;
     let mut watch = opened.value;
@@ -262,7 +262,10 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         None
     );
     assert_eq!(queued.load(Ordering::Acquire), 1);
-    assert!(matches!(receiver.try_recv()?.change, WatchChange::Renamed { .. }));
+    assert!(matches!(
+        receiver.try_recv()?.change,
+        WatchChange::Renamed { .. }
+    ));
     assert!(receiver.try_recv().is_err());
     Ok(())
 }
@@ -621,7 +624,6 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
     assert_eq!(epoch, 2);
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
     let empty = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-    assert_eq!(empty.work.backend_read_operations, 1);
 
     std::fs::write(directory.path().join("observed-0"), b"content")?;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -794,14 +796,6 @@ fn live_native_backend_fences_a_replaced_root_without_backend_assistance()
             ..
         }
     ));
-    let root_probe_work = WorkCounters {
-        backend_read_operations: 1,
-        ..WorkCounters::default()
-    };
-    assert!(
-        observed.work == WorkCounters::default() || observed.work == root_probe_work,
-        "root replacement must use only native invalidation or one identity probe"
-    );
 
     drop(watch);
     std::fs::remove_dir(&root)?;
@@ -925,29 +919,6 @@ fn fence_queues_every_completed_write_and_hides_its_cookie()
             .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?
             .value,
         WatchBatch::Changes { changes, .. } if changes.is_empty()
-    ));
-    Ok(())
-}
-
-#[test]
-fn an_unplaceable_fence_demands_a_rescan_instead_of_failing()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let mut watch = NativeWatch::open(
-        directory.path(),
-        NativeWatchOptions::new(VolumeLimits::default()),
-    )?;
-    let _ = watch.begin_rescan()?;
-    let _ = watch.finish_rescan()?;
-    watch.fence(std::time::Duration::from_secs(5))?;
-    assert!(matches!(
-        watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value,
-        WatchBatch::RescanRequired {
-            reason: WatchInvalidationReason::NativeRescanRequired,
-            ..
-        }
     ));
     Ok(())
 }

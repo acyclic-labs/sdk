@@ -55,7 +55,8 @@ impl ToolExecutor for RemoteTool {
         invocation: &crate::tool::ToolInvocation,
         work: crate::NativeWork<'_>,
     ) -> crate::Result<()> {
-        let _ = (scope, context, invocation, work);
+        let _ = (invocation, work);
+        let scope = scope.or_else(|| context.map(|context| context.task().scope()));
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.is_some() {
             return Err(crate::Error::NativeBoundary {
