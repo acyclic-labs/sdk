@@ -7,9 +7,9 @@ pub(crate) fn lowercase_unicode(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
-    let mut owned = NamespacePathAccounting::new(accounting)?;
-    let result = lowercase_unicode_with_steps(text, cancellation, &mut |step| owned.observe(step));
-    owned.finish(result)
+    let mut owned = OriginalReadAccounting::new(accounting)?;
+    let result = lowercase_unicode_with_steps(text, cancellation, &mut |step| observe_path(&mut owned, step));
+    finish_owned(owned, result)
 }
 
 fn lowercase_unicode_with_steps(

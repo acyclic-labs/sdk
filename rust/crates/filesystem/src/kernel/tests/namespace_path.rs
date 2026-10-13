@@ -1,4 +1,26 @@
 use super::*;
+use crate::{MeasuredResult, OperationFailure, OperationReceipt};
+
+fn parse_path(
+    path: &str,
+    profile: FilesystemProfile,
+    limits: VolumeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    live_owned_bytes: u64,
+) -> MeasuredResult<OperationReceipt<NamespacePath>, NamespacePathError> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = (|| {
+        cancellation.check().map_err(crate::FsError::from)?;
+        accounting.claim_owned(live_owned_bytes, 0)?;
+        NamespacePath::parse_in_profile(path, profile, limits, &mut accounting, cancellation)
+            .map(|(path, _)| path)
+    })();
+    let work = accounting.spent();
+    result
+        .map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(super::operations::path_error(error), work))
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod original_namespace_controls {
@@ -6,9 +28,12 @@ mod original_namespace_controls {
     use crate::kernel::allocation::KernelAccounting;
 
     fn is_budget_error(error: &crate::FsError) -> bool {
-        matches!(error, crate::FsError::NativeKernel(
-            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { .. })
-        ))
+        matches!(
+            error,
+            crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                crate::WorkError::BudgetExceeded { .. }
+            ))
+        )
     }
 
     #[test]
@@ -21,7 +46,9 @@ mod original_namespace_controls {
             probe.receipt().allocation_operations
         };
         let budget = WorkBudget {
-            allocation_operations: controller_operations.checked_add(2).ok_or("allocation quota overflow")?,
+            allocation_operations: controller_operations
+                .checked_add(2)
+                .ok_or("allocation quota overflow")?,
             ..WorkBudget::UNBOUNDED
         };
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -29,26 +56,40 @@ mod original_namespace_controls {
         let baseline = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (paid_path, paid_guard) = NamespacePath::parse_in_profile(
-            "/paid", FilesystemProfile::Portable, VolumeLimits::default(),
-            &mut accounting, &cancellation,
+            "/paid",
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            &mut accounting,
+            &cancellation,
         )?;
         drop(paid_path);
         drop(paid_guard);
-        assert_eq!(original.receipt().allocation_operations, budget.allocation_operations);
+        assert_eq!(
+            original.receipt().allocation_operations,
+            budget.allocation_operations
+        );
         assert_eq!(original.live_allocation_bytes(), baseline);
         let before = original.receipt();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let error = NamespacePath::parse_in_profile(
-            "/a/b", FilesystemProfile::Portable, VolumeLimits::default(),
-            &mut accounting, &cancellation,
-        ).err().ok_or("exhausted original allocated a path")?;
+            "/a/b",
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            &mut accounting,
+            &cancellation,
+        )
+        .err()
+        .ok_or("exhausted original allocated a path")?;
         assert!(is_budget_error(&error));
         let after = original.receipt();
         assert_eq!(after.allocation_operations, before.allocation_operations);
         assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
         assert_eq!(after.bytes_copied, before.bytes_copied);
         assert_eq!(after.bytes_encoded, before.bytes_encoded);
-        assert_eq!(after.source_path_components - before.source_path_components, 2);
+        assert_eq!(
+            after.source_path_components - before.source_path_components,
+            2
+        );
         assert_eq!(original.live_allocation_bytes(), baseline);
         Ok(())
     }
@@ -57,7 +98,8 @@ mod original_namespace_controls {
     fn original_cancellation_precedes_parse_and_clone_allocations()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = NamespacePath::from_portable(
-            &PortablePath::parse("/valid", VolumeLimits::default())?, VolumeLimits::default(),
+            &PortablePath::parse("/valid", VolumeLimits::default())?,
+            VolumeLimits::default(),
         )?;
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -68,21 +110,24 @@ mod original_namespace_controls {
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         for result in [
             NamespacePath::parse_in_profile(
-                "/valid", FilesystemProfile::Portable, VolumeLimits::default(),
-                &mut accounting, &cancellation,
+                "/valid",
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+                &mut accounting,
+                &cancellation,
             ),
             source.clone_with_accounting(&mut accounting, &cancellation),
         ] {
             let error = result.err().ok_or("cancelled original produced a path")?;
-            assert!(matches!(error, crate::FsError::NativeKernel(
-                crate::NativeTreeMaterializationError::Cancelled
-            )));
+            assert!(matches!(
+                error,
+                crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)
+            ));
             assert_eq!(original.receipt(), before);
             assert_eq!(original.live_allocation_bytes(), baseline);
         }
         Ok(())
     }
-
 }
 
 #[test]
@@ -132,7 +177,10 @@ fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error:
         assert_eq!(
             path.components()
                 .first()
-                .and_then(|name| name.unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new()).ok().map(|receipt| receipt.value))
+                .and_then(|name| name
+                    .unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .ok()
+                    .map(|receipt| receipt.value))
                 .as_deref(),
             Some("é")
         );
@@ -204,18 +252,28 @@ fn bounds_are_checked_without_storage() -> Result<(), Box<dyn std::error::Error>
 fn invalid_and_cancelled_paths_do_not_allocate() {
     let cancellation = CancellationToken::new();
     for path in ["relative", "/a//b", "/.", "/..", "/a/", "/nul\0"] {
-        let failure = NamespacePath::parse_in_profile_measured(
-            path, FilesystemProfile::Windows, VolumeLimits::default(),
-            WorkBudget::UNBOUNDED, &cancellation, 0,
-        ).expect_err("invalid spelling must fail");
+        let failure = parse_path(
+            path,
+            FilesystemProfile::Windows,
+            VolumeLimits::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            0,
+        )
+        .expect_err("invalid spelling must fail");
         assert_eq!(failure.work.allocation_operations, 0);
         assert_eq!(failure.work.peak_allocation_bytes, 0);
     }
     cancellation.cancel();
-    let failure = NamespacePath::parse_in_profile_measured(
-        "/valid", FilesystemProfile::Portable, VolumeLimits::default(),
-        WorkBudget::UNBOUNDED, &cancellation, 99,
-    ).expect_err("cancelled parser must fail");
+    let failure = parse_path(
+        "/valid",
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        99,
+    )
+    .expect_err("cancelled parser must fail");
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(failure.error, NamespacePathError::Cancelled);
 }
@@ -224,13 +282,37 @@ fn invalid_and_cancelled_paths_do_not_allocate() {
 fn native_encoded_bounds_reject_before_owned_path_allocation() {
     let cancellation = CancellationToken::new();
     for (path, limits) in [
-        ("/ab", VolumeLimits { maximum_component_bytes: 3, ..VolumeLimits::default() }),
-        ("/ab/c", VolumeLimits { maximum_path_bytes: 7, ..VolumeLimits::default() }),
-        ("/a/b", VolumeLimits { maximum_path_depth: 1, ..VolumeLimits::default() }),
+        (
+            "/ab",
+            VolumeLimits {
+                maximum_component_bytes: 3,
+                ..VolumeLimits::default()
+            },
+        ),
+        (
+            "/ab/c",
+            VolumeLimits {
+                maximum_path_bytes: 7,
+                ..VolumeLimits::default()
+            },
+        ),
+        (
+            "/a/b",
+            VolumeLimits {
+                maximum_path_depth: 1,
+                ..VolumeLimits::default()
+            },
+        ),
     ] {
-        let failure = NamespacePath::parse_in_profile_measured(
-            path, FilesystemProfile::Windows, limits, WorkBudget::UNBOUNDED, &cancellation, 0,
-        ).expect_err("native profile bounds must fail");
+        let failure = parse_path(
+            path,
+            FilesystemProfile::Windows,
+            limits,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            0,
+        )
+        .expect_err("native profile bounds must fail");
         assert_eq!(failure.work.allocation_operations, 0);
         assert_eq!(failure.work.bytes_copied, 0);
         assert_eq!(failure.work.bytes_encoded, 0);
@@ -241,20 +323,38 @@ fn native_encoded_bounds_reject_before_owned_path_allocation() {
 fn allocation_denial_and_late_copy_denial_preserve_actual_prefix() {
     let cancellation = CancellationToken::new();
     let limits = VolumeLimits::default();
-    let denied = NamespacePath::parse_in_profile_measured(
-        "/a/b", FilesystemProfile::Portable, limits,
-        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation, 0,
-    ).expect_err("vector admission must fail");
+    let denied = parse_path(
+        "/a/b",
+        FilesystemProfile::Portable,
+        limits,
+        WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+        0,
+    )
+    .expect_err("vector admission must fail");
     assert_eq!(denied.work.allocation_operations, 0);
     assert_eq!(denied.work.source_path_components, 2);
-    let failure = NamespacePath::parse_in_profile_measured(
-        "/a/bb", FilesystemProfile::Portable, limits,
-        WorkBudget { bytes_copied: 1, ..WorkBudget::UNBOUNDED }, &cancellation, 0,
-    ).expect_err("second name copy must fail");
+    let failure = parse_path(
+        "/a/bb",
+        FilesystemProfile::Portable,
+        limits,
+        WorkBudget {
+            bytes_copied: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+        0,
+    )
+    .expect_err("second name copy must fail");
     assert_eq!(failure.work.bytes_copied, 1);
     assert_eq!(failure.work.allocation_operations, 2);
-    assert_eq!(failure.work.peak_allocation_bytes,
-        2 * std::mem::size_of::<LogicalName>() as u64 + 1);
+    assert_eq!(
+        failure.work.peak_allocation_bytes,
+        2 * std::mem::size_of::<LogicalName>() as u64 + 1
+    );
 }
 
 #[test]
@@ -264,14 +364,33 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
 
     let cancellation = CancellationToken::new();
     let contexts = [
-        "", "A", "a", "ǅ", "Σ", "ʰ", "\u{0345}", "\u{200c}", "\u{200d}",
-        "\u{2060}", "\u{fe0f}", "'", ".", ":", " ", "1",
-        "A\u{0345}\u{200d}ʰ", "\u{0345}\u{200d}ʰA",
+        "",
+        "A",
+        "a",
+        "ǅ",
+        "Σ",
+        "ʰ",
+        "\u{0345}",
+        "\u{200c}",
+        "\u{200d}",
+        "\u{2060}",
+        "\u{fe0f}",
+        "'",
+        ".",
+        ":",
+        " ",
+        "1",
+        "A\u{0345}\u{200d}ʰ",
+        "\u{0345}\u{200d}ʰA",
     ];
     let mut cases = vec![
-        "ΟΣ".to_owned(), "ΟΣΑ".to_owned(), "ΣΟΣ".to_owned(),
-        "İKẞ𐐀".to_owned(), "AΣ\u{0345}".to_owned(),
-        "AΣ\u{0345}B".to_owned(), "ǅʰΣ\u{200d}".to_owned(),
+        "ΟΣ".to_owned(),
+        "ΟΣΑ".to_owned(),
+        "ΣΟΣ".to_owned(),
+        "İKẞ𐐀".to_owned(),
+        "AΣ\u{0345}".to_owned(),
+        "AΣ\u{0345}B".to_owned(),
+        "ǅʰΣ\u{200d}".to_owned(),
     ];
     for before in contexts {
         for after in contexts {
@@ -284,33 +403,64 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
         assert_eq!(name.case_fold_key(), expected, "ordinary key: {text:?}");
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::UNCHARGED;
-        let held = lowercase_unicode("already-held-root", &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut ledger,&mut work,WorkBudget::UNBOUNDED,&cancellation), &cancellation)?.0;
+        let held = lowercase_unicode(
+            "already-held-root",
+            &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                &mut ledger,
+                &mut work,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ),
+            &cancellation,
+        )?
+        .0;
         let held_bytes = held.capacity() as u64;
         let before = work;
-        let folded = lowercase_unicode(&text, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut ledger,&mut work,WorkBudget::UNBOUNDED,&cancellation), &cancellation)?.0;
+        let folded = lowercase_unicode(
+            &text,
+            &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                &mut ledger,
+                &mut work,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ),
+            &cancellation,
+        )?
+        .0;
         assert_eq!(folded, expected, "measured key: {text:?}");
         let bytes = folded.capacity() as u64;
         assert_eq!(ledger.live_bytes(), held_bytes + bytes);
         assert_eq!(work.peak_allocation_bytes, held_bytes + bytes);
         assert_eq!(work.allocation_operations, before.allocation_operations + 1);
-        assert_eq!(work.bytes_encoded, before.bytes_encoded + folded.len() as u64);
+        assert_eq!(
+            work.bytes_encoded,
+            before.bytes_encoded + folded.len() as u64
+        );
         assert_eq!(work.bytes_copied, before.bytes_copied);
         assert!(work.items_examined > before.items_examined);
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
-            WorkBudget::UNBOUNDED, &cancellation,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
         );
-        let (bridged, allocation) = crate::kernel::types::lowercase_unicode(
-            &text, &mut accounting, &cancellation,
-        )?;
+        let (bridged, allocation) =
+            crate::kernel::types::lowercase_unicode(&text, &mut accounting, &cancellation)?;
         assert_eq!(bridged, expected, "accounting bridge: {text:?}");
         let bridged_work = accounting.spent();
-        assert_eq!(bridged_work.items_examined, work.items_examined - before.items_examined);
-        assert_eq!(bridged_work.bytes_encoded, work.bytes_encoded - before.bytes_encoded);
+        assert_eq!(
+            bridged_work.items_examined,
+            work.items_examined - before.items_examined
+        );
+        assert_eq!(
+            bridged_work.bytes_encoded,
+            work.bytes_encoded - before.bytes_encoded
+        );
         assert_eq!(bridged_work.bytes_copied, 0);
         let bridged_bytes = bridged.capacity() as u64;
         drop(bridged);
         crate::kernel::persistent_point::retire_allocation(
-            allocation, bridged_bytes, &mut accounting,
+            allocation,
+            bridged_bytes,
+            &mut accounting,
         )?;
         drop(folded);
         ledger.release(bytes)?;
@@ -323,8 +473,7 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
 }
 
 #[test]
-fn canonical_case_keys_preserve_native_byte_grammar()
--> Result<(), Box<dyn std::error::Error>> {
+fn canonical_case_keys_preserve_native_byte_grammar() -> Result<(), Box<dyn std::error::Error>> {
     for text in ["ΟΣ", "ǅΣ", "İ𝄞", "A\u{200d}Σ"] {
         let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let name = LogicalName::new(NameEncoding::WindowsUtf16Le, bytes.clone(), u32::MAX)?;
@@ -338,9 +487,9 @@ fn canonical_case_keys_preserve_native_byte_grammar()
         assert_eq!(name.case_fold_key(), bytes);
     }
     for invalid in ["", ".", "..", "a/b", "a\0b"] {
-        assert!(LogicalName::new(
-            NameEncoding::Utf8, invalid.as_bytes().to_vec(), u32::MAX,
-        ).is_err());
+        assert!(
+            LogicalName::new(NameEncoding::Utf8, invalid.as_bytes().to_vec(), u32::MAX,).is_err()
+        );
     }
     Ok(())
 }

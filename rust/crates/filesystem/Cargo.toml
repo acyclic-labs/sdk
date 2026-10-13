@@ -126,6 +126,7 @@ axum.workspace = true
 hmac = "0.13.0"
 http.workspace = true
 rcgen = "0.14.10"
+rustls.workspace = true
 sha2.workspace = true
 tempfile = "3.27.0"
 tokio-stream.workspace = true

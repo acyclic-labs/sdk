@@ -5,14 +5,16 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
     let (generation, main) = fixture(&store).await?;
     let child = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
     let impossible = main
-        .child_measured(
+        .child_with_accounting(
             &child,
             config().limits,
-            WorkBudget::UNBOUNDED,
+            &mut KernelAccounting::standalone(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ),
             &CancellationToken::new(),
-            0,
         )?
-        .value;
+        .0;
     let missing = NamespacePath::new(
         vec![
             LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?,
@@ -110,14 +112,16 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
     let (generation, path) =
         binding_fixture(&store, FileKind::Regular, Some(FileKind::Directory)).await?;
     let query = path
-        .child_measured(
+        .child_with_accounting(
             &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
             config().limits,
-            WorkBudget::UNBOUNDED,
+            &mut KernelAccounting::standalone(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ),
             &CancellationToken::new(),
-            0,
         )?
-        .value;
+        .0;
     let failure = async {
         let cancellation = &CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
