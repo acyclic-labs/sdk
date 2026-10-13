@@ -21,7 +21,7 @@ use crate::performance::BOUNDARY_BUDGET;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, NamedAttributeWriteMode,
-    NativeRootIdentity, ObjectId, OperationFailure, OperationId, VolumeId, WorkBudget, WorkError,
+    NativeRootIdentity, ObjectId, OperationId, VolumeId, WorkBudget, WorkError,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -115,10 +115,6 @@ pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
         crate::DemandError::Io(error) => engine_error(error),
         error => super::lazy::mount_demand_error(error),
     }
-}
-
-fn facade_error(error: OperationFailure<FsError>) -> MountSourceError {
-    MountSourceError::from(error.error)
 }
 
 impl From<FsError> for MountSourceError {
