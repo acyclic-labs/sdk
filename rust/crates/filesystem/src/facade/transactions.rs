@@ -320,7 +320,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             {
                 return Err(FsError::MutationNotAllowed);
             }
-            self.mutate_owned_with_accounting(operations, accounting, cancellation)
+            self.apply_mutations(operations, accounting, cancellation)
                 .await?;
         }
         Ok(Owned::new(

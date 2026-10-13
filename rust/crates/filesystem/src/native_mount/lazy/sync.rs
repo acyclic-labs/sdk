@@ -581,7 +581,7 @@ where
                 expected_file_id: MetadataField::Value(*removed_id),
             });
             candidate
-                .mutate_owned_with_accounting(operations, &mut accounting, work.cancellation())
+                .apply_mutations(operations, &mut accounting, work.cancellation())
                 .await
                 .map_err(mount_engine_error)?;
         }
@@ -616,7 +616,7 @@ where
                     .map_err(mount_engine_error)?;
                 operations.value.extend(chunk.iter().cloned());
                 candidate
-                    .mutate_owned_with_accounting(operations, &mut accounting, work.cancellation())
+                    .apply_mutations(operations, &mut accounting, work.cancellation())
                     .await
                     .map_err(mount_engine_error)?;
             }
