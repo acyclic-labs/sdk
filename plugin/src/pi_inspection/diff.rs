@@ -140,8 +140,8 @@ pub(crate) async fn diff_native(
     let continuation = match page.as_ref().and_then(|(page, _)| page.next.as_ref()) {
         Some(next) => {
             let (bytes, mut next_custody) = next
-                .encode_with_native_work(work, cancellation)
-                .map_err(|(source, custody)| Error::NativeSource { source, custody })?;
+                .encode(work)
+                .map_err(crate::pi_fork_host::native_lazy_error)?;
             output.2.absorb(&mut next_custody)?;
             Some(bytes)
         }

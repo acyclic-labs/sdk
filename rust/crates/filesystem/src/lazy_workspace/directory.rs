@@ -1,6 +1,9 @@
 use super::*;
 use crate::demand::SourceDirectoryPage;
 use std::ops::Bound;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "directory_cursor.rs"]
+mod cursor_codec;
 
 /// One merged authored/source directory entry.
 #[derive(Clone, Debug, Eq, PartialEq)]

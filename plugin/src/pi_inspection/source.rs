@@ -64,20 +64,19 @@ impl PiNativeSelectedSource {
                     ));
                 }
                 Some(
-                    acyclic_fs::LazyDirectoryCursor::decode_with_native_work(
+                    acyclic_fs::LazyDirectoryCursor::decode(
                         bytes,
                         self.workspace.workspace().profile(),
                         self.workspace.workspace().limits(),
                         work,
-                        cancellation,
                     )
-                    .map_err(|(source, custody)| Error::NativeSource { source, custody })?,
+                    .map_err(crate::pi_fork_host::native_lazy_error)?,
                 )
             }
             None => None,
         };
         let page = self.workspace.list_directory_at_snapshot(
-            self.snapshot, &path.0, continuation.map(|(cursor, _)| cursor), maximum,
+            self.snapshot, &path.0, continuation, maximum,
             &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, cancellation },
         ).await.map_err(crate::pi_fork_host::native_lazy_error)?;
         self.inspection.require_project_selection(self.snapshot, work).await?;
@@ -128,8 +127,8 @@ impl PiNativeSelectedSource {
         output.1 = match &page.0.next {
             Some(next) => {
                 let (continuation, mut next_custody) = next
-                    .encode_with_native_work(work, cancellation)
-                    .map_err(|(source, custody)| Error::NativeSource { source, custody })?;
+                    .encode(work)
+                    .map_err(crate::pi_fork_host::native_lazy_error)?;
                 output.2.absorb(&mut next_custody)?;
                 Some(PiNativeInspectionCursor {
                     snapshot: self.snapshot,
