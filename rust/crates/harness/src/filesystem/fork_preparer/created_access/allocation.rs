@@ -475,7 +475,7 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemRootBootstrapAllocation<A, O>
 {
-    pub(super) async fn reauthenticate_with_io(&self, io: &PreparationIo) -> Result<()> {
+    pub(in crate::filesystem) async fn reauthenticate_with_io(&self, io: &PreparationIo) -> Result<()> {
         let journal_hold;
         let journal = allocation_ref(&self.host.provider, &self.request.volume, Some(io))?;
         journal_hold = io.guard_owned(journal.logical_owned_bytes()?)?;
