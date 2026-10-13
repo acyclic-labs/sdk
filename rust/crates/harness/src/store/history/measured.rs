@@ -202,17 +202,8 @@ impl HistoryIo for HistoryWork {
                 self.admit_owned(maximum_owned_bytes)?;
                 self.retain_owned(maximum_owned_bytes)
             }
-            JsonCodecCharge::Work { bytes, items } => {
-                let next = WorkCounters {
-                    bytes_encoded: bytes,
-                    items_examined: items,
-                    ..Default::default()
-                };
-                self.io.preflight(next)?;
-                self.io.charge(next).map_err(Into::into)
-            }
             JsonCodecCharge::Read { .. } => Ok(()),
-            _ => HistoryIo::codec_charge(&mut &self.io, charge),
+            _ => self.io.codec_charge(charge, true),
         }
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {

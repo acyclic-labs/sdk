@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::{conversation::ContentPublisher as _, runtime::TaskSpawner as _};
+use acyclic_harness::conversation::ContentPublisher as _;
 
 impl NativeSession {
     pub async fn queue(
@@ -61,8 +61,10 @@ impl NativeSession {
                 &bytes,
                 "application/json",
                 "GraphCoder prompt command",
-            )
-            .await?;
+                None,
+            )?
+            .await?
+            .0;
         Ok(WorkflowCommand {
             operation_id: operation,
             kind: acyclic_harness::filesystem::MODEL_TASK_COMMAND_KIND.into(),
@@ -84,11 +86,12 @@ impl NativeSession {
             .map_err(|_| Error::Storage("context lock poisoned".into()))?
             .pipeline()?;
         let commands = self.runtime.commands().with_model(
-            crate::provider::model(self.config.deterministic_delay_ms),
+            &crate::provider::model(self.config.deterministic_delay_ms),
             self.model_provider.clone(),
-            context,
-            Default::default(),
-        );
+            &context,
+            &Default::default(),
+            None,
+        )?;
         render_attempt(self.runtime.resume_task(lease, &commands, 16, None).await)
     }
     pub async fn caller_context(&self, caller: TaskId, lease: &WorkLease) -> Result<TaskContext> {

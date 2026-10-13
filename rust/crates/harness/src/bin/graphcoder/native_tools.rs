@@ -134,7 +134,14 @@ pub fn source(
 }
 
 fn authority_binding(binding: &AuthorityBinding) -> ConfiguredRecursiveAuthorityBinding {
-    ConfiguredRecursiveAuthorityBinding { issuer: acyclic_harness::core::AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()), scope: binding.scope.clone() }
+    ConfiguredRecursiveAuthorityBinding {
+        issuer: acyclic_harness::core::AuthorityIssuer::new(
+            &binding.issuer,
+            binding.key,
+            binding.authority.clone(),
+        ),
+        scope: binding.scope.clone(),
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -144,6 +151,9 @@ pub struct NativeCommandConfig {
     pub operation: acyclic_harness::OperationId,
     pub plan: acyclic_harness::effect_host::TaskEffectPlan,
     pub approval: acyclic_harness::InteractionId,
+    pub operation_directory: std::path::PathBuf,
+    pub root_identity: [u8; 16],
+    pub preparation_identity: acyclic_fs::MaterializationPreparationIdentity,
 }
 
 #[cfg(feature = "native-execution")]
@@ -162,11 +172,10 @@ impl super::native::NativeSession {
             effects::EffectRegistry,
             filesystem::{
                 BorrowedNativeVolumeBinding, FilesystemContentPublisher, FilesystemContentVerifier,
-                FilesystemInteractionHost, NativeProcessAuthority, NativeProcessProvider,
-                NativeProcessRequest, NativeVolumeView, PreparationIo,
+                FilesystemInteractionHost, NativePreparationRoot, NativeProcessAuthority,
+                NativeProcessProvider, NativeProcessRequest, NativeVolumeView, PreparationIo,
             },
             scheduler::LeaseFence,
-            store::history::HistoryIo as _,
         };
         let configured = self
             .config
@@ -192,7 +201,7 @@ impl super::native::NativeSession {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner(caller, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
+            .journal_owner(caller, &fence, Some(&io))
             .await?
             .into_native_shared(&work)?;
         let reader = FilesystemContentVerifier::new(
@@ -281,21 +290,26 @@ impl super::native::NativeSession {
             .await?;
         let (request, _request_custody) =
             NativeProcessRequest::decode_with_native_work(&bytes, &work)?;
-        let (allocation, _allocation_custody) = NativeVolumeView::<
-            LocalAuthorityBackend,
-            LocalObjectBackend,
-        >::recover_allocation(
-            &owner, &request.view.options, &work
-        )?
-        .await?;
-        let allocation = allocation
-            .ok_or_else(|| Error::NotFound("original native command view allocation".into()))?;
+        let (root, _root_custody) = work.path(&request.view.options.root, None)?;
+        let (operation_directory, _directory_custody) =
+            work.path(&configured.operation_directory, None)?;
+        let allocation = NativePreparationRoot {
+            root,
+            operation_directory,
+            expected_identity: acyclic_fs::NativeRootIdentity::from_bytes(configured.root_identity),
+            expected_preparation_identity: configured.preparation_identity,
+        };
         let native_context = self
             .runtime
             .task_context_with_native_work(caller, &fence, &work)
             .await?;
         native_context.verify_volume_owner(&owner, &work).await?;
-        let guards: Vec<_> = request.view.volumes.iter().map(|_| Arc::clone(&native_context)).collect();
+        let guards: Vec<_> = request
+            .view
+            .volumes
+            .iter()
+            .map(|_| Arc::clone(&native_context))
+            .collect();
         let volumes = request
             .view
             .volumes
@@ -320,65 +334,59 @@ impl super::native::NativeSession {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let existing_lazy = request
-            .view
-            .volumes
-            .iter()
-            .map(|_| None)
-            .collect::<Vec<_>>();
         let view = NativeVolumeView::prepare(
             &owner,
             &guards,
             &allocation,
             &request.view.options,
             &volumes,
-            &existing_lazy,
             &work,
         )?
         .await?;
-        let mut process_io =
-            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(&work)?);
-        let process_verifier = verifier.copy(&mut Some(&mut process_io))?;
+        let approvals = acyclic_harness::filesystem::FilesystemExecutionJournal::new(
+            self.stream.clone(),
+            self.files.clone(),
+            &entry.private_volume,
+            &verifier,
+            &SchemaRegistry::default(),
+            &binding.scope,
+            super::terminal::MAX_FRAME_BYTES as u64,
+            Some(&io),
+        )?
+        .into_native_shared(&work)?;
         let authority = NativeProcessAuthority {
-            verifier: process_verifier,
-            history_limits: super::native::HISTORY_LIMITS,
+            verifier: verifier.copy(&mut None)?,
+            schemas: SchemaRegistry::default(),
             content: reader.clone(),
-            result_content: reader.clone(),
             results,
             approvals,
-            authority_custody: Some(process_io.into_custody()?),
         };
-        let provider = NativeProcessProvider::new(
-            owner.clone(),
-            operation,
-            &configured.plan,
-            view,
-            configured.approval,
-            authority,
-            &work,
-        )?
-        .await?
-        .into_arc_with_native_work(&work)?;
-        let mut registry = EffectRegistry::new(Some(&work), None)?;
-        registry.register(provider, Some(&work))?;
-        let mut authority_io =
-            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(&work)?);
-        let authority = authority_io.clone_authority(&binding.authority)?;
-        let issuer = issuer.copy(&mut Some(&mut authority_io))?;
-        let scope = binding.scope.copy(&mut Some(&mut authority_io))?;
+        let provider = Arc::new(
+            NativeProcessProvider::new(
+                owner.clone(),
+                operation,
+                configured.plan.clone(),
+                Some(Arc::new(view)),
+                configured.approval,
+                authority,
+            )
+            .await?,
+        );
+        let mut registry = EffectRegistry::new(None, None)?;
+        registry.register(provider, None)?;
         let effects = ConversationEffectHost::new(
             self.stream.clone(),
-            authority,
+            binding.authority.clone(),
             issuer,
-            scope,
+            binding.scope.copy(&mut None)?,
             SchemaRegistry::default(),
             reader,
             registry,
-            Some(authority_io.into_custody()?),
-            Some(&work),
+            None,
+            None,
         )?;
         let (status, _status_custody) = effects
-            .run_task_effect(&owner, operation, &configured.plan, Some(&work))
+            .run_task_effect(&owner, operation, &configured.plan, None)
             .await?;
         super::native::json_line("command", &status)
     }

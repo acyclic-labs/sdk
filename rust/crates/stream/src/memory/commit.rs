@@ -49,7 +49,7 @@ impl CommitPlan {
         );
         state
             .retained
-            .back_mut()
+            .last_mut()
             .expect("retained commit")
             ._allocation = self.resident;
         (self.result, self.output_claim)
@@ -216,24 +216,6 @@ impl MemoryStream {
         Ok((paths, allocation))
     }
 
-    fn retained(
-        &self,
-        state: &mut State,
-        key: bool,
-        committed: bool,
-    ) -> Result<Allocation, StreamError> {
-        let allocation = self.retained_claim(key, committed)?;
-        self.reserve_retained(state)?;
-        Ok(allocation)
-    }
-
-    fn retained_claim(&self, key: bool, committed: bool) -> Result<Allocation, StreamError> {
-        self.adopt(
-            usize::from(key) * std::mem::size_of::<(Bytes, usize)>()
-                + usize::from(committed) * std::mem::size_of::<(CommitId, usize)>(),
-        )
-    }
-
     fn reserve_retained(&self, state: &mut State) -> Result<(), StreamError> {
         let needed = state
             .retained
@@ -242,32 +224,12 @@ impl MemoryStream {
             .and_then(|len| len.checked_add(1))
             .ok_or(StreamError::Capacity)?;
         if needed > state.retained.capacity() {
-            let (mut buffer, claim) = self.retention_buffer(needed.next_power_of_two())?;
+            let (mut buffer, claim) = self.vector(needed.next_power_of_two())?;
             buffer.append(&mut state.retained);
             state.retained = buffer;
             state.retained_allocation = claim;
         }
         Ok(())
-    }
-
-    fn retention_buffer(
-        &self,
-        capacity: usize,
-    ) -> Result<(VecDeque<Retained>, Allocation), StreamError> {
-        let claim = self.allocate(capacity * std::mem::size_of::<Retained>())?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut claim = claim;
-        let mut buffer = VecDeque::new();
-        buffer
-            .try_reserve_exact(capacity)
-            .map_err(|_| StreamError::Capacity)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(claim) = &mut claim {
-            self.work.as_ref().expect("native claim context").record(
-                claim.reconcile_capacity(buffer.capacity() * std::mem::size_of::<Retained>()),
-            )?;
-        }
-        Ok((buffer, claim))
     }
 
     fn plan_commit(
@@ -285,8 +247,7 @@ impl MemoryStream {
             commit_id,
             mutations: facts,
         });
-        let (cached, mut resident) = self.copy_commit(&result)?;
-        self.absorb(&mut resident, self.retained_claim(true, true)?)?;
+        let (cached, resident) = self.copy_commit(&result)?;
         self.absorb(&mut scratch, paths_claim)?;
         Ok(CommitPlan {
             result,
@@ -333,8 +294,8 @@ impl MemoryStream {
         );
         if !conflicts.is_empty() {
             let result = CommitOutcome::Conflict(conflicts);
-            let (cached, mut resident) = self.copy_commit(&result)?;
-            self.absorb(&mut resident, self.retained(state, true, false)?)?;
+            let (cached, resident) = self.copy_commit(&result)?;
+            self.reserve_retained(state)?;
             return self.publish(0, || {
                 check_deadline()?;
                 retain(
@@ -346,7 +307,7 @@ impl MemoryStream {
                 );
                 state
                     .retained
-                    .back_mut()
+                    .last_mut()
                     .expect("retained conflict")
                     ._allocation = resident;
                 Ok((result, output_claim))
