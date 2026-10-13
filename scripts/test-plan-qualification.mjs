@@ -581,7 +581,7 @@ test("the core lanes cover the Rust workspace, docs crate, and TypeScript worksp
 
 test("ARM native binding production runs independently and all original ARM checks remain required",()=>{
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
- const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1];
+ const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
  const tests=branch("linux-arm64"),bindings=branch("linux-arm64-bindings");
  assert.match(tests,/nextest --workspace --all-features --locked/);
  assert.match(tests,/cargo test --workspace --all-features --locked --doc/);
@@ -589,7 +589,7 @@ test("ARM native binding production runs independently and all original ARM chec
  assert.doesNotMatch(tests,/native_binding|finish napi/);
  assert.match(bindings,/cargo fetch --locked/);assert.match(bindings,/native_binding/);
  for(const body of [tests,bindings])assert.match(body,/libfuse3-dev unzip/);
- const matrix=chooseLanes(lanes,{force:true,marker:everywhere,retained:retainedAll}).matrix;
+ const matrix=chooseLanes(lanes,{mainPush:false,force:true,marker:everywhere,retained:retainedAll}).matrix;
  const producer=matrix.find(lane=>lane.lane==="linux-arm64-bindings");
  assert.equal(producer.artifact,"packages-linux-arm64");assert.equal(producer.artifact_path,"packages");
  assert.equal(producer.runner,"blacksmith-4vcpu-ubuntu-2404-arm");
@@ -605,13 +605,13 @@ test("ARM native binding production runs independently and all original ARM chec
 
 test("the workspace gate, docs and generation run as independent required matrix lanes",()=>{
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
- const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1];
+ const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
  assert.match(branch("gate"),/nextest --workspace --all-features --locked/);
  assert.doesNotMatch(branch("gate"),/sdk-docs|sdk-generation/);
  assert.match(branch("docs"),/cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo.toml --locked/);
  assert.match(branch("generation"),/cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo.toml --locked/);
  assert.match(branch("generation"),/node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets.mjs/);
- const matrix=chooseLanes(lanes,{force:true,marker:everywhere,retained:retainedAll}).matrix;
+ const matrix=chooseLanes(lanes,{mainPush:false,force:true,marker:everywhere,retained:retainedAll}).matrix;
  for(const name of ["gate","docs","generation"])assert.equal(matrix.filter(lane=>lane.lane===name).length,1);
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
  assert.match(workflow,/max-parallel: 15/);
@@ -625,7 +625,7 @@ test("the workspace gate, docs and generation run as independent required matrix
 });
 
 test("Windows native audits are independent required lanes without moving publication outputs", () => {
-  const matrix = chooseLanes(lanes, { force: true, marker: everywhere, retained: retainedAll }).matrix;
+  const matrix = chooseLanes(lanes, { mainPush: false, force: true, marker: everywhere, retained: retainedAll }).matrix;
   const names = ["windows-napi", "windows-arm64", "windows-clippy"];
   for (const name of names) {
     const selected = matrix.filter(lane => lane.lane === name);
