@@ -236,11 +236,6 @@ pub struct HostListedEntry {
     pub name: Vec<u16>,
     pub stat: Option<HostStat>,
 }
-impl HostListedEntry {
-    pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        self.name.capacity() as u64 * if cfg!(windows) { 2 } else { 1 }
-    }
-}
 pub(crate) fn stat_file<W: NativeHostWork>(
     file: &File,
     work: &mut W,
