@@ -1,21 +1,52 @@
-//! Pinned, journaled tool calls for resumable tasks.
-
-use crate::contract::capability;
+//! Pinned, journaled tool calls.
+use crate::executor::stock_boundary as boundary;
+use crate::wire::ErrorCode::{Conflict, Invalid, NotFound, Storage, Unauthorized, Unsupported};
 use crate::{
-    Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
-    conversation::Limits,
+    Error, NativeCustody, NativeWork, OperationId, Outcome, Result, TaskId,
+    conversation::{FileRef, Limits},
     executor::{
-        ExecutionEvent, ExecutionJournal, ToolFailureKind, load_json, replay_execution, stage_json,
+        ExecutionEvent, ExecutionJournal, PreparationIo, ToolFailureKind, load_json,
+        preparation_digest, preparation_format, replay_execution, stage_json, stock_string_copy,
+        validate_json_schema_value, with_history_io,
     },
     runtime::ToolContext,
-    tool::{ToolDefinition, ToolInvocation, ToolRegistry, ToolResult},
-    workflow::{
-        DurableWorkflowHost, MachineCheckpoint, MachineRegistry, MachineStatus, MachineTransition,
-        ResumableMachine, WorkflowAdmission, WorkflowJournal,
-    },
+    tool::{Tool, ToolDefinition, ToolInvocation, ToolRegistry, ToolResult},
+    workflow::{MachineCheckpoint, MachineRegistry, ResumableMachine, WorkflowAdmission},
 };
 use serde_json::Value;
-
+use std::sync::Arc;
+mod definition;
+pub use definition::ResumableTool;
+mod registry;
+pub use registry::ResumableToolRegistry;
+mod runner;
+pub use runner::DurableToolRunner;
+#[cfg(test)]
+mod tests;
+fn preparation_io(work: NativeWork<'_>) -> Result<Option<PreparationIo>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        work.map(PreparationIo::from_native_work).transpose()
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        if work.is_some() {
+            return Err(Error::Invalid("native tool work is unavailable".into()));
+        }
+        Ok(None)
+    }
+}
+fn native_work(io: Option<&PreparationIo>) -> NativeWork<'_> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        io.and_then(PreparationIo::original_native_work)
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        let _ = io;
+        None
+    }
+}
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for Value {
     fn diagnostic_label_bytes() -> u64 {
@@ -28,22 +59,3 @@ impl crate::filesystem::UploadRecord for Value {
         crate::executor::json::json_value_logical_owned_bytes(self)
     }
 }
-use std::sync::Arc;
-
-mod definition;
-pub use definition::ResumableTool;
-mod registry;
-pub use registry::ResumableToolRegistry;
-mod session;
-pub use session::ResumableToolSession;
-mod runner;
-pub use runner::DurableToolRunner;
-#[cfg(test)]
-mod tests;
-use runner::tool_error;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod native_session;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use native_session::NativeResumableToolSession;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use native_session::clone_admission;
