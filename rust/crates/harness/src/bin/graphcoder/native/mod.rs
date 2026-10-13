@@ -16,7 +16,7 @@ use acyclic_harness::{
         ContextRenderMode, DiscoveredContext, SourceStage,
     },
     conversation::{Limits, VolumeRef},
-    core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope, Snapshot},
+    core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope},
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
     filesystem::{
