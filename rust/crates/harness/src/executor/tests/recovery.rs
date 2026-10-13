@@ -152,24 +152,44 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
         claims: AtomicUsize,
         owned: std::sync::atomic::AtomicBool,
     }
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     impl crate::runtime::TaskSpawner for DispatchObserver {
         fn policy_identity(&self) -> Option<ComponentIdentity> {
             None
         }
-        fn admit<'a>(
-            &'a self,
+        async fn admit(
+            &self,
             _: crate::runtime::TaskAdmissionRecord,
-        ) -> BoxFuture<'a, Result<crate::Admission<TaskId>>> {
-            Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+        ) -> Result<crate::Admission<TaskId>> { Err(Error::Unsupported("test observer".into()))
         }
     }
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     impl DurableTaskHost for DispatchObserver {
+        async fn claim_model_dispatch(
+            &self,
+            _: TaskId,
+            _: OperationId,
+            _: u32,
+            _: [u8; 32],
+            _: crate::scheduler::LeaseFence,
+        ) -> Result<()> {
+            self.claims.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl crate::runtime::TaskStateProvider for DispatchObserver {
         fn verify_execution_owner<'a>(
             &'a self,
             _: TaskId,
-            _: crate::scheduler::LeaseFence,
-        ) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
+            _: &'a crate::scheduler::LeaseFence,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 if self.owned.load(Ordering::SeqCst) {
                     Ok(())
                 } else {
@@ -177,54 +197,32 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
                 }
             })
         }
-        fn claim_model_dispatch<'a>(
-            &'a self,
-            _: TaskId,
-            _: OperationId,
-            _: u32,
-            _: [u8; 32],
-            _: crate::scheduler::LeaseFence,
-        ) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
-                self.claims.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
+        async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> { Err(Error::Unsupported("test observer".into()))
         }
-    }
-
-    impl crate::runtime::TaskStateProvider for DispatchObserver {
-        fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
-            Box::pin(async { Err(Error::Unsupported("test observer".into())) })
-        }
-        fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+        async fn cancel(&self, _: TaskId) -> Result<()> { Err(Error::Unsupported("test observer".into()))
         }
 
         fn policy_identity(&self) -> Option<ComponentIdentity> {
             None
         }
 
-        fn observe_admission<'a>(
-            &'a self,
+        async fn observe_admission(
+            &self,
             _task_id: TaskId,
-        ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
-            Box::pin(async {
-                Err(Error::Unsupported(
-                    "full durable admission observation is not bound".into(),
-                ))
-            })
+        ) -> Result<crate::runtime::TaskAdmissionRecord> {
+            Err(Error::Unsupported(
+                "full durable admission observation is not bound".into(),
+            ))
         }
 
-        fn resume_scope<'a>(
-            &'a self,
+        async fn resume_scope(
+            &self,
             _task_id: TaskId,
             _operation_id: OperationId,
-        ) -> BoxFuture<'a, Result<RuntimeScope>> {
-            Box::pin(async {
-                Err(Error::Unsupported(
-                    "durable task context authentication is not bound".into(),
-                ))
-            })
+        ) -> Result<RuntimeScope> {
+            Err(Error::Unsupported(
+                "durable task context authentication is not bound".into(),
+            ))
         }
     }
     let host = Arc::new(DispatchObserver {

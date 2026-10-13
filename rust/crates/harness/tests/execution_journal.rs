@@ -381,25 +381,23 @@ impl ExecutionJournal for CompletedDescriptorSpy {
 }
 
 struct TestTaskState(RuntimeScope);
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl TaskStateProvider for TestTaskState {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
         None
     }
-    fn observe_admission<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async { Err(Error::Unsupported("not used by this journal test".into())) })
+    async fn observe_admission(&self, _: TaskId) -> Result<TaskAdmissionRecord> { Err(Error::Unsupported("not used by this journal test".into()))
     }
-    fn resume_scope<'a>(
-        &'a self,
+    async fn resume_scope(
+        &self,
         _: TaskId,
         _: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    ) -> Result<RuntimeScope> { Ok(self.0.clone())
     }
-    fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
-        Box::pin(async { Ok(None) })
+    async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> { Ok(None)
     }
-    fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+    async fn cancel(&self, _: TaskId) -> Result<()> { Ok(())
     }
 }
 

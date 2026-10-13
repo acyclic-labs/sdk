@@ -132,6 +132,27 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     ));
     let complete = CompositeForkVerifier::new(&[filesystem_files, files(&stream)], &mut None)?;
     block_on(complete.verify(&seed, &mut None))?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let budget = WorkBudget {
+            allocation_operations: 64,
+            peak_allocation_bytes: 65_536,
+            items_examined: 65_536,
+            ..WorkBudget::default()
+        };
+        let native = NativeMaterializationWork::new(budget, &CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let retained = {
+            let io = crate::filesystem::PreparationIo::from_native_work(&native)?;
+            CompositeForkVerifier::new(&[], &mut Some(&mut io.history_io()))?
+        };
+        let available =
+            budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        assert!(native.admit_retained(available).is_err());
+        drop(retained);
+        native.admit_retained(available).map_err(Error::from)?;
+    }
     let mut request: ForkRequest =
         serde_json::from_str(include_str!("../../fixtures/v2/fork-request.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;

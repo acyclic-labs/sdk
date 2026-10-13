@@ -2963,7 +2963,7 @@ where
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_input(&input)?;
         self.host
-            .verify_execution_owner(self.task, self.fence.clone())
+            .verify_execution_owner(self.task, &self.fence, None)?
             .await?;
         if self
             .run_limits

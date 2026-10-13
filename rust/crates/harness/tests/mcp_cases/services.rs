@@ -38,21 +38,21 @@ impl ModelProvider for ByteModel {
 }
 
 struct Participant { pub(super) journal: Arc<LocalJournal>, pub(super) issuer: AuthorityIssuer }
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl InteractionRouter for Participant {
-    fn route<'a>(&'a self, operation: OperationId, interaction: Interaction) -> BoxProviderFuture<'a, Result<InteractionOutcome>> {
-        Box::pin(async move {
-            let id = InteractionId::from_bytes(operation.into_bytes());
-            self.journal.open_interaction(id, interaction.clone()).await?;
-            if let Some(outcome) = self.journal.interaction_outcome(id).await? { return Ok(outcome); }
-            let response = match interaction {
-                Interaction::Form { .. } => InteractionResponse::Form { value: json!({"answer":"participant"}) },
-                Interaction::Approval { .. } => InteractionResponse::Approval { approved: true, reason: None },
-                _ => return Err(Error::Unsupported("participant control is form/approval only".into())),
-            };
-            let scope = self.issuer.issue("participant", &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]), Some(acyclic_harness::AgentId::from_bytes([41;16])), None, &mut None).expect("scope proof");
-            self.journal.resolve_interaction(id, response, &scope).await?;
-            self.journal.interaction_outcome(id).await?.ok_or_else(|| Error::NotFound("recorded participant decision".into()))
-        })
+    async fn route(&self, operation: OperationId, interaction: Interaction) -> Result<InteractionOutcome> {
+        let id = InteractionId::from_bytes(operation.into_bytes());
+        self.journal.open_interaction(id, interaction.clone()).await?;
+        if let Some(outcome) = self.journal.interaction_outcome(id).await? { return Ok(outcome); }
+        let response = match interaction {
+            Interaction::Form { .. } => InteractionResponse::Form { value: json!({"answer":"participant"}) },
+            Interaction::Approval { .. } => InteractionResponse::Approval { approved: true, reason: None },
+            _ => return Err(Error::Unsupported("participant control is form/approval only".into())),
+        };
+        let scope = self.issuer.issue("participant", &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]), Some(acyclic_harness::AgentId::from_bytes([41;16])), None, &mut None).expect("scope proof");
+        self.journal.resolve_interaction(id, response, &scope).await?;
+        self.journal.interaction_outcome(id).await?.ok_or_else(|| Error::NotFound("recorded participant decision".into()))
     }
 }
 pub(super) async fn admitted_context(scope: RuntimeScope, router: Arc<dyn InteractionRouter>, content: Option<acyclic_harness::runtime::ContentBindings>) -> Result<TaskContext> {

@@ -200,37 +200,33 @@ impl SchemaRegistry {
         expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&ExtensionBinding> {
-        let mut selected = None;
-        if let Some(schemas) = &self.schemas {
-            for ((candidate, candidate_version), binding) in schemas.iter() {
-                if let Some(io) = work.as_deref_mut() {
-                    io.check_cancellation()?;
-                }
-                if candidate == name && *candidate_version == version {
-                    selected = Some(binding);
-                    break;
-                }
+        for ((candidate, candidate_version), binding) in
+            self.schemas.iter().flat_map(|schemas| schemas.iter())
+        {
+            if let Some(io) = work.as_deref_mut() {
+                io.check_cancellation()?;
             }
+            if candidate != name || *candidate_version != version {
+                continue;
+            }
+            if expected.is_some_and(|(schema, implementation, policy)| {
+                schema != binding.schema_digest
+                    || implementation != binding.implementation_digest
+                    || policy != binding.fork_policy
+            }) {
+                return Err(crate::fork::boundary_error(
+                    work,
+                    crate::wire::ErrorCode::Conflict,
+                    "extension binding mismatch",
+                ));
+            }
+            return Ok(binding);
         }
-        let binding = selected.ok_or_else(|| {
-            crate::fork::boundary_error(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "extension implementation is not installed",
-            )
-        })?;
-        if expected.is_some_and(|(schema, implementation, policy)| {
-            schema != binding.schema_digest
-                || implementation != binding.implementation_digest
-                || policy != binding.fork_policy
-        }) {
-            return Err(crate::fork::boundary_error(
-                work,
-                crate::wire::ErrorCode::Conflict,
-                "extension binding mismatch",
-            ));
-        }
-        Ok(binding)
+        Err(crate::fork::boundary_error(
+            work,
+            crate::wire::ErrorCode::Unsupported,
+            "extension implementation is not installed",
+        ))
     }
 
     /// Validates exact extension content against its installed schema.

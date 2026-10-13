@@ -50,7 +50,7 @@ async fn b13_model_claims_use_pinned_limits_and_fence() -> Result<()> {
     stale.reservation_id.push_str("-stale");
     assert!(
         f.host
-            .verify_execution_owner(task, stale.clone())
+            .verify_execution_owner(task, &stale, None)?
             .await
             .is_err()
     );

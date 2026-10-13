@@ -213,67 +213,61 @@ pub(super) struct IdentityHost {
 
 impl DurableTaskHost for IdentityHost {}
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl TaskSpawner for IdentityHost {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         TaskStateProvider::policy_identity(self)
     }
-    fn reconcile_admission<'a>(
-        &'a self,
+    async fn reconcile_admission(
+        &self,
         operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        Box::pin(async move {
-            Ok(Some((
-                TaskId::from_bytes(operation_id.into_bytes()),
-                self.record.clone(),
-            )))
-        })
+    ) -> Result<Option<(TaskId, TaskAdmissionRecord)>> {
+        Ok(Some((
+            TaskId::from_bytes(operation_id.into_bytes()),
+            self.record.clone(),
+        )))
     }
-    fn admit<'a>(
-        &'a self,
+    async fn admit(
+        &self,
         _request: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async {
-            Ok(Admission::Rejected {
-                reason: "unused".into(),
-            })
+    ) -> Result<Admission<TaskId>> {
+        Ok(Admission::Rejected {
+            reason: "unused".into(),
         })
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl crate::runtime::TaskStateProvider for IdentityHost {
-    fn observe_admission<'a>(
-        &'a self,
+    async fn observe_admission(
+        &self,
         _task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async { Ok(self.record.clone()) })
+    ) -> Result<TaskAdmissionRecord> { Ok(self.record.clone())
     }
-    fn outcome<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
-        Box::pin(async move {
-            if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
-                Ok(None)
-            } else {
-                Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
-            }
-        })
+    async fn outcome(&self, _task_id: TaskId) -> Result<Option<Outcome<Value>>> {
+        if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
+        }
     }
-    fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+    async fn cancel(&self, _task_id: TaskId) -> Result<()> { Ok(())
     }
 
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
     }
 
-    fn resume_scope<'a>(
-        &'a self,
+    async fn resume_scope(
+        &self,
         _task_id: TaskId,
         _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable task context authentication is not bound".into(),
-            ))
-        })
+    ) -> Result<RuntimeScope> {
+        Err(Error::Unsupported(
+            "durable task context authentication is not bound".into(),
+        ))
     }
 }
 
@@ -282,67 +276,61 @@ pub(super) struct SplitState {
     pub(super) record: TaskAdmissionRecord,
 }
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl TaskStateProvider for SplitState {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
     }
-    fn observe_admission<'a>(
-        &'a self,
+    async fn observe_admission(
+        &self,
         task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async move {
-            if task_id != self.task_id {
-                return Err(Error::NotFound("task".into()));
-            }
-            Ok(self.record.clone())
-        })
+    ) -> Result<TaskAdmissionRecord> {
+        if task_id != self.task_id {
+            return Err(Error::NotFound("task".into()));
+        }
+        Ok(self.record.clone())
     }
-    fn resume_scope<'a>(
-        &'a self,
+    async fn resume_scope(
+        &self,
         task_id: TaskId,
         operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async move {
-            if task_id != self.task_id || operation_id != self.record.operation_id {
-                return Err(Error::NotFound("task".into()));
-            }
-            RuntimeScope::new(self.record.grants.clone(), self.record.limits)?
-                .with_run_limits(self.record.run_limits, &mut None)
-        })
+    ) -> Result<RuntimeScope> {
+        if task_id != self.task_id || operation_id != self.record.operation_id {
+            return Err(Error::NotFound("task".into()));
+        }
+        RuntimeScope::new(self.record.grants.clone(), self.record.limits)?
+            .with_run_limits(self.record.run_limits, &mut None)
     }
-    fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
-        Box::pin(async move {
-            if task_id != self.task_id {
-                return Err(Error::NotFound("task".into()));
-            }
-            Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
-        })
+    async fn outcome(&self, task_id: TaskId) -> Result<Option<Outcome<Value>>> {
+        if task_id != self.task_id {
+            return Err(Error::NotFound("task".into()));
+        }
+        Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
     }
-    fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if task_id != self.task_id {
-                return Err(Error::NotFound("task".into()));
-            }
-            Ok(())
-        })
+    async fn cancel(&self, task_id: TaskId) -> Result<()> {
+        if task_id != self.task_id {
+            return Err(Error::NotFound("task".into()));
+        }
+        Ok(())
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl TaskSpawner for SplitState {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
     }
-    fn admit<'a>(
-        &'a self,
+    async fn admit(
+        &self,
         _request: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async move { Ok(Admission::Accepted(self.task_id)) })
+    ) -> Result<Admission<TaskId>> { Ok(Admission::Accepted(self.task_id))
     }
-    fn reconcile_admission<'a>(
-        &'a self,
+    async fn reconcile_admission(
+        &self,
         _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        Box::pin(async move { Ok(Some((self.task_id, self.record.clone()))) })
+    ) -> Result<Option<(TaskId, TaskAdmissionRecord)>> { Ok(Some((self.task_id, self.record.clone())))
     }
 }
 

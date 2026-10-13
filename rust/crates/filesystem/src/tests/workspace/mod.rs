@@ -133,19 +133,3 @@ fn selected_transaction_budget() -> WorkBudget {
         materializations: 1_000_000,
     }
 }
-
-async fn generation_changes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    from: &Generation<A, O>,
-    to: &Generation<A, O>,
-    maximum: u32,
-) -> Result<ChangeSet<A, O>, WorkspaceError> {
-    from.diff_to(
-        to,
-        maximum,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .map(|receipt| receipt.value.0)
-    .map_err(|failure| failure.error)
-}

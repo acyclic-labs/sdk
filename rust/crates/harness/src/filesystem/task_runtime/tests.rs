@@ -864,7 +864,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         assert!(
             runtime
                 .task_host()
-                .verify_dispatch_owner(task, fence.clone())
+                .verify_dispatch_owner(task, &fence, None)?
                 .await
                 .is_err()
         );
