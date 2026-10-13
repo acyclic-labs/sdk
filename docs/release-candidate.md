@@ -22,7 +22,7 @@
   support exact-generation reads and atomic idempotent mutation batches;
   Machines references remain opaque and provider-bound.
 - Native dependency-free OpenAI-compatible streaming in `@acyclic-labs/harness`,
-  plus separately versioned AI SDK, Pi, and OpenCode bridge packages.
+  plus a separately versioned Pi bridge package.
 - In-memory Filesystem, Stream, and Objects providers, plus a deterministic
   process-local Machines simulator.
 - A single canonical Filesystem engine over the public Stream and Objects
