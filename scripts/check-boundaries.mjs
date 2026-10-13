@@ -10,12 +10,15 @@ const forbiddenContent = [
   /(?:package|import)\s+["']?[^\s"']*(?:internal|private)[^\s"']*/i,
 ];
 const privateKey = /BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY/;
-const credentialLiteral = /\b(?:aws_secret_access_key|github_token|authorization:(?!:))["']?\s*[=:]\s*["'][^"'\r\n${]+["']/i;
+const credentialLiteral = /\b(?:aws_secret_access_key|github_token|authorization)["']?\s*[=:]\s*(["'`])((?:\\.|(?!\1)[^\r\n])*)\1/gi;
 const credentialAssignment = /\b(?:aws_secret_access_key|github_token|authorization:(?!:))\s*[=:]\s*[^\s${][^\s]*/i;
 // Only the recorded public fake-server fixtures may contain credential literals.
 const fixtureDigests = new Map([
   ["typescript/packages/machines/test/fixtures/server-key.pem", "048bbcff062c2c0ccb0ed19df146e59b9cc937f86210be0158076123f24b2340"],
   ["typescript/packages/swarm/test/http.test.mjs", "daa0e6ba7f5f0ec32786a32ebcb5f7abc2903e8b24927c5de9a6c2b44a03f418"],
+  ["typescript/packages/harness/test/client.test.ts", "53e6f5a95522b8f2d97ea02e66858c8e24bc576eed5a98712ff6a7d846bdb5b3"],
+  ["typescript/packages/inference/test/client.test.ts", "91461928c421e7bef5830aab385760662070d269263cbb8b7f5f0bc3d6270b63"],
+  ["typescript/packages/inference/test/idle-kv.test.ts", "7d0a7df8a57880410e548945a2320a04068225fe7ac7755d17a49185d482507a"],
 ]);
 const forbiddenPath = /(?:^|[\\/])(?:proto|rust|typescript)[\\/](?:.*[\\/])?(?:internal|private)(?:[\\/]|$)/i;
 const machinesPath = /(?:^|[\\/])(?:proto[\\/]machines|rust[\\/]crates[\\/]machines|typescript[\\/]packages[\\/]machines|generated[\\/](?:rust|typescript)[\\/](?:acyclic[\\/])?machines)(?:[\\/]|$)/i;
@@ -26,8 +29,10 @@ function inspect(path, content) {
   const relativePath = relative(root, path).replaceAll("\\", "/");
   if (forbiddenPath.test(relativePath)) failures.push(`${relativePath}: forbidden private path`);
   for (const pattern of forbiddenContent) if (pattern.test(content)) failures.push(`${relativePath}: ${pattern}`);
-  const credential = /\.(?:[cm]?[jt]sx?)$/.test(relativePath) ? credentialLiteral : credentialAssignment;
-  if (privateKey.test(content) || credential.test(content)) {
+  const hasCredential = /\.(?:[cm]?[jt]sx?)$/.test(relativePath)
+    ? [...content.matchAll(credentialLiteral)].some(([, delimiter, value]) => delimiter !== "`" || !/(?<!\\)(?:\\\\)*\$\{/.test(value))
+    : credentialAssignment.test(content);
+  if (privateKey.test(content) || hasCredential) {
     const digest = createHash("sha256").update(content.replaceAll("\r\n", "\n")).digest("hex");
     if (fixtureDigests.get(relativePath) !== digest) failures.push(`${relativePath}: credential outside a recorded fake-server fixture`);
   }

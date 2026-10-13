@@ -9,6 +9,9 @@ const checker = readFileSync(join(root, "scripts/check-boundaries.mjs"));
 const fixtures = [
   "typescript/packages/machines/test/fixtures/server-key.pem",
   "typescript/packages/swarm/test/http.test.mjs",
+  "typescript/packages/harness/test/client.test.ts",
+  "typescript/packages/inference/test/client.test.ts",
+  "typescript/packages/inference/test/idle-kv.test.ts",
 ];
 
 function scan(t, files, untracked = {}) {
@@ -63,6 +66,20 @@ test("literal source credentials, plaintext configuration and private implementa
     assert.equal(result.status, 1, path);
     assert.ok(result.stderr.includes(path), result.stderr);
   }
+});
+
+test("backticks, quoted dollar/braces and authorization literals reject", t => {
+  for (const value of ['`unrecorded-secret`', '"unrecorded$secret"', '"unrecorded{secret}"', '"${secret}"', '`unrecorded\\${secret}`']) {
+    const result = scan(t, { "consumer.ts": "const github_" + "token = " + value + ";" });
+    assert.equal(result.status, 1, value);
+  }
+  const result = scan(t, { "consumer.mjs": 'const headers = { author' + 'ization: "Bearer unrecorded" };' });
+  assert.equal(result.status, 1);
+});
+
+test("headers computed from runtime credentials remain valid", t => {
+  const result = scan(t, { "consumer.ts": "const headers = { author" + 'ization: `Bearer ${options.token}` };' });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("the source guard ignores untracked local reports and checks tracked dist files", t => {
