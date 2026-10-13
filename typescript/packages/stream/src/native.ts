@@ -20,8 +20,8 @@ async function loadNativeModule(): Promise<typeof GeneratedNative> {
     const binding = namespace.NativeStreamClient === undefined ? namespace.default : namespace;
     if (typeof binding?.NativeStreamClient !== "function" || typeof binding.NativeStreamCancellation !== "function"
       || typeof binding.NativeStreamClient.connectResult !== "function" || typeof binding.NativeStreamClient.connectWithCaResult !== "function"
-      || typeof binding.NativeStreamClient.prototype?.acknowledgeDeliveryResult !== "function"
-      || typeof binding.NativeStreamClient.prototype?.withoutDeliveryAcknowledgements !== "function") {
+      || typeof binding.NativeStreamClient.prototype?.tailResult !== "function"
+      || typeof binding.NativeStreamClient.prototype?.transport !== "function") {
       throw new Error("Stream native companion did not export the generated Rust N-API binding");
     }
     return binding;
@@ -92,26 +92,17 @@ export async function nativeStreamAvailable(): Promise<boolean> {
 export class NativeStreamProvider implements StreamProvider {
   private constructor(private readonly client: GeneratedNative.NativeStreamClient, private readonly module: typeof GeneratedNative) {}
 
-  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation, options?: { readonly autoAcknowledge?: boolean }): Promise<NativeStreamProvider> {
+  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<NativeStreamProvider> {
     const module = await loadNativeModule();
     const result = caCertificate === undefined
       ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
       : await module.NativeStreamClient.connectWithCaResult(endpoint, token, Buffer.from(caCertificate), cancellation);
     if (result.error !== undefined) throw nativeError(result.error, "connect");
     if (result.client === undefined) throw new StreamError("transport", "Stream native companion returned no client");
-    const client = options?.autoAcknowledge === false ? result.client.withoutDeliveryAcknowledgements() : result.client;
-    return new NativeStreamProvider(client, module);
+    return new NativeStreamProvider(result.client, module);
   }
 
   get transport(): string { return this.client.transport(); }
-
-  async acknowledgeDelivery(deliveryToken: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<void> {
-    if (!(deliveryToken instanceof Uint8Array) || deliveryToken.byteLength !== 32) throw new StreamError("invalid_argument", "delivery token must contain exactly 32 bytes");
-    const request = toBinary(wire.AcknowledgeDeliveryRequestSchema, create(wire.AcknowledgeDeliveryRequestSchema, { deliveryToken }));
-    const value = await this.operation("acknowledge_delivery", this.client.acknowledgeDeliveryResult(Buffer.from(request), cancellation));
-    try { fromBinary(wire.AcknowledgeDeliveryResponseSchema, value); }
-    catch (error) { throw invalidResponse("acknowledge_delivery", error); }
-  }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const value = await this.operation("inspect_idempotency", this.client.inspectIdempotencyResult(Buffer.from(wireInspectIdempotencyRequest(key))));

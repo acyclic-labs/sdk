@@ -337,15 +337,6 @@ export declare type ReadResponse = Message<"acyclic.stream.v1.ReadResponse"> & {
    * @generated from field: uint64 decoded_length = 4;
    */
   decodedLength: bigint;
-
-  /**
-   * Optional hosted transport receipt for this entire validated frame, not
-   * evidence of application consumption, billing, or a committed cursor.
-   * When present, exactly 32 opaque bytes bound to the issuing endpoint.
-   *
-   * @generated from field: optional bytes delivery_token = 5;
-   */
-  deliveryToken?: Uint8Array | undefined;
 };
 
 /**
@@ -353,34 +344,6 @@ export declare type ReadResponse = Message<"acyclic.stream.v1.ReadResponse"> & {
  * Use `create(ReadResponseSchema)` to create a new message.
  */
 export declare const ReadResponseSchema: GenMessage<ReadResponse>;
-
-/**
- * @generated from message acyclic.stream.v1.AcknowledgeDeliveryRequest
- */
-export declare type AcknowledgeDeliveryRequest = Message<"acyclic.stream.v1.AcknowledgeDeliveryRequest"> & {
-  /**
-   * @generated from field: bytes delivery_token = 1;
-   */
-  deliveryToken: Uint8Array;
-};
-
-/**
- * Describes the message acyclic.stream.v1.AcknowledgeDeliveryRequest.
- * Use `create(AcknowledgeDeliveryRequestSchema)` to create a new message.
- */
-export declare const AcknowledgeDeliveryRequestSchema: GenMessage<AcknowledgeDeliveryRequest>;
-
-/**
- * @generated from message acyclic.stream.v1.AcknowledgeDeliveryResponse
- */
-export declare type AcknowledgeDeliveryResponse = Message<"acyclic.stream.v1.AcknowledgeDeliveryResponse"> & {
-};
-
-/**
- * Describes the message acyclic.stream.v1.AcknowledgeDeliveryResponse.
- * Use `create(AcknowledgeDeliveryResponseSchema)` to create a new message.
- */
-export declare const AcknowledgeDeliveryResponseSchema: GenMessage<AcknowledgeDeliveryResponse>;
 
 /**
  * @generated from message acyclic.stream.v1.ChildrenRequest
@@ -1175,14 +1138,6 @@ export declare const StreamService: GenService<{
     methodKind: "server_streaming";
     input: typeof FollowRequestSchema;
     output: typeof ReadResponseSchema;
-  },
-  /**
-   * @generated from rpc acyclic.stream.v1.StreamService.AcknowledgeDelivery
-   */
-  acknowledgeDelivery: {
-    methodKind: "unary";
-    input: typeof AcknowledgeDeliveryRequestSchema;
-    output: typeof AcknowledgeDeliveryResponseSchema;
   },
   /**
    * @generated from rpc acyclic.stream.v1.StreamService.Children

@@ -17,8 +17,6 @@ export interface StreamGrpcOptions {
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
-  /** Best-effort validated frame receipts, enabled by default. */
-  readonly autoAcknowledge?: boolean;
 }
 
 /** Complete Stream v1 gRPC client, including streaming reads/follow and atomic Commit. */
@@ -33,27 +31,15 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     request.header.set("authorization", `Bearer ${options.token}`);
     return next(request);
   };
-  const client = createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
-  const acknowledgeDelivery: typeof client.acknowledgeDelivery = (request, callOptions) => {
-    validateDeliveryToken(request.deliveryToken);
-    return client.acknowledgeDelivery({ ...request, deliveryToken: request.deliveryToken.slice() }, callOptions);
-  };
-  return { ...client, acknowledgeDelivery };
+  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
 }
 
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
   readonly #client: ReturnType<typeof createStreamGrpcClient>;
-  readonly #autoAcknowledge: boolean;
   constructor(options: StreamGrpcOptions) {
     this.#client = createStreamGrpcClient(options);
-    this.#autoAcknowledge = options.autoAcknowledge ?? true;
   }
-  /** Explicit receipt on the authenticated issuing endpoint. */
-  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
-    await this.#call("acknowledge_delivery", () => this.#client.acknowledgeDelivery({ deliveryToken }));
-  }
-
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
     try { return await call(); } catch (error) { throw providerError(error, operation); }
   }
@@ -88,29 +74,31 @@ export class GrpcStreamProvider implements StreamProvider {
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
-    yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request))), request.from, request.limit);
+    const controller = new AbortController();
+    try {
+      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
+    } finally { controller.abort(); }
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "follow" as const, path, from: options.from };
     await validateWireRequest(request);
     if (options.signal?.aborted) return;
-    yield* this.#frames("follow", this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal }), request.from, undefined, options.signal);
+    const controller = new AbortController();
+    const signal = options.signal === undefined ? controller.signal : AbortSignal.any([options.signal, controller.signal]);
+    try {
+      yield* this.#frames("follow", this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), { signal }), request.from, undefined, signal);
+    } finally { controller.abort(); }
   }
   async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
     remaining?: number, signal?: AbortSignal): AsyncIterable<EncodedRecord> {
-    const acknowledgements = this.#autoAcknowledge ? deliveryAcknowledgements(this.#client, signal) : undefined;
     try {
       for await (const response of frames) {
         if (signal?.aborted) return;
-        if (response.deliveryToken !== undefined && response.deliveryToken.byteLength !== 32) {
-          throw new StreamError("invalid_response", "stream frame delivery token must contain exactly 32 bytes");
-        }
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
         const records = values.map((value, index) => checkedRecord(value, next + BigInt(index)));
         next += BigInt(records.length);
         if (remaining !== undefined) remaining -= records.length;
-        if (response.deliveryToken !== undefined) acknowledgements?.enqueue(response.deliveryToken);
         for (const record of records) {
           if (signal?.aborted) return;
           yield record;
@@ -118,7 +106,7 @@ export class GrpcStreamProvider implements StreamProvider {
       }
     } catch (error) {
       if (!signal?.aborted) throw providerError(error, operation);
-    } finally { acknowledgements?.close(); }
+    }
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const, limit: request.limit,
@@ -143,41 +131,6 @@ export class GrpcStreamProvider implements StreamProvider {
   }
 }
 
-function validateDeliveryToken(token: unknown): asserts token is Uint8Array {
-  if (!(token instanceof Uint8Array) || token.byteLength !== 32) throw new StreamError("invalid_argument", "delivery token must contain exactly 32 bytes");
-}
-
-function deliveryAcknowledgements(client: ReturnType<typeof createStreamGrpcClient>, signal?: AbortSignal) {
-  const abort = new AbortController();
-  const queue: Uint8Array[] = [];
-  let wake: (() => void) | undefined;
-  const close = () => {
-    abort.abort();
-    queue.length = 0;
-    signal?.removeEventListener("abort", close);
-    wake?.();
-  };
-  signal?.addEventListener("abort", close, { once: true });
-  if (signal?.aborted) close();
-  void (async () => {
-    while (!abort.signal.aborted) {
-      const token = queue.shift();
-      if (token === undefined) {
-        await new Promise<void>(resolve => { wake = resolve; });
-        wake = undefined;
-      } else {
-        try { await client.acknowledgeDelivery({ deliveryToken: token }, { signal: abort.signal, timeoutMs: 500 }); }
-        catch { /* Receipts never affect record delivery. */ }
-      }
-    }
-  })();
-  return { close, enqueue(token: Uint8Array) {
-    if (abort.signal.aborted || queue.length >= 16) return;
-    queue.push(token.slice());
-    wake?.();
-  } };
-}
-
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -194,7 +147,7 @@ function providerError(error: unknown, operation: string): Error {
     case Code.OutOfRange: code = "out_of_range"; break;
     case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
-    case Code.Unimplemented: if (operation === "acknowledge_delivery" || reason === "unsupported_capability") code = "unsupported"; break;
+    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
     case Code.FailedPrecondition:
       if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed") code = reason;
       break;
