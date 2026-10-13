@@ -40,8 +40,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
     let admitted = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         Some(65),
         limits,
         budget(),
@@ -69,8 +67,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
         let historical = open_history(
             &provider,
             authority(),
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
             Some(cut),
             limits,
             budget(),
@@ -92,8 +88,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
     let future = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         Some(135),
         limits,
         budget(),
@@ -109,8 +103,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
     let narrow = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         Some(65),
         HistoryReadLimits {
             maximum_events: 1,
@@ -129,8 +121,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
         let failed = open_history(
             &provider,
             authority(),
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
             Some(65),
             limits,
             budget(),
@@ -165,8 +155,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
     let exact = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         Some(134),
         limits,
         budget(),
@@ -177,8 +165,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
     let latest = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         None,
         crate::store::default_projection_read_limits(),
         budget(),
