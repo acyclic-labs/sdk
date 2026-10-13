@@ -122,8 +122,6 @@ pub(super) fn consume_receipts(
         references,
         proofs,
         publication_lease: None,
-        #[cfg(not(target_arch = "wasm32"))]
-        native_custody: None,
     };
     quota.transfer();
     Ok(access)

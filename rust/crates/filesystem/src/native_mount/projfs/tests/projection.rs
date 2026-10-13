@@ -368,7 +368,7 @@ fn newer_capture_is_not_cleared_by_an_older_flush() {
         .expect("failure state")
         .queue_capture(path.clone(), "first write".to_owned());
     let during_capture = Arc::clone(&failure);
-    let error = flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
+    let error = flush_callback_gate(&executor, &failure, move |paths| {
         during_capture
             .lock()
             .expect("failure state")
@@ -377,7 +377,7 @@ fn newer_capture_is_not_cleared_by_an_older_flush() {
     })
     .expect_err("the newer write remains pending");
     assert!(error.to_string().contains("second write"));
-    flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(()))
+    flush_callback_gate(&executor, &failure, |_| Ok(()))
         .expect("a later flush captures the newer write");
 }
 

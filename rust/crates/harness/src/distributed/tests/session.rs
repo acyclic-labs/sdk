@@ -133,7 +133,7 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
     )
     .await?;
     assert!(
-        publish(&mut reopened, (key), winner.clone())
+        publish(&mut reopened, key, winner.clone())
             .await
             .is_err(),
         "an exact accounting retry cannot bypass cancellation"

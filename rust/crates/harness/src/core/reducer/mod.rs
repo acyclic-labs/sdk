@@ -95,54 +95,6 @@ impl Reducer {
         &self.schemas
     }
 
-    /// Authenticates and checks the exact migration boundary before a host reads old state or stages new bytes.
-    pub(crate) fn preflight_extension_migration(
-        &self,
-        scope: &Scope,
-        expected_revision: u64,
-        previous: &EventReference,
-        name: &str,
-        to_version: u32,
-        destination: &VolumeRef,
-    ) -> Result<()> {
-        self.authority_verifier
-            .verify_audience(&self.authority, &mut None)?;
-        self.authority_verifier.verify(scope, &mut None)?;
-        require_capability(
-            (&scope.id, &scope.capabilities),
-            capability::EXTENSION_MIGRATE,
-        )?;
-        ContentGrant::authorize_volume(
-            &self.authority_verifier,
-            scope,
-            destination,
-            VolumeOperation::Write,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            &mut None,
-        )?;
-        if expected_revision != self.revision {
-            return Err(Error::Conflict(
-                "extension migration revision changed".into(),
-            ));
-        }
-        let (source, current) = self
-            .projection
-            .extension_states
-            .get(name)
-            .ok_or_else(|| Error::NotFound(format!("extension state {name}")))?;
-        if source != previous
-            || previous.authority != self.authority
-            || current.version == to_version
-        {
-            return Err(Error::Conflict(
-                "extension migration source or target is not exact".into(),
-            ));
-        }
-        self.schemas
-            .pinned_binding(name, to_version, None, &mut None)?;
-        Ok(())
-    }
-
     /// Returns the fixed aggregate lifecycle projection.
     #[must_use]
     pub const fn lifecycle(&self) -> LifecycleState {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_host::NativeHostWork;
 use crate::source_watch::HostChangeSink;
 use crate::{CancellationToken, WorkBudget};
 use std::os::windows::io::AsHandle;
@@ -40,15 +41,7 @@ fn driver(
     NativeSourceWatch::open_watch(dir.as_handle(), delivery, false, Some(true), false, work)
 }
 fn assert_retired(shared: &Shared) {
-    assert!(!is_open(&shared.directory));
-    assert!(!is_open(&shared.completed));
-    assert!(
-        shared
-            .thread
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none()
-    );
+    assert!(shared.retired(&shared.lock_reads()));
     assert!(!shared.buffer_owned.load(Ordering::Acquire));
 }
 fn wait_retired(shared: &Shared) -> Instant {
@@ -222,14 +215,17 @@ mod original {
     fn no_growth(birth: &NativeDemandReadMeter, before: WorkCounters, budget: WorkBudget) {
         birth.with_original_leaf(|work| {
             assert_eq!(
-                work.work.allocation_operations,
-                before.allocation_operations
+                (
+                    work.work.allocation_operations,
+                    work.work.peak_allocation_bytes,
+                    work.budget
+                ),
+                (
+                    before.allocation_operations,
+                    before.peak_allocation_bytes,
+                    budget
+                )
             );
-            assert_eq!(
-                work.work.peak_allocation_bytes,
-                before.peak_allocation_bytes
-            );
-            assert_eq!(work.budget, budget);
         });
     }
     #[test]
@@ -269,70 +265,66 @@ mod original {
     }
     #[test]
     fn cleanup_wait_finishes_late_cancellation_without_new_work() -> TestResult {
-        {
-            let (_root, held) = held()?;
-            let cancellation = CancellationToken::new();
-            let budget = WorkBudget {
-                source_bytes_read: 0,
-                ..budget()
-            };
-            let birth = birth(budget, &cancellation);
-            let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
-            let watch = driver(&held, &mut work)?;
-            let before = birth.with_original_leaf(|work| work.work);
-            let wait = CancellationToken::new();
-            let paused = watch.paused();
-            assert!(matches!(
-                watch.stop_with_cleanup_wait(&wait),
-                Err(DemandError::WorkerUnavailable)
-            ));
-            drop(paused);
-            assert_eq!(birth.with_original_leaf(|work| work.work), before);
-            cancellation.cancel();
-            *watch
-                .shared
-                .native_wait_cancellation
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(wait.clone());
-            assert!(matches!(
-                watch.stop_with_cleanup_wait(&wait),
-                Err(DemandError::Cancelled)
-            ));
-            assert!(wait.is_cancelled());
-            assert!(watch.is_stopped());
-            assert_retired(&watch.shared);
-            no_growth(&birth, before, budget);
-        }
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            source_bytes_read: 0,
+            ..budget()
+        };
+        let (_root, held) = held()?;
+        let birth = birth(budget, &cancellation);
+        let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
+        let watch = driver(&held, &mut work)?;
+        let before = birth.with_original_leaf(|work| work.work);
+        let wait = CancellationToken::new();
+        let paused = watch.paused();
+        assert!(matches!(
+            watch.stop_with_cleanup_wait(&wait),
+            Err(DemandError::WorkerUnavailable)
+        ));
+        drop(paused);
+        assert_eq!(birth.with_original_leaf(|work| work.work), before);
+        cancellation.cancel();
+        *watch
+            .shared
+            .native_wait_cancellation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(wait.clone());
+        assert!(matches!(
+            watch.stop_with_cleanup_wait(&wait),
+            Err(DemandError::Cancelled)
+        ));
+        assert!(wait.is_cancelled());
+        assert!(watch.is_stopped());
+        assert_retired(&watch.shared);
+        no_growth(&birth, before, budget);
         Ok(())
     }
     #[test]
     fn poisoned_last_drop_uses_the_same_born_worker() -> TestResult {
-        {
-            let (_root, held) = held()?;
-            let cancellation = CancellationToken::new();
-            let budget = budget();
-            let birth = birth(budget, &cancellation);
-            let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
-            let watch = driver(&held, &mut work)?;
-            let completion = Arc::clone(&watch.shared);
-            let reads = completion.lock_reads();
-            let before = birth.with_original_leaf(|work| work.work);
-            let live = birth.with_original_leaf(|work| work.live_allocation_bytes());
-            cancellation.cancel();
-            birth.with_original_leaf(DemandWork::poison_native_original_work);
-            drop(reads);
-            drop(watch);
-            wait_retired(&completion);
-            no_growth(&birth, before, budget);
-            birth.with_original_leaf(|work| {
-                assert!(work.live_allocation_bytes() > 0);
-                assert!(work.live_allocation_bytes() < live);
-                assert!(matches!(
-                    work.take_native_io_failure(),
-                    Some(DemandError::OriginalWorkPoisoned)
-                ));
-            });
-        }
+        let cancellation = CancellationToken::new();
+        let budget = budget();
+        let (_root, held) = held()?;
+        let birth = birth(budget, &cancellation);
+        let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
+        let watch = driver(&held, &mut work)?;
+        let completion = Arc::clone(&watch.shared);
+        let reads = completion.lock_reads();
+        let before = birth.with_original_leaf(|work| work.work);
+        let live = birth.with_original_leaf(|work| work.live_allocation_bytes());
+        cancellation.cancel();
+        birth.with_original_leaf(DemandWork::poison_native_original_work);
+        drop(reads);
+        drop(watch);
+        wait_retired(&completion);
+        no_growth(&birth, before, budget);
+        birth.with_original_leaf(|work| {
+            assert!(work.live_allocation_bytes() > 0);
+            assert!(work.live_allocation_bytes() < live);
+            assert!(matches!(
+                work.take_native_io_failure(),
+                Some(DemandError::OriginalWorkPoisoned)
+            ));
+        });
         Ok(())
     }
     #[test]
@@ -355,9 +347,9 @@ mod original {
                 .expect("remove close protection");
             }
         }
-        let (_root, held) = held()?;
         let cancellation = CancellationToken::new();
         let budget = budget();
+        let (_root, held) = held()?;
         let birth = birth(budget, &cancellation);
         let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
         let watch = driver(&held, &mut work)?;
@@ -429,24 +421,19 @@ fn actual_callback_stop_keeps_the_owner_retryable_without_work() -> TestResult {
     use std::sync::{OnceLock, Weak};
     struct SelfStop {
         watch: OnceLock<Weak<NativeSourceWatch>>,
-        result: Mutex<Option<(bool, WorkCounters)>>,
-        ready: Condvar,
+        result: std::sync::mpsc::SyncSender<(bool, WorkCounters)>,
     }
     impl SelfStop {
         fn attempt(&self, work: &mut DemandWork) -> Result<(), DemandError> {
-            let mut result = self.result.lock().unwrap_or_else(PoisonError::into_inner);
-            if result.is_none()
-                && let Some(watch) = self.watch.get().and_then(Weak::upgrade)
-            {
+            if let Some(watch) = self.watch.get().and_then(Weak::upgrade) {
                 let mut stop = DemandWork::new(work.budget, work.cancellation());
-                *result = Some((
+                let _ = self.result.try_send((
                     matches!(
                         watch.stop_with_work(&mut stop),
                         Err(DemandError::WorkerUnavailable)
                     ),
                     stop.work,
                 ));
-                self.ready.notify_all();
             }
             Ok(())
         }
@@ -467,10 +454,10 @@ fn actual_callback_stop_keeps_the_owner_retryable_without_work() -> TestResult {
         }
     }
     let (root, held) = held()?;
+    let (result, received) = std::sync::mpsc::sync_channel(1);
     let sink = Arc::new(SelfStop {
         watch: OnceLock::new(),
-        result: Mutex::new(None),
-        ready: Condvar::new(),
+        result,
     });
     let cancellation = CancellationToken::new();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -485,13 +472,10 @@ fn actual_callback_stop_keeps_the_owner_retryable_without_work() -> TestResult {
     )?);
     assert!(sink.watch.set(Arc::downgrade(&watch)).is_ok());
     std::fs::write(root.path().join("changed"), b"callback")?;
-    let result = sink.result.lock().unwrap_or_else(PoisonError::into_inner);
-    let (result, _) = sink
-        .ready
-        .wait_timeout_while(result, Duration::from_secs(5), |result| result.is_none())
-        .unwrap_or_else(PoisonError::into_inner);
-    assert_eq!(*result, Some((true, WorkCounters::UNCHARGED)));
-    drop(result);
+    assert_eq!(
+        received.recv_timeout(Duration::from_secs(5))?,
+        (true, WorkCounters::UNCHARGED)
+    );
     assert!(!watch.is_stopped());
     assert!(watch.delivery().is_exact());
     watch.stop_with_work(&mut work)?;

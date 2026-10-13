@@ -1,10 +1,4 @@
 use super::*;
-use crate::{
-    AgentId,
-    conversation::{VolumeClass, VolumeOperation},
-};
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod access;
 #[cfg(feature = "filesystem")]
 /// Borrowed original ROOT authentication, sealed by the actual owner.
 #[derive(Clone, Copy)]
@@ -29,7 +23,7 @@ impl<'a> RootBootstrapContentContext<'a> {
         self.binding.audience()
     }
     /// Canonical `RootBind` agent.
-    pub fn agent(&self) -> AgentId {
+    pub fn agent(&self) -> crate::AgentId {
         self.binding.agent()
     }
     /// Complete original admission digest.

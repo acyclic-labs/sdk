@@ -160,7 +160,7 @@ where
                 return file.lookup_with_meter(work);
             }
             Ok(mount_lookup(
-                LazyLookup::Source {
+                &LazyLookup::Source {
                     node,
                     source: self.lazy.source_reference(),
                 },

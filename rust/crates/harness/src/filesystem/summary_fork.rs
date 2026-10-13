@@ -60,7 +60,15 @@ pub(super) fn split_references<'a>(
         .chain(prepared.context().metadata.values())
     {
         let key = with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(file, u64::MAX, work)
+            crate::executor::json::canonical_json_digest(
+                file,
+                io.map(PreparationIo::remaining)
+                    .transpose()?
+                    .map_or(acyclic_stream::MAX_RECORD_BYTES as u64, |budget| {
+                        budget.bytes_encoded
+                    }),
+                work,
+            )
         })?;
         let private = crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path());
@@ -94,7 +102,15 @@ fn rewritten_context(
 ) -> Result<Context> {
     let replace = |file: &mut FileRef| -> Result<()> {
         let key = with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(file, u64::MAX, work)
+            crate::executor::json::canonical_json_digest(
+                file,
+                io.map(PreparationIo::remaining)
+                    .transpose()?
+                    .map_or(acyclic_stream::MAX_RECORD_BYTES as u64, |budget| {
+                        budget.bytes_encoded
+                    }),
+                work,
+            )
         })?;
         if let Some(copy) = replacements.get(&key) {
             let retired = io.map(|_| file.logical_owned_bytes()).transpose()?;
@@ -237,8 +253,16 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<GenerationRef> {
-    let generation = (controller.host).apply_generation(workspace, Some(expected), mutations, IdempotencyKey(crate::executor::stock_string_copy(key.as_str(), io)?), io, preparation.map(Arc::as_ref))
-    .await?;
+    let generation = (controller.host)
+        .apply_generation(
+            workspace,
+            Some(expected),
+            mutations,
+            IdempotencyKey(crate::executor::stock_string_copy(key.as_str(), io)?),
+            io,
+            preparation.map(Arc::as_ref),
+        )
+        .await?;
     fsio::retain(&generation, io).await?;
     fsio::generation_ref(&controller.host.provider, generation.id(), io)
 }
@@ -249,7 +273,10 @@ async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
 ) -> Result<Option<GenerationRef>> {
-    match (controller.host).operation_generation(workspace, key, io).await? {
+    match (controller.host)
+        .operation_generation(workspace, key, io)
+        .await?
+    {
         Some(generation) => {
             fsio::retain(&generation, io).await?;
             Ok(Some(fsio::generation_ref(
@@ -414,8 +441,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let payload_generation = if payloads.is_empty() {
             if let Some(io) = io {
                 let target = (self.host).open(&workspace, Some(io)).await?;
-                let generation =
-                    (self.host).generation(&target, initial_generation, Some(io)).await?;
+                let generation = (self.host)
+                    .generation(&target, initial_generation, Some(io))
+                    .await?;
                 fsio::retain(&generation, Some(io)).await?;
                 initial_generation.clone_with_io(io)?
             } else {
