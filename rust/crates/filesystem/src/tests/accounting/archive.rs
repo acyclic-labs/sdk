@@ -50,7 +50,13 @@ async fn evidence(
         permit: crate::PublicationPermit::Unrestricted,
     };
     Ok(
-        if crate::kernel::decode_published_generation(&record.payload, 4096).is_ok() {
+        if crate::kernel::decode_published_generation::<crate::kernel::CanonicalDecodeError>(
+            &record.payload,
+            4096,
+            |_| Ok(()),
+        )
+        .is_ok()
+        {
             crate::kernel::encode_generation_publication_evidence(
                 &PublishGenerationRequest {
                     authority_id: id,
@@ -65,10 +71,10 @@ async fn evidence(
                 config,
                 64 * 1024,
             )?
+            .into()
         } else {
             crate::kernel::encode_original_generation_evidence(&proof, &append, config, 64 * 1024)?
-        }
-        .into(),
+        },
     )
 }
 
