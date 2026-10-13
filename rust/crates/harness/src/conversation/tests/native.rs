@@ -248,13 +248,9 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     );
     assert!(matches!(
         state.append(message(&content, 5), &mut Some(&mut io)),
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "allocation_operations",
-                ..
-            }),
-            ..
-        })
+        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
+            acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { counter: "allocation_operations", .. })))
     ));
     assert!(
         denied.receipt().bytes_hashed > 0,

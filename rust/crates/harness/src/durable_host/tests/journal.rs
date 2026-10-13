@@ -540,9 +540,12 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
         )?
         .await?;
     assert_eq!(journal.replay(attempt, 0, 8, None)?.await?.len(), 3);
+    let mut child = f.admission(2, json!(0));
+    child.parent = Some(TaskId::from_bytes([1; 16]));
+    child.run_limits.max_steps = Some(1);
     assert!(matches!(
-        f.host.admit(f.admission(2, json!(0))).await?,
-        crate::Admission::Rejected { .. }
+        f.host.admit_owned(child, (&lease.reservation).into()).await,
+        Err(Error::Conflict(_))
     ));
     assert_eq!(
         f.host

@@ -17,6 +17,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         Capabilities::new(["tool:call:test.echo"]),
         Limits::default(),
     )?;
+    let scope = scope.narrow(scope.grants().clone(), scope.limits())?;
     let harness = crate::runtime::Bindings {
         scope: scope.clone(),
         concurrency: 1,
