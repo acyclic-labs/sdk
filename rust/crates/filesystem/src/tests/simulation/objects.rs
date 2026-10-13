@@ -212,7 +212,7 @@ async fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
             .insert(object_id, OwnedBytes::from_static(b"forged"));
         state.pending_object_bytes = 6;
     }
-    let failure = (simulation.flush_object_visibility(B, &cancellation),)
+    let failure = (simulation.flush_object_visibility(B, &cancellation))
         .await
         .err()
         .ok_or("corrupt delayed object unexpectedly published")?;
@@ -229,7 +229,7 @@ async fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
         state.pending_objects.insert(object_id, bytes);
         state.pending_object_bytes = 0;
     }
-    let failure = (simulation.flush_object_visibility(B, &cancellation),)
+    let failure = (simulation.flush_object_visibility(B, &cancellation))
         .await
         .err()
         .ok_or("underflowing delayed accounting unexpectedly succeeded")?;

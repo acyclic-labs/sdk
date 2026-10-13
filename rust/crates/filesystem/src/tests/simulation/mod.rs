@@ -1,7 +1,7 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::storage::{AuthorityResult, FenceOutcome, ObjectKind};
-use crate::{AuthorityWork, WorkError};
+use crate::{AuthorityFailure, AuthorityWork, WorkError};
 use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
