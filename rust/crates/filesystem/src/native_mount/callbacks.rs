@@ -253,34 +253,3 @@ pub struct NativeMountSourceLineage<'a> {
     pub(super) capture_gate: &'a std::sync::Mutex<adapter::CaptureSourceGate>,
     pub(super) capture_cancellation: &'a crate::CancellationToken,
 }
-
-#[cfg(windows)]
-pub(super) struct NativeMountNamespaceBinding {
-    pub(super) owner: Arc<dyn std::any::Any + Send + Sync>,
-    pub(super) root: crate::kernel::NamespacePath,
-    pub(super) native_original: Option<crate::NativeMaterializationWork>,
-    pub(super) lazy_owner: Option<Arc<dyn std::any::Any + Send + Sync>>,
-    pub(super) lazy_root: Option<String>,
-    pub(super) _custody: crate::NativeAllocation,
-}
-
-#[cfg(windows)]
-impl NativeMountNamespaceBinding {
-    pub(super) fn matches(&self, next: &NativeMountSourceLineage<'_>) -> bool {
-        Arc::ptr_eq(&self.owner, &next.owner)
-            && self.root == *next.root
-            && match (&self.native_original, next.native_original) {
-                (Some(old), Some(new)) => {
-                    old.shares_ledger(new) && old.shares_resource_allowance(new)
-                }
-                (None, None) => true,
-                _ => false,
-            }
-            && match (&self.lazy_owner, &next.lazy_owner) {
-                (Some(old), Some(new)) => Arc::ptr_eq(old, new),
-                (None, None) => true,
-                _ => false,
-            }
-            && self.lazy_root.as_deref() == next.lazy_root
-    }
-}
