@@ -43,12 +43,6 @@ pub(super) fn open_unix<W: NativeHostWork>(
     mut flags: i32,
     work: &mut W,
 ) -> Result<File, W::Error> {
-    let parent = if directory == libc::AT_FDCWD {
-        rustix::fs::CWD
-    } else {
-        // SAFETY: callers retain the parent throughout the syscall.
-        unsafe { std::os::fd::BorrowedFd::borrow_raw(directory) }
-    };
     let delta = if flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT) != 0 {
         WRITE
     } else {
@@ -56,14 +50,15 @@ pub(super) fn open_unix<W: NativeHostWork>(
     };
     loop {
         let result = retry_io(work, delta, || {
-            rustix::fs::openat(
-                parent,
-                name,
-                rustix::fs::OFlags::from_bits_retain(flags as _),
-                rustix::fs::Mode::from_bits_truncate(0o666),
-            )
-            .map(File::from)
-            .map_err(io::Error::from)
+            use std::os::fd::FromRawFd as _;
+            // SAFETY: callers retain the parent and name; a successful open returns one owned descriptor.
+            let fd =
+                unsafe { libc::openat(directory, name.as_ptr(), flags, 0o666 as libc::mode_t) };
+            if fd < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(unsafe { File::from_raw_fd(fd) })
+            }
         });
         #[cfg(target_os = "linux")]
         if result

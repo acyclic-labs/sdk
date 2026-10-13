@@ -206,9 +206,10 @@ impl DarwinMountSession {
             .grow((2 * std::mem::size_of::<usize>()) as u64)?;
         let context = Arc::new(context);
         let _active = NativeMountWorkScope::new(Arc::clone(&context), original)?;
+        let observer: Arc<dyn ViewObserver> = context.clone();
         context
             .source
-            .observe_view_with_meter(Arc::downgrade(&context), original)?;
+            .observe_view_with_meter(Arc::downgrade(&observer), original)?;
         let resources = DriverSessionResources::new(context, &request.destination, original)?;
         *out = Some(Self {
             handler_failure: Arc::clone(&resources.context()?.handler_failure),
@@ -311,7 +312,7 @@ fn run_loop(
         .expect("provider resources")
         .clone();
     drop(state);
-    let result = crate::native_mount::run_native_mount_handler_on_meter(&original, || {
+    let result = crate::native_mount::run_native_mount_handler_on_meter(&original, |original| {
         if aborted {
             return Err(NativeMountError::ControlPending);
         }
