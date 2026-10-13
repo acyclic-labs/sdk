@@ -1,5 +1,5 @@
 //! Deterministic recovery and concurrency conformance for durable filesystem protocols.
-//! Crash injection wraps the production Memory journal store and keeps each
+//! Crash injection wraps a test journal store and keeps each
 //! ordinary or original-ledger-funded ownership packet through the write seam.
 #![allow(
     clippy::expect_used,
@@ -18,8 +18,7 @@ use acyclic_fs::{
     Digest, GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
     MaterializationError, MaterializationIntent, MaterializationJournal,
     MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
-    MaterializationPreimage, MaterializationRecovery, MemoryMaterializationJournalStore,
-    MemoryMaterializationJournalStoreError, OperationId, OperationWindowCoordinator,
+    MaterializationPreimage, MaterializationRecovery, OperationId, OperationWindowCoordinator,
     OperationWindowError, OperationWindowFinish, OperationWindowPhase, OperationWindowSnapshot,
     OperationWindowStore, WorkspaceId,
 };
@@ -28,6 +27,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::sync::Barrier;
+
+use acyclic_fs as sdk;
+#[path = "../src/materializer/memory.rs"]
+mod memory;
+use memory::{Store, StoreError};
 
 fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
@@ -254,10 +258,10 @@ async fn concurrent_open_expiry_and_late_writer_fencing_survive_restart() {
     ));
 }
 
-// Keep the production packet store; the fixture controls only its write seam.
+// The fixture controls the journal write seam.
 #[derive(Clone, Default)]
 struct CrashJournalStore {
-    inner: Arc<MemoryMaterializationJournalStore>,
+    inner: Arc<Store>,
     state: Arc<Mutex<CrashJournalState>>,
     write_gate: Arc<tokio::sync::Mutex<()>>,
 }
@@ -309,7 +313,7 @@ impl CrashJournalStore {
 #[derive(Debug, Error)]
 enum CrashStoreError {
     #[error(transparent)]
-    Memory(#[from] MemoryMaterializationJournalStoreError),
+    Memory(#[from] StoreError),
     #[error("simulated process crash at durable journal write")]
     InjectedCrash(MaterializationJournal),
 }
@@ -317,7 +321,7 @@ enum CrashStoreError {
 #[cfg(not(target_arch = "wasm32"))]
 struct CrashActionCompletion<'a> {
     actual: Option<
-        <MemoryMaterializationJournalStore as MaterializationJournalStore>::ActionCompletion<'a>,
+        <Store as MaterializationJournalStore>::ActionCompletion<'a>,
     >,
     before_write: Option<MaterializationJournal>,
     store: &'a CrashJournalStore,
@@ -340,7 +344,7 @@ impl std::future::Future for CrashActionCompletion<'_> {
         }
         let Some(actual) = this.actual.as_mut() else {
             return std::task::Poll::Ready(Err(
-                MemoryMaterializationJournalStoreError::Unavailable.into(),
+                StoreError::NativeWork(acyclic_fs::NativeTreeMaterializationError::InvalidLayout).into(),
             ));
         };
         let std::task::Poll::Ready(result) =
@@ -1505,7 +1509,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                     matches!(
                         store.load(operation_id).await,
                         Err(CrashStoreError::Memory(
-                            MemoryMaterializationJournalStoreError::NativeWork(
+                            StoreError::NativeWork(
                                 acyclic_fs::NativeTreeMaterializationError::Cancelled,
                             )
                         ))
@@ -1583,7 +1587,7 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
         before,
         "conflict performs no late copy or allocation"
     );
-    let CrashStoreError::Memory(MemoryMaterializationJournalStoreError::ActionConflict(packet)) =
+    let CrashStoreError::Memory(StoreError::Conflict(packet)) =
         error
     else {
         panic!("expected the intact real Memory conflict error");

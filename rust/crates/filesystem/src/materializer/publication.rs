@@ -47,8 +47,6 @@ pub async fn prepare_native_generation_transition<
         match journal.phase {
             MaterializationPhase::Prepared => Ok(journal),
             MaterializationPhase::Preparing => {
-                let operation = journal.plan.operation_id;
-                let mut guard = || verify_generation_source(&materializer, operation, from);
                 materializer.capture_preimages(journal, &mut guard).await
             }
             _ => Err(NativeWorkspacePublicationError::MismatchedJournal),
@@ -115,17 +113,12 @@ where
     let result = async {
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
-        let operation = journal.plan.operation_id;
-        let mut guard = || {
-            let authorized = before_effect();
-            let materializer = &materializer;
-            async move {
-                authorized.await?;
-                verify_generation_source(materializer, operation, from).await
-            }
-        };
         materializer
-            .replay(journal, MaterializationRecovery::Complete, &mut guard)
+            .replay(
+                journal,
+                MaterializationRecovery::Complete,
+                &mut before_effect,
+            )
             .await
     }
     .await;
@@ -135,51 +128,6 @@ where
             work: work.receipt(),
         })
         .map_err(|cause| (cause, work.receipt()))
-}
-
-async fn verify_generation_source<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
-    materializer: &JournaledMaterializer<
-        crate::LocalCoreStateStore,
-        Arc<NativeTreeMaterializationBackend>,
-    >,
-    operation: OperationId,
-    generation: &crate::Generation<A, O>,
-) -> Result<(), NativeWorkspacePublicationError> {
-    let journal = materializer
-        .load(operation)
-        .await?
-        .ok_or(NativeWorkspacePublicationError::MismatchedJournal)?;
-    let initial = match journal.phase {
-        MaterializationPhase::Preparing | MaterializationPhase::Prepared => true,
-        MaterializationPhase::Applying if journal.applied == 0 => {
-            match (journal.plan.edits.first(), journal.preimages.first()) {
-                (Some(edit), Some(preimage)) => matches!(
-                    materializer.backend.observe(edit, preimage).await?,
-                    MaterializationObservation::Preimage | MaterializationObservation::Unverified
-                ),
-                _ => false,
-            }
-        }
-        _ => false,
-    };
-    if initial {
-        let work = materializer.backend.work();
-        for edit in &journal.plan.edits {
-            if !preflight(
-                &materializer.backend.held_root,
-                edit_path(edit),
-                generation,
-                !matches!(edit, MaterializationEdit::SetMetadata { .. }),
-                false,
-                &work,
-            )
-            .await?
-            {
-                return Err(NativeTreeMaterializationError::ExternalMutation.into());
-            }
-        }
-    }
-    Ok(())
 }
 
 async fn prepare_generation<'a, A, O, F, Fut>(
@@ -251,10 +199,7 @@ where
             preparation_identity: None,
             preparation_progress: Some(MaterializationPreparationProgress {
                 parent: parent.identity().to_bytes(),
-                operation: None,
-                target: None,
-                backup: None,
-                pending: None,
+                pending: false,
             }),
             preimages: Vec::new(),
             phase: MaterializationPhase::Preparing,
@@ -286,9 +231,11 @@ where
     let materializer = JournaledMaterializer::new(store, backend);
     materializer.verify_allocation(&journal).await?;
     if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
-        verify_generation_source(&materializer, request.operation_id, from).await?;
-        let (reset, identity) = materializer.reset_stage(journal, "", before_effect).await?;
-        journal = reset;
+        before_effect().await?;
+        materializer.verify_effect_context(&journal).await?;
+        let completion = materializer.store.prepare_action(journal).await?;
+        let identity = materializer.backend.reset_target_directory("").await?;
+        journal = completion.await?;
         let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut selections = Vec::new();
         for edit in &journal.plan.edits {

@@ -74,7 +74,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
         if before_directory
             && !present
             && physical.as_ref().is_some_and(|stat| stat.is_dir())
-            && !generation_children(&root, &path, from, None, work).await?
+            && host_directory_holds_unknown_entries(&root, &path, from, work).await?
         {
             continue;
         }
@@ -88,7 +88,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
             if fresh
                 && regular
                 && physical.is_some()
-                && preflight(&root, &path, to, false, true, work).await?
+                && host_holds_generation_file(&root, &path, to, work).await?
             {
                 continue;
             }
@@ -148,18 +148,6 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
     let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut plan_edits = Vec::new();
     for (edit, _, mut owned) in edits {
-        if !preflight(
-            &root,
-            edit_path(&edit),
-            from,
-            !matches!(edit, MaterializationEdit::SetMetadata { .. }),
-            true,
-            work,
-        )
-        .await?
-        {
-            return Err(NativeTreeMaterializationError::ExternalMutation.into());
-        }
         allocation.absorb(&mut owned)?;
         push_buffer(&mut plan_edits, edit, &mut allocation)?;
     }
