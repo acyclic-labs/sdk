@@ -86,7 +86,7 @@ fn recursive_publication_is_direct_parent_only() {
             .await
             .unwrap();
         assert_eq!(
-            grandchild.read("/base.txt", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value.bytes.as_ref(),
+            grandchild.read("/base.txt", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value.as_ref(),
             b"late parent"
         );
         let mut transaction = grandchild

@@ -165,7 +165,7 @@ impl ControlPlane {
                 .ok_or_else(|| "root workspace is unavailable".to_owned())?
                 .workspace()
                 .clone();
-            let root_identity = physical.source.inner().root_identity();
+            let root_identity = physical.source.root_identity();
             let capture = CaptureOptions {
                 source_root: binding.path.clone(),
                 expected_root_identity: root_identity,

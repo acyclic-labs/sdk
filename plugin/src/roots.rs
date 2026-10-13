@@ -218,13 +218,7 @@ impl SharedPhysicalRoot {
             |prior_source, reference| {
                 let batch = poll()?;
                 let source = if observation_consumes_changes(&batch) {
-                    self.source
-
-                        .invalidate(&mut acyclic_fs::demand::DemandWork::new(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        ))
-                        .map_err(display)?
+                    self.source.invalidate()
                 } else {
                     prior_source
                 };
@@ -498,7 +492,7 @@ impl LocalMount {
 
     pub(crate) fn abandon(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.abandon().map_err(display)?;
+            mount.retire(&CancellationToken::new()).map(drop).map_err(display)?;
         }
         Ok(())
     }

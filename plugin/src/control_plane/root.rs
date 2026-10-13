@@ -352,7 +352,7 @@ impl ControlPlane {
                                 repository_workspace_id: workspace.workspace().id().into_bytes(),
                                 source_identity: source_reference.identity,
                                 source_epoch: source_reference.epoch,
-                                native_root_identity: source.inner().root_identity().to_bytes(),
+                                native_root_identity: source.root_identity().to_bytes(),
                             }),
                         },
                     );
@@ -442,7 +442,7 @@ impl ControlPlane {
                     repository_workspace_id: workspace.workspace().id().into_bytes(),
                     source_identity: source_reference.identity,
                     source_epoch: source_reference.epoch,
-                    native_root_identity: source.inner().root_identity().to_bytes(),
+                    native_root_identity: source.root_identity().to_bytes(),
                 }),
             };
             self.state.roots.insert(root_key(root_id), binding);

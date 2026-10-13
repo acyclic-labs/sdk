@@ -652,7 +652,7 @@ impl PiSession {
                         },
                     )
                     .await?;
-                if physical.source.inner().root_identity().to_bytes()
+                if physical.source.root_identity().to_bytes()
                     != creation.native_root_identity
                 {
                     return Err(RootError::NativeBoundary {
@@ -682,7 +682,7 @@ impl PiSession {
                         original_native_work.cancellation(),
                     )
                     .await
-                    .map_err(|source| RootError::from(acyclic_fs::LazyWorkspaceError::NativeWorkspace(source, None)))?;
+                    .map_err(|source| RootError::from(source))?;
                 drop(workspace_name.0);
                 drop(workspace_name.1);
                 if workspace.id().into_bytes() != creation.repository_workspace_id {
