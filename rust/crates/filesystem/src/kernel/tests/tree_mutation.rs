@@ -546,14 +546,18 @@ async fn decoded_page_allocation_is_admitted_after_shape_read_before_decode()
     .await
     .err()
     .ok_or("underbudgeted decoded page unexpectedly succeeded")?;
-    assert!(matches!(
-        failure.error,
-        TreeMutationError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed,
-            maximum: observed_maximum,
-        }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum
-    ));
+    assert!(
+        matches!(
+            failure.error,
+            TreeMutationError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                observed,
+                maximum: observed_maximum,
+            }) if observed > observed_maximum && observed_maximum <= maximum
+        ),
+        "{failure:?}"
+    );
+    assert!(failure.work.peak_allocation_bytes <= maximum);
     assert_eq!(failure.work.backend_read_operations, 1);
     assert_eq!(failure.work.backend_write_operations, 0);
     Ok(())

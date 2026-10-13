@@ -2,6 +2,7 @@
 
 use super::allocation::{AllocationError, AllocationLedger};
 use super::codec::{DecodedPageKind, DecodedPageShape};
+use super::file_read::read_store_error;
 use super::persistent_btree::{Child, Format, Page};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::{
@@ -150,12 +151,12 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
                 .and_then(|_| store.decoded_cache_get(__decoded_args.0))
         }
         None => store.decoded_cache_get(cache_key),
-    }.map_err(page_store_error)?;
+    }.map_err(read_store_error)?;
     #[cfg(target_arch = "wasm32")]
-    let cached = store.decoded_cache_get(cache_key).map_err(page_store_error)?;
+    let cached = store.decoded_cache_get(cache_key).map_err(read_store_error)?;
     if let Some(cached) = cached {
         let logical_bytes = cached.logical_bytes;
-        let page = cached.value.downcast::<Page<F>>().map_err(|_| page_store_error(ObjectStoreError::Corrupt))?;
+        let page = cached.value.downcast::<Page<F>>().map_err(|_| read_store_error(ObjectStoreError::Corrupt))?;
         let source = OwnedPage {
             page: PageLease::Shared { page, logical_bytes }, logical_bytes: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -185,12 +186,6 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
 
 
 
-fn page_store_error(error: ObjectStoreError) -> crate::FsError {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let ObjectStoreError::Native(error) = error { return error.into(); }
-    error.into()
-}
-
 async fn read_cold_object<S: AsyncObjectStore>(
     store: &S, page: ObjectId, limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -219,7 +214,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
         let read = future.as_mut().await;
         drop(future);
         drop(frame);
-        return read.map(|read| (read, 0)).map_err(page_store_error);
+        return read.map(|read| (read, 0)).map_err(read_store_error);
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native object reads use the original provider callback");
@@ -316,10 +311,10 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
                 .map_err(crate::ObjectStoreError::from)
                 .and_then(|_| store.decoded_cache_admit(__decoded_args.0, __decoded_args.1))
         }
-        .map_err(page_store_error)? {
+        .map_err(read_store_error)? {
             DecodedCacheAdmission::Shared(value) | DecodedCacheAdmission::Uncached(value) => value,
         };
-        let page = value.value.downcast::<Page<F>>().map_err(|_| page_store_error(ObjectStoreError::Corrupt))?;
+        let page = value.value.downcast::<Page<F>>().map_err(|_| read_store_error(ObjectStoreError::Corrupt))?;
         return Ok((OwnedPage {
             page: PageLease::Shared { page, logical_bytes: value.logical_bytes },
             logical_bytes: 0, native_custody: value.native_custody,
@@ -1115,7 +1110,7 @@ fn accounted_leaf_error(error: Error) -> crate::FsError {
         Error::Allocation(error) => {
             error.into_work_or(CanonicalDecodeError::AllocationFailed.into())
         }
-        Error::Storage(error) => error.into(),
+        Error::Storage(error) => read_store_error(error),
         Error::Decode(error) => error.into(),
         Error::Work(error) => error.into(),
     }
