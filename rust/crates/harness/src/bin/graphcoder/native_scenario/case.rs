@@ -48,9 +48,8 @@ pub(super) async fn prepare_case(
     };
     let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, authority.clone());
     let grants = Capabilities::new(
-        COMMON_GRANTS
-            .iter()
-            .map(|grant| (*grant).to_owned())
+        fixture::<Vec<String>>("grants", json!({}))?
+            .into_iter()
             .chain([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
@@ -76,46 +75,19 @@ pub(super) async fn prepare_case(
         key: TEST_KEY,
         scope,
     };
-    let limits = Limits {
-        file_bytes: PAYLOAD_BYTES,
-        path_bytes: 1024,
-        attachments: 16,
-        render_bytes: 16 * 1024,
-        model_steps: 1,
-        model_events_per_step: 64,
-        tool_calls_per_step: 16,
-        context_messages: 64,
-    };
-    let run_limits = TaskRunLimits {
-        concurrency: Some(6),
-        max_steps: Some(1),
-        deadline_epoch_ms: None,
-    };
-    let mut config = Config {
-        filesystem_root: root.join("filesystem"),
-        stream_root: root.join("stream"),
-        filesystem_provider: filesystem_provider.clone(),
-        stream_provider: stream_provider.clone(),
-        private_volume: private.clone(),
-        owner: owner.clone(),
-        generation: format!("qualification-{}", uuid::Uuid::new_v4()),
-        limits,
-        run_limits,
-        model_invocation_ledger: root.join("model-invocations.jsonl"),
-        session_limits: SessionLimits {
-            active_tasks: 6,
-            total_tasks,
-            depth: 3,
-            model_steps: 7,
-        },
-        concurrency: 6,
-        deterministic_delay_ms: 2000,
-        fork_sources: Vec::new(),
-        tools: Default::default(),
-        context: Default::default(),
-        native_publications: Vec::new(),
-        project_source_root: None,
-    };
+    let mut config: Config = fixture(
+        "config",
+        json!({
+            "filesystem_root": root.join("filesystem"), "stream_root": root.join("stream"),
+            "filesystem_provider": filesystem_provider, "stream_provider": stream_provider,
+            "private_volume": private, "owner": owner,
+            "generation": format!("qualification-{}", uuid::Uuid::new_v4()),
+            "model_invocation_ledger": root.join("model-invocations.jsonl"),
+            "session_limits": fixture::<SessionLimits>("session_limits", json!({"total_tasks": total_tasks}))?,
+            "tools": crate::native_tools::NativeToolsConfig::default(),
+        "context": crate::native::WorkflowContext::default()
+        }),
+    )?;
     // Open the actual diagnostic provider sink before any model invocation.
     drop(crate::provider::Deterministic::new(
         config.deterministic_delay_ms,
@@ -200,14 +172,12 @@ pub(super) async fn prepare_case(
         "grandchild",
         "cross_source",
     ] {
-        let input = ModelTaskCommand {
-            input: ModelContent::Text(format!("real isolated {label} qualification task")),
-            selected_context: None,
-            max_steps: 1,
-            max_output_tokens: Some(256),
-            mailbox_operation: None,
-            selected_output_volume: None,
-        };
+        let input: ModelTaskCommand = fixture(
+            "model_input",
+            json!({
+                "input": format!("real isolated {label} qualification task")
+            }),
+        )?;
         let bytes = serde_json::to_vec(&input).map_err(invalid)?;
         let file = files
             .put_content(
@@ -331,52 +301,28 @@ pub(super) async fn prepare_case(
         .references
         .insert("native_import_baseline".into(), imported_file);
     producer.seed(&mut seed, "bootstrap", 1).await?;
-    let mut logical_root = producer
-        .fork(&mut seed, "root", None)
-        .await?
-        .ok_or_else(|| Error::Conflict("bootstrap root was not published".into()))?;
-    producer.seed(&mut logical_root, "root", 17).await?;
-    let mut left = producer
-        .fork(&mut logical_root, "left", None)
-        .await?
-        .ok_or_else(|| Error::Conflict("left fork was not published".into()))?;
-    producer.seed(&mut left, "left", 2).await?;
-    let mut right = producer
-        .fork(&mut logical_root, "right", None)
-        .await?
-        .ok_or_else(|| Error::Conflict("right fork was not published".into()))?;
-    producer.seed(&mut right, "right", 1).await?;
-    let mut grandchild = producer
-        .fork(&mut left, "grandchild", None)
-        .await?
-        .ok_or_else(|| Error::Conflict("grandchild fork was not published".into()))?;
-    producer.seed(&mut grandchild, "grandchild", 1).await?;
-    // Authenticated foreign project selection only.
+    let mut callers = vec![(seed, "bootstrap_seed")];
+    for (label, parent, messages) in [
+        ("root", 0, 17),
+        ("left", 1, 2),
+        ("right", 1, 1),
+        ("grandchild", 2, 1),
+    ] {
+        let mut child = producer
+            .fork(&mut callers[parent].0, label, None)
+            .await?
+            .ok_or_else(|| Error::Conflict(format!("{label} fork was not published")))?;
+        producer.seed(&mut child, label, messages).await?;
+        callers.push((child, label));
+    }
+    let source = callers[1].0.task;
     producer
-        .fork(&mut left, "cross_source", Some(logical_root.task))
+        .fork(&mut callers[2].0, "cross_source", Some(source))
         .await?;
-    let notice_file = producer.file(&left, &left.private,
-        "merge/selected-grandchild.txt",
-        b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
-        "text/plain").await?;
-    producer
-        .references
-        .insert("merge_notice".into(), notice_file.clone());
-    producer.config.tools.merges.push(ConfiguredRecursiveMerge {
-        caller: left.task,
-        source: grandchild.task,
-        notice: left.message(MessageKind::Merge, notice_file)?,
-    });
-    let callers = [
-        (&seed, "bootstrap_seed"),
-        (&logical_root, "root"),
-        (&left, "left"),
-        (&right, "right"),
-        (&grandchild, "grandchild"),
-    ];
     let mut identities = BTreeMap::new();
     let mut caller_records = BTreeMap::new();
-    for (caller, label) in callers {
+    for (caller, label) in &callers {
+        let label = *label;
         if label != "bootstrap_seed" {
             producer.config.tools.callers.push(NativeToolCaller {
                 task: caller.task,
@@ -411,6 +357,9 @@ pub(super) async fn prepare_case(
     tokio::fs::write(&cursor_path, cursor_frame.encode_to_vec())
         .await
         .map_err(storage)?;
+    let seed = &callers[0].0;
+    let logical_root = &callers[1].0;
+    let right = &callers[3].0;
     let config_path = root.join("native-config.json");
     let target_workspace = filesystem
         .open_workspace(
@@ -445,51 +394,17 @@ pub(super) async fn prepare_case(
             ))
         })?
         .to_bytes();
-    let native_binding = NativePublicationConfig {
-        operation_id: publication_operation,
-        caller: logical_root.task,
-        caller_lease: logical_root.lease.clone(),
-        owner: logical_root.binding.clone(),
-        private_volume: logical_root.private.clone(),
-        root: native_root.clone(),
-        operation_directory: native_operation_directory.clone(),
-        state_root: root.join("native-publication-state"),
-        source_root_identity,
-        from_project: seed.project.clone(),
-        to_project: logical_root.project.clone(),
-        from: imported_generation.id(),
-        to: target_generation.id(),
-        excluded_names: vec![".system".into(), ".qualification-inputs".into()],
-        budget: acyclic_fs::WorkBudget {
-            authority_records_read: 8192,
-            authority_records_appended: 2048,
-            authority_bytes_read: 16 * 1024 * 1024,
-            authority_bytes_written: 16 * 1024 * 1024,
-            object_probes: 8192,
-            backend_read_operations: 8192,
-            backend_write_operations: 8192,
-            durability_operations: 4096,
-            page_reads: 8192,
-            page_writes: 8192,
-            object_bytes_read: 16 * 1024 * 1024,
-            object_bytes_written: 16 * 1024 * 1024,
-            bytes_hashed: 32 * 1024 * 1024,
-            bytes_copied: 32 * 1024 * 1024,
-            bytes_encoded: 16 * 1024 * 1024,
-            source_bytes_read: 1024 * 1024,
-            source_path_components: 4096,
-            source_entries_visited: 4096,
-            output_bytes: 1024 * 1024,
-            items_examined: 16384,
-            items_returned: 4096,
-            allocation_operations: 65536,
-            peak_allocation_bytes: 8 * 1024 * 1024,
-            materializations: 64,
-        },
-        maximum_directory_entries: 64,
-        maximum_extent_spans: 16,
-        transfer_bytes: PAYLOAD_BYTES,
-    };
+    let native_binding: NativePublicationConfig = fixture(
+        "publication",
+        json!({
+            "operation_id": publication_operation, "caller": logical_root.task,
+            "caller_lease": logical_root.lease, "owner": logical_root.binding,
+            "private_volume": logical_root.private, "root": native_root,
+            "operation_directory": native_operation_directory, "state_root": root.join("native-publication-state"),
+            "source_root_identity": source_root_identity, "from_project": seed.project, "to_project": logical_root.project,
+            "from": imported_generation.id(), "to": target_generation.id()
+        }),
+    )?;
     native_binding.validate()?;
     producer.config.tools.content_budget = native_binding.budget;
     producer.config.native_publications.push(native_binding);

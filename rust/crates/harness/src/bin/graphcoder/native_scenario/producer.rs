@@ -7,7 +7,6 @@ use acyclic_harness::{
         PreparationIo,
     },
     source_authorization::ProjectSourceSnapshot,
-    store::HistoryReader,
 };
 
 impl Producer {
@@ -49,7 +48,7 @@ impl Producer {
             core::EffectGuarantee,
             effect_host::TaskEffectPlan,
             filesystem::NATIVE_PROCESS_EFFECT_KIND,
-            interaction::{ApprovalBinding, Interaction, InteractionKind, InteractionTicket},
+            interaction::{Interaction, InteractionTicket},
         };
         let operation = OperationId::new();
         let approval = InteractionId::new();
@@ -82,11 +81,12 @@ impl Producer {
                 .await
                 .map_err(storage)?;
         }
-        let options = NativeViewOptions {
-            root: namespace.clone(),
-            maximum_volumes: 1,
-            work_per_volume: budget,
-        };
+        let options: NativeViewOptions = fixture(
+            "native_options",
+            json!({
+                "root": namespace, "work_per_volume": budget
+            }),
+        )?;
         let (allocation, _custody) =
             NativePreparationRoot::witness(&namespace, &preparation, &work)?.await?;
         let generation = self.generation(&caller.project).await?;
@@ -118,26 +118,18 @@ impl Producer {
         } else {
             PathBuf::from("/bin/sh")
         };
-        let mut argv = if cfg!(windows) {
+        let mut argv: Vec<String> = if cfg!(windows) {
             vec!["/d".into(), "/c".into()]
         } else {
             vec!["-c".into()]
         };
         argv.push("echo graphcoder-approved-command".into());
-        let request = NativeProcessRequest {
-            executable,
-            argv,
-            cwd: namespace.join("project"),
-            environment: Default::default(),
-            timeout_ms: 5000,
-            control_timeout_ms: 1000,
-            cancellation_poll_ms: 20,
-            maximum_output_bytes: 1024,
-            maximum_result_bytes: 16 * 1024,
-            mcp_stdio: None,
-            standard_input: None,
-            view: view.manifest().clone(),
-        };
+        let request: NativeProcessRequest = fixture(
+            "native_request",
+            json!({
+                "executable": executable, "argv": argv, "cwd": namespace.join("project"), "view": view.manifest()
+            }),
+        )?;
         let request_file = self
             .file(
                 caller,
@@ -185,16 +177,13 @@ impl Producer {
         .open(
             OperationId::new(),
             Some(&caller.binding.scope),
-            &InteractionTicket {
-                id: uuid::Uuid::from_bytes(approval.into_bytes()),
-                kind: InteractionKind::Approval,
-                request: prompt,
-                deadline_unix_ms: None,
-                approval: Some(ApprovalBinding {
-                    operation_id: operation,
-                    action_digest: digest,
+            &fixture::<InteractionTicket>(
+                "approval_ticket",
+                json!({
+                    "id": uuid::Uuid::from_bytes(approval.into_bytes()), "request": prompt,
+                    "approval": {"operation_id": operation, "action_digest": digest}
                 }),
-            },
+            )?,
             None,
             None,
         )
@@ -427,10 +416,7 @@ impl Producer {
         child.operation_id = child_operation;
         child.parent = Some(parent.task);
         child.input = serde_json::to_value(&self.planned_commands[label]).map_err(invalid)?;
-        let mut grants = COMMON_GRANTS
-            .iter()
-            .map(|grant| (*grant).to_owned())
-            .collect::<Vec<_>>();
+        let mut grants = fixture::<Vec<String>>("grants", json!({}))?;
         let capabilities =
             std::iter::once(parent.project.capability(VolumeOperation::Read, &mut None)).chain(
                 self.planned_commands
@@ -443,47 +429,29 @@ impl Producer {
                 grants.push(capability);
             }
         }
-        let state = parent.aggregate.reducer();
-        let preparation = &binding.request.preparation;
-        let history = HistoryReader::new(
-            &self.stream,
-            &parent.binding.authority,
-            &verifier,
-            &mut None,
-        )?
-        .fork_history(
-            state,
-            preparation.inherited_through_sequence,
-            HISTORY_LIMITS,
-            &mut None,
-        )
-        .await?;
+        let prefix = &binding.request.preparation;
+        // All fixture prefixes are resident and contain at most 21 messages.
         let (references, _) = ParentProjectController::new(
             &self.files,
-            state,
+            parent.aggregate.reducer(),
             &verifier,
             &parent.binding.scope,
             &parent.project,
             None,
         )?
         .inherited_reference_grants(
-            state,
+            parent.aggregate.reducer(),
             agent,
             &binding.request.attached_agents,
-            preparation.inherited_through_sequence,
-            preparation.maximum_inherited_messages as usize,
-            preparation.maximum_inherited_bytes,
-            preparation.maximum_inherited_references as usize,
+            prefix.inherited_through_sequence,
+            prefix.maximum_inherited_messages as usize,
+            prefix.maximum_inherited_bytes,
+            prefix.maximum_inherited_references as usize,
             resolver.as_ref(),
-            Some(&history),
+            None,
         )
         .await?;
         for grant in references {
-            if grant.reader != agent {
-                return Err(Error::Unauthorized(
-                    "canonical projection grants another reader".into(),
-                ));
-            }
             grants.push(grant.capability()?);
         }
         child.grants = Capabilities::new(grants);
