@@ -29,32 +29,37 @@ pub struct TaskDependencyEnvironment {
     pub extensions: BTreeSet<(String, u32)>,
 }
 
-/// Validates an immutable task dependency graph and its provider requirements.
-pub(crate) fn validate_task_requirements(
-    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
-    tools: &BTreeSet<(String, String)>,
+/// Validates exact task versions, cycles and provider requirements.
+pub(crate) fn validate_task_requirements<'a>(
+    definitions: impl IntoIterator<Item = ((&'a str, &'a str), &'a BTreeSet<String>)>,
+    has_tool: impl Fn(&str, &str) -> Result<bool>,
     environment: &TaskDependencyEnvironment,
-    grants: &BTreeSet<String>,
+    grants: &Capabilities,
     io: StartupIo<'_>,
 ) -> Result<()> {
+    let mut tasks = BTreeMap::new();
+    for (key, requirements) in definitions {
+        native_startup::item(io, std::mem::size_of_val(&(key, requirements)))?;
+        tasks.insert(key, requirements);
+    }
     let mut marks = BTreeMap::new();
     for key in tasks.keys() {
-        visit_task_dependency(key, &mut marks, tasks, tools, environment, grants, io)?;
+        visit_task_dependency(*key, &mut marks, &tasks, &has_tool, environment, grants, io)?;
     }
     Ok(())
 }
 
-pub(super) fn visit_task_dependency(
-    key: &(String, String),
-    marks: &mut BTreeMap<(String, String), u8>,
-    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
-    tools: &BTreeSet<(String, String)>,
+fn visit_task_dependency<'a>(
+    key: (&'a str, &'a str),
+    marks: &mut BTreeMap<(&'a str, &'a str), u8>,
+    tasks: &BTreeMap<(&'a str, &'a str), &'a BTreeSet<String>>,
+    has_tool: &dyn Fn(&str, &str) -> Result<bool>,
     environment: &TaskDependencyEnvironment,
-    grants: &BTreeSet<String>,
+    grants: &Capabilities,
     io: StartupIo<'_>,
 ) -> Result<()> {
     native_startup::item(io, 0)?;
-    match marks.get(key).copied() {
+    match marks.get(&key) {
         Some(1) => {
             return Err(native_startup::error(
                 io,
@@ -65,73 +70,42 @@ pub(super) fn visit_task_dependency(
         Some(2) => return Ok(()),
         _ => {}
     }
-    let requirements = tasks.get(key).ok_or_else(|| {
+    let requirements = *tasks.get(&key).ok_or_else(|| {
         native_startup::error(
             io,
             crate::wire::ErrorCode::Invalid,
             "unsatisfied task requirement",
         )
     })?;
-    native_startup::item(io, std::mem::size_of::<((String, String), u8)>())?;
-    marks.insert(
-        (
-            native_startup::text(&key.0, io)?,
-            native_startup::text(&key.1, io)?,
-        ),
-        1,
-    );
+    native_startup::item(io, std::mem::size_of_val(&(key, 1_u8)))?;
+    marks.insert(key, 1);
     for requirement in requirements {
-        validate_requirement(requirement, marks, tasks, tools, environment, grants, io)?;
-    }
-    *marks
-        .get_mut(key)
-        .expect("the original task was marked before walking its dependencies") = 2;
-    Ok(())
-}
-
-pub(super) fn validate_requirement(
-    requirement: &str,
-    marks: &mut BTreeMap<(String, String), u8>,
-    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
-    tools: &BTreeSet<(String, String)>,
-    environment: &TaskDependencyEnvironment,
-    grants: &BTreeSet<String>,
-    io: StartupIo<'_>,
-) -> Result<()> {
-    native_startup::item(io, 0)?;
-    if let Some(target) = parse_dependency_target(requirement, "task:", io)? {
-        if !tasks.contains_key(&target) {
+        let available = if let Some(target) = parse_dependency_target(requirement, "task:", io)? {
+            visit_task_dependency(target, marks, tasks, has_tool, environment, grants, io)?;
+            true
+        } else if let Some((name, version)) = parse_dependency_target(requirement, "tool:", io)? {
+            has_tool(name, version)?
+        } else {
+            provider_requirement_satisfied(requirement, environment, grants, io)?
+        };
+        if !available {
             return Err(native_startup::error(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "unsatisfied task requirement",
             ));
         }
-        return visit_task_dependency(&target, marks, tasks, tools, environment, grants, io);
     }
-    if let Some(target) = parse_dependency_target(requirement, "tool:", io)? {
-        return tools.contains(&target).then_some(()).ok_or_else(|| {
-            native_startup::error(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "unsatisfied tool requirement",
-            )
-        });
-    }
-    if provider_requirement_satisfied(requirement, environment, grants, io)? {
-        return Ok(());
-    }
-    Err(native_startup::error(
-        io,
-        crate::wire::ErrorCode::Invalid,
-        "unsatisfied task requirement",
-    ))
+    *marks
+        .get_mut(&key)
+        .expect("task marked before visiting dependencies") = 2;
+    Ok(())
 }
 
-pub(super) fn provider_requirement_satisfied(
+fn provider_requirement_satisfied(
     requirement: &str,
     environment: &TaskDependencyEnvironment,
-    grants: &BTreeSet<String>,
+    grants: &Capabilities,
     io: StartupIo<'_>,
 ) -> Result<bool> {
     let available = match requirement {
@@ -149,15 +123,7 @@ pub(super) fn provider_requirement_satisfied(
         _ => None,
     };
     if let Some(available) = available {
-        return if available {
-            Ok(true)
-        } else {
-            Err(native_startup::error(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "unsatisfied task requirement",
-            ))
-        };
+        return Ok(available);
     }
     if let Some(grant) = requirement.strip_prefix("grant:") {
         return Ok(!grant.is_empty() && grants.contains(grant));
@@ -181,16 +147,17 @@ pub(super) fn provider_requirement_satisfied(
             && !name.contains('@')
             && environment
                 .extensions
-                .contains(&(native_startup::text(name, io)?, version)));
+                .iter()
+                .any(|(selected, revision)| selected == name && *revision == version));
     }
     Ok(false)
 }
 
-pub(super) fn parse_dependency_target(
-    requirement: &str,
+fn parse_dependency_target<'a>(
+    requirement: &'a str,
     prefix: &str,
     io: StartupIo<'_>,
-) -> Result<Option<(String, String)>> {
+) -> Result<Option<(&'a str, &'a str)>> {
     let Some(value) = requirement.strip_prefix(prefix) else {
         return Ok(None);
     };
@@ -204,10 +171,7 @@ pub(super) fn parse_dependency_target(
                 "invalid task dependency",
             )
         })?;
-    Ok(Some((
-        native_startup::text(target.0, io)?,
-        native_startup::text(target.1, io)?,
-    )))
+    Ok(Some(target))
 }
 
 #[allow(
@@ -229,55 +193,6 @@ pub(super) fn validate_task_dependencies(
     has_policy: bool,
     io: StartupIo<'_>,
 ) -> Result<()> {
-    let mut task_requirements = BTreeMap::new();
-    for entry in &tasks.0 {
-        native_startup::item(
-            io,
-            std::mem::size_of::<((String, String), BTreeSet<String>)>(),
-        )?;
-        let mut requirements = BTreeSet::new();
-        for requirement in entry.requirements() {
-            native_startup::item(io, std::mem::size_of::<String>())?;
-            requirements.insert(native_startup::text(requirement, io)?);
-        }
-        task_requirements.insert(
-            (
-                native_startup::text(&entry.identity().name, io)?,
-                native_startup::text(&entry.identity().version, io)?,
-            ),
-            requirements,
-        );
-    }
-    let mut available_tools = BTreeSet::new();
-    for requirement in task_requirements.values().flat_map(BTreeSet::iter) {
-        let Some((name, version)) = requirement
-            .strip_prefix("tool:")
-            .and_then(|value| value.rsplit_once('@'))
-        else {
-            continue;
-        };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut history = io.map(|io| io.history_io());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut work = history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::history::HistoryIo);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let mut work = None;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let preparation = io;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let preparation = None;
-        let available = tools.get(name, Some(version), preparation)?.is_some()
-            || resumable_tools.get(name, version, &mut work)?.is_some();
-        if available {
-            native_startup::item(io, std::mem::size_of::<(String, String)>())?;
-            available_tools.insert((
-                native_startup::text(name, io)?,
-                native_startup::text(version, io)?,
-            ));
-        }
-    }
     let created_default = scope.created_content(None);
     let content = created_default.or(content);
     let artifacts = created_default.or(artifacts);
@@ -312,16 +227,24 @@ pub(super) fn validate_task_dependencies(
         artifacts_write,
         extensions,
     };
-    let mut grants = BTreeSet::new();
-    for grant in scope.grants.iter() {
-        native_startup::item(io, std::mem::size_of::<String>())?;
-        grants.insert(native_startup::text(grant, io)?);
-    }
     validate_task_requirements(
-        &task_requirements,
-        &available_tools,
+        tasks.0.iter().map(|entry| {
+            (
+                (
+                    entry.identity().name.as_str(),
+                    entry.identity().version.as_str(),
+                ),
+                entry.requirements(),
+            )
+        }),
+        |name, version| {
+            crate::executor::with_history_io(io, |work| {
+                Ok(tools.get(name, Some(version), io)?.is_some()
+                    || resumable_tools.get(name, version, work)?.is_some())
+            })
+        },
         &environment,
-        &grants,
+        scope.grants(),
         io,
     )
 }

@@ -4,12 +4,12 @@ use super::*;
 fn task_requirement_projection_rejects_missing_versions_and_cycles() {
     let tools = BTreeSet::from([(String::from("tool"), String::from("2"))]);
     let environment = TaskDependencyEnvironment::default();
-    let grants = BTreeSet::new();
+    let grants = Capabilities::new(Vec::<String>::new());
     let missing = dependency_fixture(&[("parent", &["task:leaf@1"])]);
-    assert!(validate_task_requirements(&missing, &tools, &environment, &grants, None).is_err());
+    assert!(validate_task_requirements(missing.iter().map(|((name, version), requirements)| ((name.as_str(), version.as_str()), requirements)), |name, version| Ok(tools.iter().any(|(selected, revision)| selected == name && revision == version)), &environment, &grants, None).is_err());
 
     let cycle = dependency_fixture(&[("left", &["task:right@1"]), ("right", &["task:left@1"])]);
-    let result = validate_task_requirements(&cycle, &tools, &environment, &grants, None);
+    let result = validate_task_requirements(cycle.iter().map(|((name, version), requirements)| ((name.as_str(), version.as_str()), requirements)), |name, version| Ok(tools.iter().any(|(selected, revision)| selected == name && revision == version)), &environment, &grants, None);
     assert!(result.is_err());
 }
 
@@ -20,13 +20,13 @@ fn task_requirement_projection_checks_grants_and_extensions() {
     environment
         .extensions
         .insert((String::from("example.state"), 3));
-    let grants = BTreeSet::from([String::from("task:run")]);
+    let grants = Capabilities::new([String::from("task:run")]);
     assert!(
-        validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_ok()
+        validate_task_requirements(tasks.iter().map(|((name, version), requirements)| ((name.as_str(), version.as_str()), requirements)), |_, _| Ok(false), &environment, &grants, None).is_ok()
     );
     environment.extensions.clear();
     assert!(
-        validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_err()
+        validate_task_requirements(tasks.iter().map(|((name, version), requirements)| ((name.as_str(), version.as_str()), requirements)), |_, _| Ok(false), &environment, &grants, None).is_err()
     );
 }
 
