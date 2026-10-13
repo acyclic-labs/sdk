@@ -433,22 +433,12 @@ where
         name: &[u8],
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
-        let owner = ViewGate::callback_owner();
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let name = inputs.attribute_name(name, self.profile, self.limits)?;
-            let observation = self
-                .checkout
-                .observe(
-                    owner,
-                    inputs.carrier,
-                    cancellation,
-                    Some(&self.cancellation),
-                )
-                .await?;
-            let mut checkout = inputs.observer(&observation, cancellation)?;
+            let mut checkout = self.observer(work).await?;
             let value = checkout
                 .read_named_attribute_by_id(self.file_id, &name, work, cancellation)
                 .await
