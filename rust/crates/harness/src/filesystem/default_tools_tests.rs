@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::ContentGrant;
 use crate::{
     AgentId, Capabilities,
     conversation::{MessageKind, VolumeClass, VolumeOwner},

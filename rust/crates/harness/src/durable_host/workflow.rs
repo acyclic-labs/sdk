@@ -3,77 +3,74 @@ use super::*;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Suspends the exact lease with optional atomic execution and workflow guards.
-    #[allow(clippy::too_many_arguments)]
-    pub fn suspend_workflow<'a, 'w: 'a>(
+    pub async fn suspend_workflow<'a, 'w: 'a>(
         &'a self,
         task: TaskId,
         fence: &'a crate::scheduler::LeaseFence,
-        revision: u64,
-        waiting_command: Option<OperationId>,
+        waiting: (u64, Option<OperationId>),
         idle_execution: Option<(OperationId, u64)>,
         pending: Option<(&'a acyclic_stream::StreamPath, u64)>,
         work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
-    ) -> impl std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'a {
-        async move {
-            if pending.is_some() && idle_execution.is_none() {
-                return Err(crate::scheduler::diagnostic(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "workflow tail guard requires its execution guard",
-                ));
-            }
-            let operation_id = OperationId::from_bytes(task.into_bytes());
-            let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh(work).await?;
-            coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
+    ) -> Result<()> {
+        let (revision, waiting_command) = waiting;
+        if pending.is_some() && idle_execution.is_none() {
+            return Err(crate::scheduler::diagnostic(
                 work,
-            )?;
-            let key = worker_key("suspend", operation_id, fence, revision, work)?;
-            let event = crate::scheduler::SchedulerEvent::WorkflowSuspended {
-                operation_id,
-                fence: fence.clone_with_work(work)?,
-                workflow_revision: revision,
-                waiting_command,
-            };
-            if let Some((execution, tail)) = idle_execution {
-                coordinator
-                    .apply_if_execution_quiescent(
-                        key,
-                        event,
-                        execution,
-                        tail,
-                        pending.map(|(path, tail)| (path.as_str(), tail)),
-                        work,
-                    )
-                    .await?;
-            } else {
-                coordinator.apply(key, event, work).await?;
-            }
-            let current = coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-                work,
-            )?;
-            if current.phase != crate::scheduler::OperationPhase::Suspended
-                || current.cancellation_requested
-                || current.workflow.as_ref().is_none_or(|slot| {
-                    slot.revision != revision || slot.waiting_command != waiting_command
-                })
-            {
-                return Err(crate::scheduler::diagnostic(
-                    work,
-                    crate::wire::ErrorCode::Conflict,
-                    "workflow suspension receipt is no longer current",
-                ));
-            }
-            Ok(())
+                crate::wire::ErrorCode::Invalid,
+                "workflow tail guard requires its execution guard",
+            ));
         }
+        let operation_id = OperationId::from_bytes(task.into_bytes());
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh(work).await?;
+        coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+            work,
+        )?;
+        let key = worker_key("suspend", operation_id, fence, revision, work)?;
+        let event = crate::scheduler::SchedulerEvent::WorkflowSuspended {
+            operation_id,
+            fence: fence.clone_with_work(work)?,
+            workflow_revision: revision,
+            waiting_command,
+        };
+        if let Some((execution, tail)) = idle_execution {
+            coordinator
+                .apply_if_execution_quiescent(
+                    key,
+                    event,
+                    execution,
+                    tail,
+                    pending.map(|(path, tail)| (path.as_str(), tail)),
+                    work,
+                )
+                .await?;
+        } else {
+            coordinator.apply(key, event, work).await?;
+        }
+        let current = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+            work,
+        )?;
+        if current.phase != crate::scheduler::OperationPhase::Suspended
+            || current.cancellation_requested
+            || current.workflow.as_ref().is_none_or(|slot| {
+                slot.revision != revision || slot.waiting_command != waiting_command
+            })
+        {
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Conflict,
+                "workflow suspension receipt is no longer current",
+            ));
+        }
+        Ok(())
     }
 
     /// One bounded source page, filtered by the current signed owner projection.

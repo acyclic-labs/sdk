@@ -6,7 +6,6 @@ use crate::{AgentId, Capabilities};
 
 use acyclic_fs::{CancellationToken, WorkBudget};
 
-use acyclic_stream::StreamPath;
 
 async fn publish(
     parent: &mut StreamAggregate<MemoryStream>,

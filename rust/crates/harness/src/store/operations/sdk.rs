@@ -46,7 +46,7 @@ pub(crate) fn stream<P: StreamProvider>(
     } else {
         None
     };
-    let stream = acyclic_stream::Stream::new(Arc::clone(&client), path)
+    let stream = acyclic_stream::Stream::new(Arc::clone(client), path)
         .map_err(|error| stream_error_with_work(error, work))?;
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let path_custody = None;
@@ -178,7 +178,7 @@ pub(crate) async fn read_records<P: StreamProvider>(
     Ok(client.read(request).await.map(ObservedRecords::Ordinary))
 }
 
-/// Preserves the provider's NotFound result for the canonical CAS selector.
+/// Preserves the provider's `NotFound` result for the canonical CAS selector.
 pub(crate) async fn bounds_with_work<P: StreamProvider>(
     client: &Arc<P>,
     path: &StreamPath,
@@ -226,14 +226,11 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
             crate::distributed::native_call_result(original, tail)?.map(|output| *output.value()),
         );
     }
-    let result = match result {
-        Some(result) => result,
-        None => {
-            if let Some(observer) = work.as_deref_mut() {
-                observer.begin_call()?;
-            }
-            client.tail(path.clone()).await
+    let result = if let Some(result) = result { result } else {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.begin_call()?;
         }
+        client.tail(path.clone()).await
     };
     match result {
         Ok(tail) => Ok(Some(tail)),

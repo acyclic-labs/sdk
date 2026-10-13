@@ -20,7 +20,7 @@ pub(in crate::executor) fn stock_tool_definitions(
 pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
-        return io.and_then(PreparationIo::original_native_work).is_some();
+        io.and_then(PreparationIo::original_native_work).is_some()
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     {

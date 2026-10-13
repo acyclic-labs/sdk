@@ -18,6 +18,10 @@ impl HistoryIo for &PreparationIo {
         PreparationIo::original_native_work(self)
     }
     #[cfg(not(target_arch = "wasm32"))]
+    fn take_native_custody(&mut self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+        PreparationIo::take_native_custody(self, bytes)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     fn absorb_native_custody(&mut self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
         PreparationIo::absorb_native_custody(self, incoming)
     }
@@ -45,7 +49,7 @@ impl HistoryIo for &PreparationIo {
             ..Default::default()
         })?;
         self.remaining()?;
-        self.retain_owned(bytes).map_err(Into::into)
+        self.retain_owned(bytes)
     }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> {
         PreparationIo::retain_owned(self, bytes).map_err(Into::into)
@@ -140,8 +144,7 @@ impl HistoryIo for &PreparationIo {
             } => self
                 .retain_owned(maximum_owned_bytes.max(
                     crate::executor::json::json_value_decode_owned_bytes(value_shape)?,
-                ))
-                .map_err(Into::into),
+                )),
             charge => PreparationIo::codec_charge(self, charge, true),
         }
     }

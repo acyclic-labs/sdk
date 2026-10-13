@@ -157,12 +157,9 @@ where
             )?;
         }
         let ordinary;
-        let reader = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                &ordinary
-            }
+        let reader = if let Some(io) = io { io } else {
+            ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+            &ordinary
         };
         let notice = with_history_io(io, |work| {
             crate::wire_codec::CodecQuota::produce(work, |quota| {

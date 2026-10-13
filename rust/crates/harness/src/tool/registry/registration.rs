@@ -170,11 +170,10 @@ impl ToolRegistry {
             };
             if let Some((name, selection)) = selection {
                 self.selected.insert(name, selection);
-            } else if let Some(selection) = self.selected.get_mut(&key.0) {
-                if *selection != ModelSelection::Hidden {
+            } else if let Some(selection) = self.selected.get_mut(&key.0)
+                && *selection != ModelSelection::Hidden {
                     *selection = ModelSelection::Ambiguous;
                 }
-            }
             self.versions.insert(key, tool);
             published = true;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

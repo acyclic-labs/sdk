@@ -3,7 +3,7 @@ use super::*;
 use crate::filesystem::*;
 use crate::{
     AgentId,
-    conversation::{FileDescriptor, VolumeOwner},
+    conversation::VolumeOwner,
     executor::ModelPurpose,
     resources::ProviderRef,
 };
@@ -80,7 +80,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
     assert_eq!(records.len(), 1);
     assert_eq!(records.first().map(|record| &record.event), Some(&event));
     reopened
-        .append(operation, &"start", &event, None)?
+        .append(operation, "start", &event, None)?
         .await?;
     assert_eq!(reopened.replay(operation, 0, 2, None)?.await?.len(), 1);
     assert!(matches!(
@@ -171,7 +171,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
 )]
 async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_restore() -> Result<()> {
     use crate::conversation::{
-        ContentPublisher as _, ConversationMessage, MessageKind, ModelContextSelection,
+        ConversationMessage, MessageKind, ModelContextSelection,
     };
     use crate::core::{Action, AggregateKind, Authority, AuthorityIssuer, Command};
     use std::sync::atomic::Ordering;

@@ -49,7 +49,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         reference: ResourceRef::new(
             ResourceKind::Artifact,
             ProviderRef::new("test".into(), "objects".into(), "1".into(), &mut None)?,
-            b"extension-state".to_vec().into(),
+            b"extension-state".to_vec(),
             Some("immutable-1".into()),
             &mut None,
         )?,
@@ -64,7 +64,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         *reference = ResourceRef::new(
             ResourceKind::Artifact,
             reference.provider().clone(),
-            b"child-extension-state".to_vec().into(),
+            b"child-extension-state".to_vec(),
             Some("immutable-1".into()),
             &mut None,
         )?;

@@ -134,11 +134,10 @@ pub(crate) async fn replay_execution<'a>(
             }
         }
         #[cfg(feature = "filesystem")]
-        if selected.len() == selected_before {
-            if let Some(io) = io {
+        if selected.len() == selected_before
+            && let Some(io) = io {
                 io.release(held.saturating_sub(key_growth))?;
             }
-        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if selected.len() != selected_before
             && let Some(io) = io
