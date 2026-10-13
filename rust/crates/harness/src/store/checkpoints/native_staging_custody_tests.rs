@@ -4,7 +4,7 @@ use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 use acyclic_stream::{MemoryStream, OwnedBytes};
 use std::sync::{Arc, atomic::Ordering};
 
-pub(super) fn budget() -> WorkBudget {
+pub(in crate::store) fn budget() -> WorkBudget {
     WorkBudget {
         authority_records_read: 32,
         authority_bytes_read: 1_048_576,

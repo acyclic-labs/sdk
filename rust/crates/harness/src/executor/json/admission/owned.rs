@@ -30,7 +30,7 @@ impl Resident {
 }
 fn tree(
     value: &Value,
-    schema: &'static Schema,
+    schema: &'static JsonValueSchema,
     depth: u32,
     resident: &mut Resident,
     charge: &Charge<'_>,
@@ -95,7 +95,7 @@ fn tree(
 pub(super) fn inspect(
     value: &Value,
     bounds: JsonBounds,
-    schema: &'static Schema,
+    schema: &'static JsonValueSchema,
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
     let charge = RefCell::new(charge);

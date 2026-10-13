@@ -343,4 +343,4 @@ pub(super) use staging::*;
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_malformed_receipt_tests;
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-mod native_staging_custody_tests;
+pub(in crate::store) mod native_staging_custody_tests;

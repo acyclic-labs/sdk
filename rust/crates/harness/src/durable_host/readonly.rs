@@ -331,14 +331,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(feature = "native-execution")]
         {
             let witness = self.admission_reader(task, work).await?;
-            let observation = crate::filesystem::observe_preparation(&witness, work)?.await?;
-            let Some(recorded) = observation else {
+            let observation = crate::filesystem::preparation_owner(&witness, work)?.await?;
+            let Some((recorded_task, original_fence, _custody)) = observation else {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::NotFound,
                     reason: "protected original native preparation journal is unavailable",
                 });
             };
-            if recorded.task != task {
+            if recorded_task != task {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "protected native preparation belongs to another task",
@@ -353,7 +353,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.owner_scope,
                 &self.verifier,
                 witness.admission_operation(),
-                &recorded.original_fence,
+                &original_fence,
                 &mut Some(&mut io),
             )
             .await?;
@@ -361,7 +361,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let mut owner = self
                 .journal_owner_record(
                     task,
-                    &recorded.original_fence,
+                    &original_fence,
                     Some(original.0),
                     Some(&crate::executor::PreparationIo::from_native_work(work)?),
                 )

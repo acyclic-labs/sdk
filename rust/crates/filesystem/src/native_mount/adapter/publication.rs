@@ -65,11 +65,11 @@ impl<A, O> SharedCheckoutState<A, O> {
             base: self
                 .checkout
                 .private_candidate(&work, cancellation)
-                .map_err(fs_error)?,
+                .map_err(MountSourceError::from)?,
             checkout: self
                 .checkout
                 .private_candidate(&work, cancellation)
-                .map_err(fs_error)?,
+                .map_err(MountSourceError::from)?,
             operation,
         })
     }

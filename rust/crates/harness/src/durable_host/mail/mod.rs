@@ -49,26 +49,6 @@ fn require_original(io: Option<&PreparationIo>) -> Result<()> {
     ))
 }
 
-pub(crate) fn received_copy_operation(
-    task: TaskId,
-    receive: OperationId,
-    io: Option<&PreparationIo>,
-) -> Result<OperationId> {
-    require_original(io)?;
-    let domain = b"acyclic.harness.received-copy.v1\0";
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.history_io().hashed_bytes(domain.len() as u64 + 32)?;
-    }
-    let mut hash = blake3::Hasher::new();
-    hash.update(domain);
-    hash.update(&task.into_bytes());
-    hash.update(&receive.into_bytes());
-    let mut id = [0; 16];
-    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    Ok(OperationId::from_bytes(id))
-}
-
 pub(super) fn encode<T: Serialize>(
     value: &T,
     maximum: u64,
@@ -202,7 +182,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             .await
     }
 
-    async fn prepare_mail(
+    pub(super) async fn prepare_mail(
         &self,
         sender: TaskId,
         recipient: TaskId,
@@ -254,19 +234,6 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         Ok((bytes, event.payload))
     }
 
-    pub(super) async fn mail_bytes(
-        &self,
-        sender: TaskId,
-        recipient: TaskId,
-        message: OperationId,
-        payload: FileRef,
-        io: Option<&PreparationIo>,
-    ) -> Result<OwnedBytes> {
-        self.prepare_mail(sender, recipient, message, payload, io)
-            .await
-            .map(|(bytes, _)| bytes)
-    }
-
     /// Publishes mail under the sender's exact uncancelled lease.
     #[cfg(feature = "filesystem")]
     pub async fn send_mail(
@@ -294,40 +261,21 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
         require_original(io)?;
-        if !std::ptr::eq(self, owner.host.as_ref()) {
+        if !owner.original_host_binding_matches(self) {
             return Err(boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "mail sender belongs to another original host",
             ));
         }
-        #[cfg(feature = "filesystem")]
-        let mut observer = io.map(PreparationIo::history_io);
-        #[cfg(feature = "filesystem")]
-        let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
-        #[cfg(not(feature = "filesystem"))]
-        let mut work: Observer<'_> = None;
-        self.verify_mail_owner(
-            owner.task_id(),
-            Some(&owner.fence),
-            Some(owner),
-            false,
-            &mut work,
-        )
-        .await?;
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        owner.verify(false, &mut work).await?;
         let (bytes, payload) = self
             .prepare_mail(owner.task_id(), recipient, message, payload, io)
             .await?;
-        self.publish_mail(
-            owner.task_id(),
-            recipient,
-            message,
-            bytes,
-            Some(&owner.fence),
-            Some(owner),
-            io,
-        )
-        .await?;
+        self.publish_mail(owner.task_id(), recipient, message, bytes, Some(owner), io)
+            .await?;
         Ok(payload)
     }
 
@@ -342,23 +290,22 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
         require_original(io)?;
-        let owner = Some(self.journal_owner(sender, fence, io).await?);
+        let owner = self.journal_owner(sender, fence, io).await?;
         #[cfg(feature = "filesystem")]
         let mut observer = io.map(PreparationIo::history_io);
         #[cfg(feature = "filesystem")]
         let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
         let mut work: Observer<'_> = None;
-        self.verify_mail_owner(sender, Some(fence), owner.as_ref(), true, &mut work)
-            .await?;
+        owner.verify(true, &mut work).await?;
         let bytes = self
-            .mail_bytes(sender, recipient, message, payload, io)
-            .await?;
+            .prepare_mail(sender, recipient, message, payload, io)
+            .await?
+            .0;
         let retained = self
             .observe_mail_location(sender, recipient, message, &bytes, None, io)
             .await?;
-        self.verify_mail_owner(sender, Some(fence), owner.as_ref(), true, &mut work)
-            .await?;
+        owner.verify(true, &mut work).await?;
         Ok(retained)
     }
 
@@ -368,19 +315,11 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         recipient: TaskId,
         message: OperationId,
         bytes: OwnedBytes,
-        fence: Option<&crate::scheduler::LeaseFence>,
         #[cfg(feature = "filesystem")] owner: Option<&TaskJournalOwner<P>>,
         #[cfg(not(feature = "filesystem"))] owner: Option<&std::convert::Infallible>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         require_original(io)?;
-        if io.is_some() && fence.is_some() && owner.is_none() {
-            return Err(boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "native sender requires its original retained owner",
-            ));
-        }
         #[cfg(feature = "filesystem")]
         let mut observer = io.map(PreparationIo::history_io);
         #[cfg(feature = "filesystem")]
@@ -401,14 +340,18 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         )?;
         let mut source_verified = false;
         loop {
-            self.verify_mail_owner(sender, fence, owner, false, &mut work)
-                .await?;
+            #[cfg(feature = "filesystem")]
+            if let Some(owner) = owner {
+                owner.verify(false, &mut work).await?;
+            }
             if self
                 .observe_mail_location(sender, recipient, message, &bytes, None, io)
                 .await?
             {
-                self.verify_mail_owner(sender, fence, owner, false, &mut work)
-                    .await?;
+                #[cfg(feature = "filesystem")]
+                if let Some(owner) = owner {
+                    owner.verify(false, &mut work).await?;
+                }
                 return Ok(());
             }
             if !source_verified {
@@ -469,39 +412,20 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 path: intent.0.path().clone(),
             };
             #[cfg(feature = "filesystem")]
-            let owner_condition = match (owner, fence) {
-                (Some(owner), _) => Some(
+            let owner_condition = match owner {
+                Some(owner) => Some(
                     owner
                         .condition(crate::distributed::JournalWrite::Fresh, &mut work)
                         .await?,
                 ),
-                (None, Some(fence)) => Some(
-                    self.coordinator
-                        .lock()
-                        .await
-                        .journal_condition(
-                            self.verifier.audience(),
-                            &self.owner_scope,
-                            &self.verifier,
-                            OperationId::from_bytes(sender.into_bytes()),
-                            fence,
-                            crate::distributed::JournalWrite::Fresh,
-                            &mut work,
-                        )
-                        .await?,
-                ),
-                (None, None) => None,
+                None => None,
             };
+            #[cfg(feature = "filesystem")]
+            let fence = owner.map(|owner| &owner.fence);
             #[cfg(not(feature = "filesystem"))]
-            let owner_condition: Option<CommitCondition> = if fence.is_some() {
-                return Err(boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "owned mail publication is not bound",
-                ));
-            } else {
-                None
-            };
+            let owner_condition: Option<CommitCondition> = None;
+            #[cfg(not(feature = "filesystem"))]
+            let fence: Option<&crate::scheduler::LeaseFence> = None;
             let mut conditions = [("", None); 3];
             let mut count = 0;
             for condition in [Some(&target), Some(&absent), owner_condition.as_ref()]
@@ -558,44 +482,12 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     "committed mail receipt is absent",
                 ));
             }
-            self.verify_mail_owner(sender, fence, owner, false, &mut work)
-                .await?;
+            #[cfg(feature = "filesystem")]
+            if let Some(owner) = owner {
+                owner.verify(false, &mut work).await?;
+            }
             return Ok(());
         }
-    }
-
-    async fn verify_mail_owner(
-        &self,
-        sender: TaskId,
-        fence: Option<&crate::scheduler::LeaseFence>,
-        #[cfg(feature = "filesystem")] owner: Option<&TaskJournalOwner<P>>,
-        #[cfg(not(feature = "filesystem"))] owner: Option<&std::convert::Infallible>,
-        settlement: bool,
-        work: &mut Observer<'_>,
-    ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        if let Some(owner) = owner {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(original) = work.as_ref().and_then(|io| io.original_native_work()) {
-                if !owner
-                    .native_custody
-                    .as_ref()
-                    .is_some_and(|guard| guard.work().shares_allocation_context(original))
-                {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "mail owner differs from its original native metadata ledger",
-                    });
-                }
-            }
-            return owner.verify(settlement, work).await;
-        }
-        if let Some(fence) = fence {
-            return self
-                .verify_owner(sender, fence, settlement, &mut None)
-                .await;
-        }
-        Ok(())
     }
 
     pub(super) async fn observe_mail_location(

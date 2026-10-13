@@ -1,27 +1,9 @@
 use super::super::history::HistoryIo;
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use crate::store::checkpoints::native_staging_custody_tests::budget;
+use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_stream::MemoryStream;
 use std::sync::Arc;
-
-fn budget() -> WorkBudget {
-    WorkBudget {
-        authority_records_read: 32,
-        authority_bytes_read: 1_048_576,
-        backend_read_operations: 32,
-        source_bytes_read: 1_048_576,
-        bytes_copied: 1_048_576,
-        bytes_encoded: 1_048_576,
-        bytes_hashed: 1_048_576,
-        authority_records_appended: 32,
-        authority_bytes_written: 1_048_576,
-        backend_write_operations: 32,
-        items_examined: 1_048_576,
-        allocation_operations: 1_048_576,
-        peak_allocation_bytes: 1_048_576,
-        ..WorkBudget::default()
-    }
-}
 
 #[tokio::test]
 async fn native_message_lookup_provider_corruption_bound_and_cancellation_release_records()

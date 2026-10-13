@@ -120,35 +120,10 @@ impl Scope<'_> {
         Ok(())
     }
     fn size<T: Serialize + ?Sized>(&mut self, value: &T) -> Encoded<u64> {
-        struct Counter<'a, 'b> {
-            scope: &'a mut Scope<'b>,
-            bytes: u64,
+        match super::write(value, self, None, self.bounds.maximum_bytes) {
+            Ok(bytes) => Ok(bytes),
+            Err(error) => self.stop(error),
         }
-        impl std::io::Write for Counter<'_, '_> {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.scope
-                    .event(JsonCodecCharge::Work {
-                        bytes: bytes.len() as u64,
-                        items: 0,
-                    })
-                    .map_err(|_| std::io::ErrorKind::Interrupted)?;
-                let Some(total) = self.bytes.checked_add(bytes.len() as u64) else {
-                    let _ = self.scope.bound::<()>("JSON byte count overflow");
-                    return Err(std::io::ErrorKind::Interrupted.into());
-                };
-                self.bytes = total;
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut counter = Counter {
-            scope: self,
-            bytes: 0,
-        };
-        serde_json::to_writer(&mut counter, value)?;
-        Ok(counter.bytes)
     }
     fn string(&mut self, value: &str) -> Encoded<String> {
         if value.len() as u64 > self.bounds.maximum_bytes.saturating_sub(self.bytes) {

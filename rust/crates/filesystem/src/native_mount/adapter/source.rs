@@ -406,7 +406,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .observe(
                     owner,
                     &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                        boundary_budget(),
+                        BOUNDARY_BUDGET,
                         &self.cancellation,
                     )),
                     &self.cancellation,
@@ -444,7 +444,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let work = match &self.native_original {
             Some(work) => work.clone(),
-            None => capture_meter(boundary_budget(), &self.cancellation)?,
+            None => capture_meter(BOUNDARY_BUDGET, &self.cancellation)?,
         };
         self.checkout
             .publish(
@@ -472,7 +472,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
-            .private_candidate(boundary_budget(), &self.cancellation)
+            .private_candidate(BOUNDARY_BUDGET, &self.cancellation)
             .map_err(facade_error)?
             .value;
         let decision = checkout
@@ -501,7 +501,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
-            .private_candidate(boundary_budget(), &self.cancellation)
+            .private_candidate(BOUNDARY_BUDGET, &self.cancellation)
             .map_err(facade_error)?
             .value;
         checkout
@@ -525,7 +525,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         }
         let root =
             NamespacePath::new(Vec::new(), self.limits).map_err(MountSourceError::NamespacePath)?;
-        let work = capture_meter(boundary_budget(), &self.cancellation)?;
+        let work = capture_meter(BOUNDARY_BUDGET, &self.cancellation)?;
         let (installed, _allocation) = installed_changes(
             base,
             checkout,
