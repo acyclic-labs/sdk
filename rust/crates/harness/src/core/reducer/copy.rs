@@ -5,21 +5,12 @@ impl Reducer {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Reducer> {
         inspect_metadata(&(&self.authority, &self.projection, &self.events), work)?;
         let bytes = if work.is_some() {
-            self.projection.owned_bytes(
-                &self.authority,
-                self.events.iter(),
-                self.events.capacity(),
-            )?
+            self.projection
+                .owned_bytes(&self.authority, self.events.iter())?
         } else {
             0
         };
-        if let Some(io) = work.as_deref() {
-            io.admit_copy(bytes)?;
-        }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
-        if let Some(io) = quota.work().as_deref_mut() {
-            io.copy_bytes(bytes)?;
-        }
+        let mut quota = snapshot::admit_copy(bytes, work)?;
         let (conversation, retained) = self.projection.conversation.copy(quota.work(), None)?;
         quota.adopt(retained)?;
         let verifier = self.authority_verifier.copy(quota.work())?;

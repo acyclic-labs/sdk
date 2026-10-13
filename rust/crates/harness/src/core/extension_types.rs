@@ -139,33 +139,23 @@ impl ExtensionAdmission {
         ])
     }
 
-    pub(crate) fn copy(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| {
-            if quota.work().is_none() {
-                return Ok(self.clone());
-            }
-            Ok(Self {
-                source: copy(&self.source, quota, |value: &EventReference, _| {
-                    Ok(value.authority.id.capacity() as u64)
-                })?,
-                selected: copying::copy_vector(&self.selected, quota, |value, quota| {
-                    copy(value, quota, |value: &ExtensionDependency, _| {
-                        Ok(value.name.capacity() as u64)
-                    })
-                })?,
-                configurations: copying::copy_vector(
-                    &self.configurations,
-                    quota,
-                    |value, quota| {
-                        copy(value, quota, |value: &ExtensionConfiguration, work| {
-                            value.content.validate(work)?;
-                            owned_bytes(value)
-                        })
-                    },
-                )?,
+    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+        CodecQuota::produce(work, |quota| {
+            copy(self, quota, |admission, work| {
+                if let Some(io) = work.as_deref_mut().filter(|io| copying::is_native(*io)) {
+                    for bytes in [
+                        owned_buffer::<ExtensionDependency>(admission.selected.len())?,
+                        owned_buffer::<ExtensionConfiguration>(admission.configurations.len())?,
+                    ] {
+                        if bytes != 0 {
+                            io.admit_allocation(bytes)?;
+                        }
+                    }
+                }
+                for configuration in &admission.configurations {
+                    configuration.content.validate(work)?;
+                }
+                admission.logical_owned_bytes()
             })
         })
     }
@@ -189,10 +179,7 @@ impl ExtensionAdmission {
     }
 
     /// Checks the frozen selection and its ordered configuration records.
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         use crate::fork::boundary_error;
         use crate::wire::ErrorCode::{Conflict, Invalid};
         if self.source.authority.kind != AggregateKind::Agent || self.source.revision == 0 {

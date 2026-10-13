@@ -5,7 +5,7 @@ impl Reducer {
         &self,
         action: &Action,
         archived_effect: Option<(EffectId, &EffectState)>,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<EventPayload> {
         match action {
             Action::TransitionLifecycle { to, reason } => {
