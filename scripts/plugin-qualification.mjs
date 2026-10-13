@@ -17,6 +17,7 @@ function fail(message) {
 function archiveManifest(path) {
   const result = spawnSync("tar", ["-xOf", path, "package/package.json"], {
     encoding: "utf8",
+    windowsHide: true,
     maxBuffer: 1024 * 1024,
   });
   if (result.error || result.status !== 0) {

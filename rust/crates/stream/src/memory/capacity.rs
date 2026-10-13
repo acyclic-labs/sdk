@@ -57,7 +57,9 @@ fn missing_paths<'a>(
             .map(|(end, _)| end)
             .chain(std::iter::once(path.len()))
             .filter(move |end| {
-                let prefix = &path[..*end];
+                let Some(prefix) = path.get(..*end) else {
+                    return false;
+                };
                 !state.paths.contains_key(prefix)
                     && before != prefix
                     && !before

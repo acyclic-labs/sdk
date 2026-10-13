@@ -82,7 +82,7 @@ pub(super) fn decode_allowance_with_code(
     if let (Some(code), Error::NativeBoundary { reason, .. }) = (code, &error) {
         return Error::NativeBoundary {
             code,
-            reason: *reason,
+            reason: reason,
         };
     }
     let _ = code;

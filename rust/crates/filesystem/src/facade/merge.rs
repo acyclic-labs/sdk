@@ -12,7 +12,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .apply_workspace_join_with_accounting(
                 request,
                 &mut accounting,
-                &cancellation,
+                cancellation,
                 |request, intent, limits, budget| async move {
                     publish_generation_async_with_permit(
                         &self.inner.objects,
@@ -21,7 +21,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         intent,
                         limits,
                         budget,
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map(|receipt| OperationReceipt {

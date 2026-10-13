@@ -29,7 +29,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if let Action::PlanEffect { result_schema, .. } = action {
             match work.as_deref_mut() {
                 Some(io) => {
-                    history::verify_content_with_work(io, verifier.as_ref(), reference).await?
+                    history::verify_content_with_work(io, verifier.as_ref(), reference).await?;
                 }
                 None => {
                     verified_content_bytes(
@@ -191,7 +191,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             verified_content_bytes(
                 verifier.as_ref(),
                 &message.content,
-                (&message.content).descriptor().byte_length(),
+                message.content.descriptor().byte_length(),
                 None,
             )
             .await?;
@@ -201,7 +201,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                         verified_content_bytes(
                             verifier.as_ref(),
                             &attachment.file,
-                            (&attachment.file).descriptor().byte_length(),
+                            attachment.file.descriptor().byte_length(),
                             None,
                         )
                         .await?;

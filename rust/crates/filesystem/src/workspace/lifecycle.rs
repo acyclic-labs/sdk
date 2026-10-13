@@ -88,8 +88,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                         .with_backend(backend, allocations.live_bytes())
                         .map_err(|error| {
                             E::from(WorkspaceError::WorkMerge {
-                                prior,
-                                backend,
+                                prior: Box::new(prior),
+                                backend: Box::new(backend),
                                 error,
                             })
                         })?;

@@ -80,8 +80,31 @@ impl GenerationReceipt {
             .len()
             .checked_add(additional)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        let work = self.custody.work().clone();
-        crate::core_state::reserve(values, required, &work, &mut self.custody)
+        let prior = values
+            .capacity()
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(MaterializeError::Work(WorkError::Overflow))? as u64;
+        if self.custody.bytes() < prior {
+            let mut prefix = self.custody.work().claim(
+                prior - self.custody.bytes(),
+                0,
+                crate::WorkCounters::UNCHARGED,
+            )?;
+            self.custody.absorb(&mut prefix)?;
+        }
+        let capacity = if required > values.capacity() {
+            required
+                .max(
+                    values
+                        .capacity()
+                        .checked_mul(2)
+                        .ok_or(MaterializeError::Work(WorkError::Overflow))?,
+                )
+                .max(1)
+        } else {
+            values.capacity()
+        };
+        crate::materializer::reserve_buffer(values, capacity, &mut self.custody)
             .map_err(MaterializeError::from)
     }
 

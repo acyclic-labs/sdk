@@ -58,7 +58,10 @@ fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std:
     }
     .source_changed(
         &[SourceChange::Everything],
-        &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+        &mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ),
     )?;
     assert!(!view.unchanged_since(&a, None, stamp));
     assert!(view.lookup(&a)?.is_some());
@@ -127,11 +130,12 @@ fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn st
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("a"), b"a")?;
     let state = tempfile::tempdir()?;
+    let state_root = std::fs::canonicalize(state.path())?;
     let runtime = tokio::runtime::Runtime::new()?;
     // A store released late fails the very next open; the rounds only
     // vary where the source change lands against the drop.
     for round in 0..24 {
-        let store = LocalCoreStateStore::open_owned(state.path().join("core"))
+        let store = LocalCoreStateStore::open_owned(state_root.join("core"))
             .map_err(|error| format!("round {round}: {error}"))?;
         let view = runtime.block_on(async {
             mounted_view_of(

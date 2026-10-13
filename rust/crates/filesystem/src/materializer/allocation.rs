@@ -205,12 +205,11 @@ impl NativeResourceRetirement {
 }
 impl Drop for NativeResourceRetirement {
     fn drop(&mut self) {
-        if let Some(resource) = &self.resource {
-            if let Err(error) = resource.retire(self.bytes) {
+        if let Some(resource) = &self.resource
+            && let Err(error) = resource.retire(self.bytes) {
                 let mut state = self.original.lock();
                 state.record_native_io_failure(error);
                 state.poison_native_original_work();
             }
-        }
     }
 }

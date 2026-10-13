@@ -33,17 +33,12 @@ impl LocalStream {
                 let result = loop {
                     let revision = *stream.inner.changed.borrow();
                     let replay = provider.has_replay(&request.idempotency_key).await;
-                    if !replay {
-                        if let Err(error) = before().await {
-                            return Ok(Err(error));
-                        }
+                    if !replay && let Err(error) = before().await {
+                        return Ok(Err(error));
                     }
-                    let visibility = match stream.inner.visibility.try_write() {
-                        Ok(visibility) => visibility,
-                        Err(_) => {
-                            drop(stream.inner.visibility.write().await);
-                            continue;
-                        }
+                    let Ok(visibility) = stream.inner.visibility.try_write() else {
+                        drop(stream.inner.visibility.write().await);
+                        continue;
                     };
                     if revision != *stream.inner.changed.borrow() {
                         drop(visibility);
@@ -134,7 +129,7 @@ impl LocalStream {
                         stream
                             .work
                             .as_ref()
-                            .expect("native context")
+                            .ok_or(StreamError::Unavailable)?
                             .reserve_durability(4)?;
                         Some(stream.prepare(&command)?)
                     };

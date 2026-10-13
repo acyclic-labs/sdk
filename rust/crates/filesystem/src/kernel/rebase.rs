@@ -157,12 +157,9 @@ impl ProofDataCustody {
         &self, original: &Arc<crate::demand::NativeDemandReadMeter>,
     ) -> bool {
         let mut completed = self.completed_data_work.lock();
-        match completed.native_original.as_ref() {
-            Some(bound) => bound.as_ptr() == Arc::as_ptr(original),
-            None => {
-                completed.native_original = Some(Arc::downgrade(original));
-                true
-            },
+        if let Some(bound) = completed.native_original.as_ref() { bound.as_ptr() == Arc::as_ptr(original) } else {
+            completed.native_original = Some(Arc::downgrade(original));
+            true
         }
     }
 
@@ -876,22 +873,19 @@ impl CheckoutDependencies {
         let captured = Arc::make_mut(&mut self.captured);
         for (region, expected) in staged {
             admit(0, 0, 0, 1)?;
-            match captured.get_mut(&region) {
-                Some(existing) => existing.usage = existing.usage.with(usage),
-                None => {
-                    // The staged key owns its name buffer already; insertion
-                    // moves that buffer rather than allocating or copying it.
-                    let retained = dependency_name_bytes(&region, false);
-                    let name_data_bytes = self.name_data_bytes.checked_add(retained)
-                        .ok_or(WorkError::Overflow)?;
-                    let cloned_name_data_bytes = self.cloned_name_data_bytes
-                        .checked_add(dependency_name_bytes(&region, true)).ok_or(WorkError::Overflow)?;
-                    admit(retained, 0, 0, 0)?;
-                    let data = data(retained, false)?;
-                    captured.insert(region, CapturedValue { state: CapturedState { expected, usage }, data });
-                    self.name_data_bytes = name_data_bytes;
-                    self.cloned_name_data_bytes = cloned_name_data_bytes;
-                }
+            if let Some(existing) = captured.get_mut(&region) { existing.usage = existing.usage.with(usage) } else {
+                // The staged key owns its name buffer already; insertion
+                // moves that buffer rather than allocating or copying it.
+                let retained = dependency_name_bytes(&region, false);
+                let name_data_bytes = self.name_data_bytes.checked_add(retained)
+                    .ok_or(WorkError::Overflow)?;
+                let cloned_name_data_bytes = self.cloned_name_data_bytes
+                    .checked_add(dependency_name_bytes(&region, true)).ok_or(WorkError::Overflow)?;
+                admit(retained, 0, 0, 0)?;
+                let data = data(retained, false)?;
+                captured.insert(region, CapturedValue { state: CapturedState { expected, usage }, data });
+                self.name_data_bytes = name_data_bytes;
+                self.cloned_name_data_bytes = cloned_name_data_bytes;
             }
         }
         Ok(())

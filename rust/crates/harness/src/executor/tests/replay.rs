@@ -304,7 +304,7 @@ async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
     journal
         .append(
             operation,
-            &"execution:started",
+            "execution:started",
             &ExecutionEvent::Started {
                 request_digest: [1; 32],
             },
@@ -349,7 +349,7 @@ async fn journal_retry_keys_and_sequences_are_operation_scoped() -> Result<()> {
         journal
             .append(
                 operation_id,
-                &"execution:started",
+                "execution:started",
                 &ExecutionEvent::Started {
                     request_digest: digest,
                 },

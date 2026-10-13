@@ -231,8 +231,12 @@ impl NativeReadMeter for Meter {
         self.cancel_reserved_bytes(kind, maximum);
         assert!(actual <= maximum);
         match kind {
-            NativeOperationKind::Read => self.record_read(actual as usize),
-            NativeOperationKind::Write => self.record_write(actual as usize),
+            NativeOperationKind::Read => self.record_read(
+                usize::try_from(actual).map_err(|_| std::io::ErrorKind::InvalidInput)?,
+            ),
+            NativeOperationKind::Write => self.record_write(
+                usize::try_from(actual).map_err(|_| std::io::ErrorKind::InvalidInput)?,
+            ),
             NativeOperationKind::Durability => unreachable!("durability carries no bytes"),
         }
     }
@@ -285,7 +289,7 @@ impl NativeReadMeter for Meter {
             && let Some((clock, now)) = self
                 .expire_after_hash
                 .lock()
-                .expect("test clock is not poisoned")
+                .map_err(|_| std::io::ErrorKind::Other)?
                 .take()
         {
             clock.store(now, Ordering::SeqCst);

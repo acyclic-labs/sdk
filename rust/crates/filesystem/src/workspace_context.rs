@@ -154,7 +154,12 @@ pub trait WorkspaceContextStore: Send + Sync {
         async move {
             KernelAccounting::native(original, cancellation)
                 .check()
-                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                .map_err(|error| {
+                    (
+                        WorkspaceContextError::NativeFilesystem(Box::new(error)),
+                        None,
+                    )
+                })?;
             Err((WorkspaceContextError::NativeOriginalUnsupported, None))
         }
     }
@@ -182,7 +187,12 @@ pub trait WorkspaceContextStore: Send + Sync {
         async move {
             KernelAccounting::native(original, cancellation)
                 .check()
-                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                .map_err(|error| {
+                    (
+                        WorkspaceContextError::NativeFilesystem(Box::new(error)),
+                        None,
+                    )
+                })?;
             drop(replacement);
             Err((WorkspaceContextError::NativeOriginalUnsupported, None))
         }
@@ -264,7 +274,7 @@ pub enum WorkspaceContextError<E: std::error::Error + 'static> {
     /// The original native invocation rejected measured metadata work.
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
-    NativeFilesystem(crate::FsError),
+    NativeFilesystem(Box<crate::FsError>),
     /// A custom adapter has not implemented original-ledger metadata work.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("workspace-context store does not support original native work")]

@@ -82,7 +82,7 @@ impl ObjectsProvider for MemoryObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let input = input;
             obs::traced(
                 obs::span!(
@@ -132,7 +132,7 @@ impl ObjectsProvider for MemoryObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let mut input = input;
             obs::traced(
                 obs::span!(
@@ -165,16 +165,12 @@ impl ObjectsProvider for MemoryObjects {
                             let mut requests = input.data.drain(..);
                             for (count, mut failure) in plans.0.drain(..) {
                                 let start = results.0.len();
-                                let mut next = match meter
-                                    .check()
-                                    .map(|()| state.clone())
-                                    .map_err(NativeObjectsError::from)
-                                {
+                                let mut next = match meter.check().map(|()| state.clone()) {
                                     Ok(next) => next,
                                     Err(error) => {
                                         Arc::get_mut(&mut failure)
-                                            .expect("failure is unique before publication")
-                                            .value = Some(error);
+                                            .ok_or(Error::from(Unavailable))?
+                                            .value = Some(error.into());
                                         for _ in requests.by_ref().take(count) {
                                             results.0.push(Err(NativeObjectsError::from(
                                                 NativeObjectsCause::SharedFailure(Arc::clone(
@@ -199,9 +195,13 @@ impl ObjectsProvider for MemoryObjects {
                                         Ok(()) => *state = next,
                                         Err(error) => {
                                             Arc::get_mut(&mut failure)
-                                                .expect("failure is unique before publication")
+                                                .ok_or(Error::from(Unavailable))?
                                                 .value = Some(error);
-                                            for result in &mut results.0[start..] {
+                                            for result in results
+                                                .0
+                                                .get_mut(start..)
+                                                .ok_or(Error::from(Unavailable))?
+                                            {
                                                 if result.is_ok() {
                                                     *result = Err(NativeObjectsError::from(
                                                         NativeObjectsCause::SharedFailure(
@@ -238,7 +238,7 @@ impl ObjectsProvider for MemoryObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let mut input = input;
             obs::traced(
                 obs::span!(INFO, "acyclic.objects.put", bytes = input.data().1.len()),
@@ -261,7 +261,7 @@ impl ObjectsProvider for MemoryObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let input = input;
             obs::traced(
                 obs::span!(INFO, "acyclic.objects.get", bytes = obs::Empty),

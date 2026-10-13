@@ -412,20 +412,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ));
         }
         let payload_generation = if payloads.is_empty() {
-            match io {
-                Some(io) => {
-                    let target = (self.host).open(&workspace, Some(io)).await?;
-                    let generation =
-                        (self.host).generation(&target, initial_generation, Some(io)).await?;
-                    fsio::retain(&generation, Some(io)).await?;
-                    initial_generation.clone_with_io(io)?
-                }
-                None => {
-                    self.host
-                        .retain_generation(&workspace, initial_generation)
-                        .await?;
-                    initial_generation.clone()
-                }
+            if let Some(io) = io {
+                let target = (self.host).open(&workspace, Some(io)).await?;
+                let generation =
+                    (self.host).generation(&target, initial_generation, Some(io)).await?;
+                fsio::retain(&generation, Some(io)).await?;
+                initial_generation.clone_with_io(io)?
+            } else {
+                self.host
+                    .retain_generation(&workspace, initial_generation)
+                    .await?;
+                initial_generation.clone()
             }
         } else if let Some(generation) = payload_generation {
             generation

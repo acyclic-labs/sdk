@@ -3,23 +3,15 @@ use super::*;
 use crate::conversation::VolumeOperation;
 use crate::filesystem::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
-    FilesystemResourceCreationProvider, FilesystemTaskRuntime, WorkspaceMutation, workspace_ref,
+    FilesystemResourceCreationProvider, FilesystemTaskRuntime,
 };
 use crate::resource_preparation::{ResourcePreparationRequest, TaskResourcePreparation};
-use crate::resources::{GenerationRef, ProviderRef};
+use crate::resources::ProviderRef;
 use crate::runtime::AgentHarness;
 use crate::workflow::ResumableMachine;
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 
 pub(crate) type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
-
-pub(crate) struct OriginalRootFilesystemBirth {
-    pub(crate) volume: VolumeRef,
-    pub(crate) operation: acyclic_fs::OperationId,
-    pub(crate) config: acyclic_fs::VolumeConfig,
-    pub(crate) initial_generation: acyclic_fs::GenerationId,
-    pub(crate) selected_generation: acyclic_fs::GenerationId,
-}
 
 pub(crate) struct CreationFixture {
     pub(crate) host: Arc<CoordinatorTaskHost<MemoryStream>>,
@@ -27,12 +19,9 @@ pub(crate) struct CreationFixture {
     pub(crate) filesystem: Arc<MemoryFilesystem>,
     pub(crate) stream: Arc<MemoryStream>,
     pub(crate) filesystem_provider: ProviderRef,
-    pub(crate) filesystem_creator:
-        Arc<FilesystemResourceCreationProvider<MemoryAuthorityBackend, MemoryObjectBackend>>,
     pub(crate) root: TaskId,
     pub(crate) root_lease: crate::distributed::WorkLease,
     pub(crate) worker: crate::distributed::Worker,
-    pub(crate) original_root_births: Option<[OriginalRootFilesystemBirth; 2]>,
     task: ComponentIdentity,
     machine: MachineIdentity,
 }
@@ -49,9 +38,6 @@ pub(crate) struct PreparedFilesystemChild {
 
 mod fixture;
 mod fork;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod roots;
 
 fn test_registries(
     machine: Arc<dyn ResumableMachine>,

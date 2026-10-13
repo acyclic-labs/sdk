@@ -744,7 +744,7 @@ async fn pending_read(
         // Status is recorded after response headers; the held remainder keeps chunk pending.
         tokio::select! {
             item = stream.next() => panic!("body must remain pending after headers, got {item:?}"),
-            () = until_status(&captured, "read") => {},
+            () = until_status(captured, "read") => {},
         }
     })
     .await

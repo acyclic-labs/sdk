@@ -83,7 +83,7 @@ async fn staged_native_read(
     let (allocation, mut bytes) = staged_vector::<u8>(length, Some(native))?;
     bytes.resize(bytes.capacity(), 0);
     let prepared = acyclic_stream::PreparedOwnedBytes::new(
-        bytes, allocation.expect("native read buffer is funded"), native.runtime_meter(),
+        bytes, allocation.expect("native read buffer is funded"), &native.runtime_meter(),
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
             native.runtime_error(error).into()

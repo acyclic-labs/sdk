@@ -253,7 +253,7 @@ try {
   if (flags.has("--fresh")) {
     const directory = flags.get("--fresh"); assert.ok(!existsSync(directory), "installed helper scenario directory must be fresh");
     const args = ["--prepare-scenario", directory];
-    const result = spawnSync(binary, args, { env, encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 1_048_576 });
+    const result = spawnSync(binary, args, { env, windowsHide: true, encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 1_048_576 });
     writeFileSync(join(evidence, "prepare.stdout.raw"), result.stdout ?? "", { mode: 0o600 });
     writeFileSync(join(evidence, "prepare.stderr.raw"), result.stderr ?? "", { mode: 0o600 });
     report.preparation = { argv: [binary, ...args], exit: result.status, signal: result.signal,
@@ -370,7 +370,7 @@ try {
   const dispatchFrom = active.text.length;
   await active.command(`/resume ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
   const dispatch = await active.expect(/deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]{64})/, dispatchFrom);
-  const rootModelOperation = modelExecutionOperation(root, manifest.callers.root.admission.input.operation_id);
+  const rootModelOperation = modelExecutionOperation(root, manifest.callers.root.admission.input.model.operation_id);
   assert.equal(dispatch[1], rootModelOperation, "actual dispatch identity derives from the original admitted WorkflowCommand");
   const originalLedgerBytes = readFileSync(config.model_invocation_ledger);
   const beforeKillLedger = join(evidence, "model-before-original-process-kill.jsonl");
@@ -426,8 +426,8 @@ try {
   assert.deepEqual(finalLedgerBytes.subarray(0, originalLedgerBytes.length), originalLedgerBytes, "durable observer prefix survives original process death");
   const finalRows = invocationLedger(config.model_invocation_ledger);
   const expectedModelOperations = ["bootstrap_seed", "root", "left", "right", "grandchild"].map(label =>
-    modelExecutionOperation(manifest.tasks[label], manifest.callers[label].admission.input.operation_id));
-  expectedModelOperations.push(modelExecutionOperation(crossTask, crossRequest.request.child.input.operation_id));
+    modelExecutionOperation(manifest.tasks[label], manifest.callers[label].admission.input.model.operation_id));
+  expectedModelOperations.push(modelExecutionOperation(crossTask, crossRequest.request.child.input.model.operation_id));
   assert.deepEqual(finalRows.filter(row => row.phase === "generate").map(row => row.operation_id).sort(),
     expectedModelOperations.sort(), "six actual non-cancelled PTY model commands each generate exactly once; no unbound invocations");
   assert.ok(finalRows.every(row => expectedModelOperations.includes(row.operation_id) && row.step === 0));

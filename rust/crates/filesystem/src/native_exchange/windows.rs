@@ -264,11 +264,10 @@ pub(super) fn recover_entry_held<W: SourceDemandReadWork>(
         })?;
         with_path(names[3], work, |right_name, work| {
             super::entry::validate_leaf(right_name)?;
-            if let Some((parent, name)) = requested_right {
-                if name != right_name || host::directory_identity(parent, work)? != parents[1] {
+            if let Some((parent, name)) = requested_right
+                && (name != right_name || host::directory_identity(parent, work)? != parents[1]) {
                     return Err(NativeExchangeError::IncompatibleJournal.into());
                 }
-            }
             if host::file_identity_and_length(file, work)? != (witness_identity, length) {
                 return Err(NativeExchangeError::IncompatibleJournal.into());
             }

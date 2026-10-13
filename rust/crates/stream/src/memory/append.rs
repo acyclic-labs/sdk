@@ -38,6 +38,7 @@ impl MemoryStream {
                     request.idempotency_key,
                     digest,
                     IdempotencyOutcome::Append(result.clone()),
+                    Default::default(),
                 );
             }
             return Ok((result, Default::default()));
@@ -75,7 +76,7 @@ impl MemoryStream {
             mutations: facts,
         };
         self.publish(bytes, || {
-            publish(&mut state, paths, histories, &envelope);
+            publish(&mut state, paths, histories, &envelope)?;
             state.decision = decision;
             state.last_committed_at_micros = time;
             retain(
@@ -84,12 +85,8 @@ impl MemoryStream {
                 request.idempotency_key,
                 digest,
                 IdempotencyOutcome::Append(outcome.clone()),
+                allocation,
             );
-            state
-                .retained
-                .last_mut()
-                .expect("retained append")
-                ._allocation = allocation;
             Ok((outcome, Default::default()))
         })
     }

@@ -168,7 +168,7 @@ impl ObjectsProvider for LocalObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let input = input;
             if input.data().is_empty() {
                 return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
@@ -208,7 +208,7 @@ impl ObjectsProvider for LocalObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let input = input;
             if input.data().is_empty() {
                 return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
@@ -259,7 +259,7 @@ impl ObjectsProvider for LocalObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let input = input;
             let worker_meter = Arc::clone(&meter);
             self.mutate_with_meter(Some(meter), move |core| {
@@ -291,7 +291,7 @@ impl ObjectsProvider for LocalObjects {
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
         super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
+        super::native_future(&Arc::clone(&meter), async move {
             let input = input;
             let core = self.core.clone();
             let body_io = Arc::clone(&self.body_io);

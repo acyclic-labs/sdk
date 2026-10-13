@@ -114,7 +114,10 @@ pub(in crate::filesystem) fn content_identity_path_io(
 
 pub(crate) fn map_error(error: WorkspaceError) -> Error {
     match error {
-        WorkspaceError::NotFound => Error::NotFound("workspace path".into()),
+        WorkspaceError::NotFound
+        | WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
+            acyclic_fs::AuthorityStoreError::Missing,
+        )) => Error::NotFound("workspace path".into()),
         WorkspaceError::RetentionConflict
         | WorkspaceError::StaleGeneration
         | WorkspaceError::StaleSource

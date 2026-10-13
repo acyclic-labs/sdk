@@ -403,7 +403,7 @@ async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()>
 async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Result<()> {
     let journal = Journal::default();
     let file = journal
-        .stage(OperationId::new(), "media", &vec![1, 2, 3, 4], "image/png", None)?
+        .stage(OperationId::new(), "media", &[1, 2, 3, 4], "image/png", None)?
         .await?;
     let options = journal
         .stage(OperationId::new(), "options", b"{}", "application/json", None)?

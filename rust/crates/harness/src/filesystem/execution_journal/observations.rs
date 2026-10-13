@@ -325,24 +325,21 @@ where
             event,
         };
         let body_hold;
-        let bytes = match io {
-            Some(io) => {
-                let encoded =
-                    io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-                body_hold = io.guard_bytes(&encoded)?;
-                encoded
+        let bytes = if let Some(io) = io {
+            let encoded =
+                io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            body_hold = io.guard_bytes(&encoded)?;
+            encoded
+        } else {
+            body_hold = None;
+            let encoded = serde_json::to_vec(&observation)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
+                return Err(Error::Invalid(
+                    "execution journal observation exceeds Stream limit".into(),
+                ));
             }
-            None => {
-                body_hold = None;
-                let encoded = serde_json::to_vec(&observation)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
-                    return Err(Error::Invalid(
-                        "execution journal observation exceeds Stream limit".into(),
-                    ));
-                }
-                encoded.into()
-            }
+            encoded.into()
         };
         let key_hold = io.map(|io| io.reserve_decode(32)).transpose()?;
         if let Some(io) = io {

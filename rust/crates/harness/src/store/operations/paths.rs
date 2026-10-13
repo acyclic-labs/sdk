@@ -143,7 +143,7 @@ pub(crate) fn owned_bytes_from_retained_vec(
         return OwnedBytes::from_vec_with_guard_in_place(
             &mut bytes,
             &mut custody,
-            original.runtime_meter(),
+            &original.runtime_meter(),
         )
         .map(|bytes| (bytes, 0))
         .map_err(|source| Error::from(original.runtime_error(source)));
