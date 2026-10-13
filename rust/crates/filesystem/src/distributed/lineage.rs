@@ -180,10 +180,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 seal(work, guard).await?;
                 return Ok(true);
             }
-            Ok(_) => {}
-            Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
+            Ok(_)
+            | Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
                 acyclic_stream::StreamError::IdempotencyMismatch,
-            ))) => return Ok(false),
+            ))) => {}
             Err(error) => return Err(error),
         }
         let value = match self.tail_of(authority, "/records", work).await {

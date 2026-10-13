@@ -119,34 +119,23 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         AuthorityStoreError,
     > {
         work.check()?;
-        let result = 'inspect: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_native() {
-                break 'inspect work.result(
-                    self.provider
-                        .native_inspect_idempotency(key, work.native_meter())
-                        .await,
-                );
-            }
-            work.charge(WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            self.provider
-                .inspect_idempotency(key)
-                .await
-                .map(|value| (value, None))
-                .map_err(map_stream_error)
-        };
-        // Native failures retain their original error before checking late cancellation.
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
-            let output = result?;
-            work.check()?;
-            Ok(output)
-        } else {
-            work.check()?;
-            result
+            return work.result(
+                self.provider
+                    .native_inspect_idempotency(key, work.native_meter())
+                    .await,
+            );
         }
+        work.charge(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        self.provider
+            .inspect_idempotency(key)
+            .await
+            .map(|value| (value, None))
+            .map_err(map_stream_error)
     }
 
     pub(super) async fn record(
@@ -285,7 +274,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             if matches!(&outcome.0, acyclic_stream::CommitOutcome::Committed(_)) {
                 meter.charge(submitted)?;
             }
-            meter.check()?;
             return Ok(outcome);
         }
         meter.check()?;
