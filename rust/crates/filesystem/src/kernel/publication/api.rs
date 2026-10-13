@@ -5,29 +5,6 @@ pub async fn publish_generation<O: crate::AsyncObjectStore, A: crate::AsyncAutho
     objects: &O,
     authority: &A,
     request: PublishGenerationRequest,
-    closure_limits: ClosureLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<PublicationReceipt, PublicationFailure> {
-    publish_generation_async_with_permit(
-        objects,
-        authority,
-        request,
-        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
-        closure_limits,
-        budget,
-        cancellation,
-    )
-    .await
-}
-
-pub(crate) async fn publish_generation_async_with_permit<
-    O: crate::AsyncObjectStore,
-    A: crate::AsyncAuthorityStore,
->(
-    objects: &O,
-    authority: &A,
-    request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
     budget: WorkBudget,
@@ -88,30 +65,21 @@ where
                 })
         }
     };
-    let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| {
-        let future = async move {
-            let __authority_args = (
-                request,
-                allowance.expect("the ordinary engine supplies its remaining budget"),
-                cancellation,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-            let __authority_result = authority
-                .compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>)
-                .await
-                .map_err(|error| error.into_error(std::convert::identity));
-            __authority_work.receipt(__authority_result)
-        };
-        async move {
-            future
-                .await
-                .map(|receipt| (receipt.value, Some(receipt.work)))
-                .map_err(|failure| PublicationStepFailure {
-                    cause: E::from(crate::FsError::Authority(failure.error)),
-                    work: Some(*failure.work),
-                })
-        }
+    let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| async move {
+        let mut work = crate::AuthorityWork::new(
+            allowance.expect("the ordinary engine supplies its remaining budget"),
+            cancellation,
+        );
+        let result = authority
+            .compare_and_append(request, &mut work, None::<&mut ()>)
+            .await
+            .map_err(|error| error.into_error(std::convert::identity));
+        work.receipt(result)
+            .map(|receipt| (receipt.value, Some(receipt.work)))
+            .map_err(|failure| PublicationStepFailure {
+                cause: E::from(crate::FsError::Authority(failure.error)),
+                work: Some(*failure.work),
+            })
     };
     let mut roots = |root: &crate::kernel::GenerationRoot,
                      _: &mut ProofGuard,

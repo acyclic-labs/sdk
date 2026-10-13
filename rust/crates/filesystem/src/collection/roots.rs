@@ -25,12 +25,12 @@ impl CheckoutRoots {
             Some(collection) => {
                 let held_working = clone_generation_root(&working.0, accounting, native_owner)?;
                 Some(collection.register_with_accounting(
-                    Held::Checkout(HeldRoots {
+                    Held::Checkout {
                         base,
                         working: held_working.0,
                         config,
                         control: held_working.1,
-                    }),
+                    },
                     accounting,
                 )?)
             }
@@ -83,9 +83,9 @@ impl CheckoutRoots {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         match holds.slots.get(hold.id).and_then(|slot| slot.held.as_ref()) {
-            Some(Held::Checkout(roots)) => roots
-                .control
-                .is_native_original(original, root_parent_bytes(&roots.working)),
+            Some(Held::Checkout {
+                working, control, ..
+            }) => control.is_native_original(original, root_parent_bytes(working)),
             _ => false,
         }
     }
@@ -112,11 +112,12 @@ impl CheckoutRoots {
                 .get_mut(hold.id)
                 .and_then(|slot| slot.held.as_mut())
                 .expect("a freshly admitted hold remains registered");
-            if let Held::Checkout(roots) = held {
-                roots.control = crate::kernel::ProofDataClaim::control(
-                    owner,
-                    root_parent_bytes(&roots.working),
-                );
+            if let Held::Checkout {
+                working, control, ..
+            } = held
+            {
+                *control =
+                    crate::kernel::ProofDataClaim::control(owner, root_parent_bytes(working));
             }
         }
     }
@@ -156,12 +157,12 @@ impl CheckoutRoots {
     ) {
         if let Some(hold) = &self.hold {
             let (working, control) = held.expect("the existing registration has a prepared root");
-            hold.update(Held::Checkout(HeldRoots {
+            hold.update(Held::Checkout {
                 base: self.base,
                 working,
                 config: self.config,
                 control,
-            }));
+            });
         } else {
             debug_assert!(held.is_none());
         }
@@ -177,12 +178,12 @@ impl CheckoutRoots {
     /// Replaces the working tree.
     pub(crate) fn set_working(&mut self, working: GenerationRoot) {
         if let Some(hold) = &self.hold {
-            hold.update(Held::Checkout(HeldRoots {
+            hold.update(Held::Checkout {
                 base: self.base,
                 working: working.clone(),
                 config: self.config,
                 control: crate::kernel::ProofDataClaim::default(),
-            }));
+            });
         }
         self.working = working;
         self.working_control = crate::kernel::ProofDataClaim::default();

@@ -23,7 +23,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
     }
 
-    pub(super) async fn prove_record_closure(
+    pub(crate) async fn prove_record_closure(
         &mut self,
         records: &[FileRecord],
     ) -> Result<(Vec<ObjectId>, ProofGuard), crate::FsError> {
@@ -85,14 +85,12 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         self.prove_records_and_namespace(root.0.root_file_id, &records)
             .await?;
         drop(records);
-        let object_count = usize_to_u64(self.objects.values.len());
         let objects = self.take_objects()?;
         let mut root = root;
         let mut output = (
             GenerationProof {
                 root: root.0,
                 generation_id,
-                object_count,
                 file_count,
                 logical_file_bytes,
                 objects: objects.0,

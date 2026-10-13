@@ -14,7 +14,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut accounting,
                 cancellation,
                 |request, intent, limits, budget| async move {
-                    publish_generation_async_with_permit(
+                    publish_generation(
                         &self.inner.objects,
                         &self.inner.authority,
                         request,

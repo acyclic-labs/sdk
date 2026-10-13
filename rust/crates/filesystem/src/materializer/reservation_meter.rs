@@ -184,6 +184,9 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         .map_err(|error| self.work().runtime_error(error))
     }
     fn started_io(&mut self, actual: WorkCounters) -> Result<(), Self::Error> {
+        if actual.allocation_operations != 0 || actual.peak_allocation_bytes != 0 {
+            return Err(Self::Error::InvalidLayout);
+        }
         self.edit(|state| {
             match actual.remaining(state.host_pending) {
                 Ok(pending) => state.host_pending = pending,
@@ -191,7 +194,10 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
                     actual.remaining(state.available()?)?;
                 }
             }
-            self.begin(state, actual)
+            let started = io_work(actual);
+            self.begin(state, started)?;
+            let completed = started.remaining(actual)?;
+            self.finish(state, completed, completed)
         })
         .map_err(|error| self.work().runtime_error(error))
     }

@@ -13,7 +13,7 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
     .await?;
     assert_eq!(proof.file_count, 1);
     assert_eq!(proof.logical_file_bytes, 0);
-    assert_eq!(proof.object_count, 4);
+    assert_eq!(u64::try_from(proof.objects.len()).unwrap_or(u64::MAX), 4);
     assert_eq!(proof.root.root_file_id, FileId::from_bytes([1; 16]));
     Ok(())
 }
@@ -197,7 +197,7 @@ async fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
     )
     .await?;
     assert_eq!(proof.file_count, 1);
-    assert!(proof.object_count >= 12);
+    assert!(u64::try_from(proof.objects.len()).unwrap_or(u64::MAX) >= 12);
     assert_eq!(
         proof
             .objects
@@ -546,7 +546,7 @@ async fn shared_regular_data_and_metadata_are_authenticated_once()
     )
     .await?;
     assert_eq!(proof.file_count, 3);
-    assert_eq!(proof.object_count, 7);
+    assert_eq!(u64::try_from(proof.objects.len()).unwrap_or(u64::MAX), 7);
     assert_eq!(proof.work.object_probes, 7);
     assert_eq!(proof.work.backend_read_operations, 7);
 

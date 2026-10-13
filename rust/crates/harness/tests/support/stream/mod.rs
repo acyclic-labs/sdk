@@ -7,6 +7,7 @@ use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, Strea
 mod controls;
 use controls::COORDINATOR_PATH;
 pub use controls::{ExecutionFaultMode, LostSessionAck, StreamIo, StreamIoSnapshot};
+mod append;
 mod commit;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
@@ -96,67 +97,9 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
             "ordinary append on native-only fixture"
         );
-        self.io
-            .writes
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.measure_write(&request.records);
-        if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
-            self.observation_writes
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            return Err(StreamError::Unavailable);
-        }
-        if request.path.as_str() == COORDINATOR_PATH
-            && self
-                .location_fault
-                .compare_exchange(
-                    4,
-                    0,
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                )
-                .is_ok()
-        {
-            return Err(StreamError::Unavailable);
-        }
-        let location = request
-            .path
-            .as_str()
-            .starts_with("harness/v3/coordinator/intent-locations/");
-        let fault = if location {
-            self.location_fault
-                .swap(0, std::sync::atomic::Ordering::SeqCst)
-        } else {
-            0
-        };
-        if fault == 1 {
-            return Err(StreamError::Unavailable);
-        }
+        let fault = self.before_append(&request)?;
         let mut outcome = self.inner.append(request).await?;
-        if fault >= 2 {
-            if fault == 3 {
-                self.hide_location_read
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-            return Err(StreamError::Unavailable);
-        }
-        if matches!(outcome, AppendOutcome::Committed(_))
-            && self
-                .lose_ack
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(StreamError::Unavailable);
-        }
-        if let AppendOutcome::Committed(receipt) = &mut outcome {
-            match self
-                .append_receipt_fault
-                .swap(0, std::sync::atomic::Ordering::SeqCst)
-            {
-                1 => receipt.start = receipt.end,
-                2 => receipt.end = receipt.start,
-                3 => receipt.tail = receipt.start,
-                _ => {}
-            }
-        }
+        self.after_append(&mut outcome, fault)?;
         Ok(outcome)
     }
     async fn fork(
@@ -534,7 +477,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 fault,
                 index: 0,
                 previous: None,
-                finished: false,
             };
             Ok(Ok(acyclic_stream::NativeStreamOutput::new(
                 Box::pin(cursor) as acyclic_stream::NativeRecordStream,
@@ -551,55 +493,16 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
     ) -> acyclic_stream::NativeProviderFuture<'_, AppendOutcome> {
         let original = meter.clone();
         acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            use std::sync::atomic::Ordering;
-            self.io.writes.fetch_add(1, Ordering::SeqCst);
-            self.measure_write(&request.records);
-            if self.forbid_writes.load(Ordering::SeqCst) {
-                self.observation_writes.fetch_add(1, Ordering::SeqCst);
-                return Ok(Err(StreamError::Unavailable));
-            }
-            if request.path.as_str() == COORDINATOR_PATH
-                && self
-                    .location_fault
-                    .compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-            {
-                return Ok(Err(StreamError::Unavailable));
-            }
-            let location = request
-                .path
-                .as_str()
-                .starts_with("harness/v3/coordinator/intent-locations/");
-            let fault = if location {
-                self.location_fault.swap(0, Ordering::SeqCst)
-            } else {
-                0
+            let fault = match self.before_append(&request) {
+                Ok(fault) => fault,
+                Err(error) => return Ok(Err(error)),
             };
-            if fault == 1 {
-                return Ok(Err(StreamError::Unavailable));
-            }
-            let mut output = match self.inner.native_append(request, original.clone()).await? {
+            let mut output = match self.inner.native_append(request, original).await? {
                 Ok(output) => output,
                 Err(error) => return Ok(Err(error)),
             };
-            if fault >= 2 {
-                if fault == 3 {
-                    self.hide_location_read.store(true, Ordering::SeqCst);
-                }
-                return Ok(Err(StreamError::Unavailable));
-            }
-            if matches!(output.value(), AppendOutcome::Committed(_))
-                && self.lose_ack.swap(false, Ordering::SeqCst)
-            {
-                return Ok(Err(StreamError::Unavailable));
-            }
-            if let AppendOutcome::Committed(receipt) = output.value_mut() {
-                match self.append_receipt_fault.swap(0, Ordering::SeqCst) {
-                    1 => receipt.start = receipt.end,
-                    2 => receipt.end = receipt.start,
-                    3 => receipt.tail = receipt.start,
-                    _ => {}
-                }
+            if let Err(error) = self.after_append(output.value_mut(), fault) {
+                return Ok(Err(error));
             }
             Ok(Ok(output))
         })

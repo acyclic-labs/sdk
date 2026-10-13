@@ -68,19 +68,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(self)
     }
 
-    /// Admits through the existing task path while retaining the parent's lease.
-    pub async fn admit_owned(
-        &self,
-        admission: TaskAdmissionRecord,
-        fence: crate::scheduler::LeaseFence,
-    ) -> Result<Admission<TaskId>> {
-        let parent = admission
-            .parent
-            .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-        self.verify_owner(parent, &fence, false, &mut None).await?;
-        self.admit_record(admission, Some(fence)).await
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "one complete immutable task admission validation path"
