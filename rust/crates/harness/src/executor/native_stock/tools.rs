@@ -113,7 +113,9 @@ pub(in crate::executor) async fn stock_execute_tool(
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    tool.executor.execute(invocation.clone(), context.take()).await
+    tool.executor
+        .execute(invocation.clone(), context.take())
+        .await
 }
 
 pub(in crate::executor) async fn stock_reconcile_tool(
@@ -139,7 +141,9 @@ pub(in crate::executor) async fn stock_reconcile_tool(
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    tool.executor.reconcile(invocation.clone(), context.take()).await
+    tool.executor
+        .reconcile(invocation.clone(), context.take())
+        .await
 }
 
 pub(in crate::executor) fn stock_project_tool(
@@ -253,26 +257,4 @@ pub(in crate::executor) fn stock_validate_invocation(
         return Ok(());
     }
     Ok(())
-}
-
-pub(in crate::executor) async fn stock_tool_rejection(
-    session: &StockExecution<'_>,
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    step: u32,
-    call: &str,
-    kind: ToolFailureKind,
-    error: Error,
-) -> Result<ExecutionProgress<()>> {
-    if error.is_native_failure() {
-        return Err(error);
-    }
-    session
-        .record_tool_failure(journal, operation, step, call, kind)
-        .await?;
-    Err(stock_boundary(
-        session.io,
-        crate::wire::ErrorCode::Invalid,
-        kind.message(),
-    ))
 }

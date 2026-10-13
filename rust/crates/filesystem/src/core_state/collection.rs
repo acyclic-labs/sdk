@@ -121,7 +121,7 @@ impl LocalCoreStateStore {
 
     /// Removes every lazy overlay and shadow node no lazy workspace reaches, and returns how many it removed.
     pub async fn collect_lazy_nodes(&self) -> Result<u64, LocalCoreStateStoreError> {
-        let nodes = Arc::clone(&self.nodes);
+        let nodes = Arc::clone(&self.recent_puts);
         self.transaction(move |root| {
             let root = &root;
             root.with_log(|log| {
@@ -238,7 +238,7 @@ pub(super) fn reachable_nodes<T: LazyNode + DeserializeOwned>(
 /// Removes every stored node of one family outside `reachable` that was not put within the grace period.
 pub(super) fn sweep_nodes<T: LazyNode>(
     root: &Namespace,
-    nodes: &NodeMemo,
+    nodes: &NodeRetention,
     reachable: &std::collections::HashSet<[u8; 32]>,
     id: impl Fn([u8; 32]) -> T::Id,
 ) -> Result<u64, LocalCoreStateStoreError> {
@@ -250,9 +250,9 @@ pub(super) fn sweep_nodes<T: LazyNode>(
         if reachable.contains(&address) {
             continue;
         }
-        // Decided and removed under the memo lock a put records under.
-        let mut memo = T::memo(nodes);
-        if !memo.release(&id(address)) {
+        // Collection and puts share the same grace-period lock.
+        let mut recent = T::recent_puts(nodes);
+        if !recent.release(&id(address)) {
             continue;
         }
         // Unsynchronized: a removal a crash undoes leaves only garbage.

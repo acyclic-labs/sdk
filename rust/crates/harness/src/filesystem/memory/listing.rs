@@ -212,8 +212,8 @@ impl LocalListFilesTool {
             .await?;
         _page_custody = custody;
         let wire = list_files_page_wire(&generation, &page)?;
-        let (value, custody) = crate::tool::value(&wire, maximum_bytes, work)?;
-        let output = (ToolResult { value }, custody);
+        let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
+        let output = (ToolResult { value }, custody.expect("native list result"));
         let mut cached = Self::native_result_copy(&output.0, maximum_bytes, work)?;
         let slot_bytes = (std::mem::size_of::<(OperationId, ListFilesObservation)>()
             - std::mem::size_of::<Value>()) as u64;
@@ -470,9 +470,8 @@ impl ToolProjection for LocalListFilesTool {
                     value: &result.value,
                 },
                 acyclic_stream::MAX_RECORD_BYTES as u64,
-                work,
-            )
-            .map(|(value, custody)| (value, Some(custody)));
+                Some(work),
+            );
         }
         Ok((
             serde_json::json!({"kind":"json","value":result.value}),

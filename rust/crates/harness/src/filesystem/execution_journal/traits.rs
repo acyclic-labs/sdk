@@ -14,48 +14,6 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(self.verify_tool_approval_with_io(id, operation, digest, None))
     }
-
-    fn verify_measured<'a>(
-        &'a self,
-        id: InteractionId,
-        operation: OperationId,
-        digest: [u8; 32],
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
-        Box::pin(async move {
-            let io = crate::filesystem::fork_preparer_io::PreparationIo::from_budget(
-                budget,
-                cancellation,
-            )
-            .map_err(|error| acyclic_fs::OperationFailure::new(error, Default::default()))?;
-            let result = self
-                .verify_tool_approval_with_io(id, operation, digest, Some(&io))
-                .await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt {
-                    value,
-                    work: io.receipt(),
-                }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_with_native_work<'a>(
-        &'a self,
-        id: InteractionId,
-        operation: OperationId,
-        digest: [u8; 32],
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.verify_tool_approval_with_io(id, operation, digest, Some(&io))
-                .await
-        })
-    }
 }
 
 impl<P, A, O> ExecutionJournal for FilesystemExecutionJournal<P, A, O>

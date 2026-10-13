@@ -62,7 +62,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             return Ok(false);
         }
         match source.kind {
-            FileKind::Regular if observed.file_type().is_file() => {
+            FileKind::Regular if (observed.file_type() == crate::demand::SourceNodeKind::RegularFile) => {
                 if source.logical_bytes != Some(observed.len()) {
                     return Ok(false);
                 }
@@ -121,7 +121,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                     return Ok(false);
                 }
             }
-            FileKind::SymbolicLink if observed.file_type().is_symlink() => {
+            FileKind::SymbolicLink if (observed.file_type() == crate::demand::SourceNodeKind::SymbolicLink) => {
                 let expected = generation
                     .read_symbolic_link(&absolute, work, work.cancellation())
                     .await?;
@@ -149,7 +149,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                     return Ok(false);
                 }
             }
-            FileKind::Directory if observed.is_dir() => {
+            FileKind::Directory if (observed.file_type() == crate::demand::SourceNodeKind::Directory) => {
                 if children
                     && !generation_children(
                         root,
@@ -167,7 +167,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
         }
         let selected = host_path(relative, &mut &*work, |path, work| root.stat(path, work))?;
         if selected.identity() != observed.identity()
-            || children && observed.is_dir() && selected.modified()? != observed.modified()?
+            || children && (observed.file_type() == crate::demand::SourceNodeKind::Directory) && selected.modified()? != observed.modified()?
         {
             return Ok(false);
         }

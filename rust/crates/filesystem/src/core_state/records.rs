@@ -329,9 +329,7 @@ pub(super) fn read_json<T: DeserializeOwned>(
     if let Some(maximum) = maximum_bytes
         && file.metadata()?.len() > maximum
     {
-        return Err(LocalCoreStateStoreError::ContextTransaction(
-            "workspace-context child bucket exceeds its declared bound".to_owned(),
-        ));
+        return Err(LocalCoreStateStoreError::Integrity);
     }
     let mut bytes = Vec::new();
     match maximum_bytes {
@@ -346,9 +344,7 @@ pub(super) fn read_json<T: DeserializeOwned>(
     if let Some(maximum) = maximum_bytes
         && bytes.len() as u64 > maximum
     {
-        return Err(LocalCoreStateStoreError::ContextTransaction(
-            "workspace-context child bucket grew beyond its declared bound".to_owned(),
-        ));
+        return Err(LocalCoreStateStoreError::Integrity);
     }
     serde_json::from_slice(&bytes)
         .map(Some)

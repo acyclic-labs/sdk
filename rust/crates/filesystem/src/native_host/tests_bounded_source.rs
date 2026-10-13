@@ -76,14 +76,13 @@ fn native_stat_preserves_full_file_id_and_opaque_reparse_kind() -> io::Result<()
     let opaque = HostStat::from_stat_information(&information, 17)?;
     assert_eq!(opaque.raw.FileId as u64, u64::MAX);
     assert_eq!(opaque.volume_serial_number, 17);
-    assert!(opaque.file_type().is_file());
-    assert!(!opaque.file_type().is_symlink());
+    assert!((opaque.file_type() == crate::demand::SourceNodeKind::RegularFile));
+    assert!((opaque.file_type() != crate::demand::SourceNodeKind::SymbolicLink));
     for tag in [0xA000_0003, 0xA000_000C] {
         information.ReparseTag = tag;
         assert!(
-            HostStat::from_stat_information(&information, 17)?
-                .file_type()
-                .is_symlink()
+            HostStat::from_stat_information(&information, 17)?.file_type()
+                == crate::demand::SourceNodeKind::SymbolicLink
         );
     }
     Ok(())

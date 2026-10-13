@@ -174,9 +174,6 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de> for Funded<'_, '_,
         }
         Ok(output)
     }
-    fn visit_borrowed_str<E: serde::de::Error>(self, value: &'de str) -> Result<Self::Value, E> {
-        self.visit_str(value)
-    }
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
         self.decode
             .allocation

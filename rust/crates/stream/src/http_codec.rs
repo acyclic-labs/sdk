@@ -24,10 +24,6 @@ fn options_json(
     (!entries.is_empty()).then(|| json_object(entries))
 }
 
-fn valid_token_operation(value: &str) -> bool {
-    TOKEN_OPERATIONS.contains(&value)
-}
-
 fn valid_token_expiry(value: &str) -> bool {
     let bytes = value.as_bytes();
     let Some((unit, digits)) = bytes.split_last() else {
@@ -48,7 +44,7 @@ fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
             || grant
                 .operations
                 .iter()
-                .any(|operation| !valid_token_operation(operation))
+                .any(|operation| !TOKEN_OPERATIONS.contains(&operation.as_str()))
         {
             return Err("invalid_argument");
         }

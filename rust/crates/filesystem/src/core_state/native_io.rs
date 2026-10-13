@@ -219,9 +219,7 @@ pub(super) fn read_file<T: DeserializeOwned>(
     };
     let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
     if maximum_bytes.is_some_and(|maximum| length > maximum) {
-        return Err(LocalCoreStateStoreError::ContextTransaction(
-            "workspace-context child bucket exceeds its declared bound".to_owned(),
-        ));
+        return Err(LocalCoreStateStoreError::Integrity);
     }
     let _buffer = {
         let claim_bytes = 64 * 1024;

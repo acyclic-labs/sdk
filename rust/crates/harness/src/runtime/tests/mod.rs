@@ -158,7 +158,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
             digest: [9; 32],
         },
         decision: ToolPolicyDecision::RequireApproval {
-            prompt: "Approve Î» ðŸ¦€?".into(),
+            prompt: "Approve ÃŽÂ» Ã°Å¸Â¦â‚¬?".into(),
         },
     };
     let definition = ToolDefinition {
@@ -173,7 +173,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
         operation_id: OperationId::new(),
         call_id: "provider-call".into(),
         name: definition.name.clone(),
-        arguments: serde_json::json!({"z":[true,null],"a":"Î»"}),
+        arguments: serde_json::json!({"z":[true,null],"a":"ÃŽÂ»"}),
     };
     (policy, definition, invocation)
 }
@@ -203,33 +203,6 @@ impl ResumableMachine for TestMachine {
             commands: Vec::new(),
             status: crate::workflow::MachineStatus::Suspended,
         })
-    }
-}
-
-pub(super) struct StateOnlyProvider;
-
-impl TaskStateProvider for StateOnlyProvider {
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        None
-    }
-    fn observe_admission<'a>(
-        &'a self,
-        _task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
-    }
-    fn resume_scope<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
-    }
-    fn outcome<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
-        Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
-    }
-    fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
     }
 }
 

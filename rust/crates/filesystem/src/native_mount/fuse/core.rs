@@ -45,7 +45,6 @@ pub(super) struct ProjectionCore {
     pub(super) invalidation: Condvar,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
-    pub(super) notifier: OnceLock<Notifier>,
     pub(super) _allocation: crate::NativeAllocation,
     pub(super) callback_guard: Option<Arc<dyn crate::native_mount::NativeMountCallbackGuard>>,
     pub(super) source_original_work: Option<crate::NativeMaterializationWork>,
@@ -70,8 +69,7 @@ impl NativeMountWorkScope {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .enter(meter)?;
-        let _state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        core.invalidation.notify_all();
+        let _state = core.state_to_finish();
         Ok(Self {
             core: Arc::clone(core),
             meter: meter.clone(),
@@ -91,20 +89,14 @@ impl Drop for NativeMountWorkScope {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .leave(&self.meter, self.generation);
-        let _state = self
-            .core
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        self.core.invalidation.notify_all();
+        let _state = self.core.state_to_finish();
     }
 }
 
 impl ProjectionCore {
     pub(super) fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        self.invalidation.notify_all();
+        let _state = self.state_to_finish();
     }
 
     pub(super) fn new(
@@ -165,7 +157,6 @@ impl ProjectionCore {
             invalidation: Condvar::new(),
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),
-            notifier: OnceLock::new(),
             _allocation: allocation,
             callback_guard,
             source_original_work,

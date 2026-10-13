@@ -52,9 +52,7 @@ use content::*;
 mod context;
 use context::*;
 mod contract;
-use contract::*;
 mod declarations;
-use declarations::*;
 mod identity;
 use identity::*;
 mod json;
@@ -62,18 +60,14 @@ use json::*;
 mod model;
 use model::*;
 mod reducer;
-use reducer::*;
+use reducer::schema_registry;
 mod tool;
 use tool::*;
 mod wire;
-use wire::*;
 
 #[cfg(target_arch = "wasm32")]
-#[path = "../wasm/context_discovery.rs"]
 mod context_discovery;
-#[path = "../wasm/history.rs"]
 mod history;
-#[path = "../wasm/mcp.rs"]
 mod mcp;
 
 #[derive(Deserialize, Serialize)]
@@ -99,13 +93,7 @@ pub struct WasmReducer {
 }
 
 /// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
-/// The native filesystem provider uses the same crate-level core while
-/// retaining its signed provider-generation proof around delegated reads.
 #[wasm_bindgen]
 pub struct WasmContentStore {
     store: crate::memory_store::MemoryStore,
 }
-
-#[cfg(feature = "browser")]
-#[path = "../wasm/task_runtime/mod.rs"]
-mod task_runtime;

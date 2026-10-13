@@ -104,51 +104,6 @@ pub(in crate::tool) fn bound<T: Serialize>(
     })
 }
 
-pub(in crate::tool) fn summary_reference(
-    file: &FileRef,
-    maximum: usize,
-    arguments: std::fmt::Arguments<'_>,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, crate::NativeCustody)> {
-    use std::fmt::Write as _;
-    let mut allocation =
-        super::super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
-    let mut text = String::new();
-    allocation.reserve_string(&mut text, maximum)?;
-    struct FixedText<'a> {
-        text: &'a mut String,
-        work: &'a super::super::edit::AlgorithmWork,
-        denial: Option<Error>,
-    }
-    impl std::fmt::Write for FixedText<'_> {
-        fn write_str(&mut self, value: &str) -> std::fmt::Result {
-            if value.len() > self.text.capacity() - self.text.len() {
-                self.denial = Some(invalid("file summary exceeds its preclaimed capacity"));
-                return Err(std::fmt::Error);
-            }
-            if let Err(error) = self.work.copy(value.len()) {
-                self.denial = Some(error);
-                return Err(std::fmt::Error);
-            }
-            self.text.push_str(value);
-            Ok(())
-        }
-    }
-    let mut writer = FixedText {
-        text: &mut text,
-        work: &allocation,
-        denial: None,
-    };
-    if writer.write_fmt(arguments).is_err() {
-        return Err(writer
-            .denial
-            .take()
-            .unwrap_or_else(|| invalid("file summary formatting failed")));
-    }
-    drop(writer);
-    super::super::schema::project_reference(file, &text, Some(work))
-}
-
 macro_rules! record {
         ($ty:ty, $value:ident, $($bytes:expr),+ $(,)?) => {
             impl crate::filesystem::UploadRecord for $ty {

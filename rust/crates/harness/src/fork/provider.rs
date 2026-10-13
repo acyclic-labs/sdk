@@ -102,7 +102,7 @@ where
 }
 
 pub(crate) fn boundary_error(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &Option<&mut dyn HistoryIo>,
     code: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {

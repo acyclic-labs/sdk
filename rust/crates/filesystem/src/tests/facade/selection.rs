@@ -43,7 +43,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
             &cancellation,
         );
         let failure = fs
-            .select_fork_paths_with_accounting(
+            .select_fork_paths(
                 &source,
                 checkout.root(),
                 paths,
