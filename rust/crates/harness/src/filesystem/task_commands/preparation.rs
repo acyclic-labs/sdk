@@ -278,13 +278,13 @@ where
                     let (admission, custody) = self
                         .runtime
                         .harness()
-                        .registered_child_admission_with_native_work(
+                        .registered_admission(
                             operation,
                             &input.name,
                             &input.version,
                             (input.input, custody),
-                            task,
-                            context.scope(),
+                            Some((task, context.scope())),
+                            None,
                             work,
                         )?;
                     io.absorb_native_custody(custody)?;

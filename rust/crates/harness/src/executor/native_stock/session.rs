@@ -115,7 +115,7 @@ pub(in crate::executor) fn native_execution_supported(
         .into_iter()
         .chain(context.as_ref().stock_tool_policy_overrides())
     {
-        policy.supports_native_policy(work)?;
+        policy.identity_with_native_work(work)?;
     }
     if let Some(policy) = &stock.policy {
         let Some((_, original)) = context.as_ref().stock_tool_policy_binding() else {
@@ -288,7 +288,7 @@ impl StockExecutor {
             return Ok(false);
         }
         if let Some(policy) = &self.policy {
-            policy.supports_native_policy(work)?;
+            policy.identity_with_native_work(work)?;
         }
         Ok(true)
     }

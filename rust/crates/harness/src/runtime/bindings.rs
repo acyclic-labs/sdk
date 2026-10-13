@@ -215,7 +215,6 @@ impl Bindings {
             .map(|policy| policy.identity());
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(work), Some(policy)) = (native, &self.policy) {
-            policy.supports_native_policy(work)?;
             let (identity, custody) = policy.identity_with_native_work(work)?;
             check_policy_metadata(&identity, &custody, work)?;
             validate_policy_identity(&identity, startup)?;
