@@ -23,7 +23,7 @@ pub(super) fn allocation_ref(
     volume: &VolumeRef,
     io: Option<&PreparationIo>,
 ) -> Result<WorkspaceRef> {
-    let volume_name = bounded_io::volume_storage_name(volume, io)?;
+    let volume_name = crate::executor::with_history_io(io, |work| volume.storage_name(work))?;
     let hold = io
         .map(|io| io.guard_owned(volume_name.capacity() as u64))
         .transpose()?;
@@ -80,11 +80,19 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
     let bytes = encode(value, maximum_bytes, io)?;
     let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
     let observed = (host).resolve(journal, io).await?;
-    let result = (host).apply_generation(journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
-            path: stock_string_copy(path, io)?,
-            bytes,
-        }], key, io, preparation.map(Arc::as_ref))
-    .await;
+    let result = (host)
+        .apply_generation(
+            journal,
+            Some(&observed.generation),
+            &[WorkspaceMutation::PutFile {
+                path: stock_string_copy(path, io)?,
+                bytes,
+            }],
+            key,
+            io,
+            preparation.map(Arc::as_ref),
+        )
+        .await;
     drop(hold);
     match result {
         Ok(_) => Ok(()),

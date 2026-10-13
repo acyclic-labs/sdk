@@ -62,7 +62,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .ok_or_else(|| io.invalid("creator capture ownership overflow"))?;
         io.retain_owned(capture)?;
         io.allocation_attempt(std::mem::size_of::<CreatedProvenance>() as u64)?;
-        let name = io.capability(&allocation.volume, "harness-")?;
+        let name = allocation
+            .volume
+            .storage_name(&mut Some(&mut io.history_io()))?;
         let read = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(
                 format_args!("volume:read:{}", &name["harness-".len()..]),

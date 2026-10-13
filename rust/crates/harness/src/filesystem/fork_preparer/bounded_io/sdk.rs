@@ -1,7 +1,6 @@
 //! Filesystem operations on the preparation context.
 use super::*;
-use crate::filesystem::{WorkspaceObservation, filesystem_key};
-use acyclic_fs::{Generation, GenerationId, TransactionCommit, Workspace};
+use acyclic_fs::{Generation, GenerationId};
 
 impl acyclic_fs::facade::FsWork for &PreparationIo {
     type Output<T, E> = (
@@ -240,21 +239,12 @@ pub(in crate::filesystem) fn content_workspace(
     volume: &VolumeRef,
     io: Option<&PreparationIo>,
 ) -> Result<WorkspaceRef> {
-    let name = volume_storage_name(volume, io)?;
+    let name = crate::executor::with_history_io(io, |work| volume.storage_name(work))?;
     let provider = match io {
         Some(io) => provider.clone_with_io(io)?,
         None => provider.clone(),
     };
     WorkspaceRef::new(provider, name.into_bytes(), None)
-}
-pub(in crate::filesystem) fn volume_storage_name(
-    volume: &VolumeRef,
-    io: Option<&PreparationIo>,
-) -> Result<String> {
-    match io {
-        Some(io) => io.capability(volume, "harness-"),
-        None => volume.storage_name(&mut None),
-    }
 }
 
 use crate::executor::stock_boundary;
