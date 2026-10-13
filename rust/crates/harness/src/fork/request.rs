@@ -39,7 +39,7 @@ impl ForkRequest {
         mut self,
         parent: &crate::core::Reducer,
         policy: ForkHistoryPolicy,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
@@ -64,7 +64,10 @@ impl ForkRequest {
             ));
         }
         if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: 1,
+            })?;
         }
         let full_cut = conversation.logical_revision();
         let (through_sequence, summary) = match policy {
@@ -79,10 +82,7 @@ impl ForkRequest {
     }
 
     /// Checks identities, resource selections and optional attestation metadata.
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         let mut work = CodecQuota::observed(work)?;
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
             || self.selections.len() as u64 > MAX_FORK_RESOURCES as u64
@@ -189,7 +189,7 @@ impl ForkRequest {
 
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         CodecQuota::produce(work, |quota| {
-            crate::core::copy_owned(self, quota, |source, work| {
+            crate::core::copy(self, quota, |source, work| {
                 source.validate(work)?;
                 crate::core::owned_bytes(source)
             })

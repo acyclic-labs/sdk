@@ -147,16 +147,8 @@ pub(crate) fn finish_context<T>(
     match context {
         CallbackWork::Original(_) => result,
         CallbackWork::Ordinary(mut context) => {
-            let completed = context.receipt();
-            accept_source_result(
-                result
-                    .map(|value| OperationReceipt {
-                        value,
-                        work: completed,
-                    })
-                    .map_err(|error| OperationFailure::new(error, completed)),
-                accounting,
-            )
+            merge_source_work(context.receipt(), accounting)?;
+            result
         }
     }
 }
@@ -168,11 +160,10 @@ pub(crate) fn callback_work(
         return Ok(CallbackWork::Original(original.clone()));
     }
     let budget = accounting.remaining().map_err(DemandError::from)?;
-    let stop = match &*accounting {
-        crate::kernel::KernelAccounting::Standalone { cancellation, .. }
-        | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. }
-        | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => cancellation,
-    };
+    let stop = accounting
+        .standalone_parts()
+        .ok_or(DemandError::NativeWorkUnavailable)?
+        .3;
     Ok(CallbackWork::Ordinary(DemandWork::new(budget, stop)))
 }
 
@@ -201,7 +192,7 @@ impl NativeDemandSource {
         let (bytes, allocation) = self.inner.root.read_link(relative, maximum, context)?;
         #[cfg(windows)]
         let (bytes, allocation) = {
-            let (units, allocation) = self.inner.root.read_link_wide(relative, maximum, context)?;
+            let (units, allocation) = self.inner.root.read_link(relative, maximum, context)?;
             let result = (|| {
                 let copying = WorkCounters {
                     bytes_copied: units.len() as u64 * 2,

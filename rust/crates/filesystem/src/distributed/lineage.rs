@@ -126,7 +126,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut request = CommitRequest {
             conditions: work.vec(4)?,
             mutations: work.vec(4)?,
-            idempotency_key: work.stream_key(b"create", &authority.into_bytes())?,
+            idempotency_key: work.key(b"create\0", &[&authority.into_bytes()])?,
         };
         self.creation_request(&mut request, authority, epoch, None, None, work)?;
         let outcome = self
@@ -158,7 +158,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut request = CommitRequest {
             conditions: work.vec(7)?,
             mutations: work.vec(7)?,
-            idempotency_key: work.operation_key(authority, commit.operation_id)?,
+            idempotency_key: work.key(
+                b"operation\0",
+                &[&authority.into_bytes(), &commit.operation_id.into_bytes()],
+            )?,
         };
         self.creation_request(
             &mut request,
@@ -177,10 +180,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 seal(work, guard).await?;
                 return Ok(true);
             }
-            Ok(_) => {}
-            Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
+            Ok(_)
+            | Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
                 acyclic_stream::StreamError::IdempotencyMismatch,
-            ))) => return Ok(false),
+            ))) => {}
             Err(error) => return Err(error),
         }
         let value = match self.tail_of(authority, "/records", work).await {
@@ -226,7 +229,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut request = CommitRequest {
             conditions: work.vec(6)?,
             mutations: work.vec(6)?,
-            idempotency_key: work.stream_key(b"fork-authority", &operation.into_bytes())?,
+            idempotency_key: work.key(b"fork-authority\0", &[&operation.into_bytes()])?,
         };
         self.creation_request(
             &mut request,
@@ -288,7 +291,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut request = CommitRequest {
             conditions: work.vec(14)?,
             mutations: work.vec(14)?,
-            idempotency_key: work.operation_key(fork.destination, fork.creation.operation_id)?,
+            idempotency_key: work.key(
+                b"operation\0",
+                &[
+                    &fork.destination.into_bytes(),
+                    &fork.creation.operation_id.into_bytes(),
+                ],
+            )?,
         };
         self.creation_request(
             &mut request,

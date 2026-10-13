@@ -5,7 +5,7 @@ use super::*;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
     owner: &crate::durable_host::TaskJournalOwner<P>,
-    mut template: crate::filesystem::NativePreparationCompletionTemplate,
+    template: crate::filesystem::NativePreparationCompletionTemplate,
     original: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<crate::NativeFutureBundle<'static, acyclic_fs::MaterializationJournal>> {
     use acyclic_stream::{CommitCondition, CommitOutcome};
@@ -20,10 +20,9 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             reason: "native completion differs from its original observer and custody",
         });
     }
-    let (_, output, maximum_bytes) = template.codec_parts();
+    let maximum_bytes = template.output.maximum_len() as u64;
     if maximum_bytes == 0
         || maximum_bytes > acyclic_stream::MAX_RECORD_BYTES as u64
-        || (output.len() as u64) < maximum_bytes
     {
         return Err(Error::NativeBoundary {
             code: wire::ErrorCode::Storage,
@@ -45,10 +44,10 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
     template.verify_owner(owner, original)?;
     let client = owner.stream();
     let owner_condition = owner.condition(JournalWrite::Fresh, &mut work).await?;
-    let bounds = operations::bounds_with_work(&client, template.path(), &mut work)
+    let bounds = operations::bounds_with_work(&client, &template.path, &mut work)
         .await?
         .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
-    if bounds.tail != template.expected_revision() {
+    if bounds.tail != template.journal.revision {
         return Err(guarded_boundary(
             &work,
             wire::ErrorCode::Conflict,
@@ -56,8 +55,8 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
         ));
     }
     let target = CommitCondition::Tail {
-        path: template.path().clone(),
-        expected: template.expected_revision(),
+        path: template.path.clone(),
+        expected: template.journal.revision,
     };
     if !matches!(&owner_condition, CommitCondition::Tail { .. }) {
         return Err(Error::NativeBoundary {
@@ -65,16 +64,16 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             reason: "native completion requires its original owner tail",
         });
     }
-    let pool_bytes = (size_of::<Error>() as u64 + crate::contract::sdk_json_diagnostic_bytes())
+    let pool_bytes = (size_of::<Error>() as u64 + crate::executor::json::sdk_json_diagnostic_bytes())
         .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
     let (request, custody) = {
-        let mut prepared = commit_request(template.key().clone(), 0, &mut work);
+        let mut prepared = commit_request(template.key.clone(), 0, &mut work);
         prepared.1.reserve(2, &mut prepared.0.conditions)?;
         prepared.0.conditions.push(owner_condition);
         prepared.0.conditions.push(target);
         add_record(
             &mut prepared,
-            template.path().clone(),
+            template.path.clone(),
             acyclic_stream::OwnedBytes::new(),
         )?;
         if let Some(io) = prepared.1.work().as_deref_mut() {
@@ -134,13 +133,12 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
         let state = pending;
         let counters = state.4.completion_work()?;
         let (mut template, sdk, sdk_recovery, mut sdk_custody, mut observer) = state;
-        let operation = OperationId::from_bytes(template.task_binding().0.into_bytes());
+        let operation = OperationId::from_bytes(template.binding.0.into_bytes());
         let finished = async {
             template.set_completed_work(counters)?;
-            let (value, output, maximum_bytes) = template.codec_parts();
             // The accepted reservation covers every write within this fixed buffer.
-            let mut output = std::io::Cursor::new(&mut output[..maximum_bytes as usize]);
-            let serialized = serde_json::to_writer(&mut output, value);
+            let mut output = std::io::Cursor::new(template.output.writable());
+            let serialized = serde_json::to_writer(&mut output, &template.value);
             let written = output.position() as usize;
             let charged = observer.record_completed(acyclic_fs::WorkCounters {
                 bytes_encoded: written as u64,
@@ -153,7 +151,10 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
                 custody: None,
             })?;
             charged?;
-            let (journal, output, mut custody) = template.into_completed_parts();
+            let crate::filesystem::NativePreparationCompletionTemplate {
+                mut journal, output, mut custody, ..
+            } = template;
+            journal.revision += 1;
             if let Err(cause) = sdk_custody.absorb(&mut custody) {
                 drop(output);
                 return Err(Error::NativeWork {
@@ -228,7 +229,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             Err(error) => return Err(completion_error(error, custody)),
         };
         let output_bytes = size_of::<acyclic_fs::MaterializationJournal>() as u64;
-        if let Err(cause) = custody.substitute(output_bytes) {
+        if let Err(cause) = custody.resize(output_bytes) {
             drop(journal);
             return Err(Error::NativeWork {
                 cause,

@@ -2,22 +2,25 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) struct RecordPaths<'a> {
-    pub(super) directory: PathBuf,
     pub(super) current: PathBuf,
     pub(super) previous: PathBuf,
     pub(super) temporary: PathBuf,
     pub(super) lock: PathBuf,
     pub(super) namespace: PhantomData<&'a Namespace>,
-    pub(super) allocation: Option<crate::materializer::NativeAllocation>,
+    pub(super) allocation: Option<crate::NativeAllocation>,
 }
 
 impl RecordPaths<'_> {
+    pub(super) fn directory(&self) -> &Path {
+        self.current.parent().expect("record paths have a family")
+    }
+
     fn read<T: DeserializeOwned>(
         &self,
         path: &Path,
     ) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
         match &self.allocation {
-            Some(allocation) => measured_read_file(path, allocation.work())
+            Some(allocation) => read_file(path, allocation.work(), None)
                 .map(|value| value.map(|(value, allocation)| (value, Some(allocation)))),
             None => read_json(path, None).map(|value| value.map(|value| (value, None))),
         }
@@ -26,14 +29,14 @@ impl RecordPaths<'_> {
     pub(super) fn sync(&self) -> Result<(), LocalCoreStateStoreError> {
         if let Some(allocation) = &self.allocation {
             let work = allocation.work();
-            let root = crate::native_host::HostRoot::open(&self.directory, &mut &*work)?;
-            let directory = root.open_dir_held(Path::new(""), &mut &*work)?;
-            crate::native_host::sync_directory_held(&directory, &mut &*work)?;
+            let root = crate::native_host::HostRoot::open(self.directory(), &mut &*work)?;
+            crate::native_host::sync_directory_held(&root.directory, &mut &*work)?;
         } else {
-            sync_directory(&self.directory)?;
+            sync_directory(self.directory())?;
         }
         Ok(())
     }
+
     fn exists(&self, path: &Path) -> Result<bool, LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
             return Ok(path.exists());
@@ -43,22 +46,7 @@ impl RecordPaths<'_> {
         let leaf = path.file_name().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
         })?;
-        #[cfg(unix)]
-        let observed = crate::native_host::stat_leaf(&parent, leaf, &mut &*work);
-        #[cfg(windows)]
-        let observed =
-            crate::native_host::with_wide_path(Path::new(leaf), &mut &*work, |name, work| {
-                crate::native_host::stat_windows_leaf(&parent, name, work)
-            });
-        match observed {
-            Ok(_) => Ok(true),
-            Err(crate::materializer::NativeTreeMaterializationError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound =>
-            {
-                Ok(false)
-            }
-            Err(error) => Err(error.into()),
-        }
+        Ok(crate::native_host::entry_identity(&parent, Path::new(leaf), &mut &*work)?.is_some())
     }
 
     #[cfg(not(windows))]
@@ -80,11 +68,13 @@ impl RecordPaths<'_> {
                 "journal destination has no leaf",
             )
         })?;
-        crate::native_host::rename_no_replace_held(
+        crate::native_host::rename_held(
             &parent,
             Path::new(source),
             &parent,
             Path::new(target),
+            acyclic_native_runtime::RenameMode::NoReplace,
+            None,
             &mut &*work,
         )?;
         Ok(())
@@ -123,11 +113,7 @@ impl RecordPaths<'_> {
             if count == 0 {
                 break;
             }
-            destination.write_all(
-                bytes
-                    .get(..count)
-                    .ok_or_else(|| std::io::Error::other("invalid journal copy length"))?,
-            )?;
+            destination.write_all(&bytes[..count])?;
         }
         crate::native_host::sync_file_held(&destination.file, &mut &*work)?;
         Ok(())
@@ -143,12 +129,14 @@ impl RecordPaths<'_> {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
         })?;
         match crate::native_host::remove_leaf(&parent, Path::new(leaf), false, &mut &*work) {
-            Ok(()) => {}
-            Err(crate::materializer::NativeTreeMaterializationError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Ok(()) => Ok(()),
+            Err(crate::NativeTreeMaterializationError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
         }
-        Ok(())
     }
 }
 
@@ -235,7 +223,7 @@ pub(super) fn acquire_lock(
         .map(|allocation| allocation.work().clone());
     let lock = match &work {
         Some(work) => {
-            crate::native_host::create_directories(&paths.directory, &mut &*work)?;
+            crate::native_host::create_directories(paths.directory(), &mut &*work)?;
             materialization_open_options(
                 &paths.lock,
                 &crate::native_host::NativeOpenOptions::ReadWriteCreate,
@@ -243,7 +231,7 @@ pub(super) fn acquire_lock(
             )?
         }
         None => {
-            std::fs::create_dir_all(&paths.directory)?;
+            std::fs::create_dir_all(paths.directory())?;
             OpenOptions::new()
                 .create(true)
                 .truncate(false)
@@ -274,7 +262,6 @@ pub(super) fn acquire_lock(
                 if Instant::now() >= deadline {
                     if let Some(mut allocation) = paths.allocation.take() {
                         drop((
-                            std::mem::take(&mut paths.directory),
                             std::mem::take(&mut paths.current),
                             std::mem::take(&mut paths.previous),
                             std::mem::take(&mut paths.temporary),

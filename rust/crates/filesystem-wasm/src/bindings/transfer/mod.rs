@@ -41,7 +41,6 @@ pub struct GenerationTransferCursorResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Builds a deterministic complete manifest for resumable transfer.
     #[wasm_bindgen(js_name = exportManifest)]
     pub async fn export_manifest(&self) -> Result<Ts<BrowserExportManifestResult>, JsValue> {
         let cancellation = CancellationToken::default();

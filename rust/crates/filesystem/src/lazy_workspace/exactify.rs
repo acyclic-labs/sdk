@@ -17,44 +17,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
         let cut = self.snapshot(ctx).await?;
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
-        self.exactify_at(root, cut, state, permit, ctx).await
-    }
-    /// Materializes an immutable cut in a deterministic scratch fork.
-    pub async fn exactify_snapshot(
-        &self,
-        cut: LazySnapshotRef,
-        destination: &str,
-        key: IdempotencyKey,
-        ctx: &mut KernelAccounting<'_>,
-    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx)?;
-        retire_node(
-            self.store
-                .load_lazy_overlay(cut.overlay, ctx)
-                .await?
-                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
-            ctx,
-        )?;
-        retire_node(
-            self.store
-                .load_lazy_shadow(cut.shadows, ctx)
-                .await?
-                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
-            ctx,
-        )?;
-        let (child, _) = self.fork_snapshot(destination, cut, key, ctx).await?;
-        child
-            .exactify("/", crate::PublicationPermit::Unrestricted, ctx)
-            .await
-    }
-    async fn exactify_at(
-        &self,
-        root: &str,
-        cut: LazySnapshotRef,
-        state: LazyWorkspaceState,
-        permit: crate::PublicationPermit,
-        ctx: &mut KernelAccounting<'_>,
-    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
         let (mut paths, _) = self.enumerate_paths(root, cut, &state, ctx).await?;
         paths
             .value
@@ -126,6 +88,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         .await;
         paths.retire(ctx)?;
         result
+    }
+
+    /// Materializes an immutable cut in a deterministic scratch fork.
+    pub async fn exactify_snapshot(
+        &self,
+        cut: LazySnapshotRef,
+        destination: &str,
+        key: IdempotencyKey,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        let (child, _) = self.fork_snapshot(destination, cut, key, ctx).await?;
+        child
+            .exactify("/", crate::PublicationPermit::Unrestricted, ctx)
+            .await
     }
 
     pub(super) async fn enumerate_paths(

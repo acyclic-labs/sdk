@@ -5,7 +5,9 @@ pub struct McpRuntimeCallbacks {
     executor: StockExecutor,
     journal: Arc<dyn ExecutionJournal>,
     model_name: String,
-    sampling: McpSamplingPolicy,
+    continuation: ModelContent,
+    image: Option<NativeMediaPolicy>,
+    audio: Option<NativeMediaPolicy>,
 }
 impl McpRuntimeCallbacks {
     /// Selects the existing execution owner and model display identity.
@@ -13,18 +15,18 @@ impl McpRuntimeCallbacks {
         executor: StockExecutor,
         journal: Arc<dyn ExecutionJournal>,
         model_name: String,
-        sampling: McpSamplingPolicy,
+        continuation: ModelContent,
+        image: Option<NativeMediaPolicy>,
+        audio: Option<NativeMediaPolicy>,
     ) -> Result<Self> {
         if model_name.is_empty() {
             return Err(Error::Invalid("MCP sampling model name is empty".into()));
         }
-        sampling.continuation.validate_user_input(&mut None)?;
-        if sampling
-            .image
+        continuation.validate_user_input(&mut None)?;
+        if image
             .as_ref()
             .is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Image { .. }))
-            || sampling
-                .audio
+            || audio
                 .as_ref()
                 .is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Audio { .. }))
         {
@@ -36,7 +38,9 @@ impl McpRuntimeCallbacks {
             executor: executor.with_tool_registry(crate::tool::ToolRegistry::default()),
             journal,
             model_name,
-            sampling,
+            continuation,
+            image,
+            audio,
         })
     }
     async fn pin(&self, operation: OperationId, request: &McpCallbackRequest) -> Result<()> {
@@ -47,7 +51,7 @@ impl McpRuntimeCallbacks {
                 &crate::contract::canonical_json_bytes(&(
                     request,
                     &self.model_name,
-                    &self.sampling,
+                    json!({"continuation":self.continuation,"image":self.image,"audio":self.audio}),
                 ))?,
                 "application/json",
                 None,
@@ -63,47 +67,46 @@ impl McpRuntimeCallbacks {
         context: ToolContext,
         request: &McpCallbackRequest,
     ) -> Result<(OperationId, Value)> {
-        crate::contract::json_byte_length(request, context.scope().limits().file_bytes, &mut None)
-            .map(|_| ())?;
-        let operation = request.validate()?;
+        crate::executor::json::json_byte_length(
+            request,
+            context.scope().limits().file_bytes,
+            &mut None,
+        )
+        .map(|_| ())?;
+        let (operation, decoded) = request.validate()?;
         if request.parent != context.operation_id() {
             return Err(Error::Unauthorized(
                 "MCP callback parent differs from admitted call".into(),
             ));
         }
-        let method = request
-            .message
-            .get("method")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::Invalid("MCP callback method absent".into()))?;
-        let params = request
-            .message
-            .get("params")
-            .ok_or_else(|| Error::Invalid("MCP callback parameters absent".into()))?;
-        let result = match method {
-            "sampling/createMessage" if request.policy.sampling => {
+        let result = match decoded {
+            rmcp::model::ServerRequest::CreateMessageRequest(sampling) => {
+                let params = sampling.params;
                 if !context.scope().grants().contains("model:generate") {
                     return Err(Error::Unauthorized(
                         "MCP sampling lacks model:generate".into(),
                     ));
                 }
-                if params
-                    .get("tools")
+                if request
+                    .message
+                    .pointer("/params/tools")
                     .is_some_and(|tools| tools.as_array().is_none_or(|tools| !tools.is_empty()))
                 {
                     return Err(Error::Unsupported(
                         "MCP sampling tool projection was not selected by this host".into(),
                     ));
                 }
-                let max_tokens = params
-                    .get("maxTokens")
-                    .and_then(Value::as_u64)
-                    .and_then(|tokens| u32::try_from(tokens).ok())
-                    .ok_or_else(|| Error::Invalid("invalid MCP sampling token bound".into()))?;
+                let max_tokens = params.max_tokens;
                 self.pin(operation, request).await?;
-                let (input, prior) =
-                    sampling_messages(params, max_tokens, &context, operation, &self.sampling)
-                        .await?;
+                let (input, prior) = sampling_messages(
+                    params,
+                    &context,
+                    operation,
+                    &self.continuation,
+                    self.image.as_ref(),
+                    self.audio.as_ref(),
+                )
+                .await?;
                 let stage = Arc::new(SourceStage::new(
                     "mcp-sampling",
                     operation.to_string(),
@@ -146,30 +149,25 @@ impl McpRuntimeCallbacks {
                 }
                 json!({"role":"assistant","content":{"type":"text","text":text},"model":self.model_name,"stopReason":"endTurn"})
             }
-            "elicitation/create" if request.policy.elicitation => {
+            rmcp::model::ServerRequest::ElicitRequest(elicitation) => {
                 if !context.scope().grants().contains("interaction:route") {
                     return Err(Error::Unauthorized(
                         "MCP elicitation lacks interaction:route".into(),
                     ));
                 }
-                if params
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .is_some_and(|mode| mode != "form")
-                {
+                let rmcp::model::ElicitRequestParams::FormElicitationParams { message, .. } =
+                    elicitation.params
+                else {
                     return Err(Error::Unsupported(
                         "MCP URL elicitation requires a separately installed host interaction"
                             .into(),
                     ));
-                }
+                };
                 let interaction = Interaction::Form {
-                    title: params
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| Error::Invalid("MCP form message absent".into()))?
-                        .into(),
-                    schema: params
-                        .get("requestedSchema")
+                    title: message,
+                    schema: request
+                        .message
+                        .pointer("/params/requestedSchema")
                         .cloned()
                         .ok_or_else(|| Error::Invalid("MCP form schema absent".into()))?,
                 };

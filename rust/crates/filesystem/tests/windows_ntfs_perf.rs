@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
+use acyclic_fs::facade::FsWork;
 use acyclic_fs::kernel::{FileMetadata, MetadataField};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
@@ -17,7 +18,6 @@ use acyclic_fs::{
 };
 use acyclic_stream::OwnedBytes;
 use serde_json::json;
-use acyclic_fs::FsWork;
 
 fn component(value: &str) -> Vec<u8> {
     value.encode_utf16().flat_map(u16::to_le_bytes).collect()
@@ -115,14 +115,16 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         "ntfs-source-links",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
+        acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
             acyclic_fs::Lifecycle::Durable
         } else {
             acyclic_fs::Lifecycle::Ephemeral
         }),
         acyclic_fs::OperationId::new(),
-        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
-    .await .map(|(lazy, _)| lazy) ?;
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await
+    .map(|(lazy, _)| lazy)?;
     let cancellation = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
     let exact = lazy
@@ -448,14 +450,16 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         "windows-ntfs-costs",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
+        acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
             acyclic_fs::Lifecycle::Durable
         } else {
             acyclic_fs::Lifecycle::Ephemeral
         }),
         acyclic_fs::OperationId::new(),
-        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
-    .await .map(|(lazy, _)| lazy) ?;
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await
+    .map(|(lazy, _)| lazy)?;
     let attach_us = started.elapsed().as_micros();
 
     let view = tempfile::tempdir()?;
@@ -556,14 +560,16 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         "windows-ntfs-phases",
         phase_demand,
         MemoryLazyWorkspaceStore::default(),
-    acyclic_fs::VolumeConfig::portable(if (&phase_fs).capabilities().durable {
+        acyclic_fs::VolumeConfig::portable(if (&phase_fs).capabilities().durable {
             acyclic_fs::Lifecycle::Durable
         } else {
             acyclic_fs::Lifecycle::Ephemeral
         }),
         acyclic_fs::OperationId::new(),
-        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
-    .await .map(|(lazy, _)| lazy) ?;
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await
+    .map(|(lazy, _)| lazy)?;
     let started = Instant::now();
     let cancellation = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
@@ -629,15 +635,17 @@ async fn native_lazy_workspace_lists_windows_source_directories()
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?,
     );
-    let lazy = LazyWorkspace:: attach (
+    let lazy = LazyWorkspace::attach(
         &fs,
         "ntfs-native-listing",
         demand,
         MemoryLazyWorkspaceStore::default(),
         VolumeConfig::native(Lifecycle::Durable),
-    acyclic_fs::OperationId::new(),
-        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
-    .await .map(|(lazy, _)| lazy) ?;
+        acyclic_fs::OperationId::new(),
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await
+    .map(|(lazy, _)| lazy)?;
     for directory in ["/", "/dir"] {
         let page = lazy
             .list_directory(

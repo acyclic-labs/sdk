@@ -478,21 +478,7 @@ async fn merge_plan(
             extensions: BTreeMap::new(),
         },
     };
-    let command_payload = fixture
-        .host
-        .put_content(
-            &fixture.private,
-            &write,
-            "merge/command.json",
-            &crate::contract::canonical_json_bytes(&plan)?,
-            "application/json",
-            "command.json",
-            65536,
-            &IdempotencyKey::new("merge-command")?,
-            None,
-            None,
-        )
-        .await?;
+    let command_payload = plan.notice.content.clone();
     Ok((plan, command_payload))
 }
 
@@ -511,9 +497,11 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     let waiting = machine.transition(
         &initial,
         &encode(
-            &(InitialPlan {
+            &(State::Waiting {
                 plan: Plan::Merge(Box::new(plan.clone())),
                 command: command.clone(),
+                report: None,
+                receipt: None,
             }),
             None,
         )?,
@@ -687,8 +675,8 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             arguments: json!({}),
         };
         assert!(tool.executor.authorize(None, &invocation).is_err());
-        assert!(tool.executor.execute(invocation.clone()).await.is_err());
-        assert!(tool.executor.reconcile(invocation).await.is_err());
+        assert!(tool.executor.execute(invocation.clone(), None).await.is_err());
+        assert!(tool.executor.reconcile(invocation, None).await.is_err());
     }
     assert!(registry.tools.get("bash", None, None)?.is_none());
     Ok(())
@@ -1103,7 +1091,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     let pinned = machine.transition(
         &initial,
         &encode(
-            &(SourcePin {
+            &(State::SourcePinned {
                 intent: intent.clone(),
                 command: command.clone(),
             }),
@@ -1152,9 +1140,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         .await?;
     let restored: State = decode(&pinned.state, None)?;
     let State::SourcePinned {
-        intent: original,
-        arguments: retained,
-        ..
+        intent: original, ..
     } = restored
     else {
         return Err(Error::Invalid(
@@ -1162,7 +1148,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         ));
     };
     assert_eq!(original, intent);
-    assert_eq!(retained, value);
+    assert_eq!(encode(&original.arguments, None)?, value);
     assert!(original.request.parent_revision < fixture.parent.reducer().revision());
     let mut changed = intent;
     changed.child_operation_id = OperationId::from_bytes([68; 16]);
@@ -1172,7 +1158,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
             .transition(
                 &pinned.state,
                 &encode(
-                    &(SourcePin {
+                    &(State::SourcePinned {
                         intent: changed,
                         command
                     }),

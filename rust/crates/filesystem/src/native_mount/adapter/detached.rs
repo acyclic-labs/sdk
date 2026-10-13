@@ -5,7 +5,6 @@ struct DetachedMountState<A, O> {
 }
 
 impl<A, O> DetachedMountState<A, O> {
-    /// Changes content, timestamps and its view together.
     async fn change_content(
         &mut self,
         change: ContentChange<std::convert::Infallible>,
@@ -22,14 +21,11 @@ impl<A, O> DetachedMountState<A, O> {
             .then_some(metadata);
         self.file
             .change_content(change, stamped, work, work.cancellation())
-            .await
-            .map_err(fs_error)?;
+            .await?;
         self.metadata = metadata;
         self.record_change(ledger, &mut NativeDemandCarrier::Native(work))
     }
 
-    /// Advances the identity's own publication epoch and invalidates every
-    /// cached lookup of the identity, under the lock its lookups take.
     fn record_change(
         &mut self,
         ledger: &Arc<ViewLedger>,
@@ -48,7 +44,7 @@ impl<A, O> DetachedMountState<A, O> {
 }
 
 pub(super) struct CheckoutDetachedFile<A, O> {
-    _native_allocation: Option<crate::NativeAllocation>,
+    _native_allocation: crate::NativeAllocation,
     state: tokio::sync::Mutex<DetachedMountState<A, O>>,
     ledger: Arc<ViewLedger>,
     runtime: CallbackRuntime,
@@ -58,10 +54,6 @@ pub(super) struct CheckoutDetachedFile<A, O> {
 }
 
 impl<A, O> CheckoutDetachedFile<A, O> {
-    pub(super) fn mutation_epoch(&self) -> Option<u64> {
-        self.state.try_lock().ok().map(|state| state.mutation_epoch)
-    }
-
     pub(super) async fn read_bytes(
         &self,
         offset: u64,
@@ -84,24 +76,15 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             offset,
             length: u64::from(length),
         };
-        let read = if let Some(original) = carrier.original_native_work() {
-            state
-                .file
-                .read_range(range, &original, &cancellation)
-                .await
-                .map_err(fs_error)?
-        } else {
-            let (budget, live) = carrier.remaining()?;
-            let result = state.file.read_range(range, budget, &cancellation).await;
-            carrier.accept_with_prior_live(result, live, fs_error)?
-        };
+        let original = carrier.original_native_work().expect("native SDK callback");
+        let read = state
+            .file
+            .read_range(range, &original, &cancellation)
+            .await?;
         let capacity = read.logical_owned_bytes();
-        let chunk = if carrier.original_native_work().is_some() {
-            crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
-        } else {
-            crate::kernel::OwnedSourceChunk::claimed(read.bytes, capacity)
-        };
-        carrier.finish_read(chunk, &cancellation, Some(&self.cancellation))
+        let chunk = crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity);
+        carrier.check(&cancellation, Some(&self.cancellation))?;
+        Ok(chunk)
     }
 
     async fn change_attribute(
@@ -128,8 +111,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         state.metadata = state
             .file
             .change_named_attribute(&name, value, work, cancellation)
-            .await
-            .map_err(fs_error)?;
+            .await?;
         state.record_change(&self.ledger, inputs.carrier)
     }
 
@@ -150,11 +132,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         )
         .await?;
         let metadata = if let Some(original) = carrier.original_native_work() {
-            state
-                .file
-                .read_metadata(&original, cancellation)
-                .await
-                .map_err(fs_error)?
+            state.file.read_metadata(&original, cancellation).await?
         } else {
             state.metadata
         };
@@ -168,8 +146,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Applies one content change to this detached file with its time
-    /// stamp as one record transition, and records it.
     fn change_content(
         &self,
         change: ContentChange<std::convert::Infallible>,
@@ -214,7 +190,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         if u64::from(maximum_bytes) > self.limits.maximum_read_bytes {
-            return Err(fs_error(FsError::FileRead(
+            return Err(MountSourceError::from(FsError::FileRead(
                 crate::kernel::FileRangeReadError::InvalidRange,
             )));
         }
@@ -234,26 +210,21 @@ where
                 .saturating_sub(offset)
                 .min(u64::from(maximum_bytes));
             if length == 0 {
-                return carrier.finish_read(
-                    crate::kernel::OwnedSourceChunk::intrinsic(
-                        acyclic_stream::OwnedBytes::new(),
-                        0,
-                    ),
-                    cancellation,
-                    Some(&self.cancellation),
-                );
+                carrier.check(cancellation, Some(&self.cancellation))?;
+                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                    OwnedBytes::new(),
+                    0,
+                ));
             }
             let read = state
                 .file
                 .read_range(ByteRange { offset, length }, work, cancellation)
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let capacity = read.logical_owned_bytes();
-            carrier.finish_read(
-                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
-                cancellation,
-                Some(&self.cancellation),
-            )
+            carrier.check(cancellation, Some(&self.cancellation))?;
+            Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                read.bytes, capacity,
+            ))
         })
     }
 
@@ -283,8 +254,7 @@ where
                     work,
                     work.cancellation(),
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             carrier.check(work.cancellation(), Some(&self.cancellation))?;
             Ok(position)
         })
@@ -468,8 +438,7 @@ where
             state
                 .file
                 .set_attributes(metadata, logical_bytes, work, cancellation)
-                .await
-                .map_err(fs_error)?;
+                .await?;
             state.metadata = metadata;
             state.record_change(&self.ledger, &mut carrier)
         })
@@ -495,8 +464,7 @@ where
             let value = state
                 .file
                 .read_named_attribute(&name, work, cancellation)
-                .await
-                .map_err(fs_error)?;
+                .await?;
             inputs
                 .carrier
                 .check(cancellation, Some(&self.cancellation))?;
@@ -545,8 +513,7 @@ where
                     &mut accounting,
                     cancellation,
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let page = inputs.attribute_page(&listing.0)?;
             drop(listing);
             drop(state);

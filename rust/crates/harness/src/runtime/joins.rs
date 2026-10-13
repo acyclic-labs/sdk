@@ -84,7 +84,7 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
                 extensions: _,
             } => match host.wait_outcome(task_id).await? {
                 Outcome::Succeeded(value) => {
-                    crate::contract::validate_json_schema_value(
+                    crate::executor::validate_json_schema_value(
                         &output_schema,
                         &value,
                         "task output",

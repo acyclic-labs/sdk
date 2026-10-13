@@ -14,10 +14,7 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     let server = tokio::spawn(
         server
             .add_service(wire::buckets_service_server::BucketsServiceServer::new(
-                Fixture(
-                    MemoryObjects::new(MemoryOptions::default())?,
-                    Default::default(),
-                ),
+                Fixture(MemoryObjects::new(MemoryOptions::default())?),
             ))
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = stopped.await;

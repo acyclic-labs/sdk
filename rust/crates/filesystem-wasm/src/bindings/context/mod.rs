@@ -14,7 +14,6 @@ impl Default for BrowserWorkspaceContextRegistry {
 
 #[wasm_bindgen]
 impl BrowserWorkspaceContextRegistry {
-    /// Creates an in-process registry. Host persistence can be injected by
     #[wasm_bindgen(constructor)]
     pub fn new() -> BrowserWorkspaceContextRegistry {
         Self {
@@ -22,7 +21,6 @@ impl BrowserWorkspaceContextRegistry {
         }
     }
 
-    /// Registers one root context from the shared serde contract.
     #[wasm_bindgen(js_name = registerRoot)]
     pub async fn register_root(
         &self,
@@ -41,7 +39,6 @@ impl BrowserWorkspaceContextRegistry {
         workspace_context_wire::encode_context(&context).map_err(js_error)
     }
 
-    /// Registers an exact direct child from the shared serde contract.
     #[wasm_bindgen(js_name = registerChild)]
     pub async fn register_child(
         &self,
@@ -62,7 +59,6 @@ impl BrowserWorkspaceContextRegistry {
         workspace_context_wire::encode_context(&context).map_err(js_error)
     }
 
-    /// Adopts one parent-authorized root without enumerating its contents.
     #[wasm_bindgen(js_name = adoptRoot)]
     pub async fn adopt_root(
         &self,
@@ -78,7 +74,6 @@ impl BrowserWorkspaceContextRegistry {
         workspace_context_wire::encode_context(&context).map_err(js_error)
     }
 
-    /// Releases one root after callers have settled its filesystem changes.
     #[wasm_bindgen(js_name = removeRoot)]
     pub async fn remove_root(
         &self,
@@ -96,7 +91,6 @@ impl BrowserWorkspaceContextRegistry {
         workspace_context_wire::encode_context(&context).map_err(js_error)
     }
 
-    /// Resolves one context as stable JSON.
     #[wasm_bindgen(js_name = resolve)]
     pub async fn resolve(&self, context_id: Vec<u8>) -> Result<Vec<u8>, JsValue> {
         let context = self
@@ -107,7 +101,6 @@ impl BrowserWorkspaceContextRegistry {
         workspace_context_wire::encode_context(&context).map_err(js_error)
     }
 
-    /// Freezes or resumes one durable context.
     #[wasm_bindgen(js_name = setActive)]
     pub async fn set_active(&self, context_id: Vec<u8>, active: bool) -> Result<Vec<u8>, JsValue> {
         let context = self
@@ -121,7 +114,6 @@ impl BrowserWorkspaceContextRegistry {
         workspace_context_wire::encode_context(&context).map_err(js_error)
     }
 
-    /// Advances one root binding after a compatibility branch switch.
     #[wasm_bindgen(js_name = setWorkspace)]
     pub async fn set_workspace(
         &self,
@@ -149,7 +141,6 @@ impl BrowserWorkspaceContextRegistry {
         workspace_context_wire::encode_context(&context).map_err(js_error)
     }
 
-    /// Recursively tombstones a direct-child subtree.
     #[wasm_bindgen(js_name = discardSubtree)]
     pub async fn discard_subtree(
         &self,

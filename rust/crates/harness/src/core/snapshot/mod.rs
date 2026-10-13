@@ -1,6 +1,7 @@
 //! Authenticated reducer checkpoints and bounded wire decoding.
 use super::*;
 mod capture;
+pub(in crate::core) use capture::admit_copy;
 mod entries;
 mod restoration;
 #[cfg(test)]
@@ -92,7 +93,7 @@ impl Snapshot {
             std::mem::size_of::<crate::merge::ProjectMergeReceipt>(),
             std::mem::size_of::<crate::conversation::ConversationMessage>(),
             std::mem::size_of::<ConversationState>(),
-            std::mem::size_of::<crate::conversation::ModelContextSelection>(),
+            std::mem::size_of::<ModelContextSelection>(),
             std::mem::size_of::<FileRef>(),
             std::mem::size_of::<crate::conversation::VolumeRef>(),
             std::mem::size_of::<crate::conversation::FileDescriptor>(),
@@ -120,7 +121,7 @@ impl Snapshot {
         maximum as u64
     };
     fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
-        crate::contract::canonical_json_digest(
+        crate::executor::json::canonical_json_digest(
             &(
                 self.format_version,
                 &self.authority,
@@ -181,7 +182,10 @@ impl Snapshot {
             verifier.verify_event(event, work)?;
             for prior in &self.events[..index] {
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                        bytes: 0,
+                        items: 1,
+                    })?;
                 }
                 if prior.operation_id == event.operation_id {
                     return Err(Error::Invalid("snapshot event suffix is invalid".into()));
@@ -212,7 +216,7 @@ impl Snapshot {
         }
         for (extension, expected) in &self.projection.bindings {
             let binding = schemas.pinned_binding(&extension.name, extension.version, None, work)?;
-            if crate::contract::canonical_json_digest(
+            if crate::executor::json::canonical_json_digest(
                 binding,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
@@ -247,8 +251,12 @@ impl<C, B> Projection<C, B> {
             bindings,
         }
     }
-    pub(in crate::core) fn with_bindings<N>(self, bindings: N) -> Projection<C, N> {
-        Projection {
+    pub(in crate::core) fn map<D, N>(
+        self,
+        conversation: impl FnOnce(C) -> Result<D>,
+        bindings: impl FnOnce(B) -> N,
+    ) -> Result<Projection<D, N>> {
+        Ok(Projection {
             lifecycle: self.lifecycle,
             active_extensions: self.active_extensions,
             active_extension_revision: self.active_extension_revision,
@@ -260,11 +268,11 @@ impl<C, B> Projection<C, B> {
             effects_archived: self.effects_archived,
             forks: self.forks,
             published_merges: self.published_merges,
-            conversation: self.conversation,
+            conversation: conversation(self.conversation)?,
             latest_context_checkpoint: self.latest_context_checkpoint,
             interactions: self.interactions,
-            bindings,
-        }
+            bindings: bindings(self.bindings),
+        })
     }
 }
 impl Default for Projection<ConversationState, ()> {

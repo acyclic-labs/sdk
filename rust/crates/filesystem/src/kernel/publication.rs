@@ -925,31 +925,6 @@ pub(crate) fn contextual_publication_fingerprint_with_accounting(
     Ok(fingerprint)
 }
 
-pub(crate) fn contextual_publication_fingerprint_from_payload_with_accounting(
-    request: PublishGenerationRequest,
-    operation_context: Digest,
-    payload: &[u8],
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<Digest, crate::FsError> {
-    accounting.check()?;
-    let context = Some(operation_context);
-    let input_bytes = usize_to_u64(fingerprint_input_length(context))
-        .checked_sub(usize_to_u64(publication_payload_length()))
-        .and_then(|bytes| bytes.checked_add(usize_to_u64(payload.len()))).ok_or(WorkError::Overflow)?;
-    let hashing = WorkCounters {
-        bytes_hashed: usize_to_u64(fingerprint_domain(context).len()).checked_add(input_bytes).ok_or(WorkError::Overflow)?,
-        ..WorkCounters::UNCHARGED
-    };
-    accounting.admit(hashing)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(fingerprint_domain(context));
-    feed_fingerprint_input(&request, context, payload, |part| { hasher.update(part); });
-    let fingerprint = Digest::from_bytes(*hasher.finalize().as_bytes());
-    accounting.record_completed(hashing)?;
-    accounting.check()?;
-    Ok(fingerprint)
-}
-
 fn publication_fingerprint(
     request: PublishGenerationRequest,
     operation_context: Option<Digest>,

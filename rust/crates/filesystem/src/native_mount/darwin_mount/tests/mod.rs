@@ -9,7 +9,6 @@ fn filtered_callback_error_does_not_overwrite_parent_errno() {
 use super::*;
 use crate::native_mount::MountPublication;
 use bytes::Bytes;
-use std::os::unix::fs::MetadataExt as _;
 use std::process::Command;
 
 unsafe extern "C" {
@@ -96,16 +95,10 @@ fn test_context(
     source: &Arc<MemorySource>,
     original: &Work,
 ) -> Result<DarwinMountContext, Box<dyn std::error::Error>> {
-    let root = source
-        .lookup_with_meter(&MountPath::root(), original)?
-        .ok_or("root absent")?;
-    let metadata = std::fs::metadata(".")?;
     Ok(DarwinMountContext::new(
         Arc::clone(source) as Arc<dyn MountFilesystem>,
         true,
-        metadata.uid(),
-        metadata.gid(),
-        root.node.file_id,
+        Path::new("."),
         original,
     )?)
 }
@@ -123,7 +116,7 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
         || source.create_file(&path, FileMetadata::default(), None, &work),
         &work,
     )?;
-    let created = context.open(&path, context.ledger.latest(), &work)?;
+    let created = context.open(&path, context.completed.load(Ordering::Acquire), &work)?;
     let before = epoch()?;
     context.flush_on_close(created, &work)?;
     assert_ne!(epoch()?, before);
@@ -170,7 +163,7 @@ fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
         || source.create_file(&path, FileMetadata::default(), None, &work),
         &work,
     )?;
-    let created = context.open(&path, context.ledger.latest(), &work)?;
+    let created = context.open(&path, context.completed.load(Ordering::Acquire), &work)?;
     context.mutate_file(
         &path,
         created,
@@ -331,21 +324,20 @@ fn a_barrier_waits_only_for_callbacks_that_began_before_it() -> TestResult {
 }
 
 #[test]
-fn nfs_read_answers_short_reads_as_eof_in_place() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_read_reply() }, 0);
-}
-
-#[test]
-fn nfs_fileids_name_nodes_so_hard_links_share_one() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_node_identity() }, 0);
-}
-
-#[test]
-fn nfs_durable_writes_are_stable_without_a_sync() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_durable_writes() }, 0);
+fn nfs_wire_protocol_preserves_file_semantics() {
+    let checks: [unsafe extern "C" fn() -> c_int; 7] = [
+        nfs4_test_read_reply,
+        nfs4_test_node_identity,
+        nfs4_test_durable_writes,
+        nfs4_test_change_attribute,
+        nfs4_test_access_rights,
+        nfs4_test_verify_attributes,
+        nfs4_test_release_open_files,
+    ];
+    for check in checks {
+        // SAFETY: each transport check owns all callback state.
+        assert_eq!(unsafe { check() }, 0);
+    }
 }
 
 #[test]
@@ -382,7 +374,7 @@ fn handles_keep_the_node_they_opened() -> TestResult {
     let read = context.open(&path, 0, &work)?;
     let bytes = context
         .file_target(&path, read, &work)?
-        .file
+        .0
         .0
         .read_up_to(0, 16)?;
     assert_eq!(bytes.as_ref(), b"kept");
@@ -419,14 +411,13 @@ fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
                 std::ptr::from_ref(&context) as usize,
                 from.as_ptr(),
                 c"/replaced".as_ptr(),
-                0,
             )
         }
     };
     assert_eq!(rename_over(c"/missing"), -libc::ENOENT);
     assert_eq!(rename_over(c"/replacement"), 0);
     let target = context.file_target(&replaced, handle, &work)?;
-    let file = &target.file.0;
+    let file = &target.0.0;
     assert_eq!(file.lookup()?.node.file_id, original.node.file_id);
     assert_eq!(file.read_up_to(0, 16)?.as_ref(), b"original");
     Ok(())
@@ -459,30 +450,6 @@ fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult
     assert!(context.may_have_named_attributes(&path, &work)?);
     assert_eq!(probe(), 6);
     Ok(())
-}
-
-#[test]
-fn nfs_change_attribute_travels_with_its_attributes() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_change_attribute() }, 0);
-}
-
-#[test]
-fn nfs_access_applies_the_callers_identity_to_mode_bits() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_access_rights() }, 0);
-}
-
-#[test]
-fn nfs_verify_compares_current_attribute_values() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_verify_attributes() }, 0);
-}
-
-#[test]
-fn nfs_teardown_releases_every_open_handle_once() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_release_open_files() }, 0);
 }
 
 #[test]
@@ -743,64 +710,44 @@ fn macos_mode_bits_deny_access() -> TestResult {
 }
 
 #[test]
-fn directory_page_rejects_a_native_mutation_between_reads() -> TestResult {
-    let (source, context, work) = checkout_context(MountPublication::Manual)?;
-    source.create_file(
-        &MountPath::root().child(b"in-page".to_vec()),
-        FileMetadata::default(),
-        None,
-        &work,
-    )?;
-    let root = MountPath::root();
-    let mut directory = DirectoryHandle::new(
-        clone_path(&root, &work)?,
-        source.binding_epoch(),
-        context.cache_epochs(&work)?,
-    );
-    advance_directory_to_offset(&context, &mut directory, 3, &work)?;
-    source.create_file(
-        &MountPath::root().child(b"after-page".to_vec()),
-        FileMetadata::default(),
-        None,
-        &work,
-    )?;
-    assert_eq!(
-        directory
-            .keep_current(&context, &work)
-            .err()
-            .as_ref()
-            .map(callback_errno),
-        Some(libc::ESTALE)
-    );
-    assert_eq!(
-        ensure_directory_page(&context, &mut directory, &work)
-            .err()
-            .as_ref()
-            .map(callback_errno),
-        Some(libc::ESTALE)
-    );
-    Ok(())
-}
-
-#[test]
-fn a_listing_that_delivered_nothing_restarts_in_the_new_view() -> TestResult {
-    let (source, context, work) = checkout_context(MountPublication::Manual)?;
-    let root = MountPath::root();
-    let mut directory = DirectoryHandle::new(
-        clone_path(&root, &work)?,
-        source.binding_epoch(),
-        context.cache_epochs(&work)?,
-    );
-    ensure_directory_page(&context, &mut directory, &work)?;
-    source.create_file(
-        &MountPath::root().child(b"after-page".to_vec()),
-        FileMetadata::default(),
-        None,
-        &work,
-    )?;
-    // Only `.` and `..` were delivered: the listing starts again.
-    directory.keep_current(&context, &work)?;
-    ensure_directory_page(&context, &mut directory, &work)?;
+fn directory_mutations_restart_only_before_entries_were_delivered() -> TestResult {
+    for delivered in [false, true] {
+        let (source, context, work) = checkout_context(MountPublication::Manual)?;
+        let root = MountPath::root();
+        if delivered {
+            source.create_file(
+                &root.child(b"in-page".to_vec()),
+                FileMetadata::default(),
+                None,
+                &work,
+            )?;
+        }
+        let mut directory =
+            DirectoryRead::new(clone_path(&root, &work)?, context.cache_epochs(&work)?);
+        if delivered {
+            advance_directory_to_offset(&context, &mut directory, 3, &work)?;
+        } else {
+            ensure_directory_page(&context, &mut directory, &work)?;
+        }
+        source.create_file(
+            &root.child(b"after-page".to_vec()),
+            FileMetadata::default(),
+            None,
+            &work,
+        )?;
+        let refreshed = directory.keep_current(&context, &work);
+        let read = ensure_directory_page(&context, &mut directory, &work);
+        if delivered {
+            assert_eq!(
+                refreshed.err().as_ref().map(callback_errno),
+                Some(libc::ESTALE)
+            );
+            assert_eq!(read.err().as_ref().map(callback_errno), Some(libc::ESTALE));
+        } else {
+            refreshed?;
+            read?;
+        }
+    }
     Ok(())
 }
 
@@ -812,19 +759,10 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
     let epochs = context
         .cache_epochs(&work)?
         .ok_or("checkout has no view stamp")?;
-    let root = DirectoryHandle::new(
-        DarwinOwned::empty(MountPath::root()),
-        Some(epochs.binding),
-        Some(epochs),
-    );
-    let directory = DirectoryHandle::new(
+    let root = DirectoryRead::new(DarwinOwned::empty(MountPath::root()), Some(epochs));
+    let directory = DirectoryRead::new(clone_path(&nested, &work)?, Some(epochs));
+    let rebound = DirectoryRead::new(
         clone_path(&nested, &work)?,
-        Some(epochs.binding),
-        Some(epochs),
-    );
-    let rebound = DirectoryHandle::new(
-        clone_path(&nested, &work)?,
-        Some(epochs.binding + 1),
         Some(CacheEpochs {
             binding: epochs.binding + 1,
             ..epochs
@@ -833,7 +771,6 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
     assert!(root.is_current(&context, &work)?);
     assert!(directory.is_current(&context, &work)?);
     assert!(!rebound.is_current(&context, &work)?);
-    assert!(directory.epochs.is_some());
 
     source.create_file(
         &MountPath::root().child(b"sibling".to_vec()),
@@ -851,18 +788,13 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
     )?;
     assert!(!directory.is_current(&context, &work)?);
 
-    let unrecorded = DirectoryHandle::new(
-        clone_path(&nested, &work)?,
-        source.binding_epoch(),
-        context.cache_epochs(&work)?,
-    );
+    let unrecorded = DirectoryRead::new(clone_path(&nested, &work)?, context.cache_epochs(&work)?);
     assert!(unrecorded.is_current(&context, &work)?);
     context.forget_view();
     assert!(!unrecorded.is_current(&context, &work)?);
 
-    let epochless = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), None, None);
+    let epochless = DirectoryRead::new(DarwinOwned::empty(MountPath::root()), None);
     assert!(!epochless.is_current(&context, &work)?);
-    assert!(!epochless.epochs.is_some());
     Ok(())
 }
 

@@ -192,24 +192,17 @@ pub(super) struct NodeMemo {
 
 /// An immutable content-addressed lazy node.
 pub(super) trait LazyNode:
-    crate::lazy_workspace::MemoryLazyNode + Default + Send + 'static
+    crate::lazy_workspace::MemoryLazyNode + DeserializeOwned + Default + Send + 'static
 {
     type Id: Copy + Ord + Send + 'static;
-    type Wire: DeserializeOwned;
     const FAMILY: &'static str;
 
     fn address(id: Self::Id) -> [u8; 32];
     fn memo(nodes: &NodeMemo) -> MutexGuard<'_, Generations<Self::Id, Self>>;
-    fn from_wire(
-        wire: Self::Wire,
-        work: &crate::materializer::NativeMaterializationWork,
-        allocation: &mut crate::materializer::NativeAllocation,
-    ) -> Result<Self, LocalCoreStateStoreError>;
 }
 
 impl LazyNode for LazyOverlay {
     type Id = LazyOverlayId;
-    type Wire = Self;
     const FAMILY: &'static str = "lazy-overlays";
 
     fn address(id: Self::Id) -> [u8; 32] {
@@ -222,19 +215,10 @@ impl LazyNode for LazyOverlay {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
-
-    fn from_wire(
-        wire: Self::Wire,
-        _work: &crate::materializer::NativeMaterializationWork,
-        _allocation: &mut crate::materializer::NativeAllocation,
-    ) -> Result<Self, LocalCoreStateStoreError> {
-        Ok(wire)
-    }
 }
 
 impl LazyNode for crate::LazyShadow {
     type Id = crate::LazyShadowId;
-    type Wire = LazyShadowWire;
     const FAMILY: &'static str = "lazy-shadows-v1";
 
     fn address(id: Self::Id) -> [u8; 32] {
@@ -244,58 +228,6 @@ impl LazyNode for crate::LazyShadow {
     fn memo(nodes: &NodeMemo) -> MutexGuard<'_, Generations<Self::Id, Self>> {
         nodes.shadows.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    fn from_wire(
-        wire: Self::Wire,
-        work: &crate::materializer::NativeMaterializationWork,
-        allocation: &mut crate::materializer::NativeAllocation,
-    ) -> Result<Self, LocalCoreStateStoreError> {
-        Ok(match wire {
-            LazyShadowWire::Empty => Self::Empty,
-            LazyShadowWire::Node {
-                file_id,
-                priority,
-                record,
-                metadata,
-                left,
-                right,
-            } => {
-                let bytes = std::mem::size_of::<crate::WorkspaceMetadata>() as u64;
-                work.admit(crate::WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                })?;
-                allocation.grow(bytes)?;
-                let metadata = Box::new(metadata);
-                work.spent(crate::WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                })?;
-                Self::Node {
-                    file_id,
-                    priority,
-                    record,
-                    metadata,
-                    left,
-                    right,
-                }
-            }
-        })
-    }
-}
-
-/// The same durable shadow JSON, with its metadata inline during bounded decode.
-#[derive(Deserialize)]
-pub(super) enum LazyShadowWire {
-    Empty,
-    Node {
-        file_id: crate::FileId,
-        priority: u64,
-        record: Vec<u8>,
-        metadata: crate::WorkspaceMetadata,
-        left: crate::LazyShadowId,
-        right: crate::LazyShadowId,
-    },
 }
 
 pub(super) fn lazy_digest<T: Serialize>(
@@ -409,13 +341,14 @@ pub(super) fn clone_node<T: crate::lazy_workspace::MemoryLazyNode>(
     meter: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(T, crate::NativeAllocation), LocalCoreStateStoreError> {
     meter.allocations(|allocations, work, budget, cancellation| {
-        Ok(crate::lazy_workspace::clone_lazy_node(
-            value,
-            allocations,
-            work,
-            budget,
-            cancellation,
-        )?)
+        Ok(value
+            .copy(&mut crate::kernel::KernelAccounting::borrowed_standalone(
+                allocations,
+                work,
+                budget,
+                cancellation,
+            ))?
+            .0)
     })
 }
 
@@ -448,17 +381,18 @@ impl LocalCoreStateStore {
                     .work();
                 let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
                 with_lock(&mut paths, |paths| {
-                    let Some((wire, allocation)) = read_recoverable::<T::Wire>(paths)? else {
+                    let Some(mut owned) = read_recoverable::<T>(paths)? else {
                         return Ok(None);
                     };
-                    let mut allocation = allocation.expect("native record allocation");
-                    let value = T::from_wire(wire, work, &mut allocation)?;
-                    allocation.resize(value.owned_bytes())?;
-                    let owned = (value, allocation);
-                    if lazy_digest((&owned.0), work)? != T::address(id) {
+                    owned
+                        .1
+                        .as_mut()
+                        .expect("native record allocation")
+                        .resize(owned.0.owned_bytes())?;
+                    if lazy_digest(&owned.0, work)? != T::address(id) {
                         return Err(LocalCoreStateStoreError::Integrity);
                     }
-                    Ok(Some(owned))
+                    Ok(Some((owned.0, owned.1.expect("native record allocation"))))
                 })
             })
             .await?;
@@ -533,14 +467,12 @@ impl LocalCoreStateStore {
                         .work();
                     let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
                     with_lock(&mut paths, |paths| {
-                        if let Some((wire, allocation)) = read_recoverable::<T::Wire>(paths)? {
-                            let mut allocation = allocation.expect("native record allocation");
-                            let existing = T::from_wire(wire, work, &mut allocation)?;
+                        if let Some(existing) = read_recoverable::<T>(paths)? {
                             work.charge(crate::WorkCounters {
                                 items_examined: 1,
                                 ..Default::default()
                             })?;
-                            if &existing != (&owned.0) {
+                            if &existing.0 != &owned.0 {
                                 return Err(LocalCoreStateStoreError::Integrity);
                             }
                         } else {

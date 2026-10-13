@@ -7,27 +7,27 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         after: Sequence,
         limit: ReplayLimit,
         work: &mut AuthorityWork<'_>,
-        kind: ReadKind,
     ) -> Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
+        work.check()?;
         if limit.records == 0 || limit.payload_bytes == 0 {
             return Err(AuthorityStoreError::InvalidReplayLimit);
         }
-        let mut output = if kind == ReadKind::Accounting {
-            (Vec::new(), None)
-        } else {
-            work.check()?;
-            self.authority_require_live(authority, work).await?;
-            work.vec_owned((limit.records as usize).min(acyclic_stream::MAX_ITEMS))?
-        };
-        let path = if kind == ReadKind::Accounting {
-            stream_path(authority, "/records")?
-        } else {
-            work.path(authority, "/records", None)?
-        };
-        let mut stream = self
+        self.authority_require_live(authority, work).await?;
+        let mut output = work.vec_owned((limit.records as usize).min(acyclic_stream::MAX_ITEMS))?;
+        let path = work.path(authority, "/records", None)?;
+        if !work.is_native() {
+            work.admit(WorkCounters {
+                authority_records_read: u64::from(limit.records),
+                authority_bytes_read: STREAM_RECORD_LIMIT.saturating_mul(u64::from(limit.records)),
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            work.charge(WorkCounters {
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        let result = self
             .authority_read(
                 acyclic_stream::ReadRequest {
                     path,
@@ -35,35 +35,31 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     limit: limit.records,
                 },
                 work,
-                kind,
             )
-            .await?;
+            .await;
+        // Native read failure, unlike ordinary read failure, precedes the late check.
+        let mut stream = if work.is_native() {
+            result?
+        } else {
+            work.check()?;
+            result?
+        };
         let mut bytes = 0_u64;
         for _ in 0..limit.records {
-            let Some(record) = stream.next(work, kind).await? else {
+            work.check()?;
+            let record = stream.next(work).await?;
+            work.check()?;
+            let Some(record) = record else {
                 break;
             };
-            let durable = if kind == ReadKind::Accounting {
-                decode_record(&record.0)?
-            } else {
-                authority_decode_borrowed(authority, &record.0.value, work)?
+            let read = WorkCounters {
+                authority_records_read: 1,
+                authority_bytes_read: record.0.value.len() as u64,
+                ..WorkCounters::UNCHARGED
             };
-            let historical = if kind == ReadKind::Accounting {
-                let mut payload = Vec::new();
-                payload
-                    .try_reserve_exact(durable.payload.len())
-                    .map_err(|_| {
-                        AuthorityStoreError::Corrupt(
-                            crate::streams_record::StreamsAuthorityRecordError::AllocationFailed
-                                .to_string(),
-                        )
-                    })?;
-                payload.extend_from_slice(durable.payload);
-                validate_record(authority, &record.0, &durable)?;
-                Some(Bytes::from(payload))
-            } else {
-                None
-            };
+            work.admit(read)?;
+            work.charge(read)?;
+            let durable = authority_decode_borrowed(authority, &record.0.value, work)?;
             bytes = bytes.checked_add(durable.payload.len() as u64).ok_or(
                 AuthorityStoreError::ReplayRecordTooLarge {
                     observed: u64::MAX,
@@ -79,11 +75,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 }
                 break;
             }
-            let payload = match historical {
-                Some(payload) => payload,
-                None => work.bytes(&[], &[durable.payload])?,
-            };
-            if kind != ReadKind::Accounting && output.0.len() == output.0.capacity() {
+            let payload = work.bytes(durable.payload)?;
+            if output.0.len() == output.0.capacity() {
                 return Err(AuthorityStoreError::RejectedStatic(
                     "replay exceeded its admitted vector capacity",
                 ));
@@ -94,9 +87,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 payload,
             ));
         }
-        if kind != ReadKind::Accounting {
-            work.check()?;
-        }
+        work.check()?;
         Ok(output)
     }
 
@@ -133,7 +124,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         identity[24..32].copy_from_slice(&expected.sequence.get().to_le_bytes());
         identity[32..].copy_from_slice(expected.digest.as_bytes());
         work.charge(copying)?;
-        let idempotency_key = work.stream_key(b"fence", &identity)?;
+        let idempotency_key = work.key(b"fence\0", &[&identity])?;
         let mut conditions = work.vec(3)?;
         conditions.extend([
             CommitCondition::Absent { path: retirement },
@@ -178,8 +169,18 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         work.check()?;
         self.authority_require_live(authority, work).await?;
-        let key = work.operation_key(authority, operation)?;
-        let observation = self.authority_inspect(key, work).await?;
+        let key = work.key(
+            b"operation\0",
+            &[&authority.into_bytes(), &operation.into_bytes()],
+        )?;
+        let observed = self.authority_inspect(key, work).await;
+        if !work.is_native() {
+            work.check()?;
+        }
+        let observation = observed?;
+        if work.is_native() {
+            work.check()?;
+        }
         let Some(observation) = &observation.0 else {
             return Ok(None);
         };
@@ -228,7 +229,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     work,
                 ));
             }
-            let payload = work.bytes(&[], &[durable.payload])?;
+            let payload = work.bytes(durable.payload)?;
             output = Some(durable_commit(durable, record.committed_at_micros, payload));
         }
         if output.is_none() {

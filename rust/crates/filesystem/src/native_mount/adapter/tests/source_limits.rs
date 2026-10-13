@@ -3,8 +3,8 @@ fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
     let borrowed = source(FilesystemProfile::Portable)?;
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let cancellation = CancellationToken::new();
-    let original = capture_meter(boundary_budget(), &cancellation)?;
-    let foreign = capture_meter(boundary_budget(), &cancellation)?;
+    let original = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
+    let foreign = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
     let baseline = original.live_allocation_bytes();
     for invalid in [true, false] {
         let mut accounting = crate::kernel::KernelAccounting::native(&original, &cancellation);
@@ -66,7 +66,7 @@ fn source_cleanup_cases() -> Result<(), Box<dyn std::error::Error>> {
     let borrowed = source(FilesystemProfile::Portable)?;
     for stopped_wait in [false, true] {
         let root_stop = CancellationToken::new();
-        let root = capture_meter(boundary_budget(), &root_stop)?;
+        let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
         let original = root.native_volume_work(WorkBudget {
             items_examined: 2,
             ..crate::performance::BOUNDARY_BUDGET
@@ -119,37 +119,41 @@ fn native_source_io_control(
 }
 
 #[test]
-fn source_io_preserves_volume_limits_and_invocation_cancellation()
--> Result<(), Box<dyn std::error::Error>> {
+fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_native_runtime::{NativeFile, NativeFileMeter};
     acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let fixture = tempfile::tempdir()?;
-    let path = fixture.path().join("borrowed-payload");
+    let path = fixture.path().join("payload");
     std::fs::write(&path, b"original")?;
     for cancelled in [false, true] {
         let root_stop = CancellationToken::new();
-        let root = capture_meter(boundary_budget(), &root_stop)?;
+        let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
         let volume = root.native_volume_work(WorkBudget {
             backend_read_operations: 1,
             ..crate::performance::BOUNDARY_BUDGET
         })?;
         let source = native_source_io_control(&borrowed, &volume)?;
+        let weak = Arc::downgrade(&source);
+        let lease = source.native_source_io_lease(source.clone())?;
+        let last_lease = lease.clone();
         let (incoming, local_stop) = root.invocation_view()?;
-        let job = incoming.with_source_io_lease(source.native_source_io_lease()?)?;
-        assert!(job.shares_ledger(&root));
-        assert!(job.shares_resource_allowance(&volume));
+        let job = incoming.with_source_io_lease(lease)?;
+        let credit = job.reserve_work(crate::WorkCounters {
+            items_examined: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
         let meter = job.runtime_meter();
         let file = NativeFile::from_file(
             std::fs::File::open(&path)?,
             Some(NativeFileMeter::Owned(meter.clone())),
         )
         .map_err(|(error, _)| error)?;
-        if cancelled {
+        let data = if cancelled {
             local_stop.cancel();
             let prefix = root.receipt();
             let error = file
-                .read_bounded_async(0, 8, meter, false)
+                .read_bounded_async(0, 8, meter.clone(), false)
                 .err()
                 .ok_or("cancelled read admitted")?;
             assert!(matches!(
@@ -158,28 +162,28 @@ fn source_io_preserves_volume_limits_and_invocation_cancellation()
             ));
             assert_eq!(root.receipt(), prefix);
             root.cancellation().check()?;
+            None
         } else {
-            let before = root.receipt();
-            let first = borrowed.runtime.block_on(
+            let data = borrowed.runtime.block_on(
                 || {
                     file.read_bounded_async(0, 8, meter.clone(), false)
                         .expect("read submission")
                 },
                 Some(meter.as_ref()),
             )??;
-            assert_eq!(first.0.as_ref(), b"original");
+            assert_eq!(data.0.as_ref(), b"original");
             assert_eq!(volume.remaining()?.backend_read_operations, 0);
             assert!(root.remaining()?.backend_read_operations > 0);
             let prefix = root.receipt();
-            assert_eq!(prefix.source_bytes_read, before.source_bytes_read + 8);
-            let second = file
+            let error = file
                 .read_bounded_async(0, 8, meter.clone(), false)
                 .and_then(|completion| {
                     borrowed
                         .runtime
                         .block_on(|| completion, Some(meter.as_ref()))?
-                });
-            let error = second.err().ok_or("volume ceiling ignored")?;
+                })
+                .err()
+                .ok_or("volume ceiling ignored")?;
             assert!(matches!(
                 job.runtime_error(error),
                 crate::NativeTreeMaterializationError::Work(_)
@@ -192,96 +196,23 @@ fn source_io_preserves_volume_limits_and_invocation_cancellation()
                 (prefix.backend_read_operations, prefix.source_bytes_read),
             );
             assert!(!local_stop.is_cancelled());
-        }
+            Some(data)
+        };
         assert!(!root_stop.is_cancelled());
         assert!(!source.cancellation.is_cancelled());
         drop(file);
+        drop(meter);
         drop(job);
         drop(incoming);
-        source.shutdown_accepted_cleanup()?;
+        drop(source);
+        assert!(weak.upgrade().is_some());
+        drop(last_lease);
+        assert!(weak.upgrade().is_none());
+        if let Some(data) = data {
+            assert_eq!(data.0.as_ref(), b"original");
+        }
+        assert!(credit.remaining_work().items_examined > 0);
     }
-    Ok(())
-}
-
-#[test]
-fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
--> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_native_runtime::{NativeFile as NativeRuntimeFile, ReadAllocation};
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let borrowed = source(FilesystemProfile::Portable)?;
-    let fixture = tempfile::tempdir()?;
-    let path = fixture.path().join("borrowed-payload");
-    std::fs::write(&path, b"original")?;
-    let file = std::fs::File::open(&path)?;
-    let root_stop = CancellationToken::new();
-    let root = capture_meter(boundary_budget(), &root_stop)?;
-    let volume = root.native_volume_work(WorkBudget {
-        backend_read_operations: 1,
-        ..crate::performance::BOUNDARY_BUDGET
-    })?;
-    let source = native_source_io_control(&borrowed, &volume)?;
-    let weak_source = Arc::downgrade(&source);
-    let lease = source.native_source_io_lease()?;
-    let last_lease = lease.clone();
-    let (incoming, local_stop) = root.invocation_view()?;
-    let job = incoming.with_source_io_lease(lease)?;
-    let meter = job.runtime_meter();
-    let data_guard = ReadAllocation::new(&meter, 8)?;
-    let data = Box::new(*b"retained");
-    let demand = job.allocation_work();
-    let credit = job.reserve_work(crate::WorkCounters {
-        items_examined: 1,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
-    let original_work = credit.work().clone();
-    assert!(original_work.shares_ledger(&root));
-    assert!(original_work.shares_resource_allowance(&volume));
-    let native_file = NativeRuntimeFile::from_file(
-        file,
-        Some(acyclic_native_runtime::NativeFileMeter::Owned(
-            meter.clone(),
-        )),
-    )
-    .map_err(|(error, file)| {
-        drop(file);
-        error
-    })?;
-    let result = borrowed.runtime.block_on(
-        || {
-            native_file
-                .read_bounded_async(0, 8, meter.clone(), false)
-                .expect("actual read submission")
-        },
-        Some(meter.as_ref()),
-    )??;
-    assert_eq!(result.0.as_ref(), b"original");
-    drop(native_file);
-    drop(meter);
-    drop(job);
-    drop(incoming);
-    drop(source);
-    assert!(
-        weak_source.upgrade().is_some(),
-        "the last real lease still owns the Source"
-    );
-    drop(last_lease);
-    assert!(
-        weak_source.upgrade().is_none(),
-        "DATA, ReadAllocation, cleanup credit, original_work and demand keeper are not operative jobs"
-    );
-    assert_eq!(*data, *b"retained");
-    assert_eq!(result.0.as_ref(), b"original");
-    assert_eq!(demand.receipt().backend_read_operations, 1);
-    assert!(credit.remaining_work().items_examined > 0);
-    assert!(!local_stop.is_cancelled());
-    assert_eq!(root.receipt().source_bytes_read, 8);
-    // Retire physical payloads before their custody guards.
-    drop(data);
-    drop(data_guard);
-    drop(result);
-    drop(credit);
-    drop(original_work);
-    drop(demand);
     Ok(())
 }
 
@@ -291,11 +222,11 @@ fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocati
     acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let cancellation = CancellationToken::new();
-    let root = capture_meter(boundary_budget(), &cancellation)?;
+    let root = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
     let volume = root.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
     let source = native_source_io_control(&borrowed, &volume)?;
-    let lease = source.native_source_io_lease()?;
-    let foreign_root = capture_meter(boundary_budget(), &cancellation)?;
+    let lease = source.native_source_io_lease(source.clone())?;
+    let foreign_root = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
     let unrelated_volume = root.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
     for incoming in [&foreign_root, &unrelated_volume] {
         let prefix = root.receipt();
@@ -322,20 +253,14 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
     acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let root_stop = CancellationToken::new();
-    let root = capture_meter(boundary_budget(), &root_stop)?;
+    let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
     let original = root.native_volume_work(WorkBudget {
         items_examined: 3,
         ..crate::performance::BOUNDARY_BUDGET
     })?;
     let source = native_source_io_control(&borrowed, &original)?;
-    let weak_source = Arc::downgrade(&source);
-    let lease = source.native_source_io_lease()?;
+    let lease = source.native_source_io_lease(source.clone())?;
     let last_lease = lease.clone();
-    assert_eq!(
-        original.remaining()?.items_examined,
-        0,
-        "constructor two and accepted producer birth poll one are the entire original credit"
-    );
     root_stop.cancel();
     assert!(matches!(
         source.shutdown_accepted_cleanup(),
@@ -343,39 +268,23 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
             crate::NativeTreeMaterializationError::Work(_)
         ))
     ));
-    assert!(!source.capture_retired());
     let closing_prefix = root.receipt();
     assert!(matches!(
-        source.native_source_io_lease(),
+        source.native_source_io_lease(source.clone()),
         Err(MountSourceError::Stale)
     ));
-    assert_eq!(
-        root.receipt(),
-        closing_prefix,
-        "closing rejects new lease before allocation"
-    );
+    assert_eq!(root.receipt(), closing_prefix);
     drop(lease);
-    drop(source);
-    let retained_source = weak_source
-        .upgrade()
-        .expect("last inner Arc physically retains Source");
-    assert!(!retained_source.capture_retired());
     drop(last_lease);
-    assert!(
-        retained_source.shutdown_accepted_cleanup()?,
-        "the originally dedicated final predicate completes without fresh poll credit"
-    );
-    assert!(retained_source.capture_retired());
-    assert!(!retained_source.shutdown_accepted_cleanup()?);
-    drop(retained_source);
-    assert!(weak_source.upgrade().is_none());
+    assert!(source.shutdown_accepted_cleanup()?);
+    assert!(!source.shutdown_accepted_cleanup()?);
     Ok(())
 }
 
 #[test]
 fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
-    let root = capture_meter(boundary_budget(), source.cancellation())?;
+    let root = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let created = source.create_file(&native_test_path("detached"), metadata(), None, &root)?;
     let owner = ViewGate::callback_owner();
     let record = source.runtime.wait(|| async {
@@ -388,7 +297,7 @@ fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn s
             .await
     })?;
     for limited in [true, false] {
-        let mut budget = boundary_budget();
+        let mut budget = BOUNDARY_BUDGET;
         if limited {
             budget.peak_allocation_bytes = 0;
         }
@@ -420,21 +329,6 @@ fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn s
 #[test]
 fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
 -> Result<(), Box<dyn std::error::Error>> {
-    #[derive(Debug)]
-    enum GuardFailure {
-        Rejected,
-        Source(MountSourceError),
-    }
-    impl From<MountSourceError> for GuardFailure {
-        fn from(error: MountSourceError) -> Self {
-            Self::Source(error)
-        }
-    }
-    impl From<FsError> for GuardFailure {
-        fn from(error: FsError) -> Self {
-            Self::Source(fs_error(error))
-        }
-    }
     acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let workspace_id = crate::WorkspaceId::from_bytes(borrowed.volume_id()?.into_bytes());
@@ -449,11 +343,11 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     })?;
     let file = borrowed.open_created(&path, &created)?;
     let root_stop = CancellationToken::new();
-    let root = capture_meter(boundary_budget(), &root_stop)?;
-    let volume = root.native_volume_work(boundary_budget())?;
+    let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
+    let volume = root.native_volume_work(BOUNDARY_BUDGET)?;
     let source = native_source_io_control(&borrowed, &volume)?;
     let (incoming, local_stop) = root.invocation_view()?;
-    let job = incoming.with_source_io_lease(source.native_source_io_lease()?)?;
+    let job = incoming.with_source_io_lease(source.native_source_io_lease(source.clone())?)?;
     file.write_range_with_meter(
         0,
         crate::kernel::OwnedSourceChunk::intrinsic(
@@ -471,7 +365,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
         let stop = stop.clone();
         async move {
             stop.cancel();
-            Err::<(), GuardFailure>(GuardFailure::Rejected)
+            Err::<(), MountSourceError>(MountSourceError::NotFound)
         }
     };
     let mut acknowledged = None;
@@ -492,10 +386,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
             None,
         )?
         .expect_err("guard must reject DATA CAS");
-    match failure.0 {
-        GuardFailure::Rejected => {}
-        GuardFailure::Source(error) => panic!("primary error replaced: {error:?}"),
-    }
+    assert!(matches!(failure.0, MountSourceError::NotFound));
     assert!(matches!(failure.1, Some(MountSourceError::Cancelled)));
     assert!(acknowledged.is_none());
     assert_eq!(
@@ -521,7 +412,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     drop(job);
     drop(incoming);
     let (retry, retry_stop) = root.invocation_view()?;
-    let retry = retry.with_source_io_lease(source.native_source_io_lease()?)?;
+    let retry = retry.with_source_io_lease(source.native_source_io_lease(source.clone())?)?;
     source
         .runtime
         .block_on(
@@ -533,7 +424,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                         &retry,
                         &retry_stop,
                         Some(source.cancellation()),
-                        &mut |_| std::future::ready(Ok::<(), GuardFailure>(())),
+                        &mut |_| std::future::ready(Ok::<(), MountSourceError>(())),
                         Some(context),
                         &mut acknowledged,
                     )

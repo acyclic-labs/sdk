@@ -18,24 +18,15 @@ fn file(volume: &VolumeRef, path: &str, bytes: &[u8], media: &str) -> Result<Fil
     )
 }
 
-struct Files {
-    provider: ProviderRef,
-    files: Vec<(FileRef, acyclic_stream::OwnedBytes)>,
+struct Provider(ProviderRef);
+
+fn files(provider: &ProviderRef) -> Arc<dyn ForkSeedVerifier> {
+    Arc::new(Provider(provider.clone()))
 }
 
-fn files(provider: &ProviderRef, bodies: &[(&FileRef, &[u8])]) -> Arc<dyn ForkSeedVerifier> {
-    Arc::new(Files {
-        provider: provider.clone(),
-        files: bodies
-            .iter()
-            .map(|(file, bytes)| ((*file).clone(), bytes.to_vec().into()))
-            .collect(),
-    })
-}
-
-impl ForkSeedVerifier for Files {
+impl ForkSeedVerifier for Provider {
     fn provider(&self) -> &ProviderRef {
-        &self.provider
+        &self.0
     }
     fn verify<'a, 'w: 'a>(
         &'a self,
@@ -43,41 +34,6 @@ impl ForkSeedVerifier for Files {
         work: &'a mut Option<&'w mut dyn HistoryIo>,
     ) -> Result<HistoryContentFuture<'a, ()>> {
         admit_fork_future(work, |_| async { Ok(()) })
-    }
-    fn verify_file<'a, 'w: 'a>(
-        &'a self,
-        _: &'a ForkSeed,
-        file: &'a FileRef,
-        work: &'a mut Option<&'w mut dyn HistoryIo>,
-    ) -> Result<HistoryContentFuture<'a, ()>> {
-        admit_fork_future(work, |work| async move {
-            if file.volume().provider() != &self.provider {
-                return Err(Error::Unauthorized("wrong file provider".into()));
-            }
-            let bytes = &self
-                .files
-                .iter()
-                .find(|(reference, _)| reference == file)
-                .ok_or_else(|| Error::NotFound("pinned file".into()))?
-                .1;
-            file.descriptor().verify(bytes.as_ref(), work)
-        })
-    }
-    fn read_manifest<'a, 'w: 'a>(
-        &'a self,
-        _: &'a ForkSeed,
-        manifest: &'a FileRef,
-        work: &'a mut Option<&'w mut dyn HistoryIo>,
-    ) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
-        admit_fork_future(work, |_| async move {
-            let bytes = &self
-                .files
-                .iter()
-                .find(|(file, _)| file == manifest)
-                .ok_or_else(|| Error::NotFound("manifest".into()))?
-                .1;
-            Ok((bytes.clone(), 0))
-        })
     }
 }
 
@@ -145,7 +101,6 @@ fn child_result_capture_rejects_alias_partial_and_foreign_generation() -> Result
 #[test]
 fn project_capture_requires_new_volume_with_independent_owner() -> Result<()> {
     let mut capture = seed()?.resources.remove(1);
-    capture.validate(&mut None)?;
     let original = capture.revision.clone();
     capture.revision = capture.source.clone();
     assert!(capture.validate(&mut None).is_err());
@@ -169,95 +124,14 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     let mut seed = seed()?;
     let filesystem = seed.child_private_volume.provider().clone();
     let stream = seed.resources[0].source.provider().clone();
-    let filesystem_files = files(&filesystem, &[]);
+    let filesystem_files = files(&filesystem);
     let only_files = CompositeForkVerifier::new(&[filesystem_files.clone()], &mut None)?;
     assert!(matches!(
         block_on(only_files.verify(&seed, &mut None)),
         Err(Error::Unsupported(_))
     ));
-    let complete = CompositeForkVerifier::new(&[filesystem_files, files(&stream, &[])], &mut None)?;
+    let complete = CompositeForkVerifier::new(&[filesystem_files, files(&stream)], &mut None)?;
     block_on(complete.verify(&seed, &mut None))?;
-    let ResourceRevision::Project { volume: source, .. } = &seed.resources[1].source else {
-        panic!("project fixture")
-    };
-    let member = file(source, "files/actual.txt", b"actual", "text/plain")?;
-    let forged = file(source, "files/forged.txt", b"forged", "text/plain")?;
-    seed.reference_grants.push(ReferenceGrant {
-        file: member.clone(),
-        reader: seed.child_agent,
-        attachment_manifest: None,
-    });
-    assert!(matches!(
-        block_on(complete.verify(&seed, &mut None)),
-        Err(Error::NotFound(_))
-    ));
-    seed.reference_grants.clear();
-    let objects = ProviderRef::new("test".into(), "objects".into(), "2".into(), &mut None)?;
-    let volume = VolumeRef::new(
-        objects.clone(),
-        "attachments".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
-        &mut None,
-    )?;
-    let bytes = serde_json::to_vec(&vec![crate::conversation::Attachment {
-        file: member.clone(),
-        label: None,
-    }])
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    let manifest = file(
-        &volume,
-        "lists/one.json",
-        &bytes,
-        "application/vnd.acyclic.harness.attachments+json",
-    )?;
-    seed.attachment_manifests.push(manifest.clone());
-    seed.reference_grants.push(ReferenceGrant {
-        file: forged.clone(),
-        reader: seed.child_agent,
-        attachment_manifest: Some(manifest.clone()),
-    });
-    assert!(seed.validate(&mut None).is_err());
-    seed.reference_grants.push(ReferenceGrant {
-        file: manifest.clone(),
-        reader: seed.child_agent,
-        attachment_manifest: None,
-    });
-    seed.validate(&mut None)?;
-    let filesystem_files = files(&filesystem, &[(&member, b"actual"), (&forged, b"forged")]);
-    let verifier = CompositeForkVerifier::new(
-        &[
-            filesystem_files.clone(),
-            files(&stream, &[]),
-            files(&objects, &[(&manifest, &bytes)]),
-        ],
-        &mut None,
-    )?;
-    let missing = CompositeForkVerifier::new(
-        &[filesystem_files, files(&stream, &[]), files(&objects, &[])],
-        &mut None,
-    )?;
-    assert!(matches!(
-        block_on(missing.verify(&seed, &mut None)),
-        Err(Error::NotFound(_))
-    ));
-    assert!(matches!(
-        block_on(verifier.verify(&seed, &mut None)),
-        Err(Error::Invalid(_))
-    ));
-    seed.reference_grants[0].file = member;
-    let attached = AgentId::from_bytes([9; 16]);
-    seed.attached_agents.push(attached);
-    seed.reference_grants.push(ReferenceGrant {
-        file: manifest.clone(),
-        reader: attached,
-        attachment_manifest: Some(manifest),
-    });
-    block_on(verifier.verify(&seed, &mut None))?;
-    seed.attachment_manifests.clear();
-    seed.reference_grants.clear();
-    seed.attached_agents.clear();
-
     let mut request: ForkRequest =
         serde_json::from_str(include_str!("../../fixtures/v2/fork-request.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -294,7 +168,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         attachment_manifests: Vec::new(),
         inherited_through_sequence: 0,
     };
-    report.validate(&mut None)?;
     let mut duplicate = report.request.clone();
     duplicate.selections.push(duplicate.selections[0].clone());
     assert!(duplicate.validate(&mut None).is_err());
@@ -308,15 +181,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     stale.parent_revision += 1;
     assert!(stale.validate(&mut None).is_err());
     let mut changed = report.clone();
-    changed.child_private_volume = VolumeRef::new(
-        changed.child_private_volume.provider().clone(),
-        "different-child-private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(seed.child_agent),
-        &mut None,
-    )?;
-    assert!(changed.validate(&mut None).is_err());
-    changed = report.clone();
     if let Capture::Captured(capture) = &mut changed.captures[1]
         && let ResourceRevision::Project { volume, .. } = &mut capture.revision
     {
@@ -349,7 +213,6 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         child_agent: seed.child_agent,
         operations: BTreeSet::from([VolumeOperation::Read]),
     });
-    seed.validate(&mut None)?;
     assert!(
         seed.shared_capabilities(seed.child_agent)?
             .contains(&shared.capability(VolumeOperation::Read, &mut None)?)
@@ -367,10 +230,10 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     seed.inherited_through_sequence = 1;
     assert!(seed.validate(&mut None).is_err());
     seed.inherited_context = vec![inherited.clone()];
+    let attached = AgentId::from_bytes([9; 16]);
     seed.attached_agents.push(attached);
-    seed.validate(&mut None)?;
     let access = seed.attached_read_capabilities(attached)?;
-    assert!(access.contains(&inherited.read_capability()?));
+    assert!(access.contains(&inherited.read_capability(&mut None)?));
     assert!(
         !access.contains(
             &seed

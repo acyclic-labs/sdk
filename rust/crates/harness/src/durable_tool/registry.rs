@@ -38,7 +38,7 @@ impl ResumableToolRegistry {
         let mut upper = self.0.len();
         while lower < upper {
             if let Some(work) = work.as_deref_mut() {
-                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                work.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             let middle = lower + (upper - lower) / 2;
             let tool = &self.0[middle];

@@ -13,17 +13,17 @@ import type {
   ToolDefinition as ToolDefinitionWire,
   Model as ModelWire,
   ModelDispatch as ModelDispatchWire,
-  ModelRole as ModelRoleWire,
-  WasmToolJsonSchema,
-  WasmToolJsonValue,
+  ModelRole,
+  WasmToolJsonSchema as ToolJsonSchema,
+  WasmToolJsonValue as ToolJsonValue,
 } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { ModelRole, WasmToolJsonSchema as ToolJsonSchema, WasmToolJsonValue as ToolJsonValue } from "../generated/wasm/acyclic_harness_wasm.js";
 import { NativeContracts } from "./native-contracts.js";
 import { validateComponentLabel } from "./rust-policy.js";
 export { validateComponentLabel } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary. */
 export type Model = Readonly<Omit<ModelWire, "options"> & { options: unknown }>;
-export type ModelRole = ModelRoleWire;
 
 type PublicModelDataPart<Part extends ModelDataPartWire> =
   Part extends Readonly<{ kind: "file" }>
@@ -60,8 +60,6 @@ export interface ModelMessage {
   readonly role: ModelRole;
   readonly content: ModelContent;
 }
-export type ToolJsonValue = WasmToolJsonValue;
-export type ToolJsonSchema = WasmToolJsonSchema;
 export interface ToolDefinition<Input = unknown, Output = unknown> {
   readonly name: string;
   readonly revision: string;

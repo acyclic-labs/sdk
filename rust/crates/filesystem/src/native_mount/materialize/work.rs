@@ -47,14 +47,6 @@ impl GenerationReceipt {
         })
     }
 
-    pub(super) fn run<T>(
-        &self,
-        operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, DemandError>,
-    ) -> Result<T, MaterializeError> {
-        let result = operation(&mut self.custody.work().clone());
-        result.map_err(MaterializeError::from)
-    }
-
     pub(super) fn adopt(&mut self, bytes: usize) -> Result<(), MaterializeError> {
         let retained = self
             .custody
@@ -122,9 +114,9 @@ impl GenerationReceipt {
         failure: OperationFailure<crate::FsError>,
     ) -> MaterializeError {
         let error = MaterializeError::from(failure.error);
-        match self.run(|work| work.merge(*failure.work)) {
+        match self.custody.work().clone().merge(*failure.work) {
             Ok(()) => error,
-            Err(failure) => failure,
+            Err(failure) => failure.into(),
         }
     }
 }

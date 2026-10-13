@@ -271,13 +271,11 @@ fn authored_guard_context(
     )?
     .with_native_callback_guard(guard.clone());
     let source = source.into_arc_meter(&original)?;
-    let root_id = source
-        .lookup_with_meter(&MountPath::root(), &original)?
-        .ok_or("root absent")?
-        .node
-        .file_id;
     let context = Arc::new(DarwinMountContext::new(
-        source, true, 0, 0, root_id, &original,
+        source,
+        true,
+        Path::new("."),
+        &original,
     )?);
     Ok((context, guard, original))
 }

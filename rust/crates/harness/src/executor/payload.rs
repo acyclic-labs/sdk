@@ -1,10 +1,33 @@
 use super::*;
 
+pub(super) fn preparation_output<'a>(
+    io: Option<&'a PreparationIo>,
+    before: u64,
+    retained: u64,
+) -> Result<Option<crate::conversation::ContentHold<'a>>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        let bytes = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "preparation ownership underflows",
+            )
+        })?;
+        let mut hold = io.guard_owned(bytes)?;
+        hold.substitute(retained)?;
+        return Ok(Some(hold));
+    }
+    let _ = (io, before, retained);
+    Ok(None)
+}
+
 pub(super) async fn load_json_bytes(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
+    validate_journal(journal, io)?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
     {
@@ -39,19 +62,6 @@ pub(crate) fn retain_preparation<T>(
         hold.into_retained();
     }
     decoded.0
-}
-
-#[cfg(feature = "filesystem")]
-pub(crate) fn receive_preparation<T>(
-    io: &PreparationIo,
-    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>,
-) -> Result<T> {
-    let held = result
-        .as_ref()
-        .map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-    let value = io.receive_content(result)?;
-    io.retain_owned(held)?;
-    Ok(value)
 }
 
 #[cfg(feature = "filesystem")]
@@ -103,7 +113,7 @@ pub(crate) fn preparation_digest<T: Serialize>(
         _bytes_hold = io.guard_bytes(&bytes)?;
         return crate::model::hash_bytes(&bytes, Some(io));
     }
-    crate::contract::canonical_json_digest(value, u64::MAX, &mut None)
+    crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
 }
 
 // Values precede their temporary guards.

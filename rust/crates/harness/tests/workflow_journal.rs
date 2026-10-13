@@ -151,7 +151,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         Err(acyclic_harness::Error::Conflict(_))
     ));
     assert_eq!(journal.admit(admission.clone()).await?, admission);
-    assert_eq!(journal.admission().await?, Some(admission.clone()));
+    assert_eq!(journal.admission(None)?.await?.0, Some(admission.clone()));
     let mut changed_admission = admission.clone();
     changed_admission.request_digest = [6; 32];
     assert!(matches!(
@@ -179,15 +179,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             .state,
         json!(4)
     );
-    let committed = journal.replay(0, 64).await?;
+    let committed = journal.replay(0, 64, None)?.await?.0;
     assert_eq!(committed.len(), 2);
     assert_eq!(journal.commit(0, IdempotencyKey::new("counter-step-1")?, committed[0].clone()).await?, committed[0]);
     let mut reused_command = committed[1].clone();
     reused_command.operation_id = OperationId::from_bytes([12; 16]);
     reused_command.idempotency_key = IdempotencyKey::new("reused-command")?;
-    reused_command.prior = committed[1].next.clone();
-    reused_command.next.revision = 3;
-    reused_command.next.state = json!(5);
+    reused_command.prior = workflow.checkpoint().clone();
     reused_command.transition.state = json!(5);
     reused_command.transition.commands[0].operation_id =
         committed[0].transition.commands[0].operation_id;
@@ -202,7 +200,6 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     forged.idempotency_key = IdempotencyKey::new("forged-step")?;
     forged.prior.revision = 2;
     forged.prior.state = json!(999);
-    forged.next.revision = 3;
     assert!(matches!(
         journal
             .commit(2, forged.idempotency_key.clone(), forged)
@@ -262,9 +259,9 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             )
             .await?;
     }
-    assert_eq!(paged.replay(0, 64).await?.len(), 64);
-    assert_eq!(paged.replay(64, 64).await?.len(), 1);
-    assert_eq!(paged.replay(0, 65).await?.len(), 64);
+    assert_eq!(paged.replay(0, 64, None)?.await?.0.len(), 64);
+    assert_eq!(paged.replay(64, 64, None)?.await?.0.len(), 1);
+    assert_eq!(paged.replay(0, 65, None)?.await?.0.len(), 64);
     let fresh_paged = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
@@ -282,7 +279,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             .await?,
         first_transition
     );
-    let first_record = fresh_paged.replay(0, 1).await?.remove(0);
+    let first_record = fresh_paged.replay(0, 1, None)?.await?.0.remove(0);
     assert_eq!(fresh_paged.commit(0, first_key, first_record.clone()).await?, first_record);
     fresh_host
         .step(
@@ -305,9 +302,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         let mut record = committed[1].clone();
         record.operation_id = OperationId::from_bytes([operation; 16]);
         record.idempotency_key = IdempotencyKey::new(key)?;
-        record.prior = committed[1].next.clone();
-        record.next.revision = 3;
-        record.next.state = json!(5);
+        record.prior = workflow.checkpoint().clone();
         record.transition.state = json!(5);
         record.transition.commands[0].operation_id = OperationId::from_bytes([command; 16]);
         Ok(record)
@@ -325,7 +320,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         matches!(&first_result, Err(acyclic_harness::Error::Conflict(_)))
             ^ matches!(&second_result, Err(acyclic_harness::Error::Conflict(_)))
     );
-    let tail = journal.replay(0, 64).await?;
+    let tail = journal.replay(0, 64, None)?.await?.0;
     assert_eq!(tail.len(), 3);
     assert!(tail[2] == first || tail[2] == second);
     Ok(())

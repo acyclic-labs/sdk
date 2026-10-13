@@ -325,21 +325,6 @@ impl Delivery {
         })
     }
 
-    fn new(sink: Arc<dyn HostChangeSink>) -> Self {
-        Self {
-            sink,
-            exact: AtomicBool::new(true),
-            budget: crate::performance::WorkBudget::UNBOUNDED,
-            cancellation: crate::cancellation::CancellationToken::new(),
-            failure: std::sync::Mutex::new(None),
-            startup_failure: std::sync::Mutex::new(std::sync::Weak::new()),
-            #[cfg(target_os = "linux")]
-            events: None,
-            ownership: SourcePayloadOwnership::default(),
-            original: None,
-        }
-    }
-
     fn new_with_work<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>, work: &mut W,
     ) -> Result<Self, DemandError> {
@@ -380,7 +365,7 @@ impl Delivery {
         work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let failure = Arc::new(SourceWatchStartupFailure {
             cause: std::sync::OnceLock::new(), watch: std::sync::Mutex::new(None),
-            stopped: AtomicBool::new(false), owned_bytes: std::sync::atomic::AtomicU64::new(0),
+            stopped: AtomicBool::new(false),
             ownership, _original: self.original.clone(),
         });
         failure.ownership.retain(bytes, work)?;
@@ -508,7 +493,6 @@ pub struct SourceWatchStartupFailure {
     cause: std::sync::OnceLock<DemandError>,
     watch: std::sync::Mutex<Option<NativeSourceWatch>>,
     stopped: AtomicBool,
-    owned_bytes: std::sync::atomic::AtomicU64,
     ownership: SourcePayloadOwnership,
     _original: Option<crate::NativeMaterializationWork>,
 }
@@ -522,7 +506,6 @@ impl Drop for FailedWatchLease<'_> {
     fn drop(&mut self) {
         if let Some(watch) = self.owner.take() {
             self.failure.stopped.store(watch.is_stopped(), Ordering::Release);
-            self.failure.owned_bytes.store(watch.logical_owned_bytes(), Ordering::Release);
             *self.failure.watch.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watch);
         }
     }
@@ -557,7 +540,6 @@ impl SourceWatchStartupFailure {
         assert!(self.cause.set(error).is_ok(), "one startup control retains one actual native owner");
         let watch = platform;
         self.stopped.store(watch.is_stopped(), Ordering::Release);
-        self.owned_bytes.store(watch.logical_owned_bytes(), Ordering::Release);
         *self.watch.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watch);
         DemandError::SourceWatchStartup(Arc::clone(self))
     }
@@ -618,9 +600,6 @@ impl SourceWatchStartupFailure {
         self.stopped.load(Ordering::Acquire)
     }
 
-    pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        arc_control_bytes::<Self>() + self.owned_bytes.load(Ordering::Acquire)
-    }
 }
 
 impl NativeSourceWatch {
@@ -665,35 +644,12 @@ impl NativeSourceWatch {
     pub(crate) fn start_with_work<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, sink: Arc<dyn HostChangeSink>, work: &mut W,
     ) -> Result<Self, DemandError> {
-        Self::start_with_output_mode(directory, sink, work, false)
-    }
-
-    pub(crate) fn start_with_output_with_work<W: SourceDemandReadWork>(
-        directory: &crate::native_host::HostRoot, sink: Arc<dyn HostChangeSink>, work: &mut W,
-    ) -> Result<Self, DemandError> {
-        Self::start_with_output_mode(directory, sink, work, true)
-    }
-
-    fn start_with_output_mode<W: SourceDemandReadWork>(
-        directory: &crate::native_host::HostRoot, sink: Arc<dyn HostChangeSink>, work: &mut W,
-        commit_output: bool,
-    ) -> Result<Self, DemandError> {
         let delivery = Delivery::new_with_work(sink, work)?;
         let bytes = arc_control_bytes::<Delivery>();
-        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
+        work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
-        let failure = if commit_output {
-            Some(delivery.prepare_failure(work)?)
-        } else { None };
-        let result = Self::start_driver(directory, delivery, work).and_then(|platform| {
-            if let Some(failure) = failure {
-                if let Err(error) = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::ReturnedItems.delta(1), crate::materializer::NativeResourceCredit::ReturnedItems.delta(1))) {
-                    return Err(failure.retain_failed_platform(error, platform));
-                }
-            }
-            Ok(platform)
-        });
+        let result = Self::start_driver(directory, delivery, work);
         if !work.is_native_original() { work.release(bytes)?; }
         result
     }
@@ -726,12 +682,6 @@ impl NativeSourceWatch {
         let result = Self::start_directory_driver(directory, delivery, complete, work);
         if !work.is_native_original() { work.release(bytes)?; }
         result
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn owned_bytes(&self) -> u64 {
-        self.platform_owned_bytes()
-            + arc_control_bytes::<Delivery>()
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> u64 {

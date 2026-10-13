@@ -24,7 +24,7 @@ impl<'a> PiForkCoordinator<'a> {
                 .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             let (value, allocation) = host
-                .observe_admission_with_native_work(owner.task_id(), work)
+                .observe_admission_with_native_work(owner.task_id(), work)?
                 .await?;
             (value, allocation)
         };
@@ -78,7 +78,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(source_task, work)
+            .observe_admission_with_native_work(source_task, work)?
             .await?;
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&admitted.0.input, maximum, work)?;
@@ -121,19 +121,9 @@ impl<'a> PiForkCoordinator<'a> {
             caller_owner: owner,
             native_snapshot,
         };
-        owner
-            .authorize_project_source_with_native_work(
-                context,
-                &self.runtime.authority.issuer,
-                &policy,
-                source_task,
-                operation,
-                &selected.0,
-                maximum_work,
-                maximum_bytes,
-                work,
-            )?
-            .await
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let handle = owner.authorize_project_source(context, &self.runtime.authority.issuer, &policy, source_task, operation, &selected.0, maximum_work, maximum_bytes, Some(&io)).await?;
+        Ok((handle, acyclic_harness::store::HistoryWork::new(io).into_custody()?))
     }
 
     pub(super) async fn selected_graph(
@@ -245,9 +235,9 @@ impl<'a> PiForkCoordinator<'a> {
         let workspace = self
             .resources
             .fs
-            .open_workspace_with_native_work(&name.0, work, work.cancellation())
+            .open_workspace(&name.0, work, work.cancellation())
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
             .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;

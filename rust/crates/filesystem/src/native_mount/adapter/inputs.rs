@@ -3,7 +3,6 @@ pub(super) struct InputBuffers<'a, 'w> {
     pub(super) bytes: u64,
     allocation: Option<crate::NativeAllocation>,
     pending: Option<crate::materializer::NativeWorkReservation>,
-    proof: Option<Arc<crate::kernel::ProofDataCustody>>,
 }
 
 impl<'a, 'w> InputBuffers<'a, 'w> {
@@ -23,66 +22,29 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             bytes: 0,
             allocation,
             pending: None,
-            proof: None,
         })
     }
 
     pub(super) fn vec<T>(&mut self, count: usize) -> Result<Vec<T>, MountSourceError> {
         if let Some(work) = self.carrier.original_native_work() {
-            let owned = crate::kernel::Owned::<Vec<T>>::allocate(
-                count,
-                &mut crate::kernel::KernelAccounting::native(&work, work.cancellation()),
-            )
-            .map_err(fs_error)?;
-            let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) =
-                owned.allocation
-            else {
-                unreachable!("native vector accounting");
-            };
+            let (values, mut allocation) = crate::native_host::buffer(count, &mut &work)
+                .map_err(MountSourceError::NativeWork)?;
             self.allocation
                 .as_mut()
                 .expect("native inputs")
                 .absorb(&mut allocation)
                 .map_err(MountSourceError::NativeWork)?;
-            return Ok(owned.value);
+            return Ok(values);
         }
-        let requested = count
-            .checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        let vector = self
+        let (values, bytes) = self
             .carrier
-            .with_work(|work| super::lazy::mount_vec::<T>(count, work))?;
+            .with_work(|work| crate::native_host::buffer(count, work))
+            .map_err(super::lazy::mount_demand_error)?;
         self.bytes = self
             .bytes
-            .checked_add(requested)
+            .checked_add(bytes)
             .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        let actual = vector
-            .capacity()
-            .checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        let extra = actual
-            .checked_sub(requested)
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        if extra != 0 {
-            self.bytes = self
-                .bytes
-                .checked_add(extra)
-                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-            if let Err(error) = self
-                .carrier
-                .with_work(|work| {
-                    work.record_native_owned_completed(extra, &work.capture_custody())
-                        .1
-                })
-                .map_err(super::lazy::mount_demand_error)
-            {
-                drop(vector);
-                return Err(error);
-            }
-        }
-        Ok(vector)
+        Ok(values)
     }
 
     pub(super) fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
@@ -172,10 +134,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             Some(work) => work.charge(delta).map_err(MountSourceError::NativeWork),
             None => self
                 .carrier
-                .with_work(|work| {
-                    work.admit(delta)?;
-                    work.record(delta)
-                })
+                .with_work(|work| work.charge(delta))
                 .map_err(super::lazy::mount_demand_error),
         }
     }
@@ -227,65 +186,10 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         self.bytes = 0;
         self.allocation.take()
     }
-
-    pub(super) fn observer<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &mut self,
-        checkout: &Checkout<A, O>,
-        cancellation: &CancellationToken,
-    ) -> Result<Checkout<A, O>, MountSourceError> {
-        let observer = if let Some(work) = self.carrier.original_native_work() {
-            checkout.observer(&work, cancellation).map_err(fs_error)?
-        } else {
-            let (budget, live) = self.carrier.remaining()?;
-            self.carrier.accept_with_prior_live(
-                checkout.observer(budget, cancellation),
-                live,
-                fs_error,
-            )?
-        };
-        self.adopt_checkout(&observer)?;
-        Ok(observer)
-    }
-
-    fn adopt_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &mut self,
-        checkout: &Checkout<A, O>,
-    ) -> Result<(), MountSourceError> {
-        if self.carrier.original_native_work().is_some() {
-            return Ok(());
-        }
-        let bytes = checkout.logical_owned_bytes();
-        let custody = checkout.proof_data_custody();
-        let custody_bytes = custody.logical_owned_bytes();
-        self.proof = Some(Arc::clone(&custody));
-        self.bytes = self
-            .bytes
-            .checked_add(bytes)
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        self.carrier
-            .with_work(|work| {
-                work.record_native_owned_completed(bytes, &None).1?;
-                work.retain_observer_custody(custody)
-            })
-            .map_err(super::lazy::mount_demand_error)?;
-        self.bytes = self
-            .bytes
-            .checked_sub(custody_bytes)
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        Ok(())
-    }
 }
 
 impl Drop for InputBuffers<'_, '_> {
     fn drop(&mut self) {
-        if let Some(proof) = self.proof.take() {
-            let _ = self.carrier.with_work(|work| {
-                work.merge(
-                    proof.take_completed_data_work(),
-                    work.live_allocation_bytes(),
-                )
-            });
-        }
         if self.allocation.is_none() {
             self.carrier
                 .with_work(|work| work.release(self.bytes))

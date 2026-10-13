@@ -254,7 +254,7 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
 {
     use crate::distributed::SchedulerPayloadStore as _;
     let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
-    let scheduler = crate::filesystem::FilesystemSchedulerPayloadStore::new(
+    let scheduler = crate::filesystem::FilesystemContentPublisher::new(
         storage.host.clone(),
         &(storage.volume),
         &storage.issuer.verifier(&mut None).expect("verifier copy"),
@@ -267,8 +267,7 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let operation = OperationId::new();
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-    let file = scheduler
-        .stage(
+    let file = crate::distributed::SchedulerPayloadStore::stage(scheduler.as_ref(),
             operation,
             "canonical-original-key",
             br#"{"input":1}"#,
@@ -277,8 +276,7 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
         .await?;
     let hold = io.take_native_custody(file.logical_owned_bytes()?)?;
     assert_eq!(hold.bytes(), file.logical_owned_bytes()?);
-    let retry = scheduler
-        .stage(
+    let retry = crate::distributed::SchedulerPayloadStore::stage(scheduler.as_ref(),
             operation,
             "canonical-original-key",
             br#"{"input":1}"#,
@@ -288,14 +286,12 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
     let retry_hold = io.take_native_custody(retry.logical_owned_bytes()?)?;
     assert_eq!(retry, file);
     assert_eq!(
-        scheduler
-            .stage(operation, "canonical-original-key", br#"{"input":1}"#, None)?
+        crate::distributed::SchedulerPayloadStore::stage(scheduler.as_ref(), operation, "canonical-original-key", br#"{"input":1}"#, None)?
             .await?,
         file
     );
     assert!(
-        scheduler
-            .stage(
+        crate::distributed::SchedulerPayloadStore::stage(scheduler.as_ref(),
                 operation,
                 "canonical-original-key",
                 br#"{"input":2}"#,
@@ -314,8 +310,7 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let denied_io = crate::filesystem::PreparationIo::from_native_work(&denied_work)?;
     assert!(matches!(
-        scheduler
-            .stage(
+        crate::distributed::SchedulerPayloadStore::stage(scheduler.as_ref(),
                 OperationId::new(),
                 "canonical-original-key",
                 b"never",

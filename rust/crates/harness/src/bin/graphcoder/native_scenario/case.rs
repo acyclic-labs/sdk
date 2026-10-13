@@ -99,7 +99,6 @@ pub(super) async fn prepare_case(
         stream_provider: stream_provider.clone(),
         private_volume: private.clone(),
         owner: owner.clone(),
-        observed_authorities: Vec::new(),
         generation: format!("qualification-{}", uuid::Uuid::new_v4()),
         limits,
         run_limits,
@@ -377,7 +376,7 @@ pub(super) async fn prepare_case(
         .logical_revision()
         .checked_add(1)
         .ok_or_else(|| Error::Invalid("merge notice sequence overflow".into()))?;
-    producer.config.tools.merges.push(NativeToolMerge {
+    producer.config.tools.merges.push(ConfiguredRecursiveMerge {
         caller: left.task,
         source: grandchild.task,
         notice: ConversationMessage {

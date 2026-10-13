@@ -1,48 +1,40 @@
 use super::*;
 
-pub(super) struct ChangeLabels {
-    pub(super) next: AtomicU64,
-    pub(super) labels: Mutex<DarwinOwned<HashMap<FileId, IssuedLabel>>>,
-    pub(super) cleared: AtomicU64,
-}
-
 pub(super) struct IssuedLabel {
     pub(super) label: u64,
     pub(super) stamp: CacheStamp,
     pub(super) binding: Option<u64>,
-    pub(super) path: DarwinOwned<MountPath>,
+    pub(super) path: Arc<DarwinOwned<MountPath>>,
     pub(super) lookup: MountLookup,
 }
 
-impl ChangeLabels {
-    pub(super) fn new() -> Self {
-        Self {
-            next: AtomicU64::new(1),
-            labels: Mutex::new(DarwinOwned::empty(HashMap::new())),
-            cleared: AtomicU64::new(0),
+impl DarwinMountContext {
+    pub(super) fn verify_labels(&self, work: &Work) -> Result<bool, NativeMountError> {
+        let cleared = self.labels_cleared.load(Ordering::Acquire);
+        let issued = {
+            let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
+            if labels.len() > MAXIMUM_VERIFIED_LABELS {
+                return Ok(false);
+            }
+            let mut rows = vector(work, labels.len())?;
+            work.charge(copy_work(
+                (labels.len() * std::mem::size_of::<(Arc<DarwinOwned<MountPath>>, MountLookup)>())
+                    as u64,
+            ))?;
+            for issued in labels.values() {
+                rows.push((Arc::clone(&issued.path), issued.lookup));
+            }
+            rows
+        };
+        for (path, previous) in issued.iter() {
+            work.charge(scan_work(1))?;
+            match self.lookup(path, work) {
+                Ok(current) if same_attributes(current, *previous) => {}
+                Err(cause) if fatal(&cause) => return Err(cause),
+                _ => return Ok(false),
+            }
         }
-    }
-
-    pub(super) fn fresh(&self) -> u64 {
-        self.next.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub(super) fn issued(
-        &self,
-        work: &Work,
-    ) -> Result<Option<DarwinOwned<Vec<(DarwinOwned<MountPath>, MountLookup)>>>, NativeMountError>
-    {
-        let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
-
-        if labels.len() > MAXIMUM_VERIFIED_LABELS {
-            return Ok(None);
-        }
-        let mut rows = vector(work, labels.len())?;
-        for issued in labels.values() {
-            let path = clone_path(&issued.path, work)?;
-            rows.push((path, issued.lookup));
-        }
-        Ok(Some(rows))
+        Ok(self.labels_cleared.load(Ordering::Acquire) == cleared)
     }
 }
 
@@ -62,14 +54,10 @@ impl DarwinMountContext {
         work: &Work,
     ) -> Result<u64, NativeMountError> {
         let Some(stamp) = stamp else {
-            return Ok(self.changes.fresh());
+            return Ok(self.next_label.fetch_add(1, Ordering::Relaxed));
         };
         let binding = self.source.binding_epoch_with_meter(work)?;
-        let mut labels = self
-            .changes
-            .labels
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
 
         if let Some(issued) = labels.get_mut(&lookup.node.file_id)
             && issued.binding == binding
@@ -87,13 +75,13 @@ impl DarwinMountContext {
         }
         if labels.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
             labels.clear();
-            self.changes.cleared.fetch_add(1, Ordering::AcqRel);
+            self.labels_cleared.fetch_add(1, Ordering::AcqRel);
         }
         if !labels.contains_key(&lookup.node.file_id) {
             grow_map(&mut labels, work)?;
         }
-        let path = clone_path(path, work)?;
-        let label = self.changes.fresh();
+        let path = shared(work, clone_path(path, work)?)?;
+        let label = self.next_label.fetch_add(1, Ordering::Relaxed);
         labels.insert(
             lookup.node.file_id,
             IssuedLabel {

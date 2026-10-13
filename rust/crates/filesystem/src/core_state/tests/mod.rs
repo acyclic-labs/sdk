@@ -1,5 +1,6 @@
-use super::*;
 use super::collection::content_address;
+use super::*;
+use crate::lazy_workspace::MemoryLazyNode;
 use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId};
 
 const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
@@ -209,11 +210,19 @@ pub(super) fn core_snapshot(store: &LocalCoreStateStore) -> CoreSnapshot {
         .with_log(|log| {
             Ok(CoreSnapshot {
                 contexts: load_all_contexts(&namespace, log)?,
-                children: log.get::<ContextChildren>(&namespace, CRASH_PARENT)?,
-                child_count: log.get::<ContextChildCount>(&namespace, CRASH_PARENT)?,
+                children: log
+                    .get::<ContextChildren>(&namespace, CRASH_PARENT, None, None)?
+                    .map(|(value, _)| value),
+                child_count: log
+                    .get::<ContextChildCount>(&namespace, CRASH_PARENT, None, None)?
+                    .map(|(value, _)| value),
                 index_ready: context_children_index_ready(&namespace, log)?,
-                lineage: log.get::<WorkspaceLineageRecord>(&namespace, CRASH_WORKSPACE)?,
-                lazy: log.get::<LazyWorkspaceState>(&namespace, CRASH_WORKSPACE)?,
+                lineage: log
+                    .get::<WorkspaceLineageRecord>(&namespace, CRASH_WORKSPACE, None, None)?
+                    .map(|(value, _)| value),
+                lazy: log
+                    .get::<LazyWorkspaceState>(&namespace, CRASH_WORKSPACE, None, None)?
+                    .map(|(value, _)| value),
             })
         })
         .expect("recovered snapshot")
@@ -338,7 +347,7 @@ pub(super) fn lose_unflushed_writes(root: &Path, flushed: usize) {
         for record in change.0 {
             let key = record.key;
             let paths = key.paths(&namespace).expect("record paths");
-            std::fs::create_dir_all(&paths.directory).expect("record directory");
+            std::fs::create_dir_all(paths.directory()).expect("record directory");
             std::fs::write(paths.current, b"{\"torn").expect("tear unflushed record");
         }
     }
@@ -471,9 +480,7 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
         file_id: crate::FileId::from_bytes([0xa1; 16]),
         priority: 0,
         record: vec![1, 2, 3],
-        metadata: Box::new(crate::WorkspaceMetadata::from_engine(
-            crate::kernel::FileMetadata::default(),
-        )),
+        metadata: crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default()),
         left: empty_shadows,
         right: empty_shadows,
     };

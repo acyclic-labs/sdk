@@ -11,17 +11,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        let path = self.canonical_path(path, ctx)?;
-        let result = async {
-            let lookup = self.lookup(&path.value, ctx).await?;
-            let result = self
-                .promote_resolved(&path.value, &lookup.0, maximum, key, permit, ctx)
-                .await;
-            self.retire_lookup(lookup, ctx)?;
-            result
-        }
-        .await;
-        path.retire(ctx)?;
+        let lookup = self.lookup(path, ctx).await?;
+        let result = self
+            .promote_resolved(path, &lookup.0, maximum, key, permit, ctx)
+            .await;
+        self.retire_lookup(lookup, ctx)?;
         result
     }
     async fn promote_resolved(
@@ -36,17 +30,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if matches!(lookup,LazyLookup::Authored { path: authored,.. } if authored == path) {
             return Ok(TransactionCommit::AlreadyCommitted(self.head(ctx).await?));
         }
-        let checkout = self
+        let mut transaction = accounted!(ctx, |work, cancel| self
             .workspace
-            .checkout_accounted(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-                ctx,
-                cancellation(ctx),
-            )
-            .await?;
-        let mut transaction =
-            crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
+            .begin_transaction(key, work, cancel))?;
         if let Some(parent) = parent_path(path) {
             accounted!(ctx, |work, cancel| transaction
                 .create_dir_all(parent, work, cancel))?;
@@ -88,7 +74,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 )?;
                 transaction
                     .checkout
-                    .mutate_owned_with_accounting(operations, ctx, cancellation(ctx))
+                    .apply_mutations(operations, ctx, cancellation(ctx))
                     .await?;
             }
             LazyLookup::Source { source, node } => {
@@ -133,24 +119,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         self.retire_lookup(lookup, ctx)?;
         result
     }
-    /// Stages a live or frozen identity in an unpublished mounted checkout.
+    /// Stages a live identity in an unpublished mounted checkout.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn stage_into_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
-        cut: Option<LazySnapshotRef>,
         path: &str,
         expected: FileId,
         maximum: u64,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
-        let lookup = match cut {
-            Some(cut) => {
-                let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
-                (lookup.ok_or(LazyWorkspaceError::NotFound)?, guard)
-            }
-            None => self.lookup(path, ctx).await?,
-        };
+        let lookup = self.lookup(path, ctx).await?;
         let result = async {
             if self.stable_file_id_for_lookup(path, &lookup.0, ctx).await? != expected {
                 return Err(LazyWorkspaceError::StaleIdentity);
@@ -174,7 +153,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             if matches!(&lookup.0,LazyLookup::Authored { path: authored,.. } if authored == path) {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            let candidate = checkout.private_candidate_with_accounting(ctx, cancellation(ctx))?;
+            let candidate = checkout.private_candidate(ctx, cancellation(ctx))?;
             let mut transaction = accounted!(ctx, |work, cancel| async {
                 crate::Transaction::for_checkout_candidate(&self.workspace, candidate, work, cancel)
             })?;

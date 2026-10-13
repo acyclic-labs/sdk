@@ -6,23 +6,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer
     }
 
-    /// Configures retirement of originally indexed successful/failed effects.
-    pub fn with_resident_terminal_effect_limit(mut self, maximum: usize) -> Result<Self> {
-        self.reducer.set_resident_terminal_effect_limit(maximum)?;
-        Ok(self)
-    }
-
-    /// Sets the archive allowance for effect checks and retries.
-    pub fn with_effect_history_read_limits(mut self, limits: HistoryReadLimits) -> Result<Self> {
-        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
-            return Err(Error::Invalid(
-                "effect history bounds must be positive".into(),
-            ));
-        }
-        self.effect_history_limits = limits;
-        Ok(self)
-    }
-
     /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
         self.reducer.set_resident_event_limit(maximum)

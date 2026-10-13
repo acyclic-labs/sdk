@@ -7,7 +7,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(in crate::filesystem) fn verify_responder_scope_with_io(
+    pub(in crate::filesystem) fn verify_responder_scope(
         &self,
         id: InteractionId,
         scope: &Scope,
@@ -15,7 +15,7 @@ where
     ) -> Result<()> {
         with_history_io(io, |work| self.verifier.verify(scope, work))?;
         let grant = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("interaction:respond:{id}"), work)
+            crate::executor::preparation_format(format_args!("interaction:respond:{id}"), work)
         })?;
         let hold = io
             .map(|io| io.guard_owned(grant.capacity() as u64))
@@ -139,24 +139,11 @@ where
         id: InteractionId,
         expected_version: u64,
     ) -> Result<InteractionTicket> {
-        self.verifier.verify(scope, &mut None)?;
-        if !scope
-            .capabilities()
-            .contains(capability::INTERACTION_RESOLVE)
-        {
-            return Err(Error::Unauthorized(
-                "scope lacks interaction:resolve".into(),
-            ));
-        }
+        self.verify_responder_scope(id, scope, None)?;
         let (ticket, prior) = self
             .read(id, None)
             .await?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-        if !scope.capabilities().contains(&ticket.responder_grant()) {
-            return Err(Error::Unauthorized(
-                "scope lacks interaction responder grant".into(),
-            ));
-        }
         let next = match &prior {
             Some(prior) if prior.outcome.is_terminal() => prior.expected_version,
             Some(prior) => next_revision(prior.expected_version)?,
@@ -170,7 +157,7 @@ where
         Ok(ticket)
     }
 
-    pub(in crate::filesystem) async fn verify_approval_with_io(
+    pub(in crate::filesystem) async fn verify_approval(
         &self,
         id: InteractionId,
         operation: OperationId,

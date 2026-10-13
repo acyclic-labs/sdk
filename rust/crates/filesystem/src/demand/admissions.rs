@@ -1,12 +1,19 @@
 use super::*;
 use crate::cancellation::{CancellationWaitAdmission, CancellationWaitError, PreparedCancelled};
-use crate::kernel::allocation::AllocationLedger;
+use crate::kernel::{
+    ProofDataCustody,
+    allocation::{AllocationLedger, LogicalVecCapacity},
+};
 use std::sync::{Arc, Weak};
 
-type Observer = (Arc<crate::kernel::ProofDataCustody>, u64, Option<u128>);
+type Observer = (Arc<ProofDataCustody>, u64, Option<u128>);
+pub(super) const SCAN: WorkCounters = WorkCounters {
+    items_examined: 1,
+    ..WorkCounters::UNCHARGED
+};
 
 pub(super) fn insert<T>(
-    (values, capacity): &mut (Vec<T>, crate::kernel::allocation::LogicalVecCapacity),
+    (values, capacity): &mut (Vec<T>, LogicalVecCapacity),
     value: T,
     ledger: &mut AllocationLedger,
     work: &mut WorkCounters,
@@ -29,7 +36,6 @@ pub(super) fn insert<T>(
     values.push(value);
     Ok(index)
 }
-
 #[derive(Default)]
 pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
@@ -37,17 +43,16 @@ pub(crate) struct Admissions {
     pub(super) io_failure: Option<DemandError>,
     cancellations: (
         Vec<(CancellationToken, CancellationWaitAdmission)>,
-        crate::kernel::allocation::LogicalVecCapacity,
+        LogicalVecCapacity,
     ),
-    observers: (Vec<Observer>, crate::kernel::allocation::LogicalVecCapacity),
+    observers: (Vec<Observer>, LogicalVecCapacity),
     pub(super) native_mount_admissions: (
         Vec<(Weak<NativeMountAllocationCustody>, u64)>,
-        crate::kernel::allocation::LogicalVecCapacity,
+        LogicalVecCapacity,
     ),
     #[cfg(feature = "native-mount")]
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
-
 fn observer_bytes(entry: &Observer) -> u64 {
     if entry.2.is_some() {
         entry.0.non_native_retained_payload_bytes()
@@ -57,27 +62,22 @@ fn observer_bytes(entry: &Observer) -> u64 {
 }
 fn native_retired(entry: &Observer) -> u64 {
     entry.2.map_or(0, |previous| {
-        u64::try_from(
-            entry
-                .0
-                .native_control_events()
-                .1
-                .checked_sub(previous)
-                .expect("monotonic retirement"),
-        )
-        .expect("bounded live native bytes")
+        let retired = entry
+            .0
+            .native_control_events()
+            .1
+            .checked_sub(previous)
+            .expect("monotonic retirement");
+        u64::try_from(retired).expect("bounded live native bytes")
     })
 }
 fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
-    entry
-        .0
-        .upgrade()
-        .map_or(0, |custody| custody.retained_bytes())
+    entry.0.upgrade().map_or(0, |owner| owner.retained_bytes())
 }
-
 impl Admissions {
-    fn backing(&self) -> impl Iterator<Item = (u64, u64)> {
-        self.observers
+    pub(super) fn live_bytes(&self, live: u64) -> u64 {
+        let backing = self
+            .observers
             .0
             .iter()
             .map(|entry| (entry.1, observer_bytes(entry)))
@@ -86,34 +86,35 @@ impl Admissions {
                     .0
                     .iter()
                     .map(|entry| (entry.1, mount_bytes(entry))),
-            )
-    }
-    pub(super) fn freed_bytes(&self) -> u64 {
-        let freed = self
+            );
+        let (released, unrecorded) =
+            backing.fold((0u64, 0u64), |(released, unrecorded), (paid, actual)| {
+                (
+                    released
+                        .checked_add(paid.saturating_sub(actual))
+                        .expect("balanced retirement"),
+                    unrecorded
+                        .checked_add(actual.saturating_sub(paid))
+                        .expect("bounded live bytes"),
+                )
+            });
+        let released = self
             .cancellations
             .0
             .iter()
             .map(|(token, admission)| admission.freed_registry_bytes(token))
-            .chain(
-                self.backing()
-                    .map(|(paid, actual)| paid.saturating_sub(actual)),
-            )
             .chain(self.observers.0.iter().map(native_retired))
-            .try_fold(0u64, u64::checked_add)
+            .try_fold(released, u64::checked_add)
             .expect("balanced retirement");
         #[cfg(feature = "native-mount")]
-        let freed = freed
+        let released = released
             .checked_add(self.view_gates.freed_bytes())
             .expect("balanced view retirement");
-        freed
-    }
-    pub(super) fn unrecorded_bytes(&self) -> u64 {
-        self.backing()
-            .map(|(paid, actual)| actual.saturating_sub(paid))
-            .sum()
+        live.checked_sub(released)
+            .and_then(|live| live.checked_add(unrecorded))
+            .expect("balanced retained bytes")
     }
 }
-
 impl DemandWork {
     pub(crate) fn admissions<T>(
         &mut self,
@@ -128,15 +129,14 @@ impl DemandWork {
         ))
     }
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
-        for entry in self.roots.observers.0.iter_mut() {
+        for entry in &mut self.roots.observers.0 {
             if entry.2.is_some() {
                 let (born, retired) = entry.0.native_control_events();
                 if retired > born {
                     return Err(crate::WorkError::Overflow);
                 }
-                let bytes = native_retired(entry);
                 self.allocations
-                    .release(bytes)
+                    .release(native_retired(entry))
                     .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
                 entry.2 = Some(retired);
             }
@@ -144,31 +144,25 @@ impl DemandWork {
         Ok(())
     }
     pub(crate) fn reconcile_cancellation_registry(&mut self) -> Result<(), crate::WorkError> {
-        for (token, admission) in self.roots.cancellations.0.iter_mut() {
+        for (token, admission) in &mut self.roots.cancellations.0 {
             admission.reconcile_registry(token, &mut self.allocations)?;
         }
         self.reconcile_native_controls()?;
-        let mut failure = None;
-        let backing = self
+        let observers = self.roots.observers.0.iter_mut().map(|entry| {
+            let actual = observer_bytes(entry);
+            (&mut entry.1, actual)
+        });
+        let mounts = self
             .roots
-            .observers
+            .native_mount_admissions
             .0
             .iter_mut()
             .map(|entry| {
-                let actual = observer_bytes(entry);
+                let actual = mount_bytes(entry);
                 (&mut entry.1, actual)
-            })
-            .chain(
-                self.roots
-                    .native_mount_admissions
-                    .0
-                    .iter_mut()
-                    .map(|entry| {
-                        let actual = mount_bytes(entry);
-                        (&mut entry.1, actual)
-                    }),
-            );
-        for (paid, actual) in backing {
+            });
+        let mut failure = None;
+        for (paid, actual) in observers.chain(mounts) {
             if actual < *paid {
                 self.allocations
                     .release(*paid - actual)
@@ -194,18 +188,12 @@ impl DemandWork {
     }
     fn retain_observer(
         &mut self,
-        token: Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<bool, DemandError> {
-        for entry in self.roots.observers.0.iter() {
-            self.work.charge(
-                &WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-                &self.budget,
-            )?;
+        token: Arc<ProofDataCustody>,
+    ) -> Result<Option<usize>, DemandError> {
+        for entry in &self.roots.observers.0 {
+            self.work.charge(&SCAN, &self.budget)?;
             if Arc::ptr_eq(&entry.0, &token) {
-                return Ok(false);
+                return Ok(None);
             }
         }
         insert(
@@ -214,24 +202,23 @@ impl DemandWork {
             &mut self.allocations,
             &mut self.work,
             self.budget,
-        )?;
-        Ok(true)
+        )
+        .map(Some)
     }
     pub(crate) fn retain_observer_custody(
         &mut self,
-        token: Arc<crate::kernel::ProofDataCustody>,
+        token: Arc<ProofDataCustody>,
     ) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
         self.check()?;
-        self.retain_observer(token)?;
-        Ok(())
+        self.retain_observer(token).map(|_| ())
     }
     pub(crate) fn retain_checkout_control(
         &mut self,
-        token: &Arc<crate::kernel::ProofDataCustody>,
+        token: &Arc<ProofDataCustody>,
     ) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
-        let inserted = self.retain_observer(token.clone())?;
+        let inserted = self.retain_observer(token.clone())?.is_some();
         let metadata = if inserted {
             self.allocations
                 .record_owned_bytes(token.logical_owned_bytes(), &mut self.work)
@@ -245,10 +232,7 @@ impl DemandWork {
                 .map_err(DemandError::from),
         )
     }
-    pub(crate) fn owns_native_checkout_token(
-        &self,
-        token: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> bool {
+    pub(crate) fn owns_native_checkout_token(&self, token: &Arc<ProofDataCustody>) -> bool {
         self.roots
             .observers
             .0
@@ -270,13 +254,7 @@ impl DemandWork {
         }
         let mut found = None;
         for (index, (current, _)) in self.roots.cancellations.0.iter().enumerate() {
-            self.work.charge(
-                &WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-                &self.budget,
-            )?;
+            self.work.charge(&SCAN, &self.budget)?;
             if current.same_state(token) {
                 found = Some(index);
                 break;
@@ -310,14 +288,14 @@ impl DemandWork {
         let reconciled = self
             .reconcile_cancellation_registry()
             .map_err(CancellationWaitError::from);
-        let admission = self
+        let mut empty = CancellationWaitAdmission::default();
+        let admission = match self
             .roots
             .cancellations
             .0
             .iter_mut()
-            .find(|(token, _)| prepared.same_token(token));
-        let mut empty = CancellationWaitAdmission::default();
-        let admission = match admission {
+            .find(|(token, _)| prepared.same_token(token))
+        {
             Some((_, admission)) => admission,
             None => {
                 assert_eq!(prepared.retained_waiter_bytes(), 0);
@@ -333,12 +311,11 @@ impl DemandWork {
         reconciled.and(finished)
     }
 }
-
 impl NativeDemandReadMeter {
     pub(crate) fn checkout_control_sink(
         self: &Arc<Self>,
-        token: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> Option<Arc<crate::kernel::ProofDataCustody>> {
+        token: &Arc<ProofDataCustody>,
+    ) -> Option<Arc<ProofDataCustody>> {
         self.lock()
             .owns_native_checkout_token(token)
             .then(|| token.clone())
@@ -346,9 +323,9 @@ impl NativeDemandReadMeter {
     pub(crate) fn register_native_checkout_control(
         self: &Arc<Self>,
         native: &crate::NativeMaterializationWork,
-        token: &Arc<crate::kernel::ProofDataCustody>,
+        token: &Arc<ProofDataCustody>,
         header: &mut crate::NativeAllocation,
-    ) -> Result<Arc<crate::kernel::ProofDataCustody>, crate::NativeTreeMaterializationError> {
+    ) -> Result<Arc<ProofDataCustody>, crate::NativeTreeMaterializationError> {
         use crate::NativeTreeMaterializationError as Error;
         if !header.is_checkout_header_for(self)
             || token.retained_payload_bytes() != 0
@@ -363,22 +340,15 @@ impl NativeDemandReadMeter {
             |work| work.check(),
         )
         .map_err(crate::materializer::native_materialization_work_error)?;
-        if work.owns_native_checkout_token(token)
-            || !token.bind_native_original(self)
-            || !work
-                .retain_observer(token.clone())
-                .map_err(crate::materializer::native_materialization_work_error)?
-        {
+        if work.owns_native_checkout_token(token) || !token.bind_native_original(self) {
             return Err(Error::InvalidLayout);
         }
+        let index = work
+            .retain_observer(token.clone())
+            .map_err(crate::materializer::native_materialization_work_error)?
+            .ok_or(Error::InvalidLayout)?;
         header.transfer_checkout_metadata(self, token.logical_owned_bytes())?;
-        work.roots
-            .observers
-            .0
-            .iter_mut()
-            .find(|entry| Arc::ptr_eq(&entry.0, token))
-            .expect("registered control")
-            .2 = Some(0);
+        work.roots.observers.0[index].2 = Some(0);
         Ok(token.clone())
     }
 }

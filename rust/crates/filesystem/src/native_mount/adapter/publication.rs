@@ -45,7 +45,6 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    /// Begins an optimistic transaction on a copy of this candidate.
     pub(super) fn candidate(
         &self,
         operation: Option<OperationId>,
@@ -61,32 +60,20 @@ impl<A, O> SharedCheckoutState<A, O> {
             Some(_) => return Err(MountSourceError::Stale),
             None => self.ensure_publication_resolved()?,
         }
-        let clone = |carrier: &mut NativeDemandCarrier<'_>| {
-            if let Some(work) = carrier.original_native_work() {
-                return self
-                    .checkout
-                    .private_candidate(&work, cancellation)
-                    .map_err(MountSourceError::Filesystem);
-            }
-            let (budget, live) = carrier.remaining()?;
-            let checkout = carrier.accept_with_prior_live(
-                self.checkout.private_candidate(budget, cancellation),
-                live,
-                fs_error,
-            )?;
-            carrier
-                .with_work(|work| work.retain_checkout_control(&checkout.private_control_custody()))
-                .map_err(super::lazy::mount_demand_error)?;
-            Ok(checkout)
-        };
+        let work = carrier.original_native_work().expect("native SDK callback");
         Ok(CheckoutCandidate {
-            base: clone(carrier)?,
-            checkout: clone(carrier)?,
+            base: self
+                .checkout
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
+            checkout: self
+                .checkout
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
             operation,
         })
     }
 
-    /// Records one change to the checkout's view. The exclusive guard keeps
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         record_view_change(
             &self.ledger,

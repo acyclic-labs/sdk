@@ -1,5 +1,7 @@
 //! Thin embedded `Fs`/`Volume`/`Checkout` composition over the two durable stores.
 
+#[cfg(test)]
+use crate::foundation::Epoch;
 use acyclic_stream::ProviderTask;
 
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
@@ -7,7 +9,7 @@ use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
 use crate::cancellation::{CancellationError, CancellationToken};
 
 use crate::foundation::{
-    AuthorityId, Digest, DurableCommit, Epoch, FileId, GenerationId, Head, OperationId,
+    AuthorityId, Digest, DurableCommit, FileId, GenerationId, Head, OperationId,
     ProposedCommit, Sequence, VolumeId,
 };
 
@@ -15,10 +17,10 @@ use crate::heap_future::in_heap;
 
 use crate::kernel::{
     contextual_publication_fingerprint_with_accounting, list_attributes_async_with_accounting,
-    lookup_file_record_async_with_accounting, lookup_path_async_with_accounting, lookup_paths,
+    lookup_file_record_async_with_accounting, lookup_path_async_with_accounting,
     lookup_paths_async_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    merge_generation_with_borrowed_resolutions_with_accounting, observe_path_edges_async,
+    merge_generation_with_borrowed_resolutions_with_accounting,
     plan_extent_range_with_accounting, prove_record_closure_async, read_blob_range_with_accounting,
     read_generation_root_with_accounting, retire_allocation, types,
 };
@@ -64,9 +66,9 @@ use crate::kernel::{
     authenticate_generation_export_manifest_async, build_blob,
     build_generation_export_manifest_async, contextual_publication_fingerprint,
     decode_workspace_deleted, export_generation_batch_async, import_generation_batch_async,
-    list_attributes, lookup_file_record, lookup_file_records, merge_generation_async,
-    plan_extent_range, prove_generation_closure, publish_generation,
-    publish_generation_async_with_permit, read_blob_range, read_file_range_async,
+    lookup_file_records, merge_generation_async,
+    prove_generation_closure, publish_generation,
+    publish_generation_async_with_permit,
     retention_authority_id, volume_authority_id,
 };
 
@@ -193,15 +195,13 @@ use candidates::root_parent_bytes;
 pub use checkout::Checkout;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use collection::LocalGarbageCollection;
-pub(crate) use content_model::ContentAddress;
 pub use content_model::ContentChange;
-pub(crate) use content_model::ContentFile;
-pub(crate) use content_model::ContentOperation;
 pub use content_model::ContentTimes;
 pub use content_model::FileCloneRequest;
 pub use content_model::GroupedChange;
 pub use content_model::GroupedOutcome;
 use content_model::content_input_path_bytes;
+pub(crate) use content_model::{ContentAddress, ContentFile};
 pub use detached::DetachedFile;
 pub use diff::DirectoryBindingChange;
 pub use diff::FileRecordChange;
@@ -264,11 +264,11 @@ pub(crate) use lineage::WorkspaceRebaseRequest;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local::LocalOptions;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(test)]
 use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;
 pub(crate) use metadata::read_record_metadata_to_file_root_with_accounting;
 use proof::DependencyLedger;
-use proof::ObservedPathMap;
 use proof::Proof;
 use publication::LastCommit;
 pub(crate) use publication::PublicationClosure;
@@ -295,13 +295,11 @@ use tree::list_directory_to_file_root_with_accounting;
 use volume_creation::CREATION_FINGERPRINT_DOMAIN;
 use volume_creation::creation_commit;
 use volume_creation::creation_fingerprint;
-use volume_creation::derived_digest;
 use volume_creation::merge_creation_backend_work;
 pub use work::FsResult;
 pub use work::FsWork;
 use work::add;
 pub(crate) use work::measured;
-use work::merge_simultaneous_failure;
 use work::merge_simultaneous_work;
 use work::remaining;
 use work::remaining_owned;

@@ -1,0 +1,68 @@
+/// Incremental cursor over immutable history.
+pub(crate) struct HistoryCursor {
+    root: Option<Arc<History>>,
+    windows: VecDeque<HistoryWindow>,
+    next: u64,
+}
+impl HistoryCursor {
+    pub(crate) fn at(next: u64) -> Self {
+        Self {
+            root: None,
+            windows: VecDeque::new(),
+            next,
+        }
+    }
+    fn new(history: Option<&Arc<History>>, tail: u64, next: u64) -> Self {
+        let mut cursor = Self::at(next);
+        cursor.sync(history, tail);
+        cursor
+    }
+    fn sync(&mut self, root: Option<&Arc<History>>, tail: u64) {
+        if match (&self.root, root) {
+            (Some(old), Some(root)) => Arc::ptr_eq(old, root),
+            (None, None) => true,
+            _ => false,
+        } {
+            return;
+        }
+        let mut added = Vec::new();
+        let mut node = root;
+        while let Some(current) = node {
+            if self
+                .root
+                .as_ref()
+                .is_some_and(|old| Arc::ptr_eq(old, current))
+            {
+                added.reverse();
+                self.windows.extend(added);
+                self.root = root.cloned();
+                return;
+            }
+            match current.as_ref() {
+                History::Batch {
+                    parent, records, ..
+                } => {
+                    if let Some(window) = history_window(Arc::clone(records), tail, self.next) {
+                        added.push(window);
+                    }
+                    node = parent.as_ref();
+                }
+                History::Prefix { .. } => break,
+            }
+        }
+        added.clear();
+        collect_history_windows(root, tail, self.next, &mut added);
+        self.windows = added.into();
+        self.root = root.cloned();
+    }
+    fn next_record(&mut self) -> Option<Record> {
+        let window = self.windows.front_mut()?;
+        let record = window.records.records.get(window.start)?.clone();
+        window.start += 1;
+        self.next = record.sequence.checked_add(1)?;
+        if window.start == window.end {
+            self.windows.pop_front();
+        }
+        Some(record)
+    }
+}

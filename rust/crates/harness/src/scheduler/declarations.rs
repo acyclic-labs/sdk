@@ -210,11 +210,13 @@ impl EntrypointRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         add(
             add(self.name.capacity() as u64, self.version.capacity() as u64)?,
-            crate::contract::json_value_logical_owned_bytes(&self.result_schema)?,
+            crate::executor::json::json_value_logical_owned_bytes(&self.result_schema)?,
         )
     }
     pub(super) fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
-        let result_schema = crate::core::copy_value(&self.result_schema, quota)?;
+        let result_schema = crate::core::copy(&self.result_schema, quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+})?;
         Ok(Self {
             name: copy_text(&self.name, quota)?,
             version: copy_text(&self.version, quota)?,
@@ -352,7 +354,7 @@ impl OperationSpec {
             resources,
             placement,
             orchestration,
-            state: crate::core::copy_file(&self.state, quota)?,
+            state: self.state.clone_in_quota(quota)?,
         })
     }
 }

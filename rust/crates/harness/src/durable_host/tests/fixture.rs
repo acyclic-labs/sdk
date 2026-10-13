@@ -1,9 +1,6 @@
 //! Shared real-provider fixture for durable host behavior tests.
 use super::*;
-use crate::filesystem::{
-    FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
-    FilesystemSchedulerPayloadStore,
-};
+use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 use crate::runtime::{TaskDefinition, TaskRegistry};
 type Execution<P, A, O> = crate::filesystem::FilesystemExecutionJournal<P, A, O>;
 type Workflow<P, A, O> = crate::filesystem::FilesystemWorkflowJournal<P, A, O>;
@@ -44,7 +41,7 @@ where
     pub(crate) async fn owner(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         let lease = match self
             .host
-            .recover_work(TaskId::from_bytes([byte; 16]))
+            .recover_work(TaskId::from_bytes([byte; 16]), &mut None)
             .await?
         {
             crate::distributed::WorkPull::Claimed(lease)
@@ -54,7 +51,11 @@ where
             }
         };
         self.host
-            .journal_owner(TaskId::from_bytes([byte; 16]), (&lease.reservation).into())
+            .journal_owner(
+                TaskId::from_bytes([byte; 16]),
+                &((&lease.reservation).into()),
+                None,
+            )
             .await
     }
 
@@ -92,21 +93,35 @@ where
         use crate::conversation::ContentPublisher;
         let task = TaskId::from_bytes([byte; 16]);
         self.host
-            .suspend_workflow(task, self.owner(byte).await?.task_binding().1.clone(), 1)
-            .await?;
-        let (input, _) = self
-            .publisher
-            .stage(
-                OperationId::from_bytes([byte; 16]),
-                "replacement.json",
-                b"0",
-                "application/json",
-                "replacement.json",
+            .suspend_workflow(
+                task,
+                self.owner(byte).await?.task_binding().1,
+                1,
                 None,
-            )?
+                None,
+                None,
+                &mut None,
+            )
             .await?;
+        let (input, _) = crate::conversation::ContentPublisher::stage(
+            self.publisher.as_ref(),
+            OperationId::from_bytes([byte; 16]),
+            "replacement.json",
+            b"0",
+            "application/json",
+            "replacement.json",
+            None,
+        )?
+        .await?;
         self.host
-            .resume_workflow(task, 1, input, IdempotencyKey::new("replace")?)
+            .resume_workflow(
+                task,
+                1,
+                input,
+                IdempotencyKey::new("replace")?,
+                None,
+                &mut None,
+            )
             .await?;
         self.claim(byte, "replacement").await?;
         self.owner(byte).await
@@ -236,14 +251,14 @@ where
             scope.limits().file_bytes,
             None,
         )?;
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             files.clone(),
             &storage,
             &verifier,
             &signed,
             scope.limits().file_bytes,
             None,
-        )?);
+        )?;
         let coordinator = DistributedCoordinator::open(
             &stream,
             reader.clone(),
@@ -314,19 +329,20 @@ where
     ) -> Result<crate::distributed::WorkLease> {
         let crate::distributed::WorkPull::Claimed(lease) = self
             .host
-            .pull_operation(
+            .pull_work(
                 &crate::distributed::Worker {
                     id: worker.into(),
                     available: Default::default(),
                     labels: BTreeMap::new(),
                 },
-                OperationId::from_bytes([byte; 16]),
+                Some(OperationId::from_bytes([byte; 16])),
+                &mut None,
             )
             .await?
         else {
             return Err(Error::NotFound("fixture lease".into()));
         };
-        self.host.start_task(&lease).await?;
+        self.host.start_task(&lease, &mut None).await?;
         Ok(lease)
     }
 
@@ -343,14 +359,14 @@ where
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             self.files.clone(),
             &self.storage,
             &verifier,
             &signed,
             self.scope.limits().file_bytes,
             None,
-        )?);
+        )?;
         let mut host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(
                 &self.stream,

@@ -11,7 +11,7 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
         &cancellation,
     )
     .map_err(|failure| failure.0)?;
-    let root = receipt.run(|work| HostRoot::open(directory.path(), work))?;
+    let root = HostRoot::open(directory.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
     let namespace = NamespacePath::new(

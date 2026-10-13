@@ -101,7 +101,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if crate::contract::canonical_json_bytes(&reference)? != record.value.as_ref() {
             return Err(Error::Storage("batch manifest ref is not canonical".into()));
         }
-        self.read_json(&reference)
+        self.read_json(&reference, None)
             .await
             .map_err(|error| match error {
                 Error::NotFound(_) => {
@@ -125,7 +125,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .stage(operation_id, &key, &bytes, None)?
             .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
-        if self.read_json(&reference).await? != canonical {
+        if self.read_json(&reference, None).await? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
         }
         let published = crate::contract::canonical_json_bytes(&reference)?;
@@ -187,7 +187,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &mut None,
         )?;
         let input =
-            crate::contract::compile_json_schema(&request.input_schema, "batch input", &mut None)?;
+            crate::executor::compile_json_schema(&request.input_schema, "batch input", &mut None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))

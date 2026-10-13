@@ -50,28 +50,39 @@ pub(crate) fn clone_value(
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
-    let retained = crate::contract::json_value_logical_owned_bytes(&copied)?;
+    let retained = crate::executor::json::json_value_logical_owned_bytes(&copied)?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }
 
-/// Builds the canonical result tree through the existing bounded SDK codec.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+/// Builds the canonical result under its byte limit and optional ledger.
 pub(crate) fn value<T: Serialize>(
     value: &T,
     maximum_bytes: u64,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    let value = io.value_json(value, maximum_bytes)?;
-    let retained = (std::mem::size_of::<Value>() as u64)
-        .checked_add(crate::contract::json_value_logical_owned_bytes(&value)?)
-        .ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "tool JSON ownership overflow",
-        })?;
-    let custody = io.into_native_custody(retained)?;
-    Ok((value, custody))
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let value = io.value_json(value, maximum_bytes.min(work.remaining()?.bytes_encoded))?;
+        let retained = (std::mem::size_of::<Value>() as u64)
+            .checked_add(crate::executor::json::json_value_logical_owned_bytes(
+                &value,
+            )?)
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "tool JSON ownership overflow",
+            })?;
+        let custody = io.into_native_custody(retained)?;
+        return Ok((value, Some(custody)));
+    }
+    let _ = work;
+    if maximum_bytes != u64::MAX {
+        crate::executor::json::json_byte_length(value, maximum_bytes, &mut None)?;
+    }
+    serde_json::to_value(value)
+        .map(|value| (value, None))
+        .map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// Static labels of the closed tool DTO graphs, extending the SDK profile with their actual derived type and field names before serde constructs an error.
@@ -138,7 +149,7 @@ pub(crate) const fn tool_serde_diagnostic_label_bytes() -> u64 {
             "digest",
             "state",
         ];
-        let mut bytes = crate::contract::preparation_serde_diagnostic_label_bytes();
+        let mut bytes = crate::executor::json::preparation_serde_diagnostic_label_bytes();
         let mut index = 0;
         while index < LABELS.len() {
             bytes += LABELS[index].len() as u64 + 4;

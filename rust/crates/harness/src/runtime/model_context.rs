@@ -3,8 +3,6 @@ use super::*;
 impl TaskContext {
     pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
         let limits = self.scope.limits();
-        let mut files = Vec::new();
-        let mut configurations = Vec::new();
         for message in messages {
             message.content.validate_limits(limits, &mut None)?;
             for file in message.content.file_refs() {
@@ -14,25 +12,22 @@ impl TaskContext {
                         "task scope cannot project this file".into(),
                     ));
                 }
-                files.push(file);
             }
-            configurations.extend(message.content.native_configurations());
         }
-        let proofs = configurations
+        let configurations = messages
             .iter()
+            .flat_map(|message| message.content.native_configurations())
             .map(|binding| {
-                binding.verify_original(
+                let proof = binding.verify_original(
                     self.scope.extensions.as_ref(),
                     self.scope.extension_schemas.as_ref(),
                     self.scope.extension_runtime.as_deref(),
                     None,
-                )
+                )?;
+                Ok((binding, proof))
             })
             .collect::<Result<Vec<_>>>()?;
-        if files.is_empty() {
-            return Ok(());
-        }
-        for (binding, (schemas, expected)) in configurations.iter().zip(proofs) {
+        for (binding, (schemas, expected)) in &configurations {
             let content = self
                 .content_binding(Some(binding.configuration.content.volume()))
                 .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
@@ -46,16 +41,19 @@ impl TaskContext {
                 .await?;
             schemas.verify_configuration_binding(
                 &binding.configuration,
-                expected,
+                *expected,
                 &bytes,
                 limits,
                 None,
             )?;
         }
-        for file in files {
+        for file in messages
+            .iter()
+            .flat_map(|message| message.content.file_refs())
+        {
             if !configurations
                 .iter()
-                .any(|binding| &binding.configuration.content == file)
+                .any(|(binding, _)| &binding.configuration.content == file)
             {
                 self.content_binding(Some(file.volume()))
                     .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?
@@ -204,17 +202,11 @@ impl TaskContext {
         }
         let identity = policy.identity();
         validate_policy_identity(&identity, None)?;
-        if let Some(parent) = &self.harness.policy
-            && self.harness.policy_identity.as_ref() == Some(&identity)
+        for (existing, bound) in self
+            .stock_tool_policy_binding()
+            .into_iter()
+            .chain(self.stock_tool_policy_overrides())
         {
-            if Arc::ptr_eq(parent, &policy) {
-                return Ok(self.clone());
-            }
-            return Err(Error::Conflict(
-                "scoped policy identity is already bound to another implementation".into(),
-            ));
-        }
-        for (existing, bound) in &self.policy_overrides {
             if existing == &identity {
                 if Arc::ptr_eq(bound, &policy) {
                     return Ok(self.clone());

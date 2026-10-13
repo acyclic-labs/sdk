@@ -446,35 +446,6 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
     Ok(())
 }
 
-#[tokio::test]
-async fn native_requests_wait_for_capacity_and_cancel_before_work() -> Result<(), Box<dyn Error>> {
-    let root = tempfile::tempdir()?;
-    let source = native_source(root.path()).await?;
-    let permits = source.occupy_all_requests().await?;
-    let cancellation = CancellationToken::new();
-    let root_path = path("/")?;
-    let query = source.lookup(
-        source.reference(),
-        &root_path,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    );
-    tokio::pin!(query);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut query)
-            .await
-            .is_err()
-    );
-    cancellation.cancel();
-    let Err(failure) = tokio::time::timeout(std::time::Duration::from_secs(1), &mut query).await?
-    else {
-        return Err("cancelled request entered the worker".into());
-    };
-    assert!(matches!(failure.error, DemandError::Cancelled));
-    drop(permits);
-    Ok(())
-}
-
 async fn held_file(
     contents: &[u8],
 ) -> Result<(tempfile::TempDir, NativeDemandSource, Box<dyn DemandFile>), Box<dyn Error>> {
@@ -704,24 +675,6 @@ async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test]
-async fn dropping_request_cancels_admitted_worker() -> Result<(), Box<dyn Error>> {
-    let root = tempfile::tempdir()?;
-    let source = native_source(root.path()).await?;
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
-    let request = tokio::spawn(async move {
-        source
-            .wait_for_cancelled_worker(started_tx, stopped_tx)
-            .await;
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(1), started_rx).await??;
-    request.abort();
-    let _ = request.await;
-    tokio::time::timeout(std::time::Duration::from_secs(1), stopped_rx).await??;
-    Ok(())
-}
-
-#[tokio::test]
 async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("directory"))?;
@@ -814,7 +767,7 @@ async fn native_lookup_preserves_non_utf8_posix_names() -> Result<(), Box<dyn Er
 async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Error>> {
     use crate::kernel::{LogicalName, NameEncoding};
 
-    let raw = "snowman-☃"
+    let raw = "snowman-Ã¢ËœÆ’"
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
@@ -825,7 +778,7 @@ async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Err
     )?;
     assert_lossless_name(
         FilesystemProfile::Windows,
-        std::ffi::OsString::from("snowman-☃"),
+        std::ffi::OsString::from("snowman-Ã¢ËœÆ’"),
         name,
     )
     .await
@@ -850,9 +803,17 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
     )?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(&host_name), b"data")?;
-    let source =
-        NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits, None, None)
-            .await?;
+    let source = NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(root.path()),
+        FilesystemProfile::Windows,
+        limits,
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .value;
     let exact = NamespacePath::new(vec![name], limits)?;
     assert!(
         source

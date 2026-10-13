@@ -83,7 +83,7 @@ pub(crate) fn guarded_boundary(
 
 /// Original canonical ROOT binding custody, constructed only by this store.
 #[cfg(feature = "filesystem")]
-pub(crate) struct VerifiedRootBinding {
+pub struct VerifiedRootBinding {
     original_task: crate::TaskId,
     admission_digest: [u8; 32],
     fence: crate::scheduler::LeaseFence,
@@ -128,7 +128,6 @@ pub struct StreamAggregate<P> {
     merge_verifier: Option<Arc<dyn ProjectMergeVerifier>>,
     extension_migrations: Option<Arc<NativeExtensionMigrations>>,
     limits: Limits,
-    effect_history_limits: HistoryReadLimits,
 }
 
 #[cfg(test)]

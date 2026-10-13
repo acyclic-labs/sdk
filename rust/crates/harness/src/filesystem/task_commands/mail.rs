@@ -1,5 +1,4 @@
-//! Mail branches share their original stock dispatch with optional native custody.
-
+//! Stock mail commands over the existing task host.
 use super::*;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use crate::runtime::TaskStateProvider;
@@ -7,7 +6,7 @@ use crate::runtime::TaskStateProvider;
 impl PreparationRecord for MailSendTaskCommand {}
 impl PreparationRecord for MailReceiveTaskCommand {}
 
-fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
+pub(super) fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
     if let Some(io) = io {
         if io.original_native_work().is_none() {
             return Err(super::super::task_runtime::observed::boundary(
@@ -21,36 +20,56 @@ fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn received_copy_operation(
+    task: TaskId,
+    receive: OperationId,
+    io: Option<&PreparationIo>,
+) -> Result<OperationId> {
+    if let Some(io) = io {
+        io.check_cancellation()?;
+    }
+    let domain = b"acyclic.harness.received-copy.v1\0";
+    crate::executor::with_history_io(io, |work| {
+        if let Some(work) = work {
+            work.hashed_bytes(domain.len() as u64 + 32)?;
+        }
+        Ok::<_, Error>(())
+    })?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(&task.into_bytes());
+    hash.update(&receive.into_bytes());
+    let mut id = [0; 16];
+    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok(OperationId::from_bytes(id))
+}
+
 pub(super) fn decode_command<T: PreparationRecord>(
     payload: Value,
     io: Option<&PreparationIo>,
 ) -> Result<T> {
-    let Some(io) = io else {
-        return serde_json::from_value(payload)
-            .map_err(|cause| Error::Invalid(format!("invalid stock command: {cause}")));
-    };
-    decode_borrowed_command(&payload, io)
-}
-
-pub(super) fn decode_borrowed_command<T: PreparationRecord>(
-    payload: &Value,
-    io: &PreparationIo,
-) -> Result<T> {
-    #[cfg(not(target_arch = "wasm32"))]
-    io.check_json_byte_bound(payload, acyclic_stream::MAX_RECORD_BYTES as u64)?;
-    Ok(crate::filesystem::retain_decoded(
-        io.value_decode_preparation(payload, crate::wire::ErrorCode::Storage)?,
-    ))
+    match io {
+        Some(io) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            io.check_json_byte_bound(&payload, acyclic_stream::MAX_RECORD_BYTES as u64)?;
+            Ok(crate::filesystem::retain_decoded(
+                io.value_decode_preparation(&payload, crate::wire::ErrorCode::Storage)?,
+            ))
+        }
+        None => serde_json::from_value(payload)
+            .map_err(|cause| Error::Invalid(format!("invalid stock command: {cause}"))),
+    }
 }
 
 pub(super) fn reconciled(io: Option<&PreparationIo>) -> Result<TaskCommandProgress> {
-    require_native_observer(io)?;
+    if let Some(io) = io {
+        io.check_cancellation()?;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
-        let custody = io.take_native_custody(0)?;
         return Ok(TaskCommandProgress::ReadyWithNativeCustody {
             value: Value::Null,
-            custody,
+            custody: io.take_native_custody(0)?,
         });
     }
     Ok(TaskCommandProgress::Ready(Value::Null))
@@ -70,49 +89,34 @@ where
         payload: Value,
         io: Option<&PreparationIo>,
         select_only: bool,
+        reconciliation_only: bool,
     ) -> Result<TaskCommandProgress> {
-        require_native_observer(io)?;
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
         if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
             let input: MailSendTaskCommand = decode_command(payload, io)?;
             let message =
                 super::super::task_runtime::execution_operation(task, command.operation_id, io)?;
-            self.runtime
-                .task_host()
-                .send_mail(task, fence, input.recipient, message, input.payload, io)
+            let host = self.runtime.task_host();
+            if reconciliation_only {
+                host.reconcile_sent_mail(task, fence, input.recipient, message, input.payload, io)
+                    .await?;
+                return reconciled(io);
+            }
+            host.send_mail(task, fence, input.recipient, message, input.payload, io)
                 .await?;
-            ready(Outcome::Succeeded(Value::Null), io)
-        } else {
-            let input: MailReceiveTaskCommand = decode_command(payload, io)?;
-            let Some(item) = self.inbox(task, input.after, io).await?.into_iter().next() else {
-                return if select_only {
-                    ready(Outcome::Succeeded(Value::Null), io)
-                } else {
-                    Ok(TaskCommandProgress::Pending)
-                };
-            };
-            ready(Outcome::Succeeded(item), io)
+            return ready(Outcome::Succeeded(Value::Null), io);
         }
-    }
-
-    pub(super) async fn reconcile_mail(
-        &self,
-        task: TaskId,
-        fence: &LeaseFence,
-        command: &WorkflowCommand,
-        payload: Value,
-        io: Option<&PreparationIo>,
-    ) -> Result<TaskCommandProgress> {
-        require_native_observer(io)?;
-        if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
-            let input: MailSendTaskCommand = decode_command(payload, io)?;
-            let message =
-                super::super::task_runtime::execution_operation(task, command.operation_id, io)?;
-            self.runtime
-                .task_host()
-                .reconcile_sent_mail(task, fence, input.recipient, message, input.payload, io)
-                .await?;
+        if reconciliation_only {
+            return reconciled(io);
         }
-        reconciled(io)
+        let input: MailReceiveTaskCommand = decode_command(payload, io)?;
+        match self.inbox(task, input.after, io).await?.into_iter().next() {
+            Some(item) => ready(Outcome::Succeeded(item), io),
+            None if select_only => ready(Outcome::Succeeded(Value::Null), io),
+            None => Ok(TaskCommandProgress::Pending),
+        }
     }
 
     pub(super) async fn wait_mail(
@@ -121,26 +125,17 @@ where
         after: u64,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
-        require_native_observer(io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
-        {
-            let (items, custody) = self
-                .runtime
-                .task_host()
-                .inbox_with_native_work(task, after, 1, work)
-                .await?;
-            let ready = !items.is_empty();
-            drop((items, custody));
-            return Ok(ready);
+        if let Some(io) = io {
+            io.check_cancellation()?;
         }
-        Ok(!self
-            .runtime
-            .task_host()
-            .inbox(task, after, 1)
-            .await?
-            .is_empty())
+        #[cfg(not(target_arch = "wasm32"))]
+        let scratch = io
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = scratch.as_ref().or(io);
+        Ok(!self.inbox(task, after, io).await?.is_empty())
     }
 
     pub(super) async fn inbox(

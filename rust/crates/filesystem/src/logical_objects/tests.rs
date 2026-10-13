@@ -1,4 +1,5 @@
 use super::*;
+use crate::CancellationToken;
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_logical_original_quota_and_all_byte_aliases()
@@ -10,7 +11,7 @@ async fn native_logical_original_quota_and_all_byte_aliases()
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, &bytes),
     };
-    let cancellation = CancellationToken::new();
+    let cancellation = crate::CancellationToken::new();
     store
         .put(
             id,
@@ -25,7 +26,8 @@ async fn native_logical_original_quota_and_all_byte_aliases()
             ..crate::WorkBudget::UNBOUNDED
         },
         &cancellation,
-    )?;
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = work.remaining()?.peak_allocation_bytes;
     let read = store
         .read(id, 100, &mut AuthorityWork::native(&work, &cancellation))

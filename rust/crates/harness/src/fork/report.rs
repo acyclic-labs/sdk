@@ -37,10 +37,7 @@ pub struct ForkReport {
 
 impl ForkReport {
     /// Validates a prepared report, including unavailable captures.
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.request.validate(work)?;
         let mut work = CodecQuota::observed(work)?;
         if self.child_result_volume != self.request.preparation.child_result_volume {
@@ -146,10 +143,7 @@ impl ForkReport {
     }
 
     /// Produces a publishable seed only when every required capture succeeded.
-    pub fn into_seed(
-        self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<ForkSeed> {
+    pub fn into_seed(self, work: &mut Option<&mut dyn HistoryIo>) -> Result<ForkSeed> {
         let mut owned = CodecQuota::observed(work)?;
         self.validate(owned.work())?;
         let resource_count = self
@@ -212,7 +206,7 @@ impl ForkReport {
     /// Copies report fields under the optional work ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         CodecQuota::produce(work, |quota| {
-            crate::core::copy_owned(self, quota, |source, work| {
+            crate::core::copy(self, quota, |source, work| {
                 source.validate(work)?;
                 crate::core::owned_bytes(source)
             })

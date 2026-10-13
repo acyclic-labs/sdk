@@ -24,44 +24,90 @@ impl CoreLog {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Reads one record from memory, or from its file on first use.
+    /// Reads one record, refusing a file larger than `maximum_bytes`.
     pub(in crate::core_state) fn get<T: Logged>(
         &mut self,
         root: &Namespace,
         id: T::Id,
-    ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        self.get_bounded(root, id, None)
-    }
-
-    /// Reads one record, refusing a file larger than `maximum_bytes`.
-    pub(in crate::core_state) fn get_bounded<T: Logged>(
-        &mut self,
-        root: &Namespace,
-        id: T::Id,
         maximum_bytes: Option<u64>,
-    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        cancellation: Option<&crate::CancellationToken>,
+    ) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
         let key = T::key(id);
-        if maximum_bytes.is_none()
-            && matches!(key, RecordKey::LazyWorkspace(_))
-            && let Some(allocation) = &root._allocation
-        {
-            let work = allocation.work();
-            return self
-                .get_native_value(root, key, work, work.cancellation())?
-                .map(|owned| T::from_value(owned.0).ok_or(LocalCoreStateStoreError::Integrity))
-                .transpose();
+        let work = root
+            ._allocation
+            .as_ref()
+            .map(|allocation| allocation.work());
+        if let Some(work) = work {
+            self.adopt_native(work)?;
         }
+        let copy = |value: &RecordValue| {
+            let (value, allocation) = match work {
+                Some(work) => {
+                    let (value, allocation) = native_records::clone_native_record_value(
+                        value,
+                        work,
+                        cancellation.unwrap_or(work.cancellation()),
+                    )?;
+                    (value, Some(allocation))
+                }
+                None => (value.clone(), None),
+            };
+            let value = T::from_value(value);
+            if work.is_some() && value.is_none() {
+                return Err(LocalCoreStateStoreError::Integrity);
+            }
+            Ok::<_, LocalCoreStateStoreError>(value.map(|value| (value, allocation)))
+        };
         {
             let residents = self.residents();
-            if let Some(index) = residents.position(key, None)? {
-                return Ok(residents.0[index].value.clone().and_then(T::from_value));
+            if let Some(index) = residents.position(key, work)? {
+                return residents.0[index]
+                    .value
+                    .as_ref()
+                    .map(copy)
+                    .transpose()
+                    .map(Option::flatten);
             }
         }
         let paths = key.paths(root)?;
-        let value = read_json::<Option<T>>(&paths.current, maximum_bytes)?.flatten();
-        self.residents()
-            .insert(key, value.clone().map(T::into_value));
-        Ok(value)
+        if let Some(work) = work {
+            native_records::check(work, cancellation.unwrap_or(work.cancellation()))?;
+        }
+        let value = match work {
+            Some(work) => read_file::<Option<T>>(&paths.current, work, maximum_bytes)?
+                .and_then(|(value, allocation)| value.map(|value| (value, Some(allocation)))),
+            None => read_json::<Option<T>>(&paths.current, maximum_bytes)?
+                .flatten()
+                .map(|value| (value, None)),
+        };
+        let (value, allocation) = match value {
+            Some((value, allocation)) => (Some(value.into_value()), allocation),
+            None => (
+                None,
+                work.map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
+                    .transpose()?,
+            ),
+        };
+        let mut record = Resident {
+            key,
+            value,
+            allocation,
+        };
+        if let (Some(value), Some(allocation)) = (&record.value, &mut record.allocation) {
+            allocation.resize(native_records::native_record_owned_bytes(
+                value,
+                allocation.work(),
+            )?)?;
+        }
+        let output = record.value.as_ref().map(copy).transpose()?.flatten();
+        let mut residents = self.residents();
+        if let Some(work) = work {
+            let needed = residents.0.len() + 1;
+            let Residents(values, slots) = &mut *residents;
+            reserve_slots(values, needed, work, slots)?;
+        }
+        residents.0.push(record);
+        Ok(output)
     }
 
     /// Keys of resident records that satisfy `select`.

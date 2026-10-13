@@ -4,7 +4,7 @@ use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
     object_digest,
 };
-use crate::{AsyncObjectStore, AuthorityWork, CancellationToken, WorkCounters, WorkError};
+use crate::{AsyncObjectStore, AuthorityWork, WorkCounters, WorkError};
 use acyclic_objects::v1::{Error, Object, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 use std::{fmt::Write as _, sync::Arc};
@@ -151,7 +151,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
             KernelOwnedAllocation::Standalone => Ok((reads, None)),
             #[cfg(not(target_arch = "wasm32"))]
             KernelOwnedAllocation::NativeOriginal(allocation) => {
-                crate::async_storage::native_read_batch(reads, allocation)
+                Ok::<_, crate::ObjectStoreError>((reads, allocation))
                     .map(|(reads, allocation)| (reads, Some(allocation)))
             }
         }

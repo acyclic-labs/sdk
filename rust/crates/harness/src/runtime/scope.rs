@@ -36,21 +36,6 @@ impl TaskRunLimits {
         Ok(())
     }
 
-    pub(super) fn validate_observed(&self, io: StartupIo<'_>) -> Result<()> {
-        native_startup::item(io, 0)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
-            self.validate(
-                &mut observer
-                    .as_mut()
-                    .map(|io| io as &mut dyn crate::store::HistoryIo),
-            )
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        self.validate(&mut None)
-    }
-
     pub(super) fn check_deadline(&self) -> Result<()> {
         let Some(deadline) = self.deadline_epoch_ms else {
             return Ok(());
@@ -86,15 +71,15 @@ impl TaskRunLimits {
 /// Effective runtime authority and bounds; child scopes may only narrow them.
 #[derive(Default)]
 pub struct RuntimeScope {
-    pub(super) grants: Capabilities,
+    pub(crate) grants: Capabilities,
     pub(super) limits: Limits,
     pub(super) run_limits: TaskRunLimits,
     pub(super) extensions: Option<ExtensionAdmission>,
     pub(super) extensions_sealed: bool,
     pub(super) extension_runtime: Option<Arc<ExtensionRuntime>>,
     pub(super) extension_schemas: Option<SchemaRegistry>,
-    pub(super) resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
-    pub(super) created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
+    pub(crate) resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
+    pub(crate) created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) _native_grants_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -124,15 +109,7 @@ impl RuntimeScope {
         Ok(Self {
             grants,
             limits,
-            run_limits: TaskRunLimits::default(),
-            extensions: None,
-            extensions_sealed: false,
-            extension_runtime: None,
-            extension_schemas: None,
-            resource_proofs: Vec::new(),
-            created_access: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native_grants_custody: None,
+            ..Self::default()
         })
     }
 
@@ -159,14 +136,8 @@ impl RuntimeScope {
         let scope = Self {
             grants: grants.0,
             limits,
-            run_limits: TaskRunLimits::default(),
-            extensions: None,
-            extensions_sealed: false,
-            extension_runtime: None,
-            extension_schemas: None,
-            resource_proofs: Vec::new(),
-            created_access: None,
             _native_grants_custody: Some(grants.1),
+            ..Self::default()
         };
         Ok((scope, custody))
     }
@@ -231,7 +202,7 @@ impl RuntimeScope {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let grants = self.grants.clone_with_native_work(work)?;
+        let grants = crate::Capabilities::copy(self.grants.iter(), work)?;
         self.clone_native_metadata(grants, self.limits, self.extensions_sealed, work)
     }
 
@@ -260,7 +231,10 @@ impl RuntimeScope {
                 .work()
                 .as_deref_mut()
                 .expect("proof vector copy observer")
-                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                .codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                    bytes: 0,
+                    items: 1,
+                })?;
             let (copied, retained) = proof.copy(quota.work())?;
             quota.adopt(retained)?;
             Ok(copied)
@@ -268,7 +242,7 @@ impl RuntimeScope {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn clone_native_metadata(
+    pub(crate) fn clone_native_metadata(
         &self,
         grants: (Capabilities, acyclic_fs::NativeAllocation),
         limits: Limits,
@@ -456,169 +430,6 @@ impl RuntimeScope {
         &self.resource_proofs
     }
 
-    pub(crate) fn with_created_access_with_work(
-        &self,
-        admission: &TaskAdmissionRecord,
-        access: Option<crate::resource_preparation::CreatedResourceAccess>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        if let Some(io) = work.as_deref_mut() {
-            io.check_cancellation()?;
-        }
-        if let Some(access) = &access {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work
-                .as_deref()
-                .is_some_and(|io| io.original_native_work().is_some())
-                && !access.native_custody.is_none()
-            {
-                return Err(scope_metadata_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "native created resource seal requires its original payload custody",
-                ));
-            }
-            if access.operation != admission.operation_id
-                || access.admission_digest != admission.canonical_digest_with_work(work)?
-                || access.proofs != admission.resource_proofs
-            {
-                return Err(scope_metadata_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "created resource seal changed admission",
-                ));
-            }
-        } else if !admission.resource_proofs.is_empty() {
-            return Err(scope_metadata_boundary(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
-                "created resource proof is not authenticated",
-            ));
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            self.validate_narrowing_with_native_work(&self.grants, &admission.limits, native)?;
-        } else {
-            admission.limits.validate(&mut None)?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        admission.limits.validate(&mut None)?;
-        if !self.allows_authority(&self.grants, &admission.limits) {
-            return Err(scope_metadata_boundary(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
-                "runtime scope cannot widen ancestor authority",
-            ));
-        }
-        for grant in admission.grants.iter() {
-            if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            }
-            if !self.grants.contains(grant)
-                && !access
-                    .as_ref()
-                    .is_some_and(|access| access.grants.contains(grant))
-            {
-                return Err(scope_metadata_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "runtime scope cannot widen ancestor authority",
-                ));
-            }
-        }
-        if self.extensions != admission.extensions {
-            return Err(scope_metadata_boundary(
-                work,
-                crate::wire::ErrorCode::Conflict,
-                "replay cannot retarget original extension admission",
-            ));
-        }
-        if let Some(extensions) = &admission.extensions {
-            extensions.validate(work)?;
-        }
-        let mut quota =
-            crate::wire_codec::CodecQuota::new(work, std::mem::size_of::<Self>() as u64)?;
-        let grants = crate::core::copy_capabilities(&admission.grants, &mut quota)?;
-        let proofs = access
-            .as_ref()
-            .map_or(self.resource_proofs.as_slice(), |access| {
-                access.proofs.as_slice()
-            });
-        let resource_proofs = Self::copy_resource_proofs(proofs, &mut quota)?;
-        let extensions = admission
-            .extensions
-            .as_ref()
-            .map(|extensions| {
-                let (copied, retained) = extensions.copy(quota.work())?;
-                quota.adopt(retained)?;
-                Ok::<_, Error>(copied)
-            })
-            .transpose()?;
-        let extension_schemas = self
-            .extension_schemas
-            .as_ref()
-            .map(|schemas| schemas.copy(quota.work()))
-            .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if access.is_some()
-            && let Some(native) = quota
-                .work()
-                .as_deref()
-                .and_then(|io| io.original_native_work())
-        {
-            native
-                .charge(acyclic_fs::WorkCounters {
-                    allocation_operations: 1,
-                    ..Default::default()
-                })
-                .map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
-        }
-        let created_access = access.map(Arc::new).or_else(|| self.created_access.clone());
-        let scope = Self {
-            grants,
-            limits: admission.limits,
-            run_limits: self.run_limits,
-            extensions,
-            extensions_sealed: true,
-            extension_runtime: self.extension_runtime.clone(),
-            extension_schemas,
-            resource_proofs,
-            created_access,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native_grants_custody: None,
-        };
-        let scope = scope.with_run_limits(admission.run_limits, quota.work())?;
-        if let Some(runtime) = &scope.extension_runtime {
-            runtime.validate_admission(scope.extensions.as_ref(), quota.work())?;
-            if let Some(schemas) = &scope.extension_schemas {
-                for identity in runtime.selected() {
-                    if schemas.implementation_digest(
-                        &identity.name,
-                        identity.version,
-                        quota.work(),
-                    )? != identity.digest
-                    {
-                        return Err(scope_metadata_boundary(
-                            quota.work(),
-                            crate::wire::ErrorCode::Conflict,
-                            "linked implementation differs from original admission registry",
-                        ));
-                    }
-                }
-            }
-        }
-        let held = if quota.work().is_some() {
-            quota.retained()
-        } else {
-            0
-        };
-        quota.transfer();
-        Ok((scope, held))
-    }
-
     pub(super) fn resume_sealed(&self, admitted: Self, operation: OperationId) -> Result<Self> {
         let mut permitted = self.clone();
         if let Some(access) = &admitted.created_access {
@@ -661,23 +472,6 @@ impl RuntimeScope {
         lease.fence()
     }
 
-    /// Returns the actor authenticated by the scratch allocation.
-    pub(crate) fn current_created_agent(
-        &self,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<Option<crate::AgentId>> {
-        self.current_created_content(work)?
-            .map(|binding| match binding.volume.owner() {
-                crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
-                _ => Err(scope_metadata_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "current created scratch is not agent-owned",
-                )),
-            })
-            .transpose()
-    }
-
     pub(crate) fn current_created_content(
         &self,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
@@ -690,34 +484,6 @@ impl RuntimeScope {
             .map(|access| access.current_content(work))
             .transpose()
             .map(Option::flatten)
-    }
-
-    pub(crate) fn created_grants(&self) -> Option<&Capabilities> {
-        self.created_access.as_ref().map(|access| &access.grants)
-    }
-
-    pub(crate) fn with_created_publication_lease(
-        mut self,
-        lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        if let Some(io) = work.as_deref_mut() {
-            io.check_cancellation()?;
-        }
-        if let Some(access) = &mut self.created_access {
-            if access.publication_lease.is_some() {
-                return Ok(self);
-            }
-            let access = Arc::get_mut(access).ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "created publication seal is already shared",
-                )
-            })?;
-            access.publication_lease = Some(lease);
-        }
-        Ok(self)
     }
 
     pub(super) async fn verify_created_write(

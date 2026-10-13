@@ -32,77 +32,14 @@ impl NativeDemandCarrier<'_> {
         }
     }
 
-    fn remaining(&mut self) -> Result<(WorkBudget, u64), MountSourceError> {
-        self.with_work(|work| {
-            Ok((
-                work.remaining().map_err(super::lazy::mount_demand_error)?,
-                work.live_allocation_bytes(),
-            ))
-        })
-    }
-
-    pub(super) fn reborrow(&mut self) -> NativeDemandCarrier<'_> {
-        match self {
-            Self::Borrowed(work) => NativeDemandCarrier::Borrowed(work),
-            Self::Shared(meter) => NativeDemandCarrier::Shared(meter),
-            Self::Native(work) => NativeDemandCarrier::Native(work),
-        }
-    }
-
     pub(super) fn new_custody(
         &mut self,
     ) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
         match self.original_native_work() {
-            Some(work) => super::NativeMountAllocationCustody::new(
-                &mut crate::NativeMaterializationWork::clone(&work),
-            ),
+            Some(mut work) => super::NativeMountAllocationCustody::new(&mut work),
             None => self.with_work(super::NativeMountAllocationCustody::new),
         }
         .map_err(super::lazy::mount_demand_error)
-    }
-
-    pub(super) fn accept_with_prior_live<T, E>(
-        &mut self,
-        result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
-        prior_live: u64,
-        map: impl FnOnce(E) -> MountSourceError,
-    ) -> Result<T, MountSourceError> {
-        let (result, completed) = match result {
-            Ok(receipt) => (Ok(receipt.value), receipt.work),
-            Err(failure) => (Err(map(failure.error)), *failure.work),
-        };
-        self.with_work(|work| work.merge(completed, prior_live))
-            .map_err(super::lazy::mount_demand_error)?;
-        result
-    }
-
-    fn finish_read(
-        &mut self,
-        chunk: crate::kernel::OwnedSourceChunk,
-        cancellation: &CancellationToken,
-        lifetime: Option<&CancellationToken>,
-    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        let bytes = if self.original_native_work().is_some() {
-            0
-        } else {
-            chunk.logical_owned_bytes()
-        };
-        let result = if bytes == 0 {
-            Ok(())
-        } else {
-            self.with_work(|work| work.record_native_owned_completed(bytes, &None).1)
-                .map_err(super::lazy::mount_demand_error)
-        }
-        .and_then(|()| self.check(cancellation, lifetime));
-        if let Err(error) = result {
-            drop(chunk);
-            if bytes != 0 {
-                self.with_work(|work| work.release(bytes))
-                    .map_err(super::lazy::mount_demand_error)?;
-            }
-            return Err(error);
-        }
-        Ok(chunk)
     }
 }
 

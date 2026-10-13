@@ -67,12 +67,12 @@ impl McpCatalog {
                 "MCP replacement changes server namespace".into(),
             ));
         }
-        crate::contract::canonical_json_digest(
+        crate::executor::json::canonical_json_digest(
             &(
                 "harness/mcp-catalog-install/v1",
                 self,
                 previous
-                    .map(|old| crate::contract::canonical_json_digest(old, u64::MAX, &mut None))
+                    .map(|old| crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None))
                     .transpose()?,
                 maximum_tools,
                 maximum_bytes,
@@ -136,7 +136,7 @@ impl McpCatalog {
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
-        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
+        crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if !names.insert(&tool.name) {
@@ -152,7 +152,7 @@ impl McpCatalog {
                         "MCP output schema must describe an object".into(),
                     ));
                 }
-                crate::contract::compile_json_schema(schema, "MCP output", &mut None)?;
+                crate::executor::compile_json_schema(schema, "MCP output", &mut None)?;
             }
         }
         if let McpSchemaExposure::Selected { names: selected } = &self.schema_exposure {
@@ -264,9 +264,9 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(|old| crate::contract::canonical_json_digest(old, u64::MAX, &mut None))
+                .map(|old| crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None))
                 .transpose()?,
-            crate::contract::canonical_json_digest(self, u64::MAX, &mut None)?,
+            crate::executor::json::canonical_json_digest(self, u64::MAX, &mut None)?,
         )?;
         if let Some(old) = previous {
             for remote in &old.tools {

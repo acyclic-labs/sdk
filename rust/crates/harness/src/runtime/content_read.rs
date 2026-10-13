@@ -1,4 +1,8 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
+use crate::conversation::{ContentIo, content_error};
+use crate::wire::ErrorCode;
+use acyclic_stream::OwnedBytes;
 
 #[cfg(feature = "filesystem")]
 pub(super) struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
@@ -13,32 +17,14 @@ pub(super) struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
 pub fn content_residency_verifier<P>(
     context: Arc<TaskContext>,
     owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-    io: Option<&crate::executor::PreparationIo>,
+    io: Option<&ContentIo>,
 ) -> Result<Arc<dyn ContentResidencyVerifier>>
 where
     P: acyclic_stream::StreamProvider + 'static,
 {
-    let issued = context.as_ref();
-    if issued.durable_task_id() != Some(owner.task_id()) || issued.id() != owner.operation_id() {
-        return Err(crate::conversation::content_error(
-            io,
-            crate::wire::ErrorCode::Unauthorized,
-            "content reader differs from its original task owner",
-        ));
-    }
+    owner.require_task_context_binding(&context, io)?;
     #[cfg(not(target_arch = "wasm32"))]
-    let native = io.and_then(crate::executor::PreparationIo::original_native_work);
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = native {
-        if !owner.native_shared_work_matches(work) {
-            return Err(crate::conversation::content_error(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "content reader lacks original shared owner custody",
-            ));
-        }
-    }
-    owner.require_task_context_binding(issued, io)?;
+    let native = io.and_then(ContentIo::original_native_work);
     #[cfg(not(target_arch = "wasm32"))]
     let custody = native
         .map(|work| {
@@ -66,13 +52,11 @@ where
     pub(super) async fn authorize(
         &self,
         reference: &FileRef,
-        io: Option<&crate::conversation::ContentIo>,
-        binding_io: Option<&crate::conversation::ContentIo>,
+        io: Option<&ContentIo>,
     ) -> Result<()> {
-        self.owner
-            .require_task_context_binding(self.context.as_ref(), binding_io)?;
+        self.owner.require_task_context_binding(&self.context, io)?;
         self.owner.validate_input_file(reference, io)?;
-        let mut history = io.map(crate::executor::PreparationIo::history_io);
+        let mut history = io.map(ContentIo::history_io);
         self.owner
             .verify_read_access(
                 &mut history
@@ -88,37 +72,31 @@ impl<P> ContentResidencyVerifier for ContextContentVerifier<P>
 where
     P: acyclic_stream::StreamProvider + 'static,
 {
-    fn supports_read(
-        &self,
-        _volume: &VolumeRef,
-        io: Option<&crate::conversation::ContentIo>,
-    ) -> Result<bool> {
+    fn supports_read(&self, _volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
         if let Some(io) = io {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let work = io
-                    .original_native_work()
-                    .ok_or(crate::conversation::content_error(
-                        Some(io),
-                        crate::wire::ErrorCode::Unsupported,
-                        "content reader requires original native work",
-                    ))?;
+                let work = io.original_native_work().ok_or(content_error(
+                    Some(io),
+                    ErrorCode::Unsupported,
+                    "content reader requires original native work",
+                ))?;
                 if !self
                     .custody
                     .as_ref()
                     .is_some_and(|custody| custody.work().shares_allocation_context(work))
                 {
-                    return Err(crate::conversation::content_error(
+                    return Err(content_error(
                         Some(io),
-                        crate::wire::ErrorCode::Unauthorized,
+                        ErrorCode::Unauthorized,
                         "content callback differs from its original native ledger",
                     ));
                 }
             }
             #[cfg(target_arch = "wasm32")]
-            return Err(crate::conversation::content_error(
+            return Err(content_error(
                 Some(io),
-                crate::wire::ErrorCode::Unsupported,
+                ErrorCode::Unsupported,
                 "content reader requires original native work",
             ));
         }
@@ -129,37 +107,20 @@ where
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
-        io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
             if reference.descriptor().byte_length() > maximum_bytes {
-                return Err(crate::conversation::content_error(
+                return Err(content_error(
                     io,
-                    crate::wire::ErrorCode::Invalid,
+                    ErrorCode::Invalid,
                     "content exceeds the callback byte bound",
                 ));
             }
-            let context = self.context.as_ref();
-            #[cfg(not(target_arch = "wasm32"))]
-            let native_io = self
-                .custody
-                .as_ref()
-                .map(|custody| crate::executor::PreparationIo::from_native_work(custody.work()))
-                .transpose()?;
             self.supports_read(reference.volume(), io)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let binding_io = io.or(native_io.as_ref());
-            #[cfg(target_arch = "wasm32")]
-            let binding_io = io;
-            self.authorize(reference, io, binding_io).await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let bytes = match io.and_then(crate::executor::PreparationIo::original_native_work) {
-                Some(work) => context.read_file_with_native_work(reference, work).await?,
-                None => context.read_file(reference).await?,
-            };
-            #[cfg(target_arch = "wasm32")]
-            let bytes = context.read_file(reference).await?;
-            self.authorize(reference, io, binding_io).await?;
+            self.authorize(reference, io).await?;
+            let bytes = self.context.read_file(reference, io).await?;
+            self.authorize(reference, io).await?;
             Ok(bytes)
         })
     }
@@ -181,30 +142,13 @@ impl TaskContext {
             .or(self.harness.content.as_ref())
     }
 
-    /// Reads one immutable file through the owner's authenticated provider.
-    pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
+    /// Reads an immutable file under this task's scope and caller IO limits.
+    pub async fn read_file(&self, file: &FileRef, io: Option<&ContentIo>) -> Result<OwnedBytes> {
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
             file,
             &self.scope,
-            None,
-        )
-        .await
-    }
-
-    /// Reads through the original bound provider on the caller's native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn read_file_with_native_work(
-        &self,
-        file: &FileRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.read_bound_file(
-            self.content_binding(Some(file.volume())),
-            file,
-            &self.scope,
-            Some(&io),
+            io,
         )
         .await
     }
@@ -213,14 +157,14 @@ impl TaskContext {
         &self,
         file: &FileRef,
         scope: &RuntimeScope,
-        io: Option<&crate::executor::PreparationIo>,
+        io: Option<&ContentIo>,
     ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             scope.limits.validate_file(file, work)?;
             if !read_granted_with_work(&scope.grants, file, work)? {
-                return Err(crate::conversation::content_error(
+                return Err(content_error(
                     io,
-                    crate::wire::ErrorCode::Unauthorized,
+                    ErrorCode::Unauthorized,
                     "task scope cannot read this file",
                 ));
             }
@@ -228,20 +172,7 @@ impl TaskContext {
         })
     }
 
-    /// Resolves an immutable artifact without coupling its provider to the workspace/content binding.
-    pub async fn read_artifact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_bound_file(
-            self.scope
-                .created_content(Some(file.volume()))
-                .or(self.harness.artifacts.as_ref()),
-            file,
-            &self.scope,
-            None,
-        )
-        .await
-    }
-
-    /// Discovers a private owner directory without a prior `FileRef`.
+    /// Lists one authenticated private directory page.
     pub async fn list_private_directory(
         &self,
         volume: &VolumeRef,
@@ -282,9 +213,7 @@ impl TaskContext {
             ));
         }
         for entry in &page.entries {
-            crate::conversation::validate_content_path(&entry.name, &mut None)?;
-            if entry.name.contains('/')
-                || (path.is_empty() && entry.name == ".system")
+            if (path.is_empty() && entry.name == ".system")
                 || after.is_some_and(|cursor| entry.name.as_bytes() <= cursor.as_bytes())
             {
                 return Err(Error::Conflict(
@@ -295,14 +224,14 @@ impl TaskContext {
         Ok(page)
     }
 
-    /// Resolves the current file at a named private path into verified pinned bytes; the returned `FileRef` can later be shared independently.
+    /// Reads and verifies a pinned file at a private path.
     pub async fn read_private_path(
         &self,
         volume: &VolumeRef,
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+    ) -> Result<(FileRef, OwnedBytes)> {
         self.require_private_directory(volume, granted_prefix, path)?;
         if path.is_empty() {
             return Err(Error::Invalid("private file path is empty".into()));
@@ -321,7 +250,6 @@ impl TaskContext {
                 None,
             )?
             .await?;
-        file.validate(&mut None)?;
         self.scope.limits.validate_file(&file, &mut None)?;
         if file.volume() != volume || file.path() != path {
             return Err(Error::Conflict(
@@ -364,8 +292,8 @@ impl TaskContext {
         binding: Option<&ContentBindings>,
         file: &FileRef,
         scope: &RuntimeScope,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+        io: Option<&ContentIo>,
+    ) -> Result<OwnedBytes> {
         self.authorize_file_read(file, scope, io)?;
         #[cfg(feature = "filesystem")]
         let created = self.scope.created_reference(file);
@@ -375,151 +303,64 @@ impl TaskContext {
             .map(|reader| reader.as_ref())
             .or_else(|| binding.map(|content| content.reader.as_ref()))
             .ok_or_else(|| {
-                crate::conversation::content_error(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "content reader is not bound",
-                )
+                content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let bytes = reader
-            .read(file, file.descriptor().byte_length(), io)?
-            .await?;
+        let (bytes, hold) =
+            verified_content_bytes(reader, file, file.descriptor().byte_length(), io).await?;
         #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_some()
-                && file.descriptor().byte_length() != bytes.len() as u64
-            {
-                return Err(crate::conversation::content_error(
-                    Some(io),
-                    crate::wire::ErrorCode::Storage,
-                    "content reader returned another file length",
-                ));
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = io.original_native_work().is_some();
-            #[cfg(target_arch = "wasm32")]
-            let native = false;
-            if !native {
-                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-            }
-            let hash = acyclic_fs::WorkCounters {
-                bytes_hashed: bytes.len() as u64,
-                ..Default::default()
-            };
-            io.preflight(hash)?;
-            let verified = file.descriptor().verify(&bytes, &mut None);
-            io.charge(hash)?;
-            verified?;
-            return Ok(bytes);
+        if let Some(hold) = hold {
+            hold.into_retained();
         }
-        file.descriptor().verify(&bytes, &mut None)?;
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
         Ok(bytes)
     }
 
-    /// Observes the original once-publication, never a refreshed source/head.
+    /// Observes the original immutable publication under caller IO limits.
     pub async fn observe_staged_file_once(
         &self,
         operation_id: OperationId,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Option<FileRef>> {
-        let writer = self.bound_content_writer(self.content_binding(None), &self.scope, io)?;
+        io: Option<&ContentIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.observe_bound_file_once(operation_id, io, &self.scope)
+            .await
+    }
+
+    /// Observes the original once-publication, never a refreshed source/head.
+    pub(super) async fn observe_bound_file_once(
+        &self,
+        operation_id: OperationId,
+        io: Option<&ContentIo>,
+        scope: &RuntimeScope,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let writer = self.bound_content_writer(self.content_binding(None), scope, io)?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
         let (file, hold) = writer
-            .observe_staged_once(operation_id, self.scope.limits.file_bytes, io)?
+            .observe_staged_once(operation_id, scope.limits.file_bytes, io)?
             .await?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(not(feature = "filesystem"))]
+        let retained = 0;
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
+        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained();
         }
         if let Some(file) = &file {
-            #[cfg(feature = "filesystem")]
-            let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
-            #[cfg(feature = "filesystem")]
-            let mut work = observer
-                .as_mut()
-                .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-            #[cfg(not(feature = "filesystem"))]
-            let mut work = None;
-            self.scope.limits.validate_file(file, &mut work)?;
+            crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
             if file.volume() != writer.volume() {
                 return Err(Error::Storage(
                     "original publisher receipt belongs to another volume".into(),
                 ));
             }
         }
-        Ok(file)
-    }
-
-    #[cfg(feature = "filesystem")]
-    /// Observes a once-publication under the supplied bounds.
-    pub async fn observe_staged_file_once_measured(
-        &self,
-        operation_id: OperationId,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error> {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = async {
-            let writer =
-                self.bound_content_writer(self.content_binding(None), &self.scope, Some(&io))?;
-            let (file, hold) = writer
-                .observe_staged_once(operation_id, self.scope.limits.file_bytes, Some(&io))?
-                .await?;
-            if let Some(hold) = hold {
-                hold.into_retained();
-            }
-            if let Some(file) = &file {
-                io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
-                self.scope.limits.validate_file(file, &mut None)?;
-                if file.volume() != writer.volume() {
-                    return Err(Error::Storage(
-                        "original publisher receipt belongs to another volume".into(),
-                    ));
-                }
-            }
-            Ok(file)
-        }
-        .await;
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt {
-                value,
-                work: io.receipt(),
-            }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
-
-    /// Reads through the exact original task scope and owner-backed reader.
-    #[cfg(feature = "filesystem")]
-    pub async fn read_file_measured(
-        &self,
-        file: &FileRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>
-    {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = self
-            .read_bound_file(
-                self.content_binding(Some(file.volume())),
-                file,
-                &self.scope,
-                Some(&io),
-            )
-            .await;
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt {
-                value,
-                work: io.receipt(),
-            }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
+        Ok((file, retained))
     }
 }

@@ -158,7 +158,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
     let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
         .map_err(|failure| failure.0)?;
-    let candidate = checkout.private_candidate(original.custody.work(), &cancellation);
+    let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(original.custody.work(), &cancellation), &cancellation);
     let candidate = candidate?;
     let reader =
         candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
@@ -241,7 +241,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         &cancellation,
     )
     .map_err(|failure| failure.0)?;
-    let candidate = checkout.private_candidate(no_write.custody.work(), &cancellation);
+    let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(no_write.custody.work(), &cancellation), &cancellation);
     let candidate = candidate?;
     let reader =
         candidate.into_pinned_reader_with_native_work(no_write.custody.work(), &cancellation);
@@ -362,7 +362,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     let cancellation = CancellationToken::new();
     let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
         .map_err(|failure| failure.0)?;
-    let root = receipt.run(|work| HostRoot::open(temporary.path(), work))?;
+    let root = HostRoot::open(temporary.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
     let namespace = NamespacePath::new(
@@ -601,7 +601,7 @@ fn live_mount_recovery_preserves_the_correct_entry() -> Result<(), Box<dyn std::
         if published {
             std::fs::write(root.join(&backup), b"before")?;
         } else {
-            parent.rename_to(relative, &parent, &backup, &mut work)?;
+            rename_entry(&parent, relative, &parent, &backup, &mut work)?;
         }
         recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
         assert_eq!(std::fs::read(&destination)?, expected);

@@ -11,10 +11,7 @@ pub(super) async fn materialize_entry<A, O, E, F, Fut>(
     path: &NamespacePath,
     host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     directory: Option<Arc<(NamespacePath, crate::NativeAllocation)>>,
-    file_id: FileId,
-    kind: FileKind,
-    payload: FilePayload,
-    #[cfg(any(target_os = "macos", windows))] metadata_id: ObjectId,
+    record: &crate::kernel::FileRecord,
     options: &MaterializeOptions,
     cancellation: &CancellationToken,
     known_files: &mut Vec<(FileId, Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>)>,
@@ -37,6 +34,14 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    let mut work = receipt.custody.work().clone();
+    let crate::kernel::FileRecord {
+        file_id,
+        kind,
+        payload,
+        metadata: _metadata_id,
+        ..
+    } = *record;
     receipt
         .custody
         .work()
@@ -63,20 +68,21 @@ where
             .map_err(MaterializeError::from)?;
         if *identity == file_id {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            receipt.run(|work| {
+            {
                 #[cfg(unix)]
                 {
                     host_root.0.hard_link(
                         super::work::host_path(&existing.0),
                         super::work::host_path(&host_path.0),
-                        work,
+                        &mut work,
                     )
                 }
                 #[cfg(windows)]
                 {
-                    host_root.0.hard_link_wide(&existing.0, &host_path.0, work)
+                    host_root.0.hard_link(&existing.0, &host_path.0, &mut work)
                 }
-            })?;
+            }
+            .map_err(MaterializeError::from)?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             receipt.value.files = receipt
                 .value
@@ -96,18 +102,19 @@ where
     match (kind, payload) {
         (FileKind::Directory, FilePayload::Directory { .. }) => {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            receipt.run(|work| {
+            {
                 #[cfg(unix)]
                 {
                     host_root
                         .0
-                        .create_dir(super::work::host_path(&host_path.0), work)
+                        .create_dir(super::work::host_path(&host_path.0), &mut work)
                 }
                 #[cfg(windows)]
                 {
-                    host_root.0.create_dir_wide(&host_path.0, work)
+                    host_root.0.create_dir(&host_path.0, &mut work)
                 }
-            })?;
+            }
+            .map_err(MaterializeError::from)?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             let directory = directory.ok_or(MaterializeError::InvalidOptions)?;
             receipt.value.directories = receipt
@@ -180,30 +187,31 @@ where
                         ..WorkCounters::UNCHARGED
                     })
                     .map_err(MaterializeError::from)?;
-                if *key == (logical_bytes, extents, metadata_id) {
+                if *key == (logical_bytes, extents, _metadata_id) {
                     payload_known = true;
                     generation_action(before_effect, NativeMaterializationActionPhase::Before)
                         .await?;
-                    cloned = receipt.run(|work| {
+                    cloned = {
                         #[cfg(target_os = "macos")]
                         {
                             host_root.0.clone_file_from(
                                 &host_root.0,
                                 super::work::host_path(&source.0),
                                 super::work::host_path(&host_path.0),
-                                work,
+                                &mut work,
                             )
                         }
                         #[cfg(windows)]
                         {
-                            host_root.0.clone_file_from_wide(
+                            host_root.0.clone_file_from(
                                 &host_root.0,
                                 &source.0,
                                 &host_path.0,
-                                work,
+                                &mut work,
                             )
                         }
-                    })?;
+                    }
+                    .map_err(MaterializeError::from)?;
                     generation_action(before_effect, NativeMaterializationActionPhase::Completed)
                         .await?;
                     break;
@@ -261,16 +269,20 @@ where
             if cloned {
                 if mode == MaterializeMode::DurableOutput {
                     #[cfg(target_os = "macos")]
-                    let file = receipt
-                        .run(|work| {
-                            host_root
-                                .0
-                                .open_file(super::work::host_path(&host_path.0), work)
-                        })?
+                    let file = host_root
+                        .0
+                        .open_file(super::work::host_path(&host_path.0), &mut work)
+                        .map_err(MaterializeError::from)?
                         .into_std();
                     #[cfg(windows)]
-                    let file = receipt
-                        .run(|work| host_root.0.open_file_wide(&host_path.0, windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work))?
+                    let file = host_root
+                        .0
+                        .open_file(
+                            &host_path.0,
+                            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+                            &mut work,
+                        )
+                        .map_err(MaterializeError::from)?
                         .into_std();
                     let meter = receipt.custody.work().runtime_meter();
                     let file = acyclic_native_runtime::NativeFile::from_file(
@@ -291,7 +303,7 @@ where
             if !payload_known {
                 receipt.push(
                     known_payloads,
-                    ((logical_bytes, extents, metadata_id), host_path.clone()),
+                    ((logical_bytes, extents, _metadata_id), host_path.clone()),
                 )?;
             }
             receipt.push(known_files, (file_id, host_path.clone()))?;

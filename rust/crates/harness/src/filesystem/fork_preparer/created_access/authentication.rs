@@ -178,7 +178,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "project"
         };
         let creation = IdempotencyKey::new(crate::executor::with_history_io(Some(io), |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!(
                     "fork:{}:{}:{suffix}",
                     fork.operation_id,

@@ -10,7 +10,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if !self
             .native
             .as_ref()
-            .is_some_and(|(_, custody)| custody.work().shares_allocation_context(work))
+            .is_some_and(|custody| custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -286,6 +286,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             ));
         }
         if let Some(selection) = &request.preparation.summary {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.native.is_some() != io.and_then(PreparationIo::original_native_work).is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "summary preparation requires its original native work",
+                });
+            }
             let summary = self.summary.as_ref().ok_or(reject(
                 crate::wire::ErrorCode::Unsupported,
                 "summary fork owner-bound checkpoint provider is not installed",
@@ -306,47 +313,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         Ok(())
-    }
-
-    pub(super) fn prepare_bound_summary(
-        &self,
-        request: &ForkRequest,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<&PreparedSummaryFork>> {
-        let Some(selection) = &request.preparation.summary else {
-            return Ok(None);
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        match (
-            &self.native,
-            io.and_then(PreparationIo::original_native_work),
-        ) {
-            (Some(_), Some(work)) => self.require_native_projection_work(work)?,
-            (None, None) => {}
-            _ => {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "summary preparation requires its original native work",
-                });
-            }
-        }
-        let bound = self.summary.as_ref().ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "summary fork owner-bound checkpoint provider is not installed",
-            )
-        })?;
-        if selection != bound.prepared.selection()
-            || request.preparation.inherited_through_sequence != bound.prepared.through_sequence()
-        {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Conflict,
-                "summary fork request differs from its original capture",
-            ));
-        }
-        Ok(Some(&bound.prepared))
     }
 }
 

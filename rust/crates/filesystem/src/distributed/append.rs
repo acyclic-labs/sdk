@@ -210,7 +210,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let idempotency_key = work.operation_key(authority_id, commit.operation_id)?;
+        let idempotency_key = work.key(
+            b"operation\0",
+            &[
+                &authority_id.into_bytes(),
+                &commit.operation_id.into_bytes(),
+            ],
+        )?;
         let result = self
             .commit(
                 CommitRequest {
@@ -223,6 +229,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 guard.as_deref_mut(),
             )
             .await;
+        if work.is_native() && result.is_ok() {
+            work.check()?;
+        }
         if !work.is_native() {
             let retained = gate.as_str().len() as u64
                 + records.as_str().len() as u64

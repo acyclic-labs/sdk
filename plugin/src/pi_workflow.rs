@@ -232,13 +232,7 @@ impl PiControlHost<'_> {
             let key = self
                 .work
                 .display(&format_args!("acyclic.pi/control/{task}/{operation}"))?;
-            host.resume_workflow(
-                task,
-                wait.revision,
-                input.0,
-                acyclic_harness::IdempotencyKey::new(key.0)?,
-                Some(&self.work),
-            )
+            host.resume_workflow(task, wait.revision, input.0, acyclic_harness::IdempotencyKey::new(key.0)?, None, Some(&self.work))
             .await?;
             drop(key.1);
         }
@@ -294,7 +288,7 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner_with_native_work(task, &fence, work)
+                .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
                 .await?;
             journal_owner
                 .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
@@ -312,8 +306,11 @@ impl PiControlHost<'_> {
             }
             drop(expected);
             let journal_owner = journal_owner.into_native_shared(work)?;
-            let content =
-                context.content_residency_verifier_with_native_work(journal_owner.clone(), work)?;
+            let content = acyclic_harness::runtime::content_residency_verifier(
+                Arc::clone(&context),
+                Arc::clone(&journal_owner),
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )?;
             let authority = owner.effect_authority_with_native_work(work)?;
             let provider = pi_root_provider::root_provider(
                 owner,
@@ -363,7 +360,7 @@ impl PiControlHost<'_> {
                 .runtime
                 .runtime
                 .task_host()
-                .journal_owner_with_native_work(task, &fence, work)
+                .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
                 .await?;
             journal_owner
                 .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))

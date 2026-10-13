@@ -74,7 +74,7 @@ impl ToolInvocation {
                 })?;
             work.as_deref_mut()
                 .expect("identity observer")
-                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items })?;
+                .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items })?;
         }
         if name.is_some_and(|name| !crate::contract::is_valid_component_label(name)) {
             return Err(crate::effect_host::effect_error(
@@ -118,7 +118,7 @@ impl crate::filesystem::UploadRecord for ToolInvocation {
         tool_serde_diagnostic_label_bytes()
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        let deep = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
+        let deep = crate::executor::json::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64)
             .checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(deep))
@@ -145,7 +145,7 @@ impl crate::filesystem::UploadRecord for ToolResult {
         tool_serde_diagnostic_label_bytes()
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        crate::contract::json_value_logical_owned_bytes(&self.value)
+        crate::executor::json::json_value_logical_owned_bytes(&self.value)
     }
 }
 

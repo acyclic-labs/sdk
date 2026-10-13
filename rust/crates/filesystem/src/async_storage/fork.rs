@@ -83,18 +83,10 @@ pub(crate) async fn workspace_fork<S: AsyncAuthorityStore + ?Sized, G: Authority
         retention,
         retained,
     } = fork;
-    #[cfg(not(target_arch = "wasm32"))]
-    let native = work.original.is_some();
-    #[cfg(target_arch = "wasm32")]
-    let native = false;
-    let retained = if native {
-        store
-            .create_first_record(retention, retained, work, None::<&mut ()>)
-            .await
-    } else {
-        first_record(store, retention, retained, work, None::<&mut ()>).await
-    }
-    .map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+    let retained = store
+        .create_first_record(retention, retained, work, None::<&mut ()>)
+        .await
+        .map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?;
     if !retained {
         return Ok(WorkspaceForkOutcome::RetentionConflict);
     }
@@ -116,15 +108,9 @@ pub(crate) async fn workspace_fork<S: AsyncAuthorityStore + ?Sized, G: Authority
                 .await?
         }
     };
-    let created = if native || guard.is_some() {
-        store
-            .create_first_record(destination, creation, work, guard)
-            .await?
-    } else {
-        first_record(store, destination, creation, work, None::<&mut ()>)
-            .await
-            .map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?
-    };
+    let created = store
+        .create_first_record(destination, creation, work, guard)
+        .await?;
     Ok(if created {
         WorkspaceForkOutcome::Committed
     } else {

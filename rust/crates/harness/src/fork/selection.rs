@@ -68,13 +68,10 @@ impl ResourceRevision {
     }
 
     /// Checks provider families and the semantic resource class.
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         match self {
             Self::PrivateVolume {
@@ -153,7 +150,7 @@ impl ResourceRevision {
 
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         CodecQuota::produce(work, |quota| {
-            crate::core::copy_owned(self, quota, |source, work| {
+            crate::core::copy(self, quota, |source, work| {
                 source.validate(work)?;
                 crate::core::owned_bytes(source)
             })
@@ -187,10 +184,7 @@ pub struct AttestedBoundary {
 
 impl AttestedBoundary {
     /// Validates an attestation envelope without claiming to verify its proof.
-    pub(crate) fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub(crate) fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.provider.validate(work)?;
         if self.evidence.is_empty() {
             return Err(boundary_error(
@@ -251,7 +245,7 @@ impl ForkPreparation {
     pub(in crate::fork) fn validate(
         &self,
         child_agent: AgentId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if let Some(selection) = &self.summary {
             selection.validate_with_work(work)?;
@@ -299,7 +293,7 @@ pub(in crate::fork) fn validate_child_result_volume(
     result: &VolumeRef,
     scratch: &VolumeRef,
     child: AgentId,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     result.validate(work)?;
     if result.class() != VolumeClass::AgentPrivate
@@ -321,7 +315,7 @@ pub(in crate::fork) fn validate_child_result_generation(
     generation: Option<&GenerationRef>,
     scratch: &VolumeRef,
     child: AgentId,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     match (result, generation) {
         (None, None) => Ok(()),

@@ -48,10 +48,10 @@ impl DurableWorkflowHost {
         let admission = observed
             .0
             .take()
-            .ok_or_else(|| error(io, Conflict, "workflow has no retained admission"))?;
+            .ok_or_else(|| stock_boundary(io, Conflict, "workflow has no retained admission"))?;
         admission.validate(io)?;
         if admission.initial != initial {
-            return Err(error(
+            return Err(stock_boundary(
                 io,
                 Conflict,
                 "workflow initial checkpoint differs from admission",
@@ -84,14 +84,22 @@ impl DurableWorkflowHost {
             )
             .await?;
             if page.0.len() > WORKFLOW_REPLAY_PAGE_RECORDS as usize {
-                return Err(error(io, Storage, "workflow provider exceeded page bound"));
+                return Err(stock_boundary(
+                    io,
+                    Storage,
+                    "workflow provider exceeded page bound",
+                ));
             }
             if page.0.is_empty() {
                 break;
             }
             for record in page.0 {
                 validate_workflow_next(
-                    &host.checkpoint,
+                    (
+                        &host.checkpoint.machine,
+                        host.checkpoint.revision,
+                        &host.checkpoint.state,
+                    ),
                     host.terminal,
                     &host.reserved_operations,
                     &keys,
@@ -167,16 +175,29 @@ impl DurableWorkflowHost {
         let mut page =
             journal::page(self.journal.as_ref(), self.checkpoint.revision - 1, 1, io).await?;
         let [record] = page.0.as_slice() else {
-            return Err(error(io, Storage, "latest workflow record is unavailable"));
+            return Err(stock_boundary(
+                io,
+                Storage,
+                "latest workflow record is unavailable",
+            ));
         };
-        if record.next != self.checkpoint
+        if record.checkpoint()?
+            != (
+                &self.checkpoint.machine,
+                self.checkpoint.revision,
+                &self.checkpoint.state,
+            )
             || self.intents.get(&record.operation_id)
                 != Some(&(
                     record.prior.revision,
                     crate::executor::preparation_digest(record, io)?,
                 ))
         {
-            return Err(error(io, Storage, "latest workflow record changed"));
+            return Err(stock_boundary(
+                io,
+                Storage,
+                "latest workflow record changed",
+            ));
         }
         Ok((
             Some(
@@ -287,13 +308,17 @@ impl DurableWorkflowHost {
         if let Some((revision, digest)) = self.intents.get(&operation_id) {
             let page = journal::page(self.journal.as_ref(), *revision, 1, io).await?;
             let [record] = page.0.as_slice() else {
-                return Err(error(io, Storage, "workflow retry record is unavailable"));
+                return Err(stock_boundary(
+                    io,
+                    Storage,
+                    "workflow retry record is unavailable",
+                ));
             };
             if crate::executor::preparation_digest(record, io)? != *digest {
-                return Err(error(io, Storage, "workflow retry record changed"));
+                return Err(stock_boundary(io, Storage, "workflow retry record changed"));
             }
             if record.idempotency_key != key || record.input != input {
-                return Err(error(
+                return Err(stock_boundary(
                     io,
                     Conflict,
                     "workflow operation identity is bound to another input",
@@ -305,14 +330,14 @@ impl DurableWorkflowHost {
             return Ok((transition, 0, workflow_owned_bytes(io)? - before));
         }
         if self.terminal {
-            return Err(error(
+            return Err(stock_boundary(
                 io,
                 Conflict,
                 "workflow cannot advance after a terminal transition",
             ));
         }
         if self.reserved_operations.contains(&operation_id) {
-            return Err(error(
+            return Err(stock_boundary(
                 io,
                 Conflict,
                 "workflow step reuses a command identity",
@@ -334,11 +359,9 @@ impl DurableWorkflowHost {
         let record = WorkflowRecord {
             operation_id,
             idempotency_key: IdempotencyKey(crate::executor::stock_string_copy(&key.0, io)?),
-            input_digest: crate::executor::preparation_digest(&input, io)?,
             prior: self.checkpoint.copy(io)?,
             input,
             transition: transition.copy(io)?,
-            next: next.copy(io)?,
         };
         record.validate(io)?;
         if record
@@ -347,7 +370,7 @@ impl DurableWorkflowHost {
             .iter()
             .any(|command| self.reserved_operations.contains(&command.operation_id))
         {
-            return Err(error(
+            return Err(stock_boundary(
                 io,
                 Conflict,
                 "workflow command identity was already committed",
@@ -392,7 +415,7 @@ impl DurableWorkflowHost {
             .await?;
         let committed = observed;
         if committed != record {
-            return Err(error(
+            return Err(stock_boundary(
                 io,
                 Conflict,
                 "workflow retry identity is bound to another transition",
@@ -407,7 +430,7 @@ impl DurableWorkflowHost {
                 record.prior.revision,
                 match digest {
                     Some(digest) => digest,
-                    None => crate::contract::canonical_json_digest(&record, u64::MAX, &mut None)?,
+                    None => crate::executor::json::canonical_json_digest(&record, u64::MAX, &mut None)?,
                 },
             ),
         );

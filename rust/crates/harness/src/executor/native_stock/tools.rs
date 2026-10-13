@@ -13,7 +13,7 @@ pub(in crate::executor) fn stock_tool_definitions(
         let mut selected = Vec::new();
         for definition in definitions {
             let key = with_history_io(Some(io), |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("tool:call:{}", definition.name),
                     work,
                 )
@@ -47,33 +47,6 @@ pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     }
 }
 
-pub(in crate::executor) fn stock_native_failure(error: &Error) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        return error.is_native_failure();
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = error;
-        false
-    }
-}
-
-pub(in crate::executor) fn stock_model_call(
-    parent: OperationId,
-    step: u32,
-    call: String,
-    name: String,
-    arguments: Value,
-    io: Option<&PreparationIo>,
-) -> Result<ToolInvocation> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return ToolInvocation::for_model_call(parent, step, call, name, arguments, Some(work));
-    }
-    ToolInvocation::for_model_call(parent, step, call, name, arguments, None)
-}
-
 pub(in crate::executor) fn stock_tool_lookup<'a>(
     registry: &'a ToolRegistry,
     name: &str,
@@ -91,20 +64,6 @@ pub(in crate::executor) fn stock_tool_lookup<'a>(
     registry
         .get(name, None, io)?
         .ok_or_else(|| Error::NotFound(format!("tool {name}")))
-}
-
-pub(in crate::executor) fn stock_tool_support(
-    tool: &crate::tool::Tool,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        tool.executor.supports_native_execution(work)?;
-        tool.projection.supports_native_projection(Some(work))?;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = (tool, io);
-    Ok(())
 }
 
 pub(in crate::executor) fn stock_authorize_tool(
@@ -154,13 +113,9 @@ pub(in crate::executor) async fn stock_execute_tool(
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    if let Some(context) = context.take() {
-        tool.executor
-            .execute_with_context(context, invocation.clone())
-            .await
-    } else {
-        tool.executor.execute(invocation.clone()).await
-    }
+    tool.executor
+        .execute(invocation.clone(), context.take())
+        .await
 }
 
 pub(in crate::executor) async fn stock_reconcile_tool(
@@ -186,13 +141,9 @@ pub(in crate::executor) async fn stock_reconcile_tool(
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    if let Some(context) = context.take() {
-        tool.executor
-            .reconcile_with_context(context, invocation.clone())
-            .await
-    } else {
-        tool.executor.reconcile(invocation.clone()).await
-    }
+    tool.executor
+        .reconcile(invocation.clone(), context.take())
+        .await
 }
 
 pub(in crate::executor) fn stock_project_tool(
@@ -226,30 +177,6 @@ pub(in crate::executor) fn stock_project_tool(
         ));
     }
     Ok((value, content))
-}
-
-pub(in crate::executor) fn stock_task_interaction_id(
-    task: TaskId,
-    operation: OperationId,
-    io: Option<&PreparationIo>,
-) -> Result<InteractionId> {
-    #[cfg(feature = "filesystem")]
-    let hashed = acyclic_fs::WorkCounters {
-        bytes_hashed: (b"harness/v2/task-interaction\0".len() + 32) as u64,
-        ..Default::default()
-    };
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.preflight(hashed)?;
-    }
-    let id = crate::durable_host::task_interaction_id(task, operation);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.spent(hashed)?;
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    Ok(id)
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -288,51 +215,18 @@ impl StockExecution<'_> {
                 continue;
             };
             io.absorb_native_custody(custody)?;
-            if !self
-                .stock
-                .tool_scope
-                .grants()
-                .contains(capability::INTERACTION_ROUTE)
+            if let Some(progress) = self
+                .settle_approval(
+                    journal,
+                    operation,
+                    approval_operation,
+                    &request,
+                    invocation,
+                    started,
+                )
+                .await?
             {
-                return Err(crate::Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "stock tool approval requires interaction:route",
-                });
-            }
-            let task = self.stock.task.as_ref().map_or(
-                TaskId::from_bytes(operation.into_bytes()),
-                |(_, task, _)| *task,
-            );
-            let approval = stock_task_interaction_id(task, approval_operation, Some(io))?;
-            journal
-                .open_interaction_with_native_work(approval, &request, work)?
-                .await?;
-            let (outcome, custody) = journal
-                .interaction_outcome_with_native_work(approval, work)?
-                .await?;
-            io.absorb_native_custody(custody)?;
-            let Some(outcome) = outcome else {
-                return if started {
-                    Err(Error::Indeterminate(invocation.operation_id))
-                } else {
-                    Ok(Some(ExecutionProgress::Pending(invocation.operation_id)))
-                };
-            };
-            if matches!(outcome, InteractionOutcome::Answered { .. }) {
-                return Err(crate::Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "approval resolved with a question answer",
-                });
-            }
-            match check_tool_approval(outcome) {
-                Ok(()) => {}
-                Err(Error::InteractionRejected(reason)) if !started => {
-                    return Ok(Some(ExecutionProgress::Rejected(reason)));
-                }
-                Err(Error::InteractionRejected(_)) => {
-                    return Err(Error::Indeterminate(invocation.operation_id));
-                }
-                Err(error) => return Err(error),
+                return Ok(Some(progress));
             }
         }
         Ok(None)
@@ -350,39 +244,17 @@ pub(in crate::executor) fn stock_validate_invocation(
     if let Some(io) = io
         && io.original_native_work().is_some()
     {
-        crate::contract::json_owned_value_shape_bounded(
+        crate::executor::json::json_owned_value_shape_bounded(
             &invocation.arguments,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: u64::MAX,
                 maximum_items: io.remaining()?.items_examined,
                 maximum_depth: 256,
             },
-            crate::contract::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::None,
             &mut |next| io.codec_charge(next, false),
         )?;
         return Ok(());
     }
     Ok(())
-}
-
-pub(in crate::executor) async fn stock_tool_rejection(
-    session: &StockExecution<'_>,
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    step: u32,
-    call: &str,
-    kind: ToolFailureKind,
-    error: Error,
-) -> Result<ExecutionProgress<()>> {
-    if stock_native_failure(&error) {
-        return Err(error);
-    }
-    session
-        .record_tool_failure(journal, operation, step, call, kind)
-        .await?;
-    Err(stock_boundary(
-        session.io,
-        crate::wire::ErrorCode::Invalid,
-        kind.message(),
-    ))
 }

@@ -38,7 +38,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = inputs.observer(&observation, work.cancellation())?;
+            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
             let file_id = checkout
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -46,7 +46,7 @@ where
                 .ok_or(MountSourceError::NotFound)?
                 .file_id;
             let result = checkout
-                .seek_file_extent_by_id(
+                .seek_file_extent(
                     file_id,
                     offset,
                     match target {
@@ -104,18 +104,10 @@ where
         let cancellation = carrier.cancellation();
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let bytes = std::mem::size_of::<CheckoutAttachedFile<A, O>>() as u64;
-        let allocation = if let Some(work) = carrier.original_native_work() {
-            Some(
-                work.claim(bytes, 1, crate::WorkCounters::UNCHARGED)
-                    .map_err(MountSourceError::NativeWork)?,
-            )
-        } else {
-            carrier
-                .with_work(|work| work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED))
-                .map_err(super::super::lazy::mount_demand_error)?;
-            None
-        };
-        let retained = if allocation.is_some() { 0 } else { bytes };
+        let work = carrier.original_native_work().expect("native SDK callback");
+        let allocation = work
+            .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
+            .map_err(MountSourceError::NativeWork)?;
         let attached: Arc<dyn MountOpenFile> = Arc::new(CheckoutAttachedFile {
             checkout: Arc::clone(&self.checkout),
             file_id,
@@ -128,14 +120,9 @@ where
         });
         if let Err(error) = carrier.check(&cancellation, Some(&self.cancellation)) {
             drop(attached);
-            if retained != 0 {
-                carrier
-                    .with_work(|work| work.release(retained))
-                    .map_err(super::super::lazy::mount_demand_error)?;
-            }
             return Err(error);
         }
-        Ok((attached, retained))
+        Ok((attached, 0))
     }
 
     pub(super) fn detached_handle(
@@ -156,7 +143,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = inputs.observer(&observation, work.cancellation())?;
+            let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, work, work.cancellation())
                 .await?
@@ -166,30 +153,8 @@ where
                     "only regular files can own detached handles".into(),
                 ));
             }
-            let allocation = work
-                .claim(
-                    std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64,
-                    1,
-                    crate::WorkCounters::UNCHARGED,
-                )
-                .map_err(MountSourceError::NativeWork)?;
-            let file = checkout.detached_from_record(lookup.record, work, work.cancellation())?;
-            inputs
-                .carrier
-                .check(work.cancellation(), Some(&self.cancellation))?;
-            let file: Arc<dyn MountOpenFile> = Arc::new(CheckoutDetachedFile {
-                state: tokio::sync::Mutex::new(DetachedMountState {
-                    file,
-                    metadata: lookup.metadata,
-                    mutation_epoch: 0,
-                }),
-                ledger: Arc::clone(&self.checkout.ledger),
-                runtime: self.runtime.clone(),
-                cancellation: self.cancellation.clone(),
-                profile: self.profile,
-                limits: self.limits,
-                _native_allocation: Some(allocation),
-            });
+            let file: Arc<dyn MountOpenFile> =
+                self.detached_from_checkout(&checkout, lookup.record, lookup.metadata, work)?;
             Ok((file, 0))
         })
     }

@@ -8,7 +8,9 @@ use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 use notify::event::{ModifyKind, RenameMode};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use notify::{Event, EventKind, Watcher};
+#[cfg(not(windows))]
+use notify::RecursiveMode;
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -863,7 +865,7 @@ pub struct NativeWatch {
     root_identity: NativeRootIdentity,
     complete: bool,
     original_work: Option<crate::NativeMaterializationWork>,
-    root_allocation: Option<crate::NativeAllocation>,
+    _root_allocation: Option<crate::NativeAllocation>,
     pending_source_watch: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
     owner_allocation: Option<crate::NativeAllocation>,
 }
@@ -1117,7 +1119,7 @@ impl NativeWatch {
             cleanup,
         };
         let metadata = held_root
-            .stat(Path::new(""), work)
+            .stat(#[cfg(unix)] Path::new(""), #[cfg(windows)] &[], work)
             .map_err(demand_watch_error)?;
         if !metadata.is_dir() {
             return Err(NativeWatchError::RootIsNotDirectory);
@@ -1286,7 +1288,7 @@ impl NativeWatch {
             epoch: 0, next_sequence: 0,
             rescan_in_progress: false, root_identity, complete,
             original_work: original.map(crate::NativeMaterializationWork::allocation_work),
-            root_allocation, owner_allocation: None,
+            _root_allocation: root_allocation, owner_allocation: None,
             pending_source_watch: None,
         };
         if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
@@ -1473,7 +1475,7 @@ impl NativeWatch {
                 .checked_mul(2)
                 .ok_or(WorkError::Overflow)?;
             let result = (|| {
-                let mut held = self.held_root.open_dir_held_wide(&[], work)?;
+                let mut held = self.held_root.open_dir_held(&[], work)?;
                 let mut component_start = 0;
                 for index in 0..path.len() {
                     work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
@@ -2150,7 +2152,7 @@ impl NativeWatch {
         let Some(root) = self.held_root.root.as_ref() else {
             return Ok(false);
         };
-        let held = root.stat(Path::new(""), work)?.identity();
+        let held = root.stat(#[cfg(unix)] Path::new(""), #[cfg(windows)] &[], work)?.identity();
         match crate::native_host::root_path_identity(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))

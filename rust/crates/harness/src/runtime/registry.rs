@@ -197,7 +197,7 @@ impl TaskRegistry {
     ) -> Result<&Arc<dyn RegisteredTaskDefinition>> {
         for definition in &self.0 {
             if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             let identity = definition.identity();
             if identity.name == name && identity.version == version {
@@ -346,7 +346,7 @@ impl TaskRegistry {
             let mut descendant = false;
             for grant in scope.grants().iter() {
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if grant
                     .strip_prefix("task:spawn:")
@@ -398,14 +398,18 @@ impl TaskRegistry {
             task: task_copy_component(definition.identity(), &mut quota)?,
             machine: task_copy_machine(machine, &mut quota)?,
             input,
-            input_schema: crate::core::copy_value(definition.input_schema(), &mut quota)?,
-            output_schema: crate::core::copy_value(definition.output_schema(), &mut quota)?,
+            input_schema: crate::core::copy(definition.input_schema(), &mut quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+})?,
+            output_schema: crate::core::copy(definition.output_schema(), &mut quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+})?,
             parent,
             resource_proofs: RuntimeScope::copy_resource_proofs(
                 scope.resource_proofs(),
                 &mut quota,
             )?,
-            grants: crate::core::copy_capabilities(scope.grants(), &mut quota)?,
+            grants: crate::core::copy(scope.grants(), &mut quota, |value: &crate::Capabilities, _| value.logical_owned_bytes())?,
             limits: scope.limits(),
             run_limits: scope.run_limits(),
             policy: None,
@@ -449,7 +453,7 @@ impl TaskRegistry {
             ));
         }
         if let Some(input) = input {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 definition.input_schema(),
                 input,
                 "task input",

@@ -147,10 +147,6 @@ impl OwnedBytes {
             other => Err(other),
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn is_native(&self) -> bool {
-        matches!(self.data, Data::Native(_))
-    }
     /// Compares the original allocation-owner identity.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]

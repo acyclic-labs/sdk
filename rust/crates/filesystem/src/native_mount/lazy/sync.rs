@@ -108,9 +108,7 @@ where
                             .map_err(lazy_error)?,
                     )
                 };
-                *acknowledged = Some(crate::NativePublicationSnapshot::published(
-                    context, operation, generation,
-                ));
+                *acknowledged = Some(crate::NativePublicationSnapshot { context: context, operation: Some(operation), generation: generation });
                 if retained == Some(operation) {
                     self.authored
                         .shared_checkout()
@@ -160,9 +158,7 @@ where
                     self.finish_detached_publication(work)?;
                     self.clear_mount_removals()?;
                 }
-                return Ok(crate::NativePublicationSnapshot::published(
-                    context, operation, generation,
-                ));
+                return Ok(crate::NativePublicationSnapshot { context: context, operation: Some(operation), generation: generation });
             }
             if let Some(operation) = operation {
                 if retained == Some(operation) {
@@ -585,7 +581,7 @@ where
                 expected_file_id: MetadataField::Value(*removed_id),
             });
             candidate
-                .mutate_owned_with_accounting(operations, &mut accounting, work.cancellation())
+                .apply_mutations(operations, &mut accounting, work.cancellation())
                 .await
                 .map_err(mount_engine_error)?;
         }
@@ -620,7 +616,7 @@ where
                     .map_err(mount_engine_error)?;
                 operations.value.extend(chunk.iter().cloned());
                 candidate
-                    .mutate_owned_with_accounting(operations, &mut accounting, work.cancellation())
+                    .apply_mutations(operations, &mut accounting, work.cancellation())
                     .await
                     .map_err(mount_engine_error)?;
             }

@@ -31,10 +31,12 @@ async fn observe_binding_with_native_work<P: StreamProvider>(
             "Pi binding requires a positive immutable event limit",
         ));
     }
-    let reader = HistoryReader::new_with_native_work(stream, authority, verifier, work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
+    let reader = HistoryReader::new(stream, authority, verifier, &mut Some(&mut io))?;
     let original = reader
-        .0
-        .operation_event_bounded_with_native_work(operation, maximum_event_bytes, work)
+        .operation_event(operation, maximum_event_bytes, &mut Some(&mut io))
         .await?;
     let Some(event) = original.0.as_ref() else {
         return Ok(None);

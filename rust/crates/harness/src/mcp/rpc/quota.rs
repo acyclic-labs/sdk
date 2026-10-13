@@ -15,7 +15,8 @@ pub(super) fn dto_quota(
         ));
     }
     let typed_slot = size_of::<super::super::McpToolDefinition>()
-        + size_of::<super::super::McpToolsPage>()
+        + size_of::<rmcp::model::ListToolsResult>()
+        + size_of::<rmcp::model::Tool>()
         + size_of::<rmcp::model::Resource>()
         + size_of::<rmcp::model::ResourceTemplate>()
         + size_of::<rmcp::model::Prompt>()
@@ -41,7 +42,7 @@ pub(super) fn dto_quota(
                 .ok_or_else(overflow)?;
         }
         Value::Number(number) => {
-            let length = crate::contract::json_byte_length(number, u64::MAX, &mut None)
+            let length = crate::executor::json::json_byte_length(number, u64::MAX, &mut None)
                 .map_err(|_| overflow())?;
             quota = quota
                 .checked_add(length.checked_mul(16).ok_or_else(overflow)?)

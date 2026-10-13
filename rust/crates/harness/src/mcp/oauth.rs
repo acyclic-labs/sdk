@@ -106,7 +106,7 @@ async fn approve(
     match context.interact(operation, Interaction::Approval {
         prompt: "Authorize access to the explicitly selected MCP server using the host's private browser interaction".into(),
         operation_id: operation,
-        action_digest: crate::contract::canonical_json_digest(&("harness/mcp-oauth/v1", endpoint, url), u64::MAX, &mut None)?,
+        action_digest: crate::executor::json::canonical_json_digest(&("harness/mcp-oauth/v1", endpoint, url), u64::MAX, &mut None)?,
     }).await? {
         InteractionOutcome::Approved => Ok(()),
         InteractionOutcome::Indeterminate { .. } => Err(Error::Indeterminate(operation)),
@@ -136,76 +136,3 @@ fn token_error(operation: OperationId, error: AuthError) -> Error {
         _ => auth_error(error),
     }
 }
-#[cfg(feature = "mcp-http")]
-mod native {
-    use super::*;
-    use crate::mcp::http::{
-        McpHttpProvider, McpHttpRequest, McpHttpResponse, NativeMcpHttpProvider,
-    };
-    /// Explicit credential-bound HTTP capability.
-    pub struct OAuthMcpHttpProvider {
-        endpoint: String,
-        manager: Arc<AuthorizationManager>,
-        network: NativeMcpHttpProvider,
-    }
-    impl OAuthMcpHttpProvider {
-        /// The manager is already authorized through the ordinary host admission.
-        pub fn new(endpoint: String, manager: Arc<AuthorizationManager>) -> Result<Self> {
-            let uri: http::Uri = endpoint
-                .parse()
-                .map_err(|_| Error::Invalid("invalid OAuth MCP endpoint".into()))?;
-            if uri.scheme_str() != Some("https")
-                || uri.authority().is_none_or(|a| a.as_str().contains('@'))
-                || endpoint.contains('#')
-            {
-                return Err(Error::Invalid(
-                    "OAuth MCP provider requires an exact HTTPS endpoint".into(),
-                ));
-            }
-            Ok(Self {
-                endpoint,
-                manager,
-                network: NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?,
-            })
-        }
-    }
-    impl McpHttpProvider for OAuthMcpHttpProvider {
-        fn exchange<'a>(
-            &'a self,
-            operation: OperationId,
-            request: McpHttpRequest,
-        ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-            Box::pin(async move {
-                if request.endpoint != self.endpoint
-                    || request
-                        .headers
-                        .keys()
-                        .any(|key| key.eq_ignore_ascii_case("authorization"))
-                {
-                    return Err(Error::Unauthorized(
-                        "MCP OAuth endpoint or credential binding differs".into(),
-                    ));
-                }
-                let token = self
-                    .manager
-                    .get_access_token()
-                    .await
-                    .map_err(|error| token_error(operation, error))?;
-                let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-                    .map_err(|_| Error::Invalid("MCP credential header invalid".into()))?;
-                bearer.set_sensitive(true);
-                self.network
-                    .exchange_authenticated(operation, request, Some(bearer))
-                    .await
-            })
-        }
-        fn reconcile<'a>(
-            &'a self,
-            _operation: OperationId,
-        ) -> BoxProviderFuture<'a, Result<Option<McpHttpResponse>>> {
-            Box::pin(async { Ok(None) })
-        }
-    }
-}
-#[cfg(feature = "mcp-http")]
-pub use native::OAuthMcpHttpProvider;

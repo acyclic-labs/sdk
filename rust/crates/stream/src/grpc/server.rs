@@ -32,26 +32,19 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     type FollowStream = Body<wire::ReadResponse>;
     type ChildrenStream = Body<wire::ChildrenResponse>;
 
-    async fn acknowledge_delivery(
-        &self,
-        request: Request<wire::AcknowledgeDeliveryRequest>,
-    ) -> Result<Response<wire::AcknowledgeDeliveryResponse>, Status> {
-        check_command_size(&request)?;
-        if request.get_ref().delivery_token.len() != 32 {
-            return Err(error_status(&StreamError::InvalidArgument));
-        }
-        // Provider-independent adapters have no hosted receipt authority.
-        Err(error_status(&StreamError::Unsupported))
-    }
-
     async fn inspect_idempotency(
         &self,
         request: Request<wire::InspectIdempotencyRequest>,
     ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
         unary(serve_span!("inspect_idempotency"), async {
             check_command_size(&request)?;
-            let key = IdempotencyKey::new(request.into_inner().idempotency_key).map_err(wire_error)?;
-            let observation = self.provider.inspect_idempotency(key).await.map_err(wire_error)?;
+            let key =
+                IdempotencyKey::new(request.into_inner().idempotency_key).map_err(wire_error)?;
+            let observation = self
+                .provider
+                .inspect_idempotency(key)
+                .await
+                .map_err(wire_error)?;
             Ok(wire::InspectIdempotencyResponse {
                 observation: observation.map(observation_wire),
             })
@@ -132,7 +125,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let path = path(request.path).map_err(wire_error)?;
-            let records = self.provider.follow(path, request.from).await.map_err(wire_error)?;
+            let records = self
+                .provider
+                .follow(path, request.from)
+                .await
+                .map_err(wire_error)?;
             Ok(observe_body(&span, records.map(record_frame)).boxed())
         })
         .await
@@ -182,7 +179,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .map_err(wire_error)?,
                 limit: request.limit,
             };
-            let page = self.provider.children_page(request).await.map_err(wire_error)?;
+            let page = self
+                .provider
+                .children_page(request)
+                .await
+                .map_err(wire_error)?;
             Ok(wire::ChildrenPageResponse {
                 hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
                 children: page
@@ -224,7 +225,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         unary(serve_span!("read_commit"), async {
             check_command_size(&request)?;
             let commit_id = commit_id(&request.into_inner().commit_id).map_err(wire_error)?;
-            let envelope = self.provider.read_commit(commit_id).await.map_err(wire_error)?;
+            let envelope = self
+                .provider
+                .read_commit(commit_id)
+                .await
+                .map_err(wire_error)?;
             Ok(envelope_to_wire(envelope))
         })
         .await

@@ -45,7 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
     {
         seal::<_, E>(guard, ctx).await?;
-        self.validate_snapshot(basis, ctx)?;
+        self.validate_snapshot(basis, ctx).await?;
         let domain = b"acyclic-fs-lazy-write-input-v1\0";
         let mut hash = blake3::Hasher::new();
         ctx.charge(WorkCounters {
@@ -106,22 +106,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         {
             return Err(LazyWorkspaceError::StaleSource.into());
         }
-        let head = self.head(ctx).await?;
-        let checkout = self
-            .workspace
-            .checkout_accounted(
-                crate::model::GenerationSelector::Exact(basis.authored_generation),
-                crate::model::CheckoutMode::tracking_transaction(),
-                ctx,
-                cancellation(ctx),
-            )
-            .await?;
-        let mut transaction = crate::Transaction::from_checkout(
-            &self.workspace,
-            checkout,
+        let generation = crate::Generation {
+            workspace: self.workspace.clone(),
+            id: basis.authored_generation,
+            publication_closure: None,
+        };
+        let mut transaction = accounted!(ctx, |work, cancel| self.workspace.begin_transaction_at(
+            &generation,
             key,
-            head.id() != basis.authored_generation,
-        );
+            work,
+            cancel
+        ))?;
         for (path, bytes) in mutations {
             if let Some(bytes) = bytes {
                 let (lookup, _, funding) = self.lookup_at_snapshot(basis, path, ctx).await?;

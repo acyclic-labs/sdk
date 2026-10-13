@@ -1,9 +1,8 @@
 //! Shared admitted JSON-RPC boundary.
 use super::{charge, error};
 use crate::{Error, NativeWork, OperationId, Result, wire::ErrorCode};
-use rmcp::model::{JsonRpcRequest, RequestId};
-use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::Value;
 
 pub(super) fn rpc_result(
     mut value: Value,
@@ -45,14 +44,20 @@ pub(super) fn rpc_result(
         })
 }
 
+#[derive(Serialize)]
+pub(super) struct Envelope<'a, P> {
+    pub(super) id: OperationId,
+    pub(super) jsonrpc: &'static str,
+    pub(super) method: &'a str,
+    pub(super) params: P,
+}
 pub(super) fn request(operation: OperationId, method: &str, params: Value) -> Result<Vec<u8>> {
-    let mut payload = Map::new();
-    payload.insert("method".into(), Value::String(method.into()));
-    payload.insert("params".into(), params);
-    serde_json::to_vec(&JsonRpcRequest::new(
-        RequestId::String(operation.to_string().into()),
-        Value::Object(payload),
-    ))
+    serde_json::to_vec(&Envelope {
+        id: operation,
+        jsonrpc: "2.0",
+        method,
+        params,
+    })
     .map_err(|error| Error::Invalid(error.to_string()))
 }
 

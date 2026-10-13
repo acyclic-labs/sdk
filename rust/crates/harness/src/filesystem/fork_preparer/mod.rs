@@ -24,6 +24,7 @@ use uuid::Uuid;
 mod allocations;
 mod attempt;
 mod authorization;
+mod capture;
 mod created_access;
 mod journal;
 mod preparation;
@@ -57,10 +58,7 @@ pub struct FilesystemForkPreparer<A, O> {
     task_preparation: Option<Arc<TaskResourcePreparation>>,
     project_source: Option<ProjectSourceReadHandle>,
     #[cfg(not(target_arch = "wasm32"))]
-    native: Option<(
-        acyclic_fs::NativeMaterializationWork,
-        acyclic_fs::NativeAllocation,
-    )>,
+    native: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct BoundSummary {
@@ -95,6 +93,8 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             &acyclic_fs::NativeMaterializationWork,
         )>,
     ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = native.as_ref().map(|(_, work)| *work);
         let this = Self {
             host,
             parent,
@@ -109,20 +109,24 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             project_source,
             task_preparation: None,
             #[cfg(not(target_arch = "wasm32"))]
-            native: native.map(|(custody, work)| (work.clone(), custody)),
+            native: native.map(|(custody, _)| custody),
         };
         #[cfg(not(target_arch = "wasm32"))]
         let io = this
             .native
             .as_ref()
-            .map(|(work, custody)| {
-                if !custody.work().shares_allocation_context(work) || this.history.is_none() {
+            .map(|custody| {
+                if !custody
+                    .work()
+                    .shares_allocation_context(original.expect("native input"))
+                    || this.history.is_none()
+                {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Invalid,
                         reason: "native fork lacks matching custody or prepared history",
                     });
                 }
-                PreparationIo::from_native_work(work)
+                PreparationIo::from_native_work(custody.work())
             })
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
@@ -180,7 +184,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         if !self
             .native
             .as_ref()
-            .is_some_and(|(_, guard)| guard.work().shares_allocation_context(work))
+            .is_some_and(|guard| guard.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -197,7 +201,6 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         self.native
             .as_mut()
             .expect("native custody was checked")
-            .1
             .absorb(&mut header)
             .map_err(|cause| Error::NativeWork {
                 cause,
@@ -215,8 +218,8 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         match (self.native.as_mut(), custody) {
-            (Some((work, retained)), Some(mut custody))
-                if custody.work().shares_allocation_context(work) =>
+            (Some(retained), Some(mut custody))
+                if custody.work().shares_allocation_context(retained.work()) =>
             {
                 retained
                     .absorb(&mut custody)
@@ -322,8 +325,6 @@ where
                 ));
             }
             this.verify_task_lease(true).await?;
-            this.preparer
-                .prepare_bound_summary(&request, this.io.as_ref())?;
             this.reconcile(&request).await
         })
     }

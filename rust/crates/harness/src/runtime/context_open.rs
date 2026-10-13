@@ -81,7 +81,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("durable task spawner is not bound".into()))?;
         let value =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.input_schema,
             &value,
             "task input",
@@ -146,43 +146,39 @@ impl AgentHarness {
         })
     }
 
-    /// Reconstructs a pinned task context after the host resumes its state machine.
+    /// Reconstructs a pinned task context on the supplied IO.
     pub async fn durable_context(
-        self: &Arc<Self>,
-        task_id: TaskId,
-        operation_id: OperationId,
-    ) -> Result<TaskContext> {
-        self.open_durable_context(
-            task_id,
-            operation_id,
-            ContextSource::Ordinary(std::marker::PhantomData),
-        )
-        .await
-        .map(|(context, _)| context)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Restores the admitted context on the original work.
-    pub async fn durable_context_with_native_work(
         self: &Arc<Self>,
         task: TaskId,
         operation: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskContext, acyclic_fs::NativeAllocation)> {
-        let (context, custody) = self
-            .open_durable_context(
-                task,
-                operation,
-                ContextSource::Native {
-                    work,
-                    purpose: NativeContextPurpose::Read,
-                },
-            )
-            .await?;
-        Ok((
-            context,
-            custody.expect("native context source transfers its original custody"),
-        ))
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Arc<TaskContext>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let source = match io {
+            Some(io) => ContextSource::Native {
+                work: io.original_native_work().ok_or_else(|| {
+                    crate::conversation::content_error(
+                        Some(io),
+                        crate::wire::ErrorCode::Unsupported,
+                        "context reconstruction requires original native work",
+                    )
+                })?,
+                purpose: NativeContextPurpose::Read,
+            },
+            None => ContextSource::Ordinary(std::marker::PhantomData),
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let source = {
+            if io.is_some() {
+                return Err(crate::conversation::content_error(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "context reconstruction requires original native work",
+                ));
+            }
+            ContextSource::Ordinary(std::marker::PhantomData)
+        };
+        self.open_durable_context(task, operation, source).await
     }
 
     pub(crate) async fn open_durable_context(
@@ -190,7 +186,7 @@ impl AgentHarness {
         task: TaskId,
         operation: OperationId,
         source: ContextSource<'_>,
-    ) -> Result<(TaskContext, Option<NativeCustody>)> {
+    ) -> Result<Arc<TaskContext>> {
         let host = match &self.state {
             Some(host) => host,
             None => {
@@ -229,11 +225,7 @@ impl AgentHarness {
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             ContextSource::Native { work, purpose } => {
-                work.charge(acyclic_fs::WorkCounters::default())
-                    .map_err(|cause| Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
+                work.charge(acyclic_fs::WorkCounters::default())?;
                 let issued_purpose = match &purpose {
                     NativeContextPurpose::Read => IssuedContextPurpose::Read,
                     NativeContextPurpose::Dispatch { .. } => IssuedContextPurpose::Dispatch,
@@ -268,12 +260,7 @@ impl AgentHarness {
                 };
                 let extra_self = (std::mem::size_of::<TaskContext>()
                     - std::mem::size_of::<RuntimeScope>()) as u64;
-                let mut custody = work
-                    .claim(extra_self, 0, acyclic_fs::WorkCounters::default())
-                    .map_err(|cause| Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
+                let mut custody = work.claim(extra_self, 0, acyclic_fs::WorkCounters::default())?;
                 let mut admitted = host
                     .resume_scope_with_native_work(task, operation, work)?
                     .await?;
@@ -290,28 +277,17 @@ impl AgentHarness {
                 if let Some(mailbox) = &mailbox {
                     mailbox.validate_scope_with_native_work(&admitted.0, work)?;
                 }
-                custody
-                    .absorb(&mut admitted.1)
-                    .map_err(|cause| Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
+                custody.absorb(&mut admitted.1)?;
                 let bound = admitted.0.concurrency_bound(self.concurrency);
                 let group = self.live.child(bound, Some(work))?;
                 let descendants = group.child(bound, Some(work))?;
-                let model_custody = work
-                    .claim(
-                        std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64,
-                        u64::from(
-                            (std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64)
-                                != 0,
-                        ),
-                        acyclic_fs::WorkCounters::default(),
-                    )
-                    .map_err(|cause| Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
+                let model_custody = work.claim(
+                    std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64,
+                    u64::from(
+                        (std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64) != 0,
+                    ),
+                    acyclic_fs::WorkCounters::default(),
+                )?;
                 let model_steps = Arc::new((AtomicUsize::new(0), Some(model_custody)));
                 (
                     admitted.0,
@@ -323,7 +299,7 @@ impl AgentHarness {
                 )
             }
         };
-        let mut context = TaskContext {
+        let context = TaskContext {
             harness: Arc::clone(self),
             task_id: operation,
             durable_task: Some(task),
@@ -335,22 +311,17 @@ impl AgentHarness {
             output_content: None,
             model_steps,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_metadata_source: None,
+            native_purpose: native_work.map(|_| issued_purpose),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
+            native_custody: custody,
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let (Some(work), Some(custody)) = (native_work, custody.as_ref()) {
-            context.mark_native_metadata_source(work, custody)?;
-            context
-                .native_metadata_source
-                .as_mut()
-                .expect("issued metadata source")
-                .purpose = issued_purpose;
-        }
+        return context.into_shared();
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = issued_purpose;
-        Ok((context, custody))
+        {
+            let _ = (custody, issued_purpose);
+            Ok(Arc::new(context))
+        }
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -371,10 +342,6 @@ impl AgentHarness {
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: admitted.resource_proofs.len() as u64,
                 ..Default::default()
-            })
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
             })?;
             if access.operation != operation || access.proofs != admitted.resource_proofs {
                 return Err(Error::NativeBoundary {
@@ -392,10 +359,6 @@ impl AgentHarness {
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: 1,
                 ..Default::default()
-            })
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
             })?;
             if !self.scope.grants.contains(grant)
                 && !created.is_some_and(|access| access.grants.contains(grant))
@@ -429,10 +392,7 @@ impl AgentHarness {
 impl TaskContext {
     pub(super) fn preparation_io(&self) -> Result<Option<crate::executor::PreparationIo>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_metadata_source.is_some()
-            || self.native_custody.is_some()
-            || self.model_steps.1.is_some()
-        {
+        if self.native_custody.is_some() || self.model_steps.1.is_some() {
             return crate::executor::PreparationIo::from_native_work(self.native_work()?).map(Some);
         }
         Ok(None)

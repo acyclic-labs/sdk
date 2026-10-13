@@ -38,7 +38,11 @@ fn batch_members_have_stable_indexed_identities_and_pinned_authority() -> Result
         execution: None,
     };
     assert_ne!(request.operation_id(0), request.operation_id(1));
-    let original = crate::contract::canonical_json_digest(&request.canonical_value(), u64::MAX, &mut None)?;
+    let original = crate::executor::json::canonical_json_digest(
+        &request.canonical_value(),
+        u64::MAX,
+        &mut None,
+    )?;
     let restored = DurableBatchRequest::from_canonical_value(request.canonical_value())?;
     assert_eq!(restored.canonical_value(), request.canonical_value());
     let mut unknown = request.canonical_value();
@@ -68,13 +72,21 @@ fn batch_members_have_stable_indexed_identities_and_pinned_authority() -> Result
     request.inputs.swap(0, 1);
     assert_ne!(
         original,
-        crate::contract::canonical_json_digest(&request.canonical_value(), u64::MAX, &mut None)?
+        crate::executor::json::canonical_json_digest(
+            &request.canonical_value(),
+            u64::MAX,
+            &mut None
+        )?
     );
     request.inputs.swap(0, 1);
     request.scope = RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?;
     assert_ne!(
         original,
-        crate::contract::canonical_json_digest(&request.canonical_value(), u64::MAX, &mut None)?
+        crate::executor::json::canonical_json_digest(
+            &request.canonical_value(),
+            u64::MAX,
+            &mut None
+        )?
     );
     Ok(())
 }
@@ -151,24 +163,12 @@ async fn recursive_child_admission_does_not_consume_the_parent_permit() -> Resul
     tasks.register(definition)?;
     let harness = Bindings {
         tasks,
-        tools: ToolRegistry::default(),
-        resumable_tools: ResumableToolRegistry::default(),
         scope: RuntimeScope::new(
             Capabilities::new(["task:spawn:test.recursive@1"]),
             Limits::default(),
         )?,
         concurrency: 1,
-        durable_host: None,
-        state: None,
-        spawner: None,
-        execution: None,
-        interactions: None,
-        interaction_resolver: None,
-        content: None,
-        artifacts: None,
-        policy: None,
-        fork_preparer: None,
-        workspaces: None,
+        ..Bindings::local()
     }
     .build(None)?;
     let definition = harness.task::<u32, u32>("test.recursive")?;
@@ -231,24 +231,12 @@ async fn group_map_preserves_input_order_and_partial_failure() -> Result<()> {
     )?)?;
     let harness = Bindings {
         tasks,
-        tools: ToolRegistry::default(),
-        resumable_tools: ResumableToolRegistry::default(),
         scope: RuntimeScope::new(
             Capabilities::new(["task:spawn:test.map.leaf@1"]),
             Limits::default(),
         )?,
         concurrency: 1,
-        durable_host: None,
-        state: None,
-        spawner: None,
-        execution: None,
-        interactions: None,
-        interaction_resolver: None,
-        content: None,
-        artifacts: None,
-        policy: None,
-        fork_preparer: None,
-        workspaces: None,
+        ..Bindings::local()
     }
     .build(None)?;
     let parent = harness.task::<Vec<u32>, Vec<u32>>("test.map.parent")?;
@@ -292,21 +280,9 @@ async fn ordered_join_polls_later_tasks_while_first_is_waiting() -> Result<()> {
     tasks.register(definition)?;
     let harness = Bindings {
         tasks,
-        tools: ToolRegistry::default(),
-        resumable_tools: ResumableToolRegistry::default(),
         scope: RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?,
         concurrency: 2,
-        durable_host: None,
-        state: None,
-        spawner: None,
-        execution: None,
-        interactions: None,
-        interaction_resolver: None,
-        content: None,
-        artifacts: None,
-        policy: None,
-        fork_preparer: None,
-        workspaces: None,
+        ..Bindings::local()
     }
     .build(None)?;
     let definition = harness.task::<bool, bool>("test.join")?;

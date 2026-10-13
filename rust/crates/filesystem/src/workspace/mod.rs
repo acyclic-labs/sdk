@@ -95,10 +95,9 @@ use read_core::{list, plan, read_link, read_range, read_selected, stat};
 pub use transaction::Transaction;
 
 #[cfg(test)]
-#[path = "../tests/workspace.rs"]
+#[path = "../tests/workspace/mod.rs"]
 mod tests;
 
-pub(crate) use reverse_traversal::reverse_paths_to_file_root_with_accounting;
 use reverse_traversal::{
     NamespaceRecordSearch, NamespaceRecords, namespace_records_bytes,
     namespace_records_to_file_root_with_accounting, reverse_drop, reverse_grow,

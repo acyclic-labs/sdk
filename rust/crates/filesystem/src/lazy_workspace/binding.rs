@@ -297,16 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let checkout = self
-            .checkout(crate::model::GenerationSelector::Head, ctx)
-            .await?;
-        let id = checkout.value.generation_id();
-        checkout.retire(ctx)?;
-        Ok(crate::Generation {
-            workspace: self.workspace.clone(),
-            id,
-            publication_closure: None,
-        })
+        accounted!(ctx, |work, cancel| self.workspace.head(work, cancel))
     }
 
     pub(crate) async fn operation_generation(
@@ -356,8 +347,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         Ok(owned)
     }
 
-    /// Validates a cut's identity without changing the source view.
-    pub fn validate_snapshot(
+    /// Validates a cut and its available indexes and generation without rebinding.
+    pub async fn validate_snapshot(
         &self,
         cut: LazySnapshotRef,
         ctx: &mut KernelAccounting<'_>,
@@ -379,6 +370,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
+        retire_node(
+            self.store
+                .load_lazy_overlay(cut.overlay, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
+            ctx,
+        )?;
+        retire_node(
+            self.store
+                .load_lazy_shadow(cut.shadows, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
+            ctx,
+        )?;
+        accounted!(ctx, |work, cancel| self.workspace.generation(
+            cut.authored_generation,
+            work,
+            cancel
+        ))?;
         Ok(())
     }
 }

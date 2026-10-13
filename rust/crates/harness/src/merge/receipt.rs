@@ -123,7 +123,9 @@ impl ProjectMergeReceipt {
             provider_proof: ProviderJoinProof {
                 provider: crate::core::copy_provider(&self.provider_proof.provider, quota)?,
                 format: crate::core::copy_text(&self.provider_proof.format, quota)?,
-                statement: crate::core::copy_value(&self.provider_proof.statement, quota)?,
+                statement: crate::core::copy(&self.provider_proof.statement, quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+})?,
             },
             notice: self.notice.clone_in_quota(quota)?,
         })

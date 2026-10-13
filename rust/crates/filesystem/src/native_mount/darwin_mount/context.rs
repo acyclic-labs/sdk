@@ -1,10 +1,11 @@
 use super::*;
+use crate::demand::NativeMountAllocationCustody;
 
 pub(super) struct FileHandle {
     file_id: FileId,
     file: Option<(
         Arc<dyn MountOpenFile>,
-        Option<crate::demand::NativeMountAllocationCustody>,
+        Option<Arc<NativeMountAllocationCustody>>,
     )>,
     written: Arc<DarwinOwned<AtomicU64>>,
 }
@@ -21,14 +22,6 @@ pub(super) struct CacheEpochs {
     pub(super) binding: u64,
 }
 
-pub(super) struct FileTarget {
-    pub(super) file: (
-        Arc<dyn MountOpenFile>,
-        Option<crate::demand::NativeMountAllocationCustody>,
-    ),
-    written: Option<Arc<DarwinOwned<AtomicU64>>>,
-}
-
 pub(super) struct DarwinMountContext {
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
@@ -42,13 +35,18 @@ pub(super) struct DarwinMountContext {
     pub(super) inodes: Mutex<DarwinOwned<HashMap<FileId, u64>>>,
     pub(super) forgotten: AtomicU64,
     pub(super) files: RwLock<DarwinOwned<HashMap<u64, FileHandle>>>,
-    pub(super) directories:
-        Mutex<DarwinOwned<HashMap<u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>>>>,
-    pub(super) ledger: FlushLedger,
-    pub(super) changes: ChangeLabels,
+    pub(super) completed: AtomicU64,
+    flushed: AtomicU64,
+    flushing: Mutex<()>,
+    pub(super) next_label: AtomicU64,
+    pub(super) labels: Mutex<DarwinOwned<HashMap<FileId, IssuedLabel>>>,
+    pub(super) labels_cleared: AtomicU64,
     pub(super) origin: ViewOrigin,
     pub(super) callbacks: CallbackGate,
-    pub(super) around: AroundChanges,
+    around_made: AtomicU64,
+    around_settled: AtomicU64,
+    unconfirmed: AtomicU64,
+    verified: AtomicU64,
     pub(super) callback_guard: Option<Arc<dyn crate::native_mount::NativeMountCallbackGuard>>,
     pub(super) source_original_work: Option<Work>,
     pub(super) native_allocation: NativeAllocation,
@@ -67,28 +65,16 @@ impl DarwinCallbackState {
     }
 }
 
-pub(super) struct AroundChanges {
-    /// Changes another origin reported, plus views forgotten.
-    pub(super) made: AtomicU64,
-    /// `made` as of the latest barrier that waited them out.
-    pub(super) settled: AtomicU64,
-    /// Fences that could not confirm every change was reported.
-    pub(super) unconfirmed: AtomicU64,
-    /// `unconfirmed` as of the latest barrier that verified or waited them
-    /// out.
-    pub(super) verified: AtomicU64,
-}
-
 impl ViewObserver for DarwinMountContext {
     fn view_changed(&self, _position: ViewStamp, origin: ViewOrigin) {
         // The client learns of this mount's own changes from their replies.
         if origin != self.origin {
-            self.around.made.fetch_add(1, Ordering::AcqRel);
+            self.around_made.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     fn view_unconfirmed(&self, _position: ViewStamp) {
-        self.around.unconfirmed.fetch_add(1, Ordering::AcqRel);
+        self.unconfirmed.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -112,18 +98,29 @@ impl DarwinMountContext {
     pub(super) fn new(
         source: Arc<dyn MountFilesystem>,
         writable: bool,
-        uid: u32,
-        gid: u32,
-        root_file_id: FileId,
+        destination: &Path,
         work: &Work,
     ) -> Result<Self, NativeMountError> {
+        work.admit(WorkCounters::UNCHARGED)?;
         let source_original_work = original_work(source.as_ref(), Some(work))?;
         let callback_guard = source.native_callback_guard();
         verify_guard(callback_guard.as_ref(), source_original_work.as_ref())?;
+        let root = source
+            .lookup_with_meter(&MountPath::root(), work)?
+            .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
+        if root.node.kind != MountNodeKind::Directory {
+            return Err(NativeMountError::Lifecycle(
+                "volume root is not a directory",
+            ));
+        }
+        let metadata =
+            crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {
+                start_stat(path, work)
+            })?;
         let mut inodes = DarwinOwned::empty(HashMap::new());
         grow_map(&mut inodes, work)?;
 
-        inodes.insert(root_file_id, ROOT_INODE);
+        inodes.insert(root.node.file_id, ROOT_INODE);
         let (handler_budget, handler_cancellation) = {
             let meter = work.state.lock();
             (meter.budget, meter.cancellation().clone())
@@ -131,8 +128,8 @@ impl DarwinMountContext {
         Ok(Self {
             source,
             writable,
-            mount_uid: uid,
-            mount_gid: gid,
+            mount_uid: metadata.st_uid,
+            mount_gid: metadata.st_gid,
             handler_failure: shared(
                 work,
                 DarwinOwned::empty(Mutex::new(DarwinCallbackState::default())),
@@ -144,17 +141,18 @@ impl DarwinMountContext {
             inodes: Mutex::new(inodes),
             forgotten: AtomicU64::new(0),
             files: RwLock::new(DarwinOwned::empty(HashMap::new())),
-            directories: Mutex::new(DarwinOwned::empty(HashMap::new())),
-            ledger: FlushLedger::new(),
-            changes: ChangeLabels::new(),
+            completed: AtomicU64::new(1),
+            flushed: AtomicU64::new(0),
+            flushing: Mutex::new(()),
+            next_label: AtomicU64::new(1),
+            labels: Mutex::new(DarwinOwned::empty(HashMap::new())),
+            labels_cleared: AtomicU64::new(0),
             origin: ViewOrigin::new(),
             callbacks: CallbackGate::new(),
-            around: AroundChanges {
-                made: AtomicU64::new(0),
-                settled: AtomicU64::new(0),
-                unconfirmed: AtomicU64::new(0),
-                verified: AtomicU64::new(0),
-            },
+            around_made: AtomicU64::new(0),
+            around_settled: AtomicU64::new(0),
+            unconfirmed: AtomicU64::new(0),
+            verified: AtomicU64::new(0),
             callback_guard,
             source_original_work,
             native_allocation: work.claim(
@@ -163,14 +161,6 @@ impl DarwinMountContext {
                 WorkCounters::UNCHARGED,
             )?,
         })
-    }
-
-    pub(in crate::native_mount) fn allocate_handle(&self) -> Result<u64, i32> {
-        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
-        if handle == 0 || handle == u64::MAX {
-            return Err(libc::EMFILE);
-        }
-        Ok(handle)
     }
 
     pub(super) fn cache_stamp(&self, work: &Work) -> Result<Option<CacheStamp>, NativeMountError> {
@@ -229,22 +219,18 @@ impl DarwinMountContext {
 
     pub(super) fn forget_view(&self) {
         self.forgotten.fetch_add(1, Ordering::AcqRel);
-        self.around.made.fetch_add(1, Ordering::AcqRel);
+        self.around_made.fetch_add(1, Ordering::AcqRel);
     }
 
     pub(super) fn revalidate(&self, work: &Work) -> Result<bool, NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
-        let unconfirmed = self.around.unconfirmed.load(Ordering::Acquire);
-        if self.around.verified.load(Ordering::Acquire) < unconfirmed
-            && !self.verify_labels(work)?
-        {
-            self.around.made.fetch_add(1, Ordering::AcqRel);
+        let unconfirmed = self.unconfirmed.load(Ordering::Acquire);
+        if self.verified.load(Ordering::Acquire) < unconfirmed && !self.verify_labels(work)? {
+            self.around_made.fetch_add(1, Ordering::AcqRel);
         }
-        self.around
-            .verified
-            .fetch_max(unconfirmed, Ordering::AcqRel);
-        let made = self.around.made.load(Ordering::Acquire);
-        if self.around.settled.load(Ordering::Acquire) >= made {
+        self.verified.fetch_max(unconfirmed, Ordering::AcqRel);
+        let made = self.around_made.load(Ordering::Acquire);
+        if self.around_settled.load(Ordering::Acquire) >= made {
             return Ok(false);
         }
         self.callbacks.drain(work)?;
@@ -263,24 +249,8 @@ impl DarwinMountContext {
             work.charge(READ_WORK)?;
             std::thread::sleep((expired - now).min(Duration::from_millis(10)));
         }
-        self.around.settled.fetch_max(made, Ordering::AcqRel);
+        self.around_settled.fetch_max(made, Ordering::AcqRel);
         Ok(true)
-    }
-
-    pub(super) fn verify_labels(&self, work: &Work) -> Result<bool, NativeMountError> {
-        let cleared = self.changes.cleared.load(Ordering::Acquire);
-        let Some(issued) = self.changes.issued(work)? else {
-            return Ok(false);
-        };
-        for (path, lookup) in issued.iter() {
-            work.charge(scan_work(1))?;
-            match self.lookup(path, work) {
-                Ok(current) if same_attributes(current, *lookup) => {}
-                Err(cause) if fatal(&cause) => return Err(cause),
-                _ => return Ok(false),
-            }
-        }
-        Ok(self.changes.cleared.load(Ordering::Acquire) == cleared)
     }
 
     pub(super) fn inode(&self, file_id: FileId, work: &Work) -> Result<u64, NativeMountError> {
@@ -372,15 +342,13 @@ impl DarwinMountContext {
             return Ok(());
         }
         self.admit_write(work)?;
-        self.ledger
-            .flush_through(written, self.source.as_ref(), work)?;
+        self.flush_through(written, work)?;
         self.admit_write(work)
     }
 
     pub(super) fn sync(&self, work: &Work) -> Result<(), NativeMountError> {
         self.admit_write(work)?;
-        self.ledger
-            .flush_through(self.ledger.latest(), self.source.as_ref(), work)?;
+        self.flush_through(self.completed.load(Ordering::Acquire), work)?;
         self.admit_write(work)
     }
 
@@ -396,7 +364,12 @@ impl DarwinMountContext {
             MountNodeKind::Directory => return Err(driver_errno(libc::EISDIR)),
             _ => return Err(driver_errno(libc::EINVAL)),
         }
-        let handle = self.allocate_handle().map_err(driver_errno)?;
+        let handle = self
+            .next_handle
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |handle| {
+                handle.checked_add(1)
+            })
+            .map_err(|_| driver_errno(libc::EMFILE))?;
         let entry = FileHandle {
             file_id: lookup.node.file_id,
             file: None,
@@ -413,12 +386,21 @@ impl DarwinMountContext {
         path: &MountPath,
         handle: u64,
         work: &Work,
-    ) -> Result<FileTarget, NativeMountError> {
+    ) -> Result<
+        (
+            (
+                Arc<dyn MountOpenFile>,
+                Option<Arc<NativeMountAllocationCustody>>,
+            ),
+            Option<Arc<DarwinOwned<AtomicU64>>>,
+        ),
+        NativeMountError,
+    > {
         if handle == 0 {
-            return Ok(FileTarget {
-                file: retained_file(work, self.source.open_file_with_meter(path, work)?)?,
-                written: None,
-            });
+            return Ok((
+                retained_file(work, self.source.open_file_with_meter(path, work)?)?,
+                None,
+            ));
         }
         let file_id = {
             let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
@@ -426,10 +408,7 @@ impl DarwinMountContext {
                 .get(&handle)
                 .ok_or_else(|| driver_errno(libc::ESTALE))?;
             if let Some(file) = &entry.file {
-                return Ok(FileTarget {
-                    file: file.clone(),
-                    written: Some(Arc::clone(&entry.written)),
-                });
+                return Ok((file.clone(), Some(Arc::clone(&entry.written))));
             }
             entry.file_id
         };
@@ -443,10 +422,10 @@ impl DarwinMountContext {
         let entry = files
             .get_mut(&handle)
             .ok_or_else(|| driver_errno(libc::ESTALE))?;
-        Ok(FileTarget {
-            file: entry.file.get_or_insert(file).clone(),
-            written: Some(Arc::clone(&entry.written)),
-        })
+        Ok((
+            entry.file.get_or_insert(file).clone(),
+            Some(Arc::clone(&entry.written)),
+        ))
     }
 
     pub(super) fn lookup_handle(
@@ -522,7 +501,7 @@ impl DarwinMountContext {
     ) -> Result<T, NativeMountError> {
         self.admit_write(work)?;
         let result = mutation().map_err(NativeMountError::from);
-        self.ledger.record();
+        self.completed.fetch_add(1, Ordering::AcqRel);
         result.and_then(|value| {
             self.admit_write(work)?;
             Ok(value)
@@ -537,15 +516,45 @@ impl DarwinMountContext {
         work: &Work,
     ) -> Result<T, NativeMountError> {
         self.admit_write(work)?;
-        let target = self.file_target(path, handle, work)?;
-        let result = mutation(target.file.0.as_ref()).map_err(NativeMountError::from);
-        let sequence = self.ledger.record();
-        if let Some(written) = target.written {
+        let (file, written) = self.file_target(path, handle, work)?;
+        let result = mutation(file.0.as_ref()).map_err(NativeMountError::from);
+        let sequence = self.completed.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(written) = written {
             written.fetch_max(sequence, Ordering::AcqRel);
         }
         result.and_then(|value| {
             self.admit_write(work)?;
             Ok(value)
         })
+    }
+    fn flush_through(&self, required: u64, work: &Work) -> Result<(), NativeMountError> {
+        if self.flushed.load(Ordering::Acquire) >= required {
+            return Ok(());
+        }
+        let _flushing = self.flushing.lock().map_err(|_| driver_errno(libc::EIO))?;
+        if self.flushed.load(Ordering::Acquire) < required {
+            let covered = self.completed.load(Ordering::Acquire);
+            self.source.flush(work)?;
+            self.flushed.fetch_max(covered, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+}
+
+fn start_stat(
+    path: &CStr,
+    work: &Work,
+) -> Result<libc::stat, crate::NativeTreeMaterializationError> {
+    loop {
+        work.charge(READ_WORK)?;
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: path is terminated and metadata is writable.
+        if unsafe { libc::stat(path.as_ptr(), metadata.as_mut_ptr()) } == 0 {
+            return Ok(unsafe { metadata.assume_init() });
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
     }
 }

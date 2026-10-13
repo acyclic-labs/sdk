@@ -2,9 +2,7 @@
 use super::*;
 pub(crate) use crate::wire_codec::CodecQuota;
 impl<'a, 'b> CodecQuota<'a, 'b> {
-    pub(crate) fn observed(
-        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
+    pub(crate) fn observed(work: &'a mut Option<&'b mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
@@ -18,7 +16,10 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
     pub(crate) fn checkpoint(&mut self) -> Result<()> {
         if let Some(observer) = self.work().as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: 1,
+            })?;
         }
         Ok(())
     }
@@ -63,7 +64,7 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
 
     pub(super) fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
-        crate::contract::canonical_json_digest(
+        crate::executor::json::canonical_json_digest(
             file,
             crate::store::default_projection_read_limits().maximum_bytes,
             self.work(),

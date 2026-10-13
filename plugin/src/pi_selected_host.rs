@@ -232,7 +232,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         if admission.0.task_id() != task
             || admission.0.task != *self.runtime.definition.identity()
@@ -267,7 +267,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
             .await?
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
@@ -291,7 +291,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         if admission.0.task_id() != task {
             return Err(denied(
@@ -1189,12 +1189,11 @@ impl PiControlHost<'_> {
                 .ok_or_else(|| denied("mounted destination lost its original issued context"))?;
             let guard = live
                 .context
-                .volume_callback_guard_with_native_work(&live.owner, &live.original_work)
+                .volume_callback_guard(&live.owner, &live.original_work)
                 .await?;
             Some(
                 guard
-                    .for_volume(&live.owner, volume, true, &publication_work)?
-                    .0,
+                    .for_volume(&live.owner, volume, true, &publication_work)?,
             )
         } else {
             None

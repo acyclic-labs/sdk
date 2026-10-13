@@ -135,7 +135,7 @@ fn scan(
 ) -> Result<()> {
     while !input.is_empty() {
         if let Some(work) = work.as_deref_mut() {
-            work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            work.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let before = input.len();
         let (tag, kind) = decode_key(&mut input).map_err(|source| {
@@ -177,7 +177,7 @@ fn scan(
             if let Some(nested) = nested {
                 // Charge framing here and child bytes in the nested scan.
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Work {
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                         bytes: (before - input.len() - bytes) as u64,
                         items: 0,
                     })?;
@@ -203,7 +203,7 @@ fn scan(
             })?;
         }
         if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(crate::contract::JsonCodecCharge::Work {
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                 bytes: (before - input.len()) as u64,
                 items: 0,
             })?;
@@ -255,7 +255,7 @@ pub(super) fn encode_metadata_quota(authority: &Authority, event: &Event) -> Res
     // Keep diagnostic custody independent of the canonical meter.
     fields
         .quota(&None)?
-        .checked_add(crate::contract::sdk_json_diagnostic_bytes())
+        .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
         .ok_or_else(|| boundary(&None, "event encoding diagnostic quota overflows"))
 }
 

@@ -119,11 +119,11 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     owner_store.verify_artifact(&artifact).await?;
     let missing_version = ArtifactRef::new(
         provider.clone(),
-        artifact.as_resource().key(),
+        artifact.as_resource().key().to_vec(),
         Some("missing-version".into()),
     )?;
     assert!(owner_store.verify_artifact(&missing_version).await.is_err());
-    let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key(), None)?;
+    let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key().to_vec(), None)?;
     owner_store.verify_artifact(&unpinned).await?;
     let traversal = ArtifactRef::new(
         provider.clone(),
@@ -348,8 +348,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     let replacement_artifact = owner_store.artifact_ref(&replacement)?;
     assert!(replacement_artifact.as_resource().version().is_none());
     owner_store.verify_artifact(&replacement_artifact).await?;
-    owner_store
-        .objects
+    objects
         .put(
             wire::PutObjectHeader {
                 bucket: Some(owner_store.bucket.clone()),
@@ -362,7 +361,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 }),
                 ..Default::default()
             },
-            bytes::Bytes::from_static(b"corrupt replacement"),
+            acyclic_stream::OwnedBytes::from_static(b"corrupt replacement"),
         )
         .await
         .map_err(storage)?;

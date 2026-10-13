@@ -472,7 +472,7 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
     .await;
     assert!(result.is_err());
     assert_eq!(store.reached.load(Ordering::SeqCst), 1);
-    let known = owner.pending_data_work();
+    let known = owner.take_completed_data_work();
     assert_eq!(known.page_reads, 1);
     assert_eq!(
         known.allocation_operations, 4,
