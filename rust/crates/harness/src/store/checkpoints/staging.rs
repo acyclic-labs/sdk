@@ -259,14 +259,8 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
         work,
     )?;
     let result = async {
-        crate::store::effects::add_publication_index_with_work(
-            client,
-            reducer,
-            event,
-            &mut publication,
-            work,
-        )
-        .await?;
+        crate::store::effect_heads::publication(client, reducer, event, &mut publication, work)
+            .await?;
         if !event
             .revision
             .is_multiple_of(u64::from(DEFAULT_PROJECTION_EVENTS))

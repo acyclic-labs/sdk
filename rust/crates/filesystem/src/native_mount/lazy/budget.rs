@@ -14,8 +14,6 @@ pub(in crate::native_mount) fn mount_demand_error(error: DemandError) -> MountSo
         DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
         DemandError::NativeMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(feature = "native-watch")]
-        DemandError::SourceWatchStartup(owner) => MountSourceError::SourceWatchStartup(owner),
-        #[cfg(feature = "native-watch")]
         DemandError::Observation(error) => match error {
             crate::watch::NativeWatchError::Work(error) => MountSourceError::Work(error),
             crate::watch::NativeWatchError::Cancelled(_) => MountSourceError::Cancelled,

@@ -69,7 +69,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = inputs.observer(&observation, cancellation)?;
+            let mut checkout = observation.observer(work, cancellation).map_err(fs_error)?;
             let value = checkout
                 .read_named_attribute(&path, &name, work, cancellation)
                 .await
@@ -105,7 +105,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = inputs.observer(&observation, cancellation)?;
+            let mut checkout = observation.observer(work, cancellation).map_err(fs_error)?;
             let mut accounting =
                 crate::kernel::allocation::KernelAccounting::native(work, cancellation);
             let listing = checkout
