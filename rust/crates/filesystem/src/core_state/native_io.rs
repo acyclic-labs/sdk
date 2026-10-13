@@ -7,66 +7,46 @@ pub(crate) fn reserve<T>(
     held: &mut crate::materializer::NativeAllocation,
 ) -> Result<(), crate::NativeTreeMaterializationError> {
     work.admit(crate::WorkCounters::UNCHARGED)?;
-    if !held.work().shares_allocation_context(work) {
-        return Err(crate::NativeTreeMaterializationError::InvalidLayout);
-    }
-    let prior = (values.capacity() * std::mem::size_of::<T>()) as u64;
-    if held.bytes() < prior {
-        let mut prefix = work.claim(prior - held.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
-        held.absorb(&mut prefix)?;
-    }
-    if needed <= values.capacity() {
-        return Ok(());
-    }
-    let old = values.capacity();
-    let next = needed
-        .max(old.checked_mul(2).ok_or(
-            crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
-        )?)
-        .max(1);
-    let old_bytes = old.checked_mul(std::mem::size_of::<T>()).ok_or(
-        crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
-    )? as u64;
-    let bytes = next.checked_mul(std::mem::size_of::<T>()).ok_or(
-        crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
-    )? as u64;
-    let mut claim = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
-    let copying = work.reserve_work(crate::WorkCounters {
-        bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
-    values
-        .try_reserve_exact(next - values.len())
-        .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
-    held.absorb(&mut claim)?;
-    // The allocator has physically retired the old backing, not merely
-    // overwritten its handles. Until here BOTH full capacities were funded.
-    held.release(old_bytes)?;
-    let actual = values
+    let width = std::mem::size_of::<T>();
+    let prior = values
         .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::materializer::NativeTreeMaterializationError::Work(
-            crate::WorkError::Overflow,
-        ))? as u64;
-    let capacity_result = if actual > bytes {
-        let (mut excess, result) = work.record_completed_allocation(actual - bytes);
-        held.absorb(&mut excess)?;
-        result
-    } else if actual < bytes {
-        held.release(bytes - actual)
+        .checked_mul(width)
+        .ok_or(crate::WorkError::Overflow)? as u64;
+    if held.work().shares_allocation_context(work) {
+        if held.bytes() < prior {
+            let mut prefix = work.claim(prior - held.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
+            held.absorb(&mut prefix)?;
+        }
+        if needed <= values.capacity() {
+            return Ok(());
+        }
+    }
+    let capacity = if needed <= values.capacity() {
+        values.capacity()
     } else {
-        Ok(())
+        needed
+            .max(
+                values
+                    .capacity()
+                    .checked_mul(2)
+                    .ok_or(crate::WorkError::Overflow)?,
+            )
+            .max(1)
     };
-    let copy_result = {
-        let copy = copying;
-        copy.record_completed(crate::WorkCounters {
-            bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })
+    let copied = crate::WorkCounters {
+        bytes_copied: values
+            .len()
+            .checked_mul(width)
+            .ok_or(crate::WorkError::Overflow)? as u64,
+        ..crate::WorkCounters::UNCHARGED
     };
-    capacity_result?;
-    copy_result?;
-    Ok(())
+    let copying = work.reserve_work(copied)?;
+    let (mut replacement, allocation) = crate::native_host::buffer(capacity, &mut &*work)?;
+    replacement.append(values);
+    // Destroy the prior backing before retiring its original ledger's custody.
+    drop(std::mem::replace(values, replacement));
+    *held = allocation;
+    copying.record_completed(copied)
 }
 
 pub(super) fn reserve_slots<T>(
