@@ -476,7 +476,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
     force: false,
     mainPush: false,
     fullQualification: true,
-   
+
     marker: everywhere,
     retained: retainedAll,
   });
@@ -523,7 +523,7 @@ test("forced reusable release calls keep the full lane scope", () => {
     force: true,
     mainPush: false,
     coreOnly: true,
-   
+
     marker: everywhere,
     retained: retainedAll,
   });
@@ -537,7 +537,7 @@ test("routine pull requests qualify only the core lanes", () => {
     mainPush: false,
     pullRequest: true,
     coreOnly: true,
-   
+
     marker: () => null,
     retained: () => "",
   });
