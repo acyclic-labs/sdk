@@ -2,7 +2,7 @@ use super::*;
 
 impl DriverSessionResources {
     pub(super) fn wait_until(&self, timeout: Duration, done: impl Fn(&LoopState) -> bool) {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.state();
         drop(
             self.changed
                 .wait_timeout_while(state, timeout, |state| !done(state))
@@ -26,7 +26,6 @@ impl DriverSessionResources {
             if !control.detached || control.controls_pending() {
                 control.detach(
                     Path::new(std::ffi::OsStr::from_bytes(destination.as_bytes())),
-                    Some(destination.as_c_str()),
                     probe,
                     &ProbeWork::Cleanup(&self.credit, wait),
                 )?;
@@ -48,43 +47,34 @@ impl DriverSessionResources {
     }
 
     pub(super) fn finish(&self) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state();
         self.requested.store(false, Ordering::Release);
         self.changed.notify_all();
-        match self.retire(&mut state, None) {
-            Ok(()) => return,
-            Err(error) => state.failure = Some(error),
+        if let Err(error) = self.retire(&mut state, None) {
+            state.failure = Some(error);
+        } else {
+            return;
         }
         self.credit.started_drop_io(READ_WORK);
-        drop(
-            self.changed
-                .wait_while(state, |state| {
-                    if !self.requested.swap(false, Ordering::AcqRel) {
-                        return true;
-                    }
-                    match self.retire(state, None) {
-                        Ok(()) => false,
-                        Err(error) => {
-                            if state.failure.is_none() {
-                                state.failure = Some(error);
-                            }
-                            true
-                        }
-                    }
-                })
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        loop {
+            state = self
+                .changed
+                .wait_while(state, |_| !self.requested.swap(false, Ordering::AcqRel))
+                .unwrap_or_else(PoisonError::into_inner);
+            match self.retire(&mut state, None) {
+                Ok(()) => return,
+                Err(error) => {
+                    state.failure.get_or_insert(error);
+                }
+            }
+        }
     }
 }
 
 pub(super) unsafe extern "C" fn report_mounted(events: *mut c_void) {
     // SAFETY: the provider retains this owner through its callback.
     let events = unsafe { &*events.cast_const().cast::<DriverSessionResources>() };
-    events
-        .state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .mounted = true;
+    events.state().mounted = true;
     events.changed.notify_all();
 }
 
@@ -105,11 +95,7 @@ impl DarwinMountSession {
                 work.charge(WRITE_WORK)?;
                 context.forget_view();
                 // SAFETY: this owner retains the SDK; the bridge ignores the name.
-                let native = self
-                    .unmount
-                    .native
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let native = self.unmount.native();
                 let status = unsafe {
                     acyclic_fs_darwin_mount_invalidate(native.value as *mut c_void, ptr::null())
                 };
@@ -170,19 +156,12 @@ impl DarwinMountSession {
     }
 
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {
-        self.unmount
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .control
-            .detached
+        self.unmount.state().control.detached
     }
 
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {
         self.unmount
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .state()
             .retirement
             .as_ref()
             .map_or((false, false), |packet| {
@@ -206,7 +185,7 @@ impl DarwinMountSession {
         let events = Arc::clone(&self.unmount);
         let work = ProbeWork::Cleanup(&events.credit, Some(wait));
         let was_mounted = {
-            let mut state = events.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = events.state();
             if state.resources.is_none() && self.thread.is_none() {
                 events.retire(&mut state, Some(wait))?;
                 drop(state);
@@ -230,7 +209,6 @@ impl DarwinMountSession {
             match resources.as_ref() {
                 Some((_, destination, _)) => control.detach(
                     Path::new(std::ffi::OsStr::from_bytes(destination.as_bytes())),
-                    Some(destination.as_c_str()),
                     probe,
                     &work,
                 )?,
@@ -247,13 +225,7 @@ impl DarwinMountSession {
             if thread.is_finished() {
                 break;
             }
-            if let Some(error) = events
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .failure
-                .take()
-            {
+            if let Some(error) = events.state().failure.take() {
                 return Err(error);
             }
             if Instant::now() >= deadline {
@@ -275,7 +247,7 @@ impl DarwinMountSession {
                     }),
             );
         }
-        let mut state = events.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = events.state();
         events.retire(&mut state, Some(wait))?;
         drop(state);
         self.classify_detached_loop(was_mounted)

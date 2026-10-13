@@ -12,7 +12,7 @@ pub(in crate::native_mount) struct DarwinRecoveryControl {
 
 pub(super) struct DirectDetach {
     pub(super) task: acyclic_native_runtime::NativeCompletion<std::io::Result<c_int>>,
-    pub(super) original: Work,
+    pub(super) credit: Arc<crate::NativeWorkReservation>,
     // NativeCompletion submits only on its first poll.
     pub(super) started: bool,
 }
@@ -22,10 +22,8 @@ impl DirectDetach {
         path: Arc<DarwinOwned<CString>>,
         original: &Work,
     ) -> Result<Self, NativeMountError> {
-        let meter = original
-            .reserve_work(WRITE_WORK)?
-            .into_runtime_credit()?
-            .runtime_meter();
+        let credit = original.reserve_work(WRITE_WORK)?.into_runtime_credit()?;
+        let meter = credit.runtime_meter();
         let mut operation = acyclic_native_runtime::NativeOperationReservation::new(
             Arc::clone(&meter),
             acyclic_native_runtime::NativeOperationKind::Write,
@@ -49,7 +47,7 @@ impl DirectDetach {
         .map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
         Ok(Self {
             task,
-            original: original.allocation_work(),
+            credit,
             started: false,
         })
     }
@@ -70,7 +68,7 @@ impl DirectDetach {
                 result
                     .and_then(std::convert::identity)
                     .map(|_| ())
-                    .map_err(|error| self.original.runtime_error(error).into()),
+                    .map_err(|error| self.credit.work().runtime_error(error).into()),
             ),
             Err(panic) => Poll::Ready(Err(NativeMountError::DriverPanicked {
                 operation: "Darwin direct detach",
@@ -83,8 +81,7 @@ impl DirectDetach {
 pub(super) struct Diskutil {
     tree: Option<acyclic_native_runtime::ProcessTree>,
     frame: Option<acyclic_native_runtime::PreparedClosedProcess>,
-    meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    original: Work,
+    credit: Arc<crate::NativeWorkReservation>,
     deadline: Instant,
 }
 
@@ -95,7 +92,7 @@ impl Diskutil {
             acyclic_native_runtime::ProcessTree::TERMINATION_TIMEOUT,
             acyclic_native_runtime::ProcessTree::TERMINATION_POLL_INTERVAL,
         );
-        let meter = original
+        let credit = original
             .reserve_work(WorkCounters {
                 backend_read_operations: TERMINATION * 5 + OBSERVATIONS + 1,
                 backend_write_operations: OBSERVATIONS + 10,
@@ -103,8 +100,7 @@ impl Diskutil {
                 bytes_copied: (5 * std::mem::size_of::<*mut c_char>()) as u64,
                 ..WorkCounters::UNCHARGED
             })?
-            .into_runtime_credit()?
-            .runtime_meter();
+            .into_runtime_credit()?;
         let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
             3,
             original.allocation_work().runtime_meter(),
@@ -113,8 +109,7 @@ impl Diskutil {
         Ok(Self {
             tree: None,
             frame: Some(frame),
-            meter,
-            original: original.allocation_work(),
+            credit,
             deadline: Instant::now(),
         })
     }
@@ -124,7 +119,7 @@ impl Diskutil {
             c"/usr/sbin/diskutil",
             &[c"unmount", c"force", destination],
             &mut self.frame,
-            self.meter.as_ref(),
+            self.credit.as_ref(),
             &mut self.tree,
         );
         // A partially born child must be terminated on the next attempt.
@@ -134,7 +129,7 @@ impl Diskutil {
             } else {
                 Duration::ZERO
             };
-        result.map_err(|error| self.original.runtime_error(error).into())
+        result.map_err(|error| self.credit.work().runtime_error(error).into())
     }
 
     fn terminate(
@@ -145,7 +140,7 @@ impl Diskutil {
             .as_mut()
             .ok_or(NativeMountError::ControlPending)?
             .terminate(Some(meter))
-            .map_err(|error| self.original.runtime_error(error).into())
+            .map_err(|error| self.credit.work().runtime_error(error).into())
     }
 }
 
@@ -171,109 +166,84 @@ impl DarwinRecoveryControl {
     pub(super) fn detach(
         &mut self,
         destination: &Path,
-        name: Option<&CStr>,
         probe: &mut MountProbe,
         work: &ProbeWork<'_>,
     ) -> Result<bool, NativeMountError> {
-        let mounted = probe.mounted(destination, work)?;
-        self.detached = !mounted;
-        if mounted && self.start_aborted {
-            return Err(NativeMountError::DestinationBusy);
-        }
-        if !mounted {
-            if let Some(child) = &mut self.diskutil {
-                if child.tree.is_some() {
-                    work.check()?;
-                    child.terminate(child.meter.clone().as_ref())?;
-                }
+        self.detached = !probe.mounted(destination, work)?;
+        if self.detached {
+            if let Some(child) = self.diskutil.as_mut().filter(|child| child.tree.is_some()) {
+                work.check()?;
+                child.terminate(child.credit.clone().as_ref())?;
             }
             self.diskutil = None;
-            if self.direct.as_ref().is_some_and(|task| !task.started) {
-                self.direct = None;
-            }
+            self.direct = self.direct.take().filter(|task| task.started);
             self.poll_direct(work)?;
             return Ok(false);
+        }
+        if self.start_aborted {
+            return Err(NativeMountError::DestinationBusy);
         }
         if self
             .diskutil
             .as_ref()
             .is_none_or(|child| child.tree.is_none())
         {
-            if self.direct.is_none() && name.is_none() {
-                self.direct = Some(DirectDetach::new(
-                    shared(
-                        work.original(),
-                        native_name(destination.as_os_str().as_bytes(), work.original())?,
-                    )?,
-                    work.original(),
-                )?);
+            if self.direct.is_none() && matches!(work, ProbeWork::Live(_)) {
+                self.direct = Some(DirectDetach::new(Arc::clone(&probe.0), work.original())?);
             }
-            let deadline = Instant::now() + DIRECT_UNMOUNT_TIMEOUT;
-            while self.direct.is_some() {
-                match self.poll_direct(work) {
-                    Ok(()) => {}
-                    Err(NativeMountError::Io(_))
-                    | Err(NativeMountError::Materialization(
-                        crate::NativeTreeMaterializationError::Io(_),
-                    )) => break,
-                    Err(error) => return Err(error),
-                }
-                if self.direct.is_none() || Instant::now() >= deadline {
-                    break;
-                }
-                work.read()?;
-                std::thread::sleep(STOP_POLL_INTERVAL);
+            match self.wait_direct(work) {
+                Ok(())
+                | Err(NativeMountError::ControlPending)
+                | Err(NativeMountError::Io(_))
+                | Err(NativeMountError::Materialization(
+                    crate::NativeTreeMaterializationError::Io(_),
+                )) => {}
+                Err(error) => return Err(error),
             }
-            if !probe.mounted(destination, work)? {
-                self.detached = true;
+            self.detached = !probe.mounted(destination, work)?;
+            if self.detached {
                 self.diskutil = None;
                 return Ok(true);
             }
             work.check()?;
             if self.diskutil.is_none() {
-                if name.is_some() {
+                if matches!(work, ProbeWork::Cleanup(..)) {
                     return Err(NativeMountError::ControlPending);
                 }
                 self.diskutil = Some(Diskutil::prepare(work.original())?);
             }
             let child = self.diskutil.as_mut().expect("prepared fallback");
-            let result = match name {
-                Some(name) => child.spawn(name),
-                None => child.spawn(&native_name(
-                    destination.as_os_str().as_bytes(),
-                    work.original(),
-                )?),
-            };
+            let spawned = child.spawn(probe.0.as_c_str());
             if child.tree.is_none() {
                 self.diskutil = None;
             }
-            result?;
+            spawned?;
         }
         let (status, timed_out) = loop {
             work.check()?;
-            let child = self.diskutil.as_mut().expect("retained process");
+            let child = self.diskutil.as_mut().expect("retained fallback");
             let status = child
                 .tree
                 .as_mut()
                 .expect("spawned process")
-                .try_wait(Some(child.meter.as_ref()))
-                .map_err(|error| NativeMountError::from(child.original.runtime_error(error)))?;
+                .try_wait(Some(child.credit.as_ref()))
+                .map_err(|error| child.credit.work().runtime_error(error))?;
             let timed_out = Instant::now() >= child.deadline;
             if status.is_some() || timed_out {
                 work.check()?;
-                child.terminate(child.meter.clone().as_ref())?;
+                child.terminate(child.credit.clone().as_ref())?;
                 break (status, timed_out);
             }
             work.read()?;
             std::thread::sleep(STOP_POLL_INTERVAL);
         };
         self.diskutil = None;
-        if !probe.mounted(destination, work)? {
-            self.detached = true;
+        self.detached = !probe.mounted(destination, work)?;
+        if self.detached {
             return Ok(true);
         }
         if timed_out {
-            return Err(NativeMountError::Io(std::io::ErrorKind::TimedOut.into()));
+            return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
         }
         if let Some(status) = status.filter(|status| !status.success()) {
             return Err(NativeMountError::DriverExit {
@@ -305,6 +275,22 @@ impl DarwinRecoveryControl {
         Ok(())
     }
 
+    fn wait_direct(&mut self, work: &ProbeWork<'_>) -> Result<(), NativeMountError> {
+        let deadline = Instant::now() + DIRECT_UNMOUNT_TIMEOUT;
+        while self.direct.is_some() {
+            self.poll_direct(work)?;
+            if self.direct.is_none() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(NativeMountError::ControlPending);
+            }
+            work.read()?;
+            std::thread::sleep(STOP_POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
     pub(in crate::native_mount) fn recover(
         &mut self,
         destination: &Path,
@@ -313,7 +299,6 @@ impl DarwinRecoveryControl {
         let work = ProbeWork::Live(original);
         self.detach(
             destination,
-            None,
             &mut MountProbe::new(destination, original)?,
             &work,
         )?;
@@ -329,33 +314,17 @@ impl DarwinRecoveryControl {
         &mut self,
         original: &Work,
     ) -> Result<(), NativeMountError> {
-        let deadline = Instant::now() + DIRECT_UNMOUNT_TIMEOUT;
-        let work = ProbeWork::Live(original);
-        let mut failure = None;
-        if self.direct.as_ref().is_some_and(|task| !task.started) {
-            self.direct = None;
+        self.direct = self.direct.take().filter(|task| task.started);
+        let result = self.wait_direct(&ProbeWork::Live(original));
+        if self.direct.is_some() {
+            return result;
         }
-        while self.direct.is_some() {
-            let result = self.poll_direct(&work);
-            if self.direct.is_none() {
-                failure = result.err();
-                break;
+        if let Some(child) = self.diskutil.as_mut().filter(|child| child.tree.is_some()) {
+            if let Err(error) = child.terminate(original.runtime_meter().as_ref()) {
+                return Err(result.err().unwrap_or(error));
             }
-            result?;
-            if Instant::now() >= deadline {
-                return Err(NativeMountError::ControlPending);
-            }
-            work.read()?;
-            std::thread::sleep(STOP_POLL_INTERVAL);
         }
-        if let Some(child) = &mut self.diskutil {
-            if child.tree.is_some() {
-                if let Err(error) = child.terminate(original.runtime_meter().as_ref()) {
-                    return Err(failure.unwrap_or(error));
-                }
-            }
-            self.diskutil = None;
-        }
-        failure.map_or(Ok(()), Err)
+        self.diskutil = None;
+        result
     }
 }
