@@ -259,31 +259,21 @@ pub(super) fn create_restore_stage(
             .map_err(|_| MaterializeError::InvalidOptions)?;
         work.record(delta).map_err(MaterializeError::from)?;
         let name = (PathBuf::from(name), allocation);
-        match {
-            #[cfg(unix)]
-            {
-                parent.create_dir(&name.0, work)
-            }
-            #[cfg(windows)]
-            {
-                crate::native_host::with_wide_path(&name.0, work, |path, work| {
-                    parent.create_dir(path, work)
-                })
-            }
-        } {
+        #[cfg(unix)]
+        let created = parent.create_dir(&name.0, work);
+        #[cfg(windows)]
+        let created = crate::native_host::with_wide_path(&name.0, work, |path, work| {
+            parent.create_dir(path, work)
+        });
+        match created {
             Ok(()) => {
-                let root = match {
-                    #[cfg(unix)]
-                    {
-                        parent.open_child(&name.0, work)
-                    }
-                    #[cfg(windows)]
-                    {
-                        crate::native_host::with_wide_path(&name.0, work, |path, work| {
-                            parent.open_child(path, work)
-                        })
-                    }
-                } {
+                #[cfg(unix)]
+                let opened = parent.open_child(&name.0, work);
+                #[cfg(windows)]
+                let opened = crate::native_host::with_wide_path(&name.0, work, |path, work| {
+                    parent.open_child(path, work)
+                });
+                let root = match opened {
                     Ok(root) => root,
                     // Without the stage capability no identity authorizes
                     // deleting this name, which may already have been swapped.

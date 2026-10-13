@@ -221,7 +221,6 @@ impl NativeMountRecoveryOwner {
     }
 
     /// Returns the original identity and actual recovery state.
-    #[must_use]
     pub fn cleanup_state(&self) -> Result<NativeMountRecoveryCleanupState, NativeMountError> {
         self.shared
             .state

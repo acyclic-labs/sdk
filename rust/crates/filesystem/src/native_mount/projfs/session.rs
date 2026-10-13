@@ -492,7 +492,6 @@ pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Engine(_) => HR_IO_DEVICE,
         MountSourceError::Stale
         | MountSourceError::Cancelled
         | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
