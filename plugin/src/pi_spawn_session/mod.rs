@@ -139,12 +139,14 @@ impl PiSession {
                 .await?;
             Some(live)
         };
-        let key = commit
+        let (key, _key_custody) = work.display(
+            commit
             .child
             .project_volumes
             .keys()
             .next()
-            .ok_or_else(|| invalid("Pi child has no selected project"))?;
+            .ok_or_else(|| invalid("Pi child has no selected project"))?
+        )?;
         let root_source = if commit.source_task != owner.policy().root_task {
             None
         } else if let Some(plan) = &plan {
@@ -163,7 +165,7 @@ impl PiSession {
             {
                 if observed.0.caller != caller
                     || observed.0.sdk_operation != commit.sdk_operation
-                    || observed.0.root_key != *key
+                    || observed.0.root_key != key
                 {
                     return Err(invalid("Pi retry changed its Root source observation"));
                 }
@@ -203,7 +205,7 @@ impl PiSession {
                 let observed: pi_fork_host::PiRootSource =
                     serde_json::from_value(acknowledgement.0)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
-                if observed.root_key != *key {
+                if observed.root_key != key {
                     return Err(invalid(
                         "Pi Root source acknowledgement changed its project",
                     ));
@@ -216,12 +218,14 @@ impl PiSession {
             root_source,
         };
         let commit = &payload.commit;
-        let key = commit
+        let (key, _key_custody) = work.display(
+            commit
             .child
             .project_volumes
             .keys()
             .next()
-            .ok_or_else(|| invalid("Pi child has no project"))?;
+            .ok_or_else(|| invalid("Pi child has no project"))?
+        )?;
         let command = self
             .spawn_command(
                 owner,
@@ -291,7 +295,7 @@ impl PiSession {
         let prepared = if let Some(plan) = coordinator.load_original_plan(original).await? {
             let source = if plan.commit.source_task == owner.policy().root_task {
                 self.roots
-                    .get(key)
+                    .get(&key)
                     .ok_or_else(|| invalid("Pi Root source handle is unavailable"))?
                     .workspace
                     .clone()
