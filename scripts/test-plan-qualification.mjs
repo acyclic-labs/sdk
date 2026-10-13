@@ -237,7 +237,9 @@ test("Windows package and clippy compilation use sixteen CPUs while cross-check 
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   const clippyBody = script.split("    'windows-clippy' {")[1]?.split("        return")[0] ?? assert.fail("missing Windows clippy dispatch");
   assert.ok(clippyBody.includes("cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings"));
-  assert.ok(clippyBody.includes("node scripts/clippy-feature-sets.mjs"));
+  assert.ok(clippyBody.includes("node scripts/clippy-feature-sets.mjs 4"));
+  assert.ok(clippyBody.indexOf("$env:CARGO_BUILD_JOBS = '4'") > clippyBody.indexOf("cargo clippy -p acyclic-plugin"));
+  assert.ok(clippyBody.indexOf("$env:CARGO_BUILD_JOBS = '4'") < clippyBody.indexOf("node scripts/clippy-feature-sets.mjs 4"));
   for (const name of ["windows-napi", "windows-arm64"]) {
     const audit = matrix.find(lane => lane.lane === name);
     assert.equal(audit.runner, "blacksmith-4vcpu-windows-2025");
@@ -250,6 +252,38 @@ test("Windows package and clippy compilation use sixteen CPUs while cross-check 
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(windows.runner));
 });
 
+
+test("four clippy workers retain every feature invocation and fail when any worker fails", async () => {
+  const source = readFileSync("scripts/clippy-feature-sets.mjs", "utf8").replace('import { spawn } from "node:child_process";', "");
+  const execute = async (workers, failFirst = false) => {
+    const calls = [];
+    let active = 0, maximum = 0;
+    const process = { argv: ["node", "script", String(workers)], env: { CARGO_TARGET_DIR: "target", CARGO_BUILD_JOBS: "4" }, stderr: { write() {} }, exitCode: 0 };
+    const spawn = (command, args, { env }) => {
+      calls.push({ command, args, target: env.CARGO_TARGET_DIR, jobs: env.CARGO_BUILD_JOBS });
+      maximum = Math.max(maximum, ++active);
+      const status = failFirst && calls.length === 1 ? 7 : 0;
+      const child = { stdout: { on() {} }, stderr: { on() {} }, on(event, callback) {
+        if (event === "close") queueMicrotask(() => { --active; callback(status); });
+        return child;
+      } };
+      return child;
+    };
+    await runInNewContext(`(async () => { ${source} })()`, { spawn, process });
+    return { calls, maximum, exitCode: process.exitCode };
+  };
+  const serial = await execute(1);
+  const parallel = await execute(4);
+  assert.equal(parallel.maximum, 4);
+  assert.equal(parallel.calls.length, serial.calls.length);
+  assert.deepEqual(parallel.calls.map(call => JSON.stringify(call.args)).sort(), serial.calls.map(call => JSON.stringify(call.args)).sort());
+  assert.deepEqual([...new Set(parallel.calls.map(call => call.target))].sort(), ["target", "target-clippy-1", "target-clippy-2", "target-clippy-3"]);
+  assert.ok(parallel.calls.every(call => call.command === "cargo" && call.jobs === "4"));
+  assert.equal(parallel.exitCode, 0);
+  const failed = await execute(4, true);
+  assert.equal(failed.exitCode, 7);
+  assert.equal(failed.calls.length, 4);
+});
 
 test("Linux mount and fork/join qualification overlap packages on an independent required runner", () => {
   const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");

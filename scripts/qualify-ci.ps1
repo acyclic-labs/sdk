@@ -108,7 +108,8 @@ switch ($Lane) {
     'windows-clippy' {
         $env:CARGO_TARGET_DIR = "$CargoTargetDir-clippy"
         cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
-        node scripts/clippy-feature-sets.mjs
+        $env:CARGO_BUILD_JOBS = '4'
+        node scripts/clippy-feature-sets.mjs 4
         return
     }
 }
