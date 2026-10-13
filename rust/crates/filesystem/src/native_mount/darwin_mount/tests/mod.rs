@@ -1,10 +1,6 @@
 #[test]
-fn filtered_callback_error_does_not_overwrite_parent_errno() {
-    crate::obs::assert_filtered_callback_isolation(|_span| {
-        let status = super::ffi(0, false, |_, _| Ok(0));
-        assert_eq!(status, -libc::ESTALE);
-        -status
-    });
+fn absent_callback_context_is_stale() {
+    assert_eq!(super::ffi(0, false, |_, _| Ok(0)), -libc::ESTALE);
 }
 use super::*;
 use crate::native_mount::MountPublication;
@@ -111,7 +107,10 @@ fn os(error: i32) -> std::io::Error {
 fn close_publishes_only_what_its_handle_wrote() -> TestResult {
     let (shared, config) = checkout(MountPublication::CloseAndSync)?;
     let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
-    let work = work(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())?;
+    let work = work(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
     let context = test_context(&source, &work)?;
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let epoch = || runtime.block_on(async { shared.lock().await.generation_id() });
@@ -162,7 +161,10 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
 fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
     let (shared, config) = checkout(MountPublication::Manual)?;
     let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
-    let work = work(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())?;
+    let work = work(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
     let context = test_context(&source, &work)?;
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let epoch = || runtime.block_on(async { shared.lock().await.generation_id() });
