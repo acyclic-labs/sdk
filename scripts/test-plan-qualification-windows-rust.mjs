@@ -79,6 +79,9 @@ test("Windows Rust nextest is pinned, verified and cached without changing other
   assert.ok(install.includes("809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3"));
   assert.ok(install.includes("Get-FileHash -LiteralPath $archive -Algorithm SHA256"));
   assert.ok(install.includes("Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin"));
+  assert.equal((install.match(/-join "`n"/g) ?? []).length, 2);
+  assert.equal((install.match(/-notmatch/g) ?? []).length, 2);
+  assert.doesNotMatch(install, /-notlike/);
   assert.ok(action.includes("inputs.lane == 'windows-rust' && '-nextest-0.9.146' || ''"));
   assert.doesNotMatch(install, /cargo install|latest|nightly/);
 });

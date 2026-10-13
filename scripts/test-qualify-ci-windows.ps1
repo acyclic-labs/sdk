@@ -113,4 +113,49 @@ try {
     if ($null -eq $priorTestThreads) { Remove-Item Env:RUST_TEST_THREADS -ErrorAction SilentlyContinue }
     else { $env:RUST_TEST_THREADS = $priorTestThreads }
 }
-Write-Host 'Windows qualification audit dispatch and failure propagation passed.'
+$action = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../.github/actions/qualification-lane/action.yml')
+$installation = ($action -split '    - name: Install Windows nextest', 2)[1] -split '    - name:', 2
+$body = ($installation[0] -split '      run: \|\r?\n', 2)[1] -replace '(?m)^        ', ''
+$install = [scriptblock]::Create($body)
+$priorTemp = $env:RUNNER_TEMP
+$priorGithubPath = $env:GITHUB_PATH
+try {
+    $env:RUNNER_TEMP = 'fixture-tools'
+    $env:GITHUB_PATH = 'fixture-path'
+    $script:Downloads = 0
+    $script:Version = @('cargo-nextest 0.9.146 (8af696ddc 2026-09-21)', 'release: 0.9.146', 'commit-hash: 8af696ddcce8fff2962d6a5168b6d138b8616a35', 'host: x86_64-pc-windows-msvc')
+    $script:InstalledVersion = $script:Version
+    function Join-Path($Path, $ChildPath) { if ($ChildPath -eq 'cargo-nextest.exe') { return 'Fake-Nextest' }; return "$Path/$ChildPath" }
+    function New-Item { }
+    function Test-Path { return $true }
+    function Fake-Nextest { return $script:Version }
+    function Invoke-WebRequest { $script:Downloads++ }
+    function Get-FileHash { return @{Hash='809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3'} }
+    function tar { $script:Version = $script:InstalledVersion }
+    function Add-Content { }
+    & $install
+    if ($script:Downloads -ne 0) { throw 'valid multiline cached version was downloaded again' }
+    $script:Version = @('cargo-nextest 0.9.146')
+    & $install
+    if ($script:Downloads -ne 0) { throw 'valid brief cached version was downloaded again' }
+    foreach ($wrong in '0.9.145', '0.9.1461', '0.9.146-dev') {
+        $script:Downloads = 0
+        $script:Version = @("cargo-nextest $wrong (fixture)", "release: $wrong")
+        & $install
+        if ($script:Downloads -ne 1) { throw "unexpected release accepted: $wrong" }
+    }
+    $script:InstalledVersion = @('cargo-nextest 0.9.145 (fixture)', 'release: 0.9.145')
+    $script:Version = $script:InstalledVersion
+    $rejected = $false
+    try { & $install } catch {
+        if ($_.Exception.Message -ne 'Windows qualification requires cargo-nextest 0.9.146') { throw }
+        $rejected = $true
+    }
+    if (-not $rejected) { throw 'wrong freshly installed release accepted' }
+} finally {
+    if ($null -eq $priorTemp) { Remove-Item Env:RUNNER_TEMP -ErrorAction SilentlyContinue }
+    else { $env:RUNNER_TEMP = $priorTemp }
+    if ($null -eq $priorGithubPath) { Remove-Item Env:GITHUB_PATH -ErrorAction SilentlyContinue }
+    else { $env:GITHUB_PATH = $priorGithubPath }
+}
+Write-Host 'Windows qualification audit dispatch, failure propagation and nextest version checks passed.'

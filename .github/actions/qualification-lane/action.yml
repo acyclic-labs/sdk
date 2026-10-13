@@ -146,7 +146,7 @@ runs:
         $bin = Join-Path $env:RUNNER_TEMP 'tools/cargo/bin'
         $nextest = Join-Path $bin 'cargo-nextest.exe'
         if (-not (Test-Path -LiteralPath $nextest) -or
-            (& $nextest nextest --version) -notlike 'cargo-nextest 0.9.146 *') {
+            ((& $nextest nextest --version) -join "`n") -notmatch '^cargo-nextest 0\.9\.146(?:\s|$)') {
           New-Item -ItemType Directory -Force -Path $bin | Out-Null
           $archive = Join-Path $env:RUNNER_TEMP 'cargo-nextest-0.9.146-windows.tar.gz'
           Invoke-WebRequest -OutFile $archive -Uri 'https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.tar.gz'
@@ -156,7 +156,7 @@ runs:
           }
           tar -xzf $archive -C $bin
         }
-        if ((& $nextest nextest --version) -notlike 'cargo-nextest 0.9.146 *') {
+        if (((& $nextest nextest --version) -join "`n") -notmatch '^cargo-nextest 0\.9\.146(?:\s|$)') {
           throw 'Windows qualification requires cargo-nextest 0.9.146'
         }
         Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin
