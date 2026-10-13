@@ -18,7 +18,7 @@ impl CoreLog {
         let paths = root.record(CORE_LOG_FAMILY, &[0; 16])?;
         let mut file = match work {
             Some(work) => {
-                crate::native_host::create_directories(&paths.directory, &mut &*work)?;
+                crate::native_host::create_directories(paths.directory(), &mut &*work)?;
                 match materialization_open_options(
                     &paths.current,
                     &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
@@ -41,7 +41,7 @@ impl CoreLog {
                 }
             }
             None => {
-                std::fs::create_dir_all(&paths.directory)?;
+                std::fs::create_dir_all(paths.directory())?;
                 match OpenOptions::new()
                     .read(true)
                     .write(true)
@@ -49,7 +49,7 @@ impl CoreLog {
                     .open(&paths.current)
                 {
                     Ok(file) => {
-                        sync_directory(&paths.directory)?;
+                        sync_directory(paths.directory())?;
                         file
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -257,7 +257,7 @@ fn native_corrupt_log(
 ) -> Result<LocalCoreStateStoreError, LocalCoreStateStoreError> {
     let mut allocation = paths.allocation.take().expect("native record paths");
     let current = paths.current;
-    drop((paths.directory, paths.previous, paths.temporary, paths.lock));
+    drop((paths.previous, paths.temporary, paths.lock));
     allocation.resize(current.capacity() as u64)?;
     Ok(LocalCoreStateStoreError::LazyWork(
         crate::LazyWorkspaceError::NativeRecordCorrupt(current, Some(allocation)),

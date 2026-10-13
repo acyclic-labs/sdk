@@ -142,7 +142,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NotFound)?;
         candidate
             .checkout
-            .change_named_attribute_by_id(lookup.node.file_id, &name, value, work, cancellation)
+            .change_named_attribute(lookup.node.file_id, &name, value, work, cancellation)
             .await?;
         self.checkout
             .install_change(
