@@ -219,12 +219,13 @@ impl AgentHarness {
                     descendants,
                     Arc::new((AtomicUsize::new(0), None)),
                     None,
-                    None,
+                    None::<NativeCustody>,
                     IssuedContextPurpose::Read,
                 )
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             ContextSource::Native { work, purpose } => {
+                let io = crate::executor::PreparationIo::from_native_work(work)?;
                 work.charge(acyclic_fs::WorkCounters::default())?;
                 let issued_purpose = match &purpose {
                     NativeContextPurpose::Read => IssuedContextPurpose::Read,
@@ -242,8 +243,7 @@ impl AgentHarness {
                                 reason: "dispatch mailbox differs from the original task and fence",
                             });
                         }
-                        host.verify_dispatch_owner_with_native_work(task, fence, work)?
-                            .await?;
+                        host.verify_dispatch_owner(task, fence, Some(&io))?.await?;
                         Some(mailbox)
                     }
                     NativeContextPurpose::Reconciliation { fence, mailbox } => {
@@ -253,8 +253,7 @@ impl AgentHarness {
                                 reason: "reconciliation mailbox differs from the original task and fence",
                             });
                         }
-                        host.verify_execution_owner_with_native_work(task, fence, work)?
-                            .await?;
+                        host.verify_execution_owner(task, fence, Some(&io))?.await?;
                         Some(mailbox)
                     }
                 };

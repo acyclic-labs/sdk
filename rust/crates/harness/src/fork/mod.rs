@@ -52,9 +52,7 @@ pub use provider::{ForkPublicationGuard, ForkSeedVerifier};
 pub(crate) use provider::{
     ObservedForkPublicationGuard, admit_fork_future, boundary_error, release_fork_guard_with_work,
 };
-pub(in crate::fork) use provider::{
-    acquire_fork_fence, frame_bytes, read_fork_manifest, release_frame,
-};
+pub(in crate::fork) use provider::{acquire_fork_fence, frame_bytes, release_frame};
 pub(crate) use quota::CodecQuota;
 pub use report::ForkReport;
 pub use request::ForkRequest;

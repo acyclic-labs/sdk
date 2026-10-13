@@ -3,13 +3,11 @@ use super::*;
 impl StockExecution<'_> {
     pub(super) async fn verify_execution_owner(&self) -> Result<()> {
         if let Some((host, task_id, fence)) = &self.stock.task {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = self.native_work() {
-                return host
-                    .verify_execution_owner_with_native_work(*task_id, fence, work)?
-                    .await;
-            }
-            host.verify_execution_owner(*task_id, fence.clone()).await?;
+            #[cfg(feature = "filesystem")]
+            let io = self.io;
+            #[cfg(not(feature = "filesystem"))]
+            let io = None;
+            host.verify_execution_owner(*task_id, fence, io)?.await?;
         }
         Ok(())
     }

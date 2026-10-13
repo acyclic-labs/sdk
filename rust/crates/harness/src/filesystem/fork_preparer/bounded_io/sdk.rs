@@ -483,8 +483,9 @@ pub(in crate::filesystem) async fn publish_generation<A, O, F, Fut>(
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
-    F: FnMut(WorkBudget) -> Fut + Send,
-    Fut: Future<Output = acyclic_fs::MeasuredResult<OperationReceipt<()>, Error>> + Send,
+    F: FnMut(WorkBudget) -> Fut + acyclic_stream::ProviderTask,
+    Fut: Future<Output = acyclic_fs::MeasuredResult<OperationReceipt<()>, Error>>
+        + acyclic_stream::ProviderTask,
 {
     let Some(io) = io else {
         return host
