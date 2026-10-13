@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust')]
+    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust', 'windows-fork-join')]
     [string] $Lane
 )
 
@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force -Path `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
 
 $clangDirectory = $null
-if ($Lane -in @('windows', 'windows-arm64', 'windows-rust')) {
+if ($Lane -in @('windows', 'windows-arm64', 'windows-rust', 'windows-fork-join')) {
     $clangDirectories = @()
     if ($env:LLVM_PATH) {
         $clangDirectories += Join-Path $env:LLVM_PATH 'bin'
@@ -70,6 +70,16 @@ switch ($Lane) {
                 $env:RUSTC_WRAPPER = $rustcWrapper
             }
         }
+        return
+    }
+    'windows-fork-join' {
+        if ($clangDirectory) {
+            $lldLink = Join-Path $clangDirectory 'lld-link.exe'
+            if (Test-Path -LiteralPath $lldLink) {
+                $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
+            }
+        }
+
         # Black-box fork/join conformance through hooks, the CLI and live ProjFS
         # mounts. The shared test support module carries ignored tests of its own.
         cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `

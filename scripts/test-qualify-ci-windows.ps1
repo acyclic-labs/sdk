@@ -18,7 +18,7 @@ foreach ($Lane in 'windows-napi', 'windows-clippy') {
     & ([scriptblock]::Create($clangSetup.Extent.Text))
 }
 if ($script:Probes) { throw 'native-only audit probed the ARM64 compiler' }
-foreach ($Lane in 'windows', 'windows-rust') {
+foreach ($Lane in 'windows', 'windows-rust', 'windows-fork-join') {
     & ([scriptblock]::Create($clangSetup.Extent.Text))
 }
 $Lane = 'windows-arm64'
@@ -63,7 +63,9 @@ function rustup { Record-Command rustup $args }
 
 $expected = @{
     'windows-rust' = @(
-        'cargo test --workspace --all-features --locked',
+        'cargo test --workspace --all-features --locked'
+    )
+    'windows-fork-join' = @(
         'cargo test -p acyclic-plugin --all-features --locked --test fork_join --ignored --test-threads=1 --skip support::'
     )
     'windows-napi' = @('cargo build -p acyclic-fs-napi --locked --target-dir fixture-target-napi')
