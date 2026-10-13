@@ -7,7 +7,7 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
     let source = open_source(directory.path()).await?;
     let path = requested("file")?;
     let token = CancellationToken::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let node = source
         .lookup(source.reference(), &path, budget, &token)
         .await?
@@ -100,7 +100,7 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
     let source = open_source(directory.path()).await?;
     let path = requested("file")?;
     let token = CancellationToken::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let node = source
         .lookup(source.reference(), &path, budget, &token)
         .await?

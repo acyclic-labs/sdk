@@ -61,13 +61,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let proven_at = self.inner.objects.collection_sweeps();
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                let (closure, _allocation) = prove_record_closure_with_native_work(
+                let (closure, _allocation) = crate::kernel::closure::ProofContext::new(
                     &self.inner.objects,
-                    records,
                     closure_limits(config),
-                    original,
-                    cancellation,
-                )
+                    crate::kernel::closure::ProofMeter::Native { original, cancellation },
+                ).prove_record_closure(records)
                 .await?;
                 return self
                     .flush_publication(
@@ -80,20 +78,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     )
                     .await;
             }
-            let proof = prove_record_closure_async(
-                &self.inner.objects,
-                records,
-                closure_limits(config),
-                accounting.remaining()?,
-                cancellation,
-            )
-            .await;
-            let spent = match &proof {
-                Ok((_, work)) => *work,
-                Err(failure) => *failure.work,
+            let meter = match crate::kernel::closure::ProofMeter::standalone(accounting.remaining()?, cancellation) {
+                Ok(meter) => meter,
+                Err(error) => {
+                    merge_creation_backend_work(&mut accounting, WorkCounters::UNCHARGED)?;
+                    return Err(FsError::from(crate::kernel::closure::closure_error(error)));
+                }
             };
+            let proof = crate::kernel::closure::ProofContext::new(
+                &self.inner.objects, closure_limits(config), meter.clone(),
+            ).prove_record_closure(records).await;
+            let spent = meter.work();
+            drop(meter);
             merge_creation_backend_work(&mut accounting, spent)?;
-            let (closure, _) = proof.map_err(|failure| FsError::from(failure.error))?;
+            let (closure, guard) = proof.map_err(|error| FsError::from(crate::kernel::closure::closure_error(error)))?;
+            drop(guard);
             self.flush_publication(
                 crate::PublicationScope::Closure {
                     objects: &closure,
@@ -208,7 +207,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if root.volume_id != workspace.id {
             return Err(WorkspaceError::ForeignGeneration);
         }
-        let publication = publish_generation_async_with_permit(
+        let publication = publish_generation(
             &self.inner.objects,
             &self.inner.authority,
             PublishGenerationRequest {
