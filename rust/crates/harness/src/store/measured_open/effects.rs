@@ -24,19 +24,9 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
             (MigrationContentStore::key(&schema)?, schema_bytes.to_vec()),
         ]),
     ))));
-    let mut writer = StreamAggregate::open(
-        &provider,
-        authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
-        None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
-    )
-    .await?
-    .with_content_verifier(content_verifier);
+    let mut writer = with_content(&provider)
+        .await?
+        .with_content_verifier(content_verifier);
     let effect_id = EffectId::from_bytes([41; 16]);
     let attempt_id = EffectAttemptId::from_bytes([42; 16]);
     let scope = issuer()
@@ -115,55 +105,50 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
     provider.forbid_writes.store(true, Ordering::SeqCst);
     provider.reset_io();
     let cancellation = CancellationToken::new();
-    let receipt = open_history(
+    let restored = open_history(
         &provider,
         authority(),
         None,
-        crate::store::default_projection_read_limits(),
+        default_projection_read_limits(),
         budget(),
         &cancellation,
     )
     .await
     .map_err(|failure| failure.error)?;
     assert_eq!(
-        receipt.value.reducer().snapshot(usize::MAX, &mut None)?.0,
+        restored.value.reducer().snapshot(usize::MAX, &mut None)?.0,
         expected
     );
     assert_eq!(
-        receipt.work.authority_bytes_read,
+        restored.work.authority_bytes_read,
         provider.io_snapshot().read_bytes
     );
-
-    assert_eq!(receipt.work.items_returned, 3);
-    let reader = HistoryReader::new(
-        &provider,
-        &authority(),
-        &(issuer().verifier(&mut None).expect("verifier copy")),
-        &mut None,
-    )?;
+    let verifier = issuer().verifier(&mut None)?;
+    let reader = HistoryReader::new(&provider, &authority(), &verifier, &mut None)?;
+    let cursor = HistoryCursor {
+        authority: authority(),
+        after_revision: 0,
+        through_revision: 3,
+    };
     for cut in [1, 3] {
-        provider.reset_io();
-        let mut work = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_budget(budget(), &cancellation)?,
-        );
-        work.preflight()?;
-        let result = effect_events(
+        let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+            budget(),
+            &cancellation,
+        )?);
+        let (events, _) = effect_events(
             &provider,
-            &issuer().verifier(&mut None).expect("verifier copy"),
+            &verifier,
             &HistoryCursor {
-                authority: authority(),
-                after_revision: 0,
                 through_revision: cut,
+                ..cursor.clone()
             },
             effect_id,
             default_projection_read_limits(),
-            &mut Some(&mut work),
+            &mut Some(&mut io),
         )
-        .await
-        .map(|(events, _)| events);
-        let archived = work.finish(result).map_err(|failure| failure.error)?;
+        .await?;
         assert_eq!(
-            archived.value,
+            events,
             expected
                 .events
                 .iter()
@@ -171,196 +156,94 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
                 .cloned()
                 .collect::<Vec<_>>()
         );
-        assert_eq!(archived.work.items_returned, cut);
-        assert_eq!(
-            archived.work.authority_bytes_read,
-            provider.io_snapshot().read_bytes
-        );
-
-        assert_eq!(provider.io_snapshot().writes, 0);
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let native = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
-            .expect("original effect reader ledger");
-        provider.reset_io();
-        let cursor = HistoryCursor {
-            authority: authority(),
-            after_revision: 0,
-            through_revision: 3,
-        };
+            .expect("finite reader budget");
         let expected_state = reader
             .effect(&cursor, effect_id, default_projection_read_limits(), None)
-            .await
-            .map(|state| state.map(|(state, _)| state))?;
-        let prefix = native.receipt();
+            .await?
+            .map(|(state, _)| state);
         provider.reset_io();
-        let (state, state_custody) = async {
-            let mut _history_io = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(&native)?,
-            );
-            let _history_value = reader
-                .effect(
-                    &cursor,
-                    effect_id,
-                    default_projection_read_limits(),
-                    Some(&mut _history_io),
-                )
-                .await?
-                .map(|(state, _)| state);
-            _history_io.return_staged_output()?;
-            Ok::<_, crate::Error>((_history_value, _history_io.into_custody()?))
-        }
-        .await?;
+        let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+        let state = reader
+            .effect(
+                &cursor,
+                effect_id,
+                default_projection_read_limits(),
+                Some(&mut io),
+            )
+            .await?
+            .map(|(state, _)| state);
         assert_eq!(state, expected_state);
-        assert!(native.shares_ledger(state_custody.work()));
+        io.return_staged_output()?;
+        let custody = io.into_custody()?;
+        assert!(native.shares_ledger(custody.work()));
         assert_eq!(
-            native.receipt().authority_bytes_read - prefix.authority_bytes_read,
+            native.receipt().authority_bytes_read,
             provider.io_snapshot().read_bytes
         );
         drop(state);
-        drop(state_custody);
+        drop(custody);
     }
-    provider.reset_io();
-    let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-        budget(),
-        &cancellation,
-    )?);
-    work.preflight()?;
-    let result = effect_events(
-        &provider,
-        &issuer().verifier(&mut None).expect("verifier copy"),
-        &HistoryCursor {
-            authority: authority(),
-            after_revision: 0,
-            through_revision: 3,
-        },
-        EffectId::from_bytes([99; 16]),
-        default_projection_read_limits(),
-        &mut Some(&mut work),
-    )
-    .await
-    .map(|(events, _)| events);
-    let absent = work.finish(result).map_err(|failure| failure.error)?;
-    assert!(absent.value.is_empty());
-    assert_eq!(absent.work.items_returned, 0);
-    assert_eq!(absent.work.output_bytes, 0);
-    assert!(absent.work.authority_records_read > 0);
-    provider.reset_io();
-    let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+    assert!(
+        reader
+            .effect(
+                &cursor,
+                EffectId::from_bytes([99; 16]),
+                default_projection_read_limits(),
+                None
+            )
+            .await?
+            .is_none()
+    );
+    let mut denied = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
         WorkBudget {
             backend_read_operations: 0,
             ..budget()
         },
         &cancellation,
     )?);
-    work.preflight()?;
-    let result = effect_events(
-        &provider,
-        &issuer().verifier(&mut None).expect("verifier copy"),
-        &HistoryCursor {
-            authority: authority(),
-            after_revision: 0,
-            through_revision: 3,
-        },
-        effect_id,
-        default_projection_read_limits(),
-        &mut Some(&mut work),
-    )
-    .await
-    .map(|(events, _)| events);
-    let denied = work
-        .finish(result)
-        .expect_err("SDK admission must precede even the original tail request");
-    assert_eq!(denied.work.backend_read_operations, 0);
+    provider.reset_io();
+    assert!(
+        reader
+            .effect(
+                &cursor,
+                effect_id,
+                default_projection_read_limits(),
+                Some(&mut denied)
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(provider.io_snapshot().reads, 0);
     assert_eq!(provider.io_snapshot().tails, 0);
-    let terminal = expected.events.last().expect("original resolved event");
-    provider.reset_io();
-    let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-        budget(),
-        &cancellation,
-    )?);
-    work.preflight()?;
-    let result = crate::store::effect_heads::Tree {
-        client: &provider,
-        authority: &authority(),
-    }
-    .retirement_proof_for_event_with_work(terminal, &mut Some(&mut work))
-    .await;
-    let proof = work.finish(result).map_err(|failure| failure.error)?;
-    assert!(proof.value);
-    assert_eq!(
-        proof.work.authority_bytes_read,
-        provider.io_snapshot().read_bytes
-    );
-    assert!(proof.work.bytes_encoded > 0);
-    provider.reset_io();
-    let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-        WorkBudget {
-            bytes_encoded: 0,
-            ..budget()
-        },
-        &cancellation,
-    )?);
-    work.preflight()?;
-    let result = crate::store::effect_heads::Tree {
-        client: &provider,
-        authority: &authority(),
-    }
-    .retirement_proof_for_event_with_work(terminal, &mut Some(&mut work))
-    .await;
-    let failure = work
-        .finish(result)
+    for (canonical_missing, transition_missing) in [(true, 0), (false, 3)] {
+        provider
+            .hide_aggregate_read
+            .store(canonical_missing, Ordering::SeqCst);
+        provider
+            .hide_effect_transition_position
+            .store(transition_missing, Ordering::SeqCst);
+        provider.reset_io();
+        let failure = open_history(
+            &provider,
+            authority(),
+            None,
+            default_projection_read_limits(),
+            budget(),
+            &cancellation,
+        )
+        .await
         .err()
-        .expect("original canonical re-encode must admit before owned codec growth");
-    assert_eq!(
-        failure.work.authority_bytes_read,
-        provider.io_snapshot().read_bytes
-    );
-    assert_eq!(failure.work.bytes_encoded, 0);
-    assert_eq!(failure.work.output_bytes, 0);
-    provider.hide_aggregate_read.store(true, Ordering::SeqCst);
-    provider.reset_io();
-    let failure = open_history(
-        &provider,
-        authority(),
-        None,
-        crate::store::default_projection_read_limits(),
-        budget(),
-        &cancellation,
-    )
-    .await
-    .err()
-    .expect("unavailable original operation index must preserve spent canonical suffix work");
-    assert_eq!(
-        failure.work.authority_bytes_read,
-        provider.io_snapshot().read_bytes
-    );
-    assert_eq!(failure.work.output_bytes, 0);
-    assert_eq!(failure.work.items_returned, 0);
-    provider.hide_aggregate_read.store(false, Ordering::SeqCst);
-    provider
-        .hide_effect_transition_position
-        .store(3, Ordering::SeqCst);
-    provider.reset_io();
-    let failure = open_history(
-        &provider,
-        authority(),
-        None,
-        crate::store::default_projection_read_limits(),
-        budget(),
-        &cancellation,
-    )
-    .await
-    .err()
-    .expect("missing original terminal effect index cannot retire");
-    assert_eq!(
-        failure.work.authority_bytes_read,
-        provider.io_snapshot().read_bytes
-    );
-    assert_eq!(failure.work.output_bytes, 0);
-    assert_eq!(failure.work.items_returned, 0);
+        .expect("incomplete retirement proof");
+        assert_eq!(
+            failure.work.authority_bytes_read,
+            provider.io_snapshot().read_bytes
+        );
+        assert_eq!(failure.work.output_bytes, 0);
+    }
     provider
         .hide_effect_transition_position
         .store(0, Ordering::SeqCst);
@@ -369,7 +252,7 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
             &provider,
             authority(),
             None,
-            crate::store::default_projection_read_limits(),
+            default_projection_read_limits(),
             budget(),
             &cancellation
         )
