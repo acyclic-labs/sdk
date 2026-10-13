@@ -1,5 +1,5 @@
 use super::*;
-use crate::workflow::{MachineIdentity, ResumableMachine};
+use crate::workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine};
 use serde_json::json;
 
 struct TestMachine {
