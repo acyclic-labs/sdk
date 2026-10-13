@@ -941,13 +941,11 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
                 }) if actual_maximum == maximum
             )),
             "object_bytes_read" => match failure.error {
-                RegularMutationError::BlobRead(BlobReadError::Storage(ObjectStoreError::Work(
-                    WorkError::BudgetExceeded {
-                        counter,
-                        observed,
-                        maximum: actual_maximum,
-                    },
-                ))) => {
+                RegularMutationError::Work(WorkError::BudgetExceeded {
+                    counter,
+                    observed,
+                    maximum: actual_maximum,
+                }) => {
                     assert_eq!(counter, "object_bytes_read");
                     assert!(observed > actual_maximum);
                     assert!(actual_maximum < baseline.work.object_bytes_read);
@@ -958,6 +956,8 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
             },
             _ => return Err("unknown budget counter".into()),
         }
+        assert!(failure.work.bytes_copied <= budget.bytes_copied);
+        assert!(failure.work.object_bytes_read <= budget.object_bytes_read);
     }
     Ok(())
 }
