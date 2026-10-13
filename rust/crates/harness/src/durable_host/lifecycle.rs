@@ -50,7 +50,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         use crate::scheduler::OperationPhase;
 
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        self.admission(operation_id).await?;
+        self.admission(operation_id, None).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
         let operation = coordinator
@@ -90,7 +90,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub async fn start_task(&self, lease: &crate::distributed::WorkLease) -> Result<()> {
         let operation_id = lease.operation.operation_id;
         let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
-        self.admission(operation_id).await?;
+        self.admission(operation_id, None).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
         let operation = coordinator.observe_operation(
@@ -136,7 +136,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         outcome: Outcome<Value>,
     ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission(operation_id).await?;
+        let admission = self.admission(operation_id, None).await?;
         self.verify_owner(task, &fence, true).await?;
         let digest = crate::executor::json::canonical_json_digest(
             &outcome,
@@ -224,23 +224,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(not(target_arch = "wasm32"))]
         let (admission, mut custody) = match io {
             Some(io) if io.original_native_work().is_some() => {
-                let (admission, custody) = self.readonly_admission(operation, io).await?;
+                let admission = self.admission(operation, Some(io)).await?;
+                let custody = io.take_native_custody(
+                    std::mem::size_of::<TaskAdmissionRecord>() as u64
+                        + admission.logical_owned_bytes()?,
+                )?;
                 (admission, Some(custody))
             }
-            _ => (self.admission(operation).await?, None),
+            _ => (self.admission(operation, None).await?, None),
         };
         #[cfg(target_arch = "wasm32")]
-        let admission = self.admission(operation).await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(native) = io.and_then(|io| io.original_native_work()) {
-            if admission.resource_proofs.is_empty() {
-                self.root_scope.validate_narrowing_with_native_work(
-                    &admission.grants,
-                    &admission.limits,
-                    native,
-                )?;
-            }
-        }
+        let admission = self.admission(operation, None).await?;
         let mut history = io.map(|io| io.history_io());
         let mut work = history
             .as_mut()
@@ -264,7 +258,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "root actor differs from its declaration".into(),
             ));
         }
-        let request_digest = crate::contract::canonical_json_digest(
+        let request_digest = crate::executor::json::canonical_json_digest(
             &admission,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut work,
@@ -307,12 +301,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         self.machines.validate_checkpoint(&workflow.initial, io)?;
         if let Some(io) = work.as_deref_mut() {
-            io.retain_owned(std::mem::size_of::<TaskJournalOwner<P>>() as u64)?;
+            io.retain_owned(
+                (std::mem::size_of::<TaskJournalOwner<P>>() + 2 * std::mem::size_of::<usize>())
+                    as u64,
+            )?;
         }
         let fence = fence.clone_with_work(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = custody.as_mut() {
-            let retained = std::mem::size_of::<TaskJournalOwner<P>>() as u64
+            let retained = (std::mem::size_of::<TaskJournalOwner<P>>()
+                + 2 * std::mem::size_of::<usize>()) as u64
                 + fence.reservation_id.capacity() as u64
                 + fence.placement.capacity() as u64
                 + workflow.initial.machine.name.capacity() as u64

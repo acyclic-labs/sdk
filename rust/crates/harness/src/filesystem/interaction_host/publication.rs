@@ -60,7 +60,7 @@ where
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|work| work as &mut dyn HistoryIo);
         if let Some(owner) = owner {
-            owner.require_interaction_grant(io)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
         }
         let mut aggregate = self.aggregate(io).await?;

@@ -13,7 +13,7 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         let maximum = self
             .protected

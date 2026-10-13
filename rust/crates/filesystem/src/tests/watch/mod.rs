@@ -459,7 +459,6 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
         maximum_queued_changes: 1,
-        _root_allocation: None,
     };
     for name in ["a", "b"] {
         accept_native_event(

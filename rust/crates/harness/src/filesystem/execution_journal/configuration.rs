@@ -32,7 +32,7 @@ where
             && self.owner.as_ref().is_some_and(|(owner, bound)| {
                 *bound == operation
                     && owner.matches_task_binding(task, fence)
-                    && std::ptr::eq(owner.host.as_ref(), host)
+                    && owner.original_host_binding_matches(host)
             })
     }
 
@@ -275,7 +275,7 @@ where
             .as_mut()
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(io)?;
+            owner.require_interaction_grant(&mut work)?;
         } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
             return Err(crate::filesystem::interaction_host::interaction_boundary(
                 io,

@@ -24,7 +24,7 @@ impl<'a> PiForkCoordinator<'a> {
                 .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             let (value, allocation) = host
-                .observe_admission_with_native_work(owner.task_id(), work)
+                .observe_admission_with_native_work(owner.task_id(), work)?
                 .await?;
             (value, allocation)
         };
@@ -78,7 +78,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(source_task, work)
+            .observe_admission_with_native_work(source_task, work)?
             .await?;
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&admitted.0.input, maximum, work)?;

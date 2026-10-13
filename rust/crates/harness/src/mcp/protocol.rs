@@ -6,18 +6,6 @@ use serde_json::Value;
 /// Initialized-session protocol revision.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
-/// One bounded discovery page.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[serde(rename_all = "camelCase")]
-pub struct McpToolsPage {
-    /// Remote tool contracts.
-    pub tools: Vec<McpToolDefinition>,
-    /// Cursor for the next admitted discovery request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
-}
-
 /// Remote tool contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]

@@ -963,14 +963,14 @@ fn verify_mcp_result(
         .as_ref()
         .is_some_and(|request| request.method == McpStdioMethod::ListTools)
     {
-        let page: acyclic_harness::mcp::McpToolsPage =
+        let page: rmcp::model::ListToolsResult =
             serde_json::from_value(request.mcp_response(output)?)?;
         if page.next_cursor.is_some()
             || page.tools.len() != 1
             || page.tools.first().is_none_or(|tool| {
                 tool.name != "echo"
-                    || tool.description != "héllo"
-                    || tool.input_schema != json!({"type":"object"})
+                    || tool.description.as_deref() != Some("héllo")
+                    || tool.input_schema.as_ref() != json!({"type":"object"}).as_object().unwrap()
             })
         {
             return Err("incorrect MCP discovery page".into());

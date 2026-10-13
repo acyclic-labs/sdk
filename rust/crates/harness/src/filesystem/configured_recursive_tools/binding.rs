@@ -40,7 +40,7 @@ where
                     "native source has no original owner",
                 )
             })?;
-            owner.require_mail_scope_with_native_work(context.scope(), work)?;
+            owner.require_mail_scope(context.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             let (owner_task, owner_fence) = owner.task_binding();
             if owner_task != binding.0
                 || owner_fence != binding.1
@@ -249,7 +249,7 @@ where
                 .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                 .await?
                 .with_invocation_cancellation(cancellation);
-            owner.require_mail_scope_with_native_work(context.scope(), work)?;
+            owner.require_mail_scope(context.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             return owner.into_native_shared(work);
         }
         let task = context.durable_task_id().ok_or_else(|| {
