@@ -113,7 +113,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     let mut ordinary = Vec::new();
     let mut rename_records = Vec::new();
     let mut renamed_directories = Vec::new();
-    let mut rename_destinations = Vec::new();
     let mut moved_away = Vec::new();
 
     for (index, change) in incoming.0.into_iter().enumerate() {
@@ -193,50 +192,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             }
         };
         match change {
-            WatchChange::Created(path) => {
-                let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                capture_replace(
-                    &mut ordinary,
-                    path,
-                    (current, CaptureIntent::Replace),
-                    meter,
-                )?;
-            }
-            WatchChange::Modified(path) | WatchChange::Removed(path) => {
-                let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                capture_entry(
-                    &mut ordinary,
-                    path,
-                    (current, CaptureIntent::Complete),
-                    meter,
-                )
-                .map(|_| ())?;
-            }
-            WatchChange::Arrived(path) => {
-                let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                {
-                    let entry = capture_entry(
-                        &mut ordinary,
-                        path,
-                        (current, CaptureIntent::Arrived),
-                        meter,
-                    )?;
-                    if entry.1 != CaptureIntent::Replace {
-                        entry.1 = CaptureIntent::Arrived;
-                    }
-                    ()
-                };
-            }
-            WatchChange::MetadataChanged(path) => {
-                let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                capture_entry(
-                    &mut ordinary,
-                    path,
-                    (current, CaptureIntent::MetadataOnly),
-                    meter,
-                )
-                .map(|_| ())?;
-            }
             WatchChange::Renamed { from, to } => {
                 cancellation.check()?;
                 let prior_source = capture_remove(&mut ordinary, &from, meter)?;
@@ -272,8 +227,6 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                             clone_capture_path(&to, meter)?,
                         ));
                     }
-                    capture_reserve(&mut rename_destinations, 1, meter)?;
-                    rename_destinations.push(clone_capture_path(&to, meter)?);
                     capture_reserve(&mut mutations, 1, meter)?;
                     mutations.push(AuthoredMutation::Rename {
                         source: clone_capture_path(&from, meter)?,
@@ -298,6 +251,27 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                     capture_drop_path(key, meter)?;
                 }
                 capture_drop_path(to, meter)?;
+            }
+            change => {
+                let (path, intent) = match change {
+                    WatchChange::Created(path) => (path, CaptureIntent::Replace),
+                    WatchChange::Modified(path) | WatchChange::Removed(path) => {
+                        (path, CaptureIntent::Complete)
+                    }
+                    WatchChange::Arrived(path) => (path, CaptureIntent::Arrived),
+                    WatchChange::MetadataChanged(path) => (path, CaptureIntent::MetadataOnly),
+                    WatchChange::Renamed { .. } => unreachable!("renames were handled above"),
+                };
+                let current = current_record(&rename_records, &moved_away, &path, meter)?;
+                let entry = capture_entry(&mut ordinary, path, (current, intent), meter)?;
+                match intent {
+                    CaptureIntent::Replace => *entry = (current, intent),
+                    CaptureIntent::Arrived if entry.1 != CaptureIntent::Replace => entry.1 = intent,
+                    CaptureIntent::Complete if entry.1 == CaptureIntent::MetadataOnly => {
+                        entry.1 = intent
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -328,7 +302,10 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             .iter()
             .map(|(path, _)| path)
             .chain(rename_records.iter().map(|(path, _)| path))
-            .chain(rename_destinations.iter()),
+            .chain(mutations.iter().filter_map(|mutation| match mutation {
+                AuthoredMutation::Rename { destination, .. } => Some(destination),
+                _ => None,
+            })),
         &ordinary,
         &rename_records,
         policy,
@@ -336,8 +313,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         checkout.volume_config().limits,
         meter,
     )?;
-    release_capture_paths(rename_destinations, meter)?;
-    let mut missing_ancestors = hydrate_watch_ancestors(
+    let missing_ancestors = hydrate_watch_ancestors(
         checkout,
         &mut ordinary,
         ancestors,
@@ -409,33 +385,15 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     }?;
 
     let mut host_links = Vec::new();
-    // A rename can target a directory that has never been observed in this lazy checkout. Materialize only those host ancestors before the rename, preserving the event order for all remaining mutations.
-    {
-        capture_sort_by(
-            &mut missing_ancestors,
-            |left, right| {
-                left.depth()
-                    .cmp(&right.depth())
-                    .then_with(|| left.cmp(right))
-            },
-            meter,
-        )
-    }?;
+    // Hydration preserves ancestor depth order, so parents precede every rename.
     let rename_mutations = std::mem::take(&mut mutations);
-    let missing_bytes =
-        missing_ancestors.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
-    for path in missing_ancestors {
-        let Some((key, (CurrentRecord::Known(current), intent))) =
-            capture_remove(&mut ordinary, &path, meter)?
-        else {
-            return Err(CaptureError::InvalidOptions);
-        };
-        capture_drop_path(key, meter)?;
+    let missing_bytes = vector_bytes(&missing_ancestors);
+    for (path, current) in missing_ancestors {
         prepare_final_path(
             checkout,
             path,
             current,
-            intent,
+            CaptureIntent::Replace,
             &source_root,
             None,
             &mut host_links,
@@ -570,8 +528,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     if namespace_boundary == 0 || namespace_boundary == mutations.len() {
         apply_capture_transaction(checkout, mutations, meter).await?;
     } else {
-        // Compile binding changes before final-state mutations on one atomic candidate.
-        let mut candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(meter, &cancellation), &cancellation)?;
+        // The public entry point owns the unpublished candidate for both phases.
         let final_state = {
             let count = mutations.len() - namespace_boundary;
             let bytes = count
@@ -588,15 +545,12 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             meter.clone().record(copied).map_err(capture_demand_error)?;
             final_state
         };
-        apply_capture_transaction(&mut candidate, mutations, meter).await?;
-        apply_capture_transaction(&mut candidate, final_state, meter).await?;
+        apply_capture_transaction(checkout, mutations, meter).await?;
+        apply_capture_transaction(checkout, final_state, meter).await?;
         {
             cancellation.check()?;
             meter.clone().check().map_err(capture_demand_error)
         }?;
-        cancellation.commit_if_live(|| {
-            *checkout = candidate;
-        })?;
     }
     Ok(WatchCaptureReceipt {
         epoch,

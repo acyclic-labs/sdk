@@ -270,3 +270,34 @@ async fn watch_rename_chain_observes_intermediate_parent() -> Result<(), Box<dyn
     )
     .await
 }
+
+#[tokio::test]
+async fn content_hints_override_metadata_hints_in_either_order()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    std::fs::write(source.path().join("file"), b"new")?;
+    for metadata_first in [true, false] {
+        let mut checkout = checkout(&[("/file", "old")]).await?;
+        let mut changes = vec![
+            WatchChange::MetadataChanged(path("/file")?),
+            WatchChange::Modified(path("/file")?),
+        ];
+        if !metadata_first {
+            changes.reverse();
+        }
+        replay(&mut checkout, &options(source.path(), 2)?, changes).await?;
+        let content = checkout
+            .read_file_range(
+                &path("/file")?,
+                crate::ByteRange {
+                    offset: 0,
+                    length: 3,
+                },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(content.value.bytes.as_ref(), b"new");
+    }
+    Ok(())
+}
