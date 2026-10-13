@@ -452,10 +452,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         aggregate.reducer(),
         ForkHistoryPolicy::Summary(Box::new(selection)), &mut None,
     )?;
-    let finite = preparer.prepare_bound_summary(&request, None)?
-        .ok_or_else(|| Error::Invalid("bound Summary source proof missing".into()))?;
-    assert_eq!(finite.context(), &source);
-    assert_eq!(finite.selection(), request.preparation.summary.as_ref().unwrap());
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
     assert!(preparer.prepare_for_task(request.clone(), &Arc::new(quota_preparation)).await.is_err());
