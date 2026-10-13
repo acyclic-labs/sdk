@@ -105,10 +105,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             return Err(AuthorityStoreError::InvalidReplayLimit);
         }
         let mut child = work.operation()?;
-        let result = self
-            .authority_replay(authority, after, limit, &mut child)
-            .await
-            .and_then(|value| child.finish(value));
+        let result = async {
+            self.authority_require_live(authority, &mut child).await?;
+            let value = self
+                .read_records(authority, after, limit, &mut child)
+                .await?;
+            child.finish(value)
+        }
+        .await;
         work.record(child.spent())?;
         result
     }

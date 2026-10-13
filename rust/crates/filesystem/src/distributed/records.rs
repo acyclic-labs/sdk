@@ -139,7 +139,8 @@ pub(super) fn generation_from_payload(
     let created = payload.len()
         == CREATED.len() + 2 + 16 + crate::kernel::CONFIG_ENCODED_BYTES + 1 + 32
         && payload.starts_with(CREATED);
-    meter.record_completed(examined)?;
+    meter.charge(examined)?;
+    meter.check()?;
     let published = payload.starts_with(PUBLISHED);
     if !created && !published {
         return Ok(None);
@@ -211,30 +212,4 @@ pub(super) fn decode_record<'a>(
 ) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, AuthorityStoreError> {
     StreamsDurableRecord::decode_borrowed(&record.value, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))
-}
-pub(super) fn validate_record(
-    authority: AuthorityId,
-    record: &acyclic_stream::Record,
-    durable: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
-) -> Result<(), AuthorityStoreError> {
-    if durable.sequence.get() != record.sequence {
-        return Err(AuthorityStoreError::Corrupt(
-            "Stream sequence does not match filesystem authority sequence".to_owned(),
-        ));
-    }
-    let digest = authority_commit_digest(
-        authority,
-        durable.epoch,
-        durable.sequence,
-        durable.operation_id,
-        durable.fingerprint,
-        durable.previous_digest,
-        durable.payload,
-    );
-    if digest != durable.digest {
-        return Err(AuthorityStoreError::Corrupt(
-            "Stream authority record digest mismatch".to_owned(),
-        ));
-    }
-    Ok(())
 }
