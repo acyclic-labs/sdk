@@ -45,7 +45,6 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    /// Begins an optimistic transaction on a copy of this candidate.
     pub(super) fn candidate(
         &self,
         operation: Option<OperationId>,
@@ -75,7 +74,6 @@ impl<A, O> SharedCheckoutState<A, O> {
         })
     }
 
-    /// Records one change to the checkout's view. The exclusive guard keeps
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         record_view_change(
             &self.ledger,

@@ -5,7 +5,6 @@ struct DetachedMountState<A, O> {
 }
 
 impl<A, O> DetachedMountState<A, O> {
-    /// Changes content, timestamps and its view together.
     async fn change_content(
         &mut self,
         change: ContentChange<std::convert::Infallible>,
@@ -27,8 +26,6 @@ impl<A, O> DetachedMountState<A, O> {
         self.record_change(ledger, &mut NativeDemandCarrier::Native(work))
     }
 
-    /// Advances the identity's own publication epoch and invalidates every
-    /// cached lookup of the identity, under the lock its lookups take.
     fn record_change(
         &mut self,
         ledger: &Arc<ViewLedger>,
@@ -86,7 +83,8 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             .await?;
         let capacity = read.logical_owned_bytes();
         let chunk = crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity);
-        carrier.finish_read(chunk, &cancellation, Some(&self.cancellation))
+        carrier.check(&cancellation, Some(&self.cancellation))?;
+        Ok(chunk)
     }
 
     async fn change_attribute(
@@ -148,8 +146,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Applies one content change to this detached file with its time
-    /// stamp as one record transition, and records it.
     fn change_content(
         &self,
         change: ContentChange<std::convert::Infallible>,
@@ -214,25 +210,21 @@ where
                 .saturating_sub(offset)
                 .min(u64::from(maximum_bytes));
             if length == 0 {
-                return carrier.finish_read(
-                    crate::kernel::OwnedSourceChunk::intrinsic(
-                        acyclic_stream::OwnedBytes::new(),
-                        0,
-                    ),
-                    cancellation,
-                    Some(&self.cancellation),
-                );
+                carrier.check(cancellation, Some(&self.cancellation))?;
+                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                    OwnedBytes::new(),
+                    0,
+                ));
             }
             let read = state
                 .file
                 .read_range(ByteRange { offset, length }, work, cancellation)
                 .await?;
             let capacity = read.logical_owned_bytes();
-            carrier.finish_read(
-                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
-                cancellation,
-                Some(&self.cancellation),
-            )
+            carrier.check(cancellation, Some(&self.cancellation))?;
+            Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                read.bytes, capacity,
+            ))
         })
     }
 

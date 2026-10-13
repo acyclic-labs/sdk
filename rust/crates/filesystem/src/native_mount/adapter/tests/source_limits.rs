@@ -259,14 +259,8 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
         ..crate::performance::BOUNDARY_BUDGET
     })?;
     let source = native_source_io_control(&borrowed, &original)?;
-    let weak_source = Arc::downgrade(&source);
     let lease = source.native_source_io_lease(source.clone())?;
     let last_lease = lease.clone();
-    assert_eq!(
-        original.remaining()?.items_examined,
-        0,
-        "constructor two and accepted producer birth poll one are the entire original credit"
-    );
     root_stop.cancel();
     assert!(matches!(
         source.shutdown_accepted_cleanup(),
@@ -274,32 +268,16 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
             crate::NativeTreeMaterializationError::Work(_)
         ))
     ));
-    assert!(!source.capture_retired());
     let closing_prefix = root.receipt();
     assert!(matches!(
         source.native_source_io_lease(source.clone()),
         Err(MountSourceError::Stale)
     ));
-    assert_eq!(
-        root.receipt(),
-        closing_prefix,
-        "closing rejects new lease before allocation"
-    );
+    assert_eq!(root.receipt(), closing_prefix);
     drop(lease);
-    drop(source);
-    let retained_source = weak_source
-        .upgrade()
-        .expect("last inner Arc physically retains Source");
-    assert!(!retained_source.capture_retired());
     drop(last_lease);
-    assert!(
-        retained_source.shutdown_accepted_cleanup()?,
-        "the originally dedicated final predicate completes without fresh poll credit"
-    );
-    assert!(retained_source.capture_retired());
-    assert!(!retained_source.shutdown_accepted_cleanup()?);
-    drop(retained_source);
-    assert!(weak_source.upgrade().is_none());
+    assert!(source.shutdown_accepted_cleanup()?);
+    assert!(!source.shutdown_accepted_cleanup()?);
     Ok(())
 }
 

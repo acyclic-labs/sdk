@@ -8,7 +8,7 @@ pub(super) async fn settled_sparse_ranges(
     reported: Vec<HostDataRange>,
     maximum_ranges: u32,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Vec<HostDataRange>, CaptureError> {
     use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
     const BLOCK: u64 = 4096;
@@ -31,15 +31,15 @@ pub(super) async fn settled_sparse_ranges(
         while position < end {
             cancellation.check()?;
             let wanted = (CHUNK - position % CHUNK).min(end - position);
-            meter.native.admit(WorkCounters {
+            meter.admit(WorkCounters {
                 source_bytes_read: wanted,
                 ..WorkCounters::UNCHARGED
             })?;
             let chunk = reader
-                .read(wanted as usize, meter.native.runtime_meter(), true)
+                .read(wanted as usize, meter.runtime_meter(), true)
                 .await
                 .map_err(|error| {
-                    if let Some(cause) = meter.native.state.take_native_io_failure() {
+                    if let Some(cause) = meter.state.take_native_io_failure() {
                         capture_demand_error(cause)
                     } else if error.kind() == std::io::ErrorKind::UnexpectedEof {
                         CaptureError::Kernel(crate::FsError::SourceSnapshotStale)
@@ -55,7 +55,7 @@ pub(super) async fn settled_sparse_ranges(
             }
             let mut start = position;
             while start < read_end {
-                meter.native.clone().check().map_err(capture_demand_error)?;
+                meter.clone().check().map_err(capture_demand_error)?;
                 let block_end = start.saturating_add(BLOCK - start % BLOCK).min(read_end);
                 let block = &chunk.0[(start - position) as usize..(block_end - position) as usize];
                 let mut nonzero = false;
@@ -84,11 +84,7 @@ pub(super) async fn settled_sparse_ranges(
                         if settled.len() == maximum_ranges as usize {
                             let bytes = vector_bytes(&settled);
                             drop(settled);
-                            meter
-                                .native
-                                .clone()
-                                .release(bytes)
-                                .map_err(capture_demand_error)?;
+                            meter.clone().release(bytes).map_err(capture_demand_error)?;
                             return Ok(reported);
                         }
                         capture_reserve(&mut settled, 1, meter)?;
@@ -107,10 +103,6 @@ pub(super) async fn settled_sparse_ranges(
     }
     let bytes = vector_bytes(&reported);
     drop(reported);
-    meter
-        .native
-        .clone()
-        .release(bytes)
-        .map_err(capture_demand_error)?;
+    meter.clone().release(bytes).map_err(capture_demand_error)?;
     Ok(settled)
 }

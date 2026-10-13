@@ -309,38 +309,35 @@ impl ToolExecutor for FileTool {
         }
     }
 
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "portable file tool requires owner-bound task context".into(),
-            ))
-        })
-    }
-
-    fn execute_with_context<'a>(
+    fn execute<'a>(
         &'a self,
-        context: ToolContext,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "portable file tool requires owner-bound task context".into(),
+                ))
+            });
+        };
+
         Box::pin(self.run(context, invocation))
     }
 
     fn reconcile<'a>(
         &'a self,
-        _: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "portable file reconciliation requires owner-bound task context".into(),
-            ))
-        })
-    }
-
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "portable file reconciliation requires owner-bound task context".into(),
+                ))
+            });
+        };
+
         // Reads always use the original immutable ref; publications resolve the existing operation receipt before attempting a generation-checked CAS.
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
     }
@@ -359,7 +356,10 @@ impl FileTool {
             Self::Read => {
                 let input = super::decode::<ReadFileInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                    .read_file(
+                        &input.0.file,
+                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    )
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("file read requires UTF-8 content"))?;
@@ -388,13 +388,18 @@ impl FileTool {
                             Some(&publication_io),
                         )
                         .await
-                        .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+                        .and_then(|(file, retained)| {
+                            Ok((file, publication_io.take_native_custody(retained)?))
+                        })
                 }?
             }
             Self::Edit => {
                 let input = super::decode::<EditFileInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                    .read_file(
+                        &input.0.file,
+                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    )
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
@@ -417,7 +422,9 @@ impl FileTool {
                             Some(&publication_io),
                         )
                         .await
-                        .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+                        .and_then(|(file, retained)| {
+                            Ok((file, publication_io.take_native_custody(retained)?))
+                        })
                 }?
             }
             Self::Patch {
@@ -438,7 +445,10 @@ impl FileTool {
                     ));
                 }
                 let read = context
-                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                    .read_file(
+                        &input.0.file,
+                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    )
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
@@ -456,7 +466,9 @@ impl FileTool {
                             Some(&publication_io),
                         )
                         .await
-                        .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+                        .and_then(|(file, retained)| {
+                            Ok((file, publication_io.take_native_custody(retained)?))
+                        })
                 }?
             }
         };

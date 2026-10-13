@@ -6,9 +6,7 @@ fn index_ready(
     work: &Work,
     cxl: &CancellationToken,
 ) -> Result<bool, Error> {
-    Ok(log
-        .get_native_value(root, RecordKey::ChildIndex, work, cxl)?
-        .is_some())
+    Ok(load::<ContextChildIndex>(root, log, (), work, cxl)?.is_some())
 }
 
 fn decode_filename(name: &[u8]) -> Option<WorkspaceContextId> {
@@ -206,52 +204,9 @@ pub(in crate::core_state) fn compare_native_context(
     let old_parent = current
         .as_ref()
         .and_then(|record| record.0.parent_context_id);
-    let new_parent = replacement.0.parent_context_id;
     let old_id = current.as_ref().map_or(id, |record| record.0.context_id);
-    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut children = WorkspaceContextChildren::new();
-    for parent in old_parent.into_iter().chain(new_parent) {
-        check(work, cxl)?;
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        if children.contains_key(&parent) {
-            continue;
-        }
-        let descendants = match load::<ContextChildren>(root, log, parent, work, cxl)? {
-            Some(mut owned) => {
-                held.absorb(&mut owned.1)?;
-                owned.0.0
-            }
-            None => BTreeSet::new(),
-        };
-        held.absorb(&mut work.claim(
-            std::mem::size_of::<(WorkspaceContextId, BTreeSet<WorkspaceContextId>)>() as u64,
-            0,
-            crate::WorkCounters::UNCHARGED,
-        )?)?;
-        children.insert(parent, descendants);
-    }
-    if old_parent != new_parent {
-        if new_parent.is_some_and(|parent| !children[&parent].contains(&id)) {
-            held.absorb(&mut work.claim(
-                std::mem::size_of::<WorkspaceContextId>() as u64,
-                0,
-                crate::WorkCounters::UNCHARGED,
-            )?)?;
-        }
-        let removed = old_parent.is_some_and(|parent| children[&parent].contains(&old_id));
-        update_context_children(
-            &mut children,
-            current.as_ref().map(|record| &record.0),
-            Some(&replacement.0),
-        );
-        if removed {
-            held.release(std::mem::size_of::<WorkspaceContextId>() as u64)?;
-        }
-    }
     drop(current);
+    let new_parent = replacement.0.parent_context_id;
     for root in replacement.0.roots.values() {
         check(work, cxl)?;
         root.source_path.to_str().ok_or(Error::Integrity)?;
@@ -266,24 +221,35 @@ pub(in crate::core_state) fn compare_native_context(
         value: Some(RecordValue::Context(record)),
         allocation: Some(allocation),
     })?;
-    for parent in old_parent.into_iter().chain(new_parent) {
-        let descendants = children.remove(&parent);
-        let bytes = descendants
-            .as_ref()
-            .map_or(0, BTreeSet::len)
-            .checked_mul(std::mem::size_of::<WorkspaceContextId>())
-            .ok_or_else(overflow)? as u64;
-        change.put_children(Resident {
-            key: RecordKey::Children(parent),
-            value: descendants.map(|set| RecordValue::Children(ContextChildren(set))),
-            allocation: Some(held.split_off(bytes)?),
-        })?;
-        if old_parent == new_parent {
-            break;
+    if old_parent != new_parent {
+        for parent in old_parent.into_iter().chain(new_parent) {
+            check(work, cxl)?;
+            work.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+            let mut children = load::<ContextChildren>(root, log, parent, work, cxl)?.unwrap_or((
+                ContextChildren::default(),
+                work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+            ));
+            if Some(parent) == old_parent && children.0.0.remove(&old_id) {
+                children
+                    .1
+                    .release(std::mem::size_of::<WorkspaceContextId>() as u64)?;
+            }
+            if Some(parent) == new_parent && !children.0.0.contains(&id) {
+                children
+                    .1
+                    .grow(std::mem::size_of::<WorkspaceContextId>() as u64)?;
+                children.0.0.insert(id);
+            }
+            change.put_children(Resident {
+                key: RecordKey::Children(parent),
+                value: Some(RecordValue::Children(children.0)),
+                allocation: Some(children.1),
+            })?;
         }
     }
-    drop(children);
-    drop(held);
     cxl.check().map_err(|_| NativeError::Cancelled)?;
     log.commit(root, change)?;
     Ok(true)
