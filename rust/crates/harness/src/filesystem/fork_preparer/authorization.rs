@@ -308,7 +308,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         Ok(())
     }
 
-    pub(super) fn prepare_bound_summary(
+    pub(in crate::filesystem) fn prepare_bound_summary(
         &self,
         request: &ForkRequest,
         io: Option<&PreparationIo>,

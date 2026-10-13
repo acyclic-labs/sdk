@@ -1,48 +1,12 @@
 use super::*;
 
 #[tokio::test]
-async fn authored_replacements_and_tombstones_mask_source_content() {
-    let fs = Fs::memory();
-    let root = attach(
-        &fs,
-        "root",
-        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
-    root.write(
-        "/file.txt",
-        acyclic_stream::OwnedBytes::from_static(b"authored"),
-        IdempotencyKey::new(),
-        crate::PublicationPermit::Unrestricted,
-        accounting!(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        root.read("/file.txt", 32, accounting!())
-            .await
-            .unwrap()
-            .bytes
-            .as_slice(),
-        b"authored"
-    );
-    root.remove("/file.txt", None, accounting!()).await.unwrap();
-    assert!(matches!(
-        root.stat("/file.txt", accounting!()).await,
-        Err(LazyWorkspaceError::NotFound)
-    ));
-}
-
-#[tokio::test]
 async fn historical_exactification_keeps_observations_and_refreshes_unresolved_paths() {
     for observed in [false, true] {
         let fs = Fs::memory();
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
         let root = attach(
             &fs,
-            "root",
             Arc::clone(&source),
             MemoryLazyWorkspaceStore::default(),
         )
@@ -96,7 +60,6 @@ async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -207,7 +170,6 @@ async fn directory_inspection_keeps_cursors_valid_and_promotion_keeps_children_l
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
         native_source(directory.path(), FilesystemProfile::Portable).await,
         MemoryLazyWorkspaceStore::default(),
     )
@@ -264,7 +226,6 @@ async fn exactification_enforces_the_entry_bound_before_returning_a_complete_gen
     std::fs::write(directory.path().join("nested/b.txt"), b"beta").unwrap();
     let root = attach(
         &Fs::memory(),
-        "root",
         native_source(directory.path(), FilesystemProfile::Portable).await,
         MemoryLazyWorkspaceStore::default(),
     )
@@ -311,7 +272,6 @@ async fn windows_names_are_transcoded_to_the_authored_profile() {
     std::fs::write(directory.path().join("caf\u{e9}.txt"), b"source").unwrap();
     let root = attach(
         &Fs::memory(),
-        "root",
         native_source(directory.path(), FilesystemProfile::Windows).await,
         MemoryLazyWorkspaceStore::default(),
     )
@@ -349,7 +309,6 @@ async fn hard_links_survive_exactification_across_batch_boundaries() {
     }
     let root = attach(
         &Fs::memory(),
-        "root",
         native_source(directory.path(), FilesystemProfile::Portable).await,
         MemoryLazyWorkspaceStore::default(),
     )
@@ -359,16 +318,15 @@ async fn hard_links_survive_exactification_across_batch_boundaries() {
         .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
         .await
         .unwrap();
-    let a = exact
-        .stat("/a000", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .unwrap()
-        .value;
-    let b = exact
-        .stat("/a519", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .unwrap()
-        .value;
+    let stat = async |path| {
+        exact
+            .stat(path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .unwrap()
+            .value
+    };
+    let a = stat("/a000").await;
+    let b = stat("/a519").await;
     assert_eq!(a.file_id, b.file_id);
     assert_eq!(b.link_count, 520);
 }

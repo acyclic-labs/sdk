@@ -60,7 +60,6 @@ pub(super) struct ProjectionState {
     pub(super) implicit: HashMap<u64, (u64, crate::NativeAllocation)>,
     pub(super) streams: DirectoryStreams,
     pub(super) invalidation: InvalidationQueue,
-    pub(super) page_stores: PageStores,
 }
 
 impl ProjectionState {
@@ -78,7 +77,6 @@ impl ProjectionState {
             implicit: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
-            page_stores: PageStores::default(),
         }
     }
 
@@ -154,26 +152,15 @@ impl ProjectionState {
             .get(&lookup.node.file_id)
             .map(|(inode, _)| *inode)
         {
-            forget_unbound_names(
-                &mut self.by_inode,
-                &mut self.inode_by_path,
-                inode,
-                &path,
-                |name, verified| {
-                    if name_is_bound(confirmed, source, lookup.node.file_id, name, work)? {
-                        return Ok(true);
-                    }
-                    match verified {
-                        Some(stamp) => {
-                            Ok(source.unchanged_since_with_meter(name, None, stamp, work)?)
-                        }
-                        None => Ok(false),
-                    }
-                },
-                &mut self.invalidation.deferred,
-                work,
-            )?;
-            retire_reused_identity(&mut self.by_inode, &mut self.inode_by_file, inode);
+            self.forget_unbound_names(source, confirmed, inode, &path, work)?;
+            if inode != ROOT_INODE
+                && self
+                    .by_inode
+                    .get(&inode)
+                    .is_some_and(|entry| entry.bindings.is_empty())
+            {
+                self.forget_file(lookup.node.file_id, inode);
+            }
         }
         self.intern_projected(path, lookup, stamp, lookup_reference, work)
     }
@@ -232,7 +219,7 @@ impl ProjectionState {
                     self.inode_by_path.remove(&binding.path);
                 }
             }
-            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
+            self.forget_file(entry.lookup.node.file_id, inode);
         }
     }
 
@@ -419,7 +406,7 @@ impl ProjectionState {
                 self.inode_by_file
                     .try_reserve(1)
                     .map_err(NativeMountError::Allocation)?;
-                forget_file(&mut self.inode_by_file, previous, ROOT_INODE);
+                self.forget_file(previous, ROOT_INODE);
                 self.inode_by_file
                     .insert(lookup.node.file_id, (ROOT_INODE, storage));
             }

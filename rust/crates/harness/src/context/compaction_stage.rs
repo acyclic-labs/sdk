@@ -29,33 +29,26 @@ impl ContextStage for CompactionStage {
 
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+        if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.validate(io)?;
-            #[derive(Serialize)]
-            struct Contract<'a> {
-                name: &'static str,
-                revision: &'static str,
-                max_messages: usize,
-                summary: &'a Option<ContextSummary>,
-                retention: &'a CompactionRetention,
-            }
-            let (value, custody) = context_contract_native(
-                &Contract {
-                    name: "compaction",
-                    revision: "3",
-                    max_messages: self.max_messages,
-                    summary: &self.summary,
-                    retention: &self.retention,
-                },
-                work,
-            )?;
-            io.expect("native ledger").absorb_native_custody(custody)?;
-            return Ok(value);
         }
-        let _ = io;
-        Ok(
-            serde_json::json!({"name": self.name(), "revision": "3", "max_messages": self.max_messages,
-            "summary": self.summary, "retention": self.retention}),
+        #[derive(Serialize)]
+        struct Contract<'a> {
+            name: &'static str,
+            revision: &'static str,
+            max_messages: usize,
+            summary: &'a Option<ContextSummary>,
+            retention: &'a CompactionRetention,
+        }
+        context_contract(
+            &Contract {
+                name: "compaction",
+                revision: "3",
+                max_messages: self.max_messages,
+                summary: &self.summary,
+                retention: &self.retention,
+            },
+            io,
         )
     }
 
@@ -83,23 +76,11 @@ impl ContextStage for CompactionStage {
                     })
                     .transpose()
             })?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let retention = if let Some(work) =
-                io.and_then(crate::executor::PreparationIo::original_native_work)
-            {
-                let (retention, custody) = clone_retention_native(&self.retention, work)?;
-                io.expect("native ledger").absorb_native_custody(custody)?;
-                retention
-            } else {
-                self.retention.clone()
-            };
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let retention = self.retention.clone();
             let compacted = DurableContextProvider::compact(
                 &context,
                 self.max_messages,
                 summary,
-                retention,
+                &self.retention,
                 io,
             )?
             .0;

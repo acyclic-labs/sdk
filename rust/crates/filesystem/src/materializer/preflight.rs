@@ -1,8 +1,6 @@
 use super::*;
 use crate::kernel::FileKind;
 use crate::native_host::{HostRoot, HostStat};
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt as _;
 
 pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
     root: &HostRoot,
@@ -16,9 +14,9 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
     let mut pending = Vec::new();
     let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let path = copy_string(path, &mut allocation)?;
-    native_vec_push(&mut pending, (path, children, allocation), &mut storage)?;
+    push_buffer(&mut pending, (path, children, allocation), &mut storage)?;
     while let Some((path, children, _allocation)) = pending.pop() {
-        let (absolute, _absolute_allocation) = native_absolute_string(&path, work)?;
+        let (absolute, _absolute_allocation) = work.display(&format_args!("/{path}"))?;
         let source = match generation.stat(&absolute, work, work.cancellation()).await {
             Ok(stat) => Some(stat),
             Err(crate::WorkspaceError::NotFound) => None,
@@ -30,7 +28,11 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                 .file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         );
-        let parent = match { #[cfg(unix)] { root.open_dir_held(relative.parent().unwrap_or_else(|| Path::new("")), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative.parent().unwrap_or_else(|| Path::new("")), &mut &*work, |path, work| root.open_dir_held(path, work)) } } {
+        let parent = match host_path(
+            relative.parent().unwrap_or_else(|| Path::new("")),
+            &mut &*work,
+            |path, work| root.open_dir_held(path, work),
+        ) {
             Ok(parent) => Some(parent),
             Err(NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
@@ -40,7 +42,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             Err(error) => return Err(error.into()),
         };
         let observed = match &parent {
-            Some(_) => match { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } } {
+            Some(_) => match host_path(relative, &mut &*work, |path, work| root.stat(path, work)) {
                 Ok(stat) => Some(stat),
                 Err(NativeTreeMaterializationError::Io(error))
                     if error.kind() == std::io::ErrorKind::NotFound =>
@@ -163,7 +165,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             }
             _ => return Ok(false),
         }
-        let selected = { #[cfg(unix)] { { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } } } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } }?;
+        let selected = host_path(relative, &mut &*work, |path, work| root.stat(path, work))?;
         if selected.identity() != observed.identity()
             || children && observed.is_dir() && selected.modified()? != observed.modified()?
         {
@@ -187,17 +189,19 @@ pub(super) async fn generation_children<
     )>,
     work: &NativeMaterializationWork,
 ) -> Result<bool, NativeWorkspacePublicationError> {
-    let directory = { #[cfg(unix)] { root.open_dir_held(Path::new(path), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(path), &mut &*work, |path, work| root.open_dir_held(path, work)) } }?;
+    let directory = host_path(Path::new(path), &mut &*work, |path, work| {
+        root.open_dir_held(path, work)
+    })?;
     let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
     let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut names = Vec::new();
     let (mut reader, cursor) = crate::native_host::read_dir_held(&directory, &mut &*work)?;
-    while let Some(name) = next_name(&mut reader, work)? {
-        native_vec_push(&mut names, name, &mut storage)?;
+    while let Some((entry, allocation)) = reader.next(&mut &*work)? {
+        push_buffer(&mut names, (entry.name, allocation), &mut storage)?;
     }
     drop(reader);
     drop(cursor);
-    let (absolute, _absolute_allocation) = native_absolute_string(path, work)?;
+    let (absolute, _absolute_allocation) = work.display(&format_args!("/{path}"))?;
     let mut after = None;
     let mut after_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     loop {
@@ -226,7 +230,7 @@ pub(super) async fn generation_children<
                         .unicode_text()
                         .ok_or(NativeTreeMaterializationError::InvalidLayout)?
                 ))?;
-                native_vec_push(pending, (child, true, child_allocation), storage)?;
+                push_buffer(pending, (child, true, child_allocation), storage)?;
             }
         }
         let more = page.has_more;
@@ -251,7 +255,8 @@ pub(super) async fn generation_children<
 }
 
 fn host_name_matches(
-    host: &std::ffi::OsStr,
+    #[cfg(unix)] host: &std::ffi::OsStr,
+    #[cfg(windows)] host: &[u16],
     logical: &crate::kernel::LogicalName,
     work: &NativeMaterializationWork,
 ) -> Result<bool, NativeTreeMaterializationError> {
@@ -275,7 +280,7 @@ fn host_name_matches(
             }
             #[cfg(windows)]
             {
-                Ok(native_compare(host.encode_wide(), units, work)? == std::cmp::Ordering::Equal)
+                Ok(native_compare(host.iter().copied(), units, work)? == std::cmp::Ordering::Equal)
             }
         }
         crate::kernel::NameEncoding::Utf8 | crate::kernel::NameEncoding::PosixBytes => {
@@ -298,7 +303,7 @@ fn host_name_matches(
                     return Ok(false);
                 };
                 Ok(
-                    native_compare(host.encode_wide(), text.encode_utf16(), work)?
+                    native_compare(host.iter().copied(), text.encode_utf16(), work)?
                         == std::cmp::Ordering::Equal,
                 )
             }
@@ -360,19 +365,19 @@ fn source_metadata_matches(
     {
         if authored.changed_ns.is_some_and(|expected| {
             i128::from(expected)
-                != i128::from(observed.ctime()) * 1_000_000_000 + i128::from(observed.ctime_nsec())
+                != i128::from((observed.raw.st_ctime as i64)) * 1_000_000_000 + i128::from((observed.raw.st_ctime_nsec as i64))
         }) {
             return Ok(false);
         }
         if authored
             .posix_mode
-            .is_some_and(|value| value & 0o7777 != observed.mode() & 0o7777)
+            .is_some_and(|value| value & 0o7777 != (observed.raw.st_mode as u32) & 0o7777)
             || authored
                 .posix_uid
-                .is_some_and(|value| value != observed.uid())
+                .is_some_and(|value| value != (observed.raw.st_uid as u32))
             || authored
                 .posix_gid
-                .is_some_and(|value| value != observed.gid())
+                .is_some_and(|value| value != (observed.raw.st_gid as u32))
         {
             return Ok(false);
         }
@@ -380,7 +385,7 @@ fn source_metadata_matches(
     #[cfg(windows)]
     if authored
         .windows_attributes
-        .is_some_and(|value| value & 0x2137 != observed.file_attributes() & 0x2137)
+        .is_some_and(|value| value & 0x2137 != observed.raw.FileAttributes & 0x2137)
     {
         return Ok(false);
     }

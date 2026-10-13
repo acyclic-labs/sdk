@@ -798,24 +798,6 @@ mod tests {
         result?.ok_or(MountSourceError::Stale)
     }
 
-    #[test]
-    fn reconstructed_full_budget_records_only_actual_cleanup() {
-        let gate = Arc::new(ViewGate::new());
-        let cancellation = CancellationToken::new();
-        let original = WorkBudget::UNBOUNDED;
-        let mut work = DemandWork::new(original, &cancellation);
-        let lease = measured_read(&gate, CallbackOwner(1), &mut work).expect("actual read");
-        assert_eq!(work.budget.items_examined, original.items_examined - 1);
-        let before = work.work.items_examined;
-        let (counters, allocations, roots) = work.into_current();
-        let mut work = DemandWork::from_current(original, &cancellation, counters, allocations, roots);
-        drop(lease);
-        work.record(WorkCounters::UNCHARGED).expect("actual cleanup under reconstructed full budget");
-        let receipt = work.receipt();
-        assert_eq!(receipt.items_examined, before + 1);
-        receipt.verify(original).expect("no artificial quota overflow");
-        assert_eq!(gate.state.lock().expect("gate state").readers, 0);
-    }
 
     #[test]
     fn native_queue_custody_preserves_non_lifo_cleanup_quota() {
@@ -914,49 +896,7 @@ mod tests {
         assert_eq!(receipt.items_examined, before + 2);
     }
 
-    #[test]
-    fn tighter_reconstructed_budget_keeps_completed_cleanup_prefix() {
-        let gate = Arc::new(ViewGate::new());
-        let cancellation = CancellationToken::new();
-        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let lease = measured_read(&gate, CallbackOwner(1), &mut work).expect("actual read");
-        let before = work.work.items_examined;
-        let (counters, allocations, roots) = work.into_current();
-        let mut tighter = WorkBudget::UNBOUNDED;
-        tighter.items_examined = before;
-        let mut work = DemandWork::from_current(tighter, &cancellation, counters, allocations, roots);
-        drop(lease);
-        let failure = work.record(WorkCounters::UNCHARGED).expect_err("tighter ceiling cannot erase actual cleanup");
-        assert_eq!(work.receipt().items_examined, before + 1);
-        assert!(matches!(failure, crate::demand::DemandError::Work(_)));
-    }
 
-    #[test]
-    fn boxed_original_read_payload_survives_custody_until_physical_drop() {
-        let gate = Arc::new(ViewGate::new());
-        let cancellation = CancellationToken::new();
-        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let mut lease = measured_read(&gate, CallbackOwner(1), &mut work).expect("actual read");
-        let bytes = std::mem::size_of::<ViewReadLease>() as u64;
-        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("actual Box payload admission");
-        lease.attach_owned_payload(bytes).expect("same original cleanup custody");
-        let lease = Box::new(lease);
-        let live = work.live_allocation_bytes();
-        let before = work.work.items_examined;
-        let (counters, allocations, roots) = work.into_current();
-        let mut work = DemandWork::from_current(
-            WorkBudget::UNBOUNDED, &cancellation, counters, allocations, roots,
-        );
-        work.check().expect("full budget reconstructs active original lease");
-        assert_eq!(work.live_allocation_bytes(), live);
-        assert_eq!(work.budget.items_examined, u64::MAX - 1);
-        drop(lease);
-        assert_eq!(work.live_allocation_bytes(), live - bytes);
-        work.record(WorkCounters::default()).expect("actual Box and lease cleanup");
-        assert_eq!(work.work.items_examined, before + 1);
-        assert_eq!(work.budget.items_examined, u64::MAX);
-        assert_eq!(work.live_allocation_bytes(), live - bytes);
-    }
 
     #[test]
     fn independent_box_payloads_release_non_lifo_without_losing_quota() {

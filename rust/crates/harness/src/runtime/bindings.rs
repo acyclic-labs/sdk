@@ -22,7 +22,6 @@ pub struct AgentHarness {
     pub(super) model: Option<ModelBinding>,
     pub(super) context: ContextPipeline,
     pub(super) fork_preparer: Option<ForkBinding>,
-    pub(super) workspaces: Option<Arc<dyn crate::merge::ProjectWorkspaceProvider>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -63,7 +62,6 @@ impl Clone for AgentHarness {
             model: self.model.clone(),
             context: self.context.clone(),
             fork_preparer: self.fork_preparer.clone(),
-            workspaces: self.workspaces.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_configuration_custody: None,
         }
@@ -112,9 +110,6 @@ pub struct ContentBindings {
     pub writer: Option<Arc<dyn ContentPublisher>>,
 }
 
-/// Artifact access uses the same immutable, digest-verified file contract as
-pub type ArtifactBindings = ContentBindings;
-
 /// Immutable admission bindings assembled before tasks can run. Each optional
 pub struct Bindings {
     /// Version-pinned typed task definitions.
@@ -142,13 +137,11 @@ pub struct Bindings {
     /// Optional owner-bound content access for tasks and tools.
     pub content: Option<ContentBindings>,
     /// Independently selected immutable artifact storage.
-    pub artifacts: Option<ArtifactBindings>,
+    pub artifacts: Option<ContentBindings>,
     /// Optional invocation policy; absence permits calls with explicit grants.
     pub policy: Option<Arc<dyn ToolPolicy>>,
     /// Parent-bound fork capture; publication remains with the owning aggregate.
     pub fork_preparer: Option<Arc<dyn crate::fork::ForkPreparer>>,
-    /// Parent-bound project fork and inspected join provider.
-    pub workspaces: Option<Arc<dyn crate::merge::ProjectWorkspaceProvider>>,
 }
 
 impl Bindings {
@@ -171,15 +164,7 @@ impl Bindings {
             artifacts: None,
             policy: None,
             fork_preparer: None,
-            workspaces: None,
         }
-    }
-
-    /// Selects a qualified execution provider for new durable admissions.
-    #[must_use]
-    pub fn execution(mut self, value: Arc<dyn ExecutionProvider>) -> Self {
-        self.execution = Some(value);
-        self
     }
 
     /// Validates the immutable composition under caller IO limits.
@@ -239,7 +224,8 @@ impl Bindings {
         if let (Some(work), Some(policy)) = (native, &self.policy) {
             policy.supports_native_policy(work)?;
             let identity = policy.identity_with_native_work(work)?;
-            validate_policy_identity_with_native_work(&identity.0, &identity.1, work)?;
+            check_policy_metadata(&identity.0, &identity.1, work)?;
+            validate_policy_identity(&identity.0, startup)?;
             startup
                 .expect("native startup observer")
                 .absorb_native_custody(identity.1)?;
@@ -294,7 +280,7 @@ impl Bindings {
         let dependency_observer = dependency_io.as_ref();
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let dependency_observer = None;
-        validate_task_dependencies(&self, dependency_observer)?;
+        super::dependencies::validate_task_dependencies(&self, dependency_observer)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         drop(dependency_io);
         let execution = self.execution;
@@ -317,7 +303,6 @@ impl Bindings {
             artifacts,
             policy,
             fork_preparer,
-            workspaces,
             ..
         } = self;
         let concurrency = scope.concurrency_bound(concurrency);
@@ -346,30 +331,6 @@ impl Bindings {
             let identity = route.identity();
             validate_policy_identity(&identity, startup)?;
         }
-        if let Some(workspaces) = &workspaces {
-            if !scope.grants().contains(capability::FORK_PUBLISH)
-                && !scope.grants().contains(capability::PROJECT_MERGE)
-            {
-                return Err(crate::conversation::content_error(
-                    startup,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "project workspaces require fork:publish or project:merge",
-                ));
-            }
-            crate::executor::with_history_io(startup, |work| {
-                workspaces.provider().validate(work)?;
-                workspaces.project().validate(work)
-            })?;
-            if workspaces.project().class() != crate::conversation::VolumeClass::Project
-                || workspaces.project().provider() != workspaces.provider()
-            {
-                return Err(crate::conversation::content_error(
-                    startup,
-                    crate::wire::ErrorCode::Invalid,
-                    "workspace binding is not a project",
-                ));
-            }
-        }
         let fork_preparer = fork_preparer
             .map(|preparer| ForkBinding::new(preparer, startup))
             .transpose()?;
@@ -394,7 +355,6 @@ impl Bindings {
             model: None,
             context: ContextPipeline::default(),
             fork_preparer,
-            workspaces,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_configuration_custody: None,
         };

@@ -167,7 +167,7 @@ fn native_extra_facts_differ(
     after: &acyclic_fs::LazyLookup,
 ) -> bool {
     let links = |lookup: &acyclic_fs::LazyLookup| match lookup {
-        acyclic_fs::LazyLookup::Authored { stat, .. } => Some(stat.link_count),
+        acyclic_fs::LazyLookup::Authored { record, .. } => Some(record.link_count),
         acyclic_fs::LazyLookup::Shadow {
             source_link_count, ..
         } => Some(*source_link_count),

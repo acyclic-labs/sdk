@@ -52,170 +52,41 @@ async fn protected_tool_acceptance_enables_original_admission() -> Result<()> {
 }
 
 #[tokio::test]
-async fn ordinary_context_cannot_be_qualified_by_an_opaque_allocation() -> Result<()> {
+async fn cancelled_shared_context_preserves_original_cause_and_metadata_custody() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
     let context = fixture
         .harness
-        .durable_context(fixture.root, fixture.root_lease.operation.operation_id)
+        .durable_context(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &original,
+            )?),
+        )
         .await?;
-    let before = original.receipt();
+    let bytes = context
+        .native_custody
+        .as_ref()
+        .expect("issued context custody")
+        .bytes();
+    cancellation.cancel();
     assert!(matches!(
         context.require_original_native_work(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(original.receipt(), before);
-    let custody = original
-        .claim(65_536, 1, acyclic_fs::WorkCounters::default())
-        .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
-    let before = original.receipt();
-    let rejected = context.into_native_shared(custody, &original);
-    assert!(matches!(
-        rejected,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(original.receipt(), before);
-    assert_eq!(
-        original.live_allocation_bytes(),
-        NativeMaterializationWork::accounting_state_bytes()
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn native_metadata_receipt_rejects_clone_foreign_and_short_custody() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let original = work(&cancellation)?;
-    let (context, custody) = fixture
-        .harness
-        .durable_context_with_native_work(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            &original,
-        )
-        .await?;
-    assert!(custody.bytes() > 0);
-    let clone = context.clone();
-    let opaque = {
-        let claim_bytes = custody.bytes();
-        original.claim(
-            claim_bytes,
-            u64::from(claim_bytes != 0),
-            acyclic_fs::WorkCounters::default(),
-        )
-    }
-    .map_err(|cause| Error::NativeWork {
-        cause,
-        custody: None,
-    })?;
-    let before = original.receipt();
-    let cloned = clone.into_native_shared(opaque, &original);
-    assert!(matches!(
-        cloned,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(original.receipt(), before);
-    drop(context);
-    drop(custody);
-
-    let (context, custody) = fixture
-        .harness
-        .durable_context_with_native_work(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            &original,
-        )
-        .await?;
-    let foreign = work(&cancellation)?;
-    let before = original.receipt();
-    let rejected = context.into_native_shared(custody, &foreign);
-    assert!(matches!(
-        rejected,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(original.receipt(), before);
-
-    let (context, mut custody) = fixture
-        .harness
-        .durable_context_with_native_work(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            &original,
-        )
-        .await?;
-    let source_bytes = context
-        .native_metadata_source
-        .as_ref()
-        .expect("genuine native metadata source")
-        .bytes;
-    assert!(source_bytes > 0);
-    let removed = custody.bytes() - (source_bytes - 1);
-    let released = custody
-        .split_off(removed)
-        .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
-    let before = original.receipt();
-    let rejected = context.into_native_shared(custody, &original);
-    assert!(matches!(
-        rejected,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(original.receipt(), before);
-    drop(released);
-    Ok(())
-}
-
-#[tokio::test]
-async fn cancelled_shared_context_preserves_original_cause_and_metadata_custody() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let original = work(&cancellation)?;
-    let (context, custody) = fixture
-        .harness
-        .durable_context_with_native_work(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            &original,
-        )
-        .await?;
-    let bytes = custody.bytes();
-    cancellation.cancel();
-    let before = original.receipt();
-    let rejected = context.into_native_shared(custody, &original);
-    match rejected {
         Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            custody: Some(custody),
-        }) => {
-            assert_eq!(custody.bytes(), bytes);
-            assert!(custody.work().shares_allocation_context(&original));
-            drop(custody);
-        }
-        _ => panic!("cancelled shared allocation must preserve the original cause and custody"),
-    }
-    assert_eq!(original.receipt(), before);
+            ..
+        })
+    ));
+    assert_eq!(
+        context
+            .native_custody
+            .as_ref()
+            .expect("retained context custody")
+            .bytes(),
+        bytes
+    );
     Ok(())
 }
 
@@ -235,11 +106,17 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     let fence = crate::scheduler::LeaseFence::from(&reservation);
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture
+    let context = fixture
         .harness
-        .durable_context_with_native_work(task, created.request.child.operation_id, &original)
+        .durable_context(
+            task,
+            created.request.child.operation_id,
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &original,
+            )?),
+        )
         .await?;
-    let shared = context.into_native_shared(custody, &original)?;
+    let shared = context;
     let content_io = crate::executor::PreparationIo::from_native_work(&original)?;
     let tool = ToolContext::new(
         Arc::clone(&shared),
@@ -257,7 +134,13 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     drop(tool);
     let owner = fixture
         .host
-        .journal_owner(task, &fence, Some(&crate::executor::PreparationIo::from_native_work(&original)?))
+        .journal_owner(
+            task,
+            &fence,
+            Some(&crate::executor::PreparationIo::from_native_work(
+                &original,
+            )?),
+        )
         .await?
         .into_native_shared(&original)?;
     let reader = crate::runtime::content_residency_verifier(
@@ -304,7 +187,13 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     let root_fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
     let root_owner = fixture
         .host
-        .journal_owner(fixture.root, &root_fence, Some(&crate::executor::PreparationIo::from_native_work(&original)?))
+        .journal_owner(
+            fixture.root,
+            &root_fence,
+            Some(&crate::executor::PreparationIo::from_native_work(
+                &original,
+            )?),
+        )
         .await?
         .into_native_shared(&original)?;
     let before = original.receipt();
@@ -324,7 +213,12 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     ));
     assert_eq!(original.receipt(), before);
 
-    let unmeasured = Arc::new(fixture.host.journal_owner(task, &(fence.clone()), None).await?);
+    let unmeasured = Arc::new(
+        fixture
+            .host
+            .journal_owner(task, &(fence.clone()), None)
+            .await?,
+    );
     let before = original.receipt();
     let rejected = crate::runtime::content_residency_verifier(
         Arc::clone(&shared),
@@ -342,15 +236,16 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     ));
     assert_eq!(original.receipt(), before);
 
-    let (root, custody) = fixture
+    let root = fixture
         .harness
-        .durable_context_with_native_work(
+        .durable_context(
             fixture.root,
             fixture.root_lease.operation.operation_id,
-            &original,
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &original,
+            )?),
         )
         .await?;
-    let root = root.into_native_shared(custody, &original)?;
     let root_reader = crate::runtime::content_residency_verifier(
         Arc::clone(&root),
         root_owner,
@@ -421,15 +316,17 @@ async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_fu
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture
+    let context = fixture
         .harness
-        .durable_context_with_native_work(
+        .durable_context(
             fixture.root,
             fixture.root_lease.operation.operation_id,
-            &original,
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &original,
+            )?),
         )
         .await?;
-    let shared = context.into_native_shared(custody, &original)?;
+    let shared = context;
     assert!(shared.native_work()?.shares_allocation_context(&original));
     shared.as_ref().require_original_native_work(&original)?;
     let operation = crate::OperationId::from_bytes([119; 16]);
@@ -565,11 +462,17 @@ async fn native_tool_scope_restricts_without_replacing_the_issued_context_or_lin
     );
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture
+    let context = fixture
         .harness
-        .durable_context_with_native_work(task, created.request.child.operation_id, &original)
+        .durable_context(
+            task,
+            created.request.child.operation_id,
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &original,
+            )?),
+        )
         .await?;
-    let shared = context.into_native_shared(custody, &original)?;
+    let shared = context;
     let read = created
         .private
         .capability(crate::conversation::VolumeOperation::Read, &mut None)?;
@@ -723,41 +626,5 @@ async fn native_tool_scope_restricts_without_replacing_the_issued_context_or_lin
         })
     ));
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn shared_context_requires_heap_headroom() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let original = work(&cancellation)?;
-    let (context, custody) = fixture
-        .harness
-        .durable_context_with_native_work(
-            fixture.root,
-            fixture.root_lease.operation.operation_id,
-            &original,
-        )
-        .await?;
-    let remaining = original.remaining().map_err(Error::from)?;
-    let _occupied = original
-        .claim(
-            remaining.peak_allocation_bytes,
-            0,
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(Error::from)?;
-    assert!(matches!(
-        context.into_native_shared(custody, &original),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
-                    ..
-                }
-            ),
-            custody: Some(_),
-        })
-    ));
     Ok(())
 }

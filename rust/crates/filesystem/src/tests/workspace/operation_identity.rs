@@ -11,13 +11,13 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
     let first = parent
-        .fork(
+        .fork::<_, _, WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen.clone(), key),
             crate::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-            allow,
+            &mut allow::<FsError>,
         )
         .await?;
     let child = first.value;
@@ -26,13 +26,13 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     child.write_text("/file", "later child").await?;
     let advanced_child = unbounded!(child, head())?;
     let retry = parent
-        .fork(
+        .fork::<_, _, WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen, key),
             crate::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-            |_| {
+            &mut |_| {
                 std::future::ready(Err(crate::OperationFailure::before_work(
                     crate::FsError::CreationRejected,
                 )))
@@ -115,10 +115,12 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
         .await?;
     let current = unbounded!(workspace, head())?;
     assert_ne!(current.id(), original_generation.id());
-    let observed = workspace
-        .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
-    let (generation, record) = observed.value.0.ok_or("original operation disappeared")?;
+    let generation = unbounded!(workspace, operation_generation(key))?
+        .ok_or("original operation disappeared")?;
+    let record = fs.authority().find_operation(
+        workspace.authority_id(), key.operation_id(),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+    ).await?.ok_or("original operation record disappeared")?;
     assert_eq!(generation.id(), original_generation.id());
     assert_eq!(record.operation_id, key.operation_id());
     let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
@@ -147,14 +149,13 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     );
     assert!(
         workspace
-            .operation_generation_record(
+            .operation_generation(
                 IdempotencyKey::new(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await?
             .value
-            .0
             .is_none()
     );
     Ok(())
@@ -332,10 +333,9 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
     assert_eq!(unbounded!(workspace, head())?.id(), original_head.id());
     assert!(
         workspace
-            .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation,)
+            .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation,)
             .await?
             .value
-            .0
             .is_none()
     );
     unbounded!(workspace, release_publication(target_reservation))?;

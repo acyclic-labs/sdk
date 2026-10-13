@@ -198,7 +198,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let path_metadata =
         through_every_object_cut!(checkout.read_metadata(&large, B, &cancellation,));
     let identity_metadata =
-        through_every_object_cut!(checkout.read_metadata_by_id(large_id, B, &cancellation,));
+        through_every_object_cut!(checkout.read_metadata(large_id, B, &cancellation,));
     assert_eq!(identity_metadata.value, path_metadata.value);
     let identity_record =
         through_every_object_cut!(checkout.read_file_record_by_id(large_id, B, &cancellation,));
@@ -348,7 +348,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert_eq!(cloned.value.bytes.as_ref(), b"xxxxne");
     let mut changed_metadata = FileMetadata::default();
     changed_metadata.modified_ns = MetadataField::Value(101);
-    through_every_object_cut!(checkout.set_attributes_by_id(
+    through_every_object_cut!(checkout.set_attributes(
         large_id,
         changed_metadata,
         None,
@@ -356,7 +356,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation
     ));
     changed_metadata.modified_ns = MetadataField::Value(102);
-    through_every_object_cut!(checkout.set_attributes_by_id(
+    through_every_object_cut!(checkout.set_attributes(
         large_id,
         changed_metadata,
         Some(4_224),

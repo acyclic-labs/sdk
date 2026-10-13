@@ -14,7 +14,7 @@ use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
     ForkOptions, Fs, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,
-    Workspace, WorkspaceError, WorkspaceId, WorkspaceStat,
+    Workspace, WorkspaceError, WorkspaceId,
 };
 #[cfg(test)]
 use bytes::Bytes;
@@ -51,38 +51,24 @@ pub struct LazyWorkspace<A, O, D, S> {
     allocation: Option<crate::NativeAllocation>,
 }
 
-impl<A, O, D, S> Clone for LazyWorkspace<A, O, D, S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            workspace: self.workspace.clone(),
-            source: Arc::clone(&self.source),
-            store: self.store.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
-            allocation: None,
-        }
-    }
-}
-
-impl<A, O, D, S> LazyWorkspace<A, O, D, S> {
+impl<A, O, D, S: Clone> LazyWorkspace<A, O, D, S> {
     /// Funds the shared handle before allocating it.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_arc(
-        mut self,
-        ctx: &mut KernelAccounting<'_>,
-    ) -> Result<Arc<Self>, LazyWorkspaceError> {
+    pub fn share(&self, ctx: &mut KernelAccounting<'_>) -> Result<Arc<Self>, LazyWorkspaceError> {
         let layout = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
             .extend(std::alloc::Layout::new::<Self>())
             .map_err(|_| crate::WorkError::Overflow)?
             .0;
-        if let KernelOwnedAllocation::NativeOriginal(guard) =
-            ctx.claim_owned(layout.pad_to_align().size() as u64, 1)?
-        {
-            self.allocation = Some(guard);
-        }
-        Ok(Arc::new(self))
+        let allocation = match ctx.claim_owned(layout.pad_to_align().size() as u64, 1)? {
+            KernelOwnedAllocation::NativeOriginal(guard) => Some(guard),
+            KernelOwnedAllocation::Standalone => None,
+        };
+        Ok(Arc::new(Self {
+            workspace: self.workspace.clone(),
+            source: Arc::clone(&self.source),
+            store: self.store.clone(),
+            allocation,
+        }))
     }
 }
 
@@ -91,8 +77,7 @@ pub use model::LAZY_SNAPSHOT_DOMAIN;
 pub(crate) use model::LAZY_STATE_SCHEMA;
 pub use model::{LazyForkOrigin, LazyForkPhase};
 mod store_node;
-use store_node::copy_bytes;
-pub(crate) use store_node::{MemoryLazyNode, clone_lazy_node};
+pub(crate) use store_node::MemoryLazyNode;
 mod hash;
 pub(crate) use hash::hash_lazy_value;
 mod lookup;
@@ -128,7 +113,7 @@ mod tombstones;
 mod transaction;
 mod work;
 mod write;
-pub use directory::{LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazySeekTarget};
+pub use directory::{LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage};
 pub use error::LazyWorkspaceError;
 pub use lookup::{LazyLookup, LazyStat};
 pub use model::{

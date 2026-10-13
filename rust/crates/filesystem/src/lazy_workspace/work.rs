@@ -117,27 +117,16 @@ pub(super) fn source_file_metadata(source: crate::demand::SourceMetadata) -> Fil
 
 pub(super) fn path_priority(path: &str) -> u64 {
     let digest = blake3::hash(path.as_bytes());
-    let mut bytes = [0_u8; 8];
-    if let Some(prefix) = digest.as_bytes().get(..8) {
-        bytes.copy_from_slice(prefix);
-    }
-    u64::from_be_bytes(bytes)
+    u64::from_be_bytes(digest.as_bytes()[..8].try_into().expect("digest prefix"))
 }
 
 pub(super) fn shadow_priority(file_id: FileId) -> u64 {
     let digest = blake3::hash(&file_id.into_bytes());
-    let mut bytes = [0_u8; 8];
-    bytes.copy_from_slice(&digest.as_bytes()[..8]);
-    u64::from_le_bytes(bytes)
+    u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("digest prefix"))
 }
 
 pub(super) fn parent_path(path: &str) -> Option<&str> {
-    let index = path.rfind('/')?;
-    if index == 0 {
-        Some("/")
-    } else {
-        path.get(..index)
-    }
+    path.get(..path.rfind('/')?.max(1))
 }
 
 pub(super) fn exactify_path_order(left: &str, right: &str) -> std::cmp::Ordering {

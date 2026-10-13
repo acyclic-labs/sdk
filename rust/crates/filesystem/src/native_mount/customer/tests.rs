@@ -87,7 +87,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(work.receipt(), before_binding);
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, pinned);
     assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
-    let ordinary_job = job.with_source_io_lease(ordinary_source.native_source_io_lease()?)?;
+    let ordinary_job = job.with_source_io_lease(ordinary_source.native_source_io_lease(ordinary_source.clone())?)?;
     assert!(ordinary_job.shares_ledger(&job));
     assert!(ordinary_job.shares_resource_allowance(&job));
     assert!(!ordinary_job.shares_ledger(&work));
@@ -101,11 +101,11 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         .await?;
     let before_foreign_job = job.receipt();
     assert!(matches!(
-        job.with_source_io_lease(native_source.native_source_io_lease()?),
+        job.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?),
         Err(crate::NativeTreeMaterializationError::InvalidLayout)
     ));
     assert_eq!(job.receipt(), before_foreign_job);
-    let native_job = work.with_source_io_lease(native_source.native_source_io_lease()?)?;
+    let native_job = work.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?)?;
     assert!(native_job.shares_ledger(&work));
     assert!(native_job.shares_resource_allowance(&work));
     drop(native_job);

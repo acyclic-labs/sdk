@@ -35,7 +35,7 @@ impl CoreLog {
         let value = native_records::read_native_record(key, &paths.current, work, cxl)?;
         let output = value
             .as_ref()
-            .map(|value| native_records::clone_native_record_value((&value.0), work, cxl))
+            .map(|value| native_records::clone_native_record_value(&value.0, work, cxl))
             .transpose()?;
         let mut residents = self.residents();
         let needed = residents.0.len() + 1;
