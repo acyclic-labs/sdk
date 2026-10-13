@@ -3,7 +3,6 @@ pub(super) struct InputBuffers<'a, 'w> {
     pub(super) bytes: u64,
     allocation: Option<crate::NativeAllocation>,
     pending: Option<crate::materializer::NativeWorkReservation>,
-    proof: Option<Arc<crate::kernel::ProofDataCustody>>,
 }
 
 impl<'a, 'w> InputBuffers<'a, 'w> {
@@ -23,7 +22,6 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             bytes: 0,
             allocation,
             pending: None,
-            proof: None,
         })
     }
 
@@ -227,65 +225,10 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         self.bytes = 0;
         self.allocation.take()
     }
-
-    pub(super) fn observer<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &mut self,
-        checkout: &Checkout<A, O>,
-        cancellation: &CancellationToken,
-    ) -> Result<Checkout<A, O>, MountSourceError> {
-        let observer = if let Some(work) = self.carrier.original_native_work() {
-            checkout.observer(&work, cancellation).map_err(fs_error)?
-        } else {
-            let (budget, live) = self.carrier.remaining()?;
-            self.carrier.accept_with_prior_live(
-                checkout.observer(budget, cancellation),
-                live,
-                fs_error,
-            )?
-        };
-        self.adopt_checkout(&observer)?;
-        Ok(observer)
-    }
-
-    fn adopt_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &mut self,
-        checkout: &Checkout<A, O>,
-    ) -> Result<(), MountSourceError> {
-        if self.carrier.original_native_work().is_some() {
-            return Ok(());
-        }
-        let bytes = checkout.logical_owned_bytes();
-        let custody = checkout.proof_data_custody();
-        let custody_bytes = custody.logical_owned_bytes();
-        self.proof = Some(Arc::clone(&custody));
-        self.bytes = self
-            .bytes
-            .checked_add(bytes)
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        self.carrier
-            .with_work(|work| {
-                work.record_native_owned_completed(bytes, &None).1?;
-                work.retain_observer_custody(custody)
-            })
-            .map_err(super::lazy::mount_demand_error)?;
-        self.bytes = self
-            .bytes
-            .checked_sub(custody_bytes)
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        Ok(())
-    }
 }
 
 impl Drop for InputBuffers<'_, '_> {
     fn drop(&mut self) {
-        if let Some(proof) = self.proof.take() {
-            let _ = self.carrier.with_work(|work| {
-                work.merge(
-                    proof.take_completed_data_work(),
-                    work.live_allocation_bytes(),
-                )
-            });
-        }
         if self.allocation.is_none() {
             self.carrier
                 .with_work(|work| work.release(self.bytes))

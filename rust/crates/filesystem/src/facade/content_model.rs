@@ -116,6 +116,12 @@ impl ContentFile for NamespacePath {
         ContentAddress::Path(self)
     }
 }
+impl ContentFile for &NamespacePath {
+    fn address(&self) -> ContentAddress<'_> {
+        ContentAddress::Path(self)
+    }
+}
+
 impl ContentFile for FileId {
     fn address(&self) -> ContentAddress<'_> {
         ContentAddress::File(*self)

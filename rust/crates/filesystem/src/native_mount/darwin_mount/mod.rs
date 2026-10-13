@@ -14,7 +14,7 @@ use super::{
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::{FileId, NativeAllocation, NativeMaterializationWork as Work, WorkCounters, WorkError};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,6 @@ const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
 const MAXIMUM_LISTING_RESTARTS: usize = 8;
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
-const RENAME_NOREPLACE: u32 = 1;
 const DISKUTIL_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(4);
 const MOUNT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);

@@ -16,11 +16,11 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         cancellation.check()?;
         #[cfg(unix)]
         let file = source_root
-            .open_file_positional(host_path, &mut meter.native.clone())
+            .open_file(host_path, &mut meter.native.clone())
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
         let file = source_root
-            .open_file_wide(
+            .open_file(
                 host_path,
                 windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
                 &mut meter.native.clone(),

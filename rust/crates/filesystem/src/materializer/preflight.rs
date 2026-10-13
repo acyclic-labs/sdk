@@ -130,7 +130,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                     #[cfg(windows)]
                     let (target, _allocation) =
                         crate::native_host::with_wide_path(leaf, &mut &*work, |name, meter| {
-                            crate::native_host::read_link_held_wide(
+                            crate::native_host::read_link_held(
                                 &parent,
                                 name,
                                 work.remaining()?.source_bytes_read,
