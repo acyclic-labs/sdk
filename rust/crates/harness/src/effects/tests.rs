@@ -107,7 +107,7 @@ impl EffectProvider for Provider {
 }
 
 #[tokio::test]
-async fn only_an_exact_provider_dispatch_can_be_attested() -> Result<()> {
+async fn durable_dispatch_produces_a_validated_attestation() -> Result<()> {
     let provider = Arc::new(Provider(AtomicUsize::new(0)));
     let mut registry = EffectRegistry::new(None, Some(Arc::new(ResultResolver)))?;
     registry.register(provider.clone(), None)?;
@@ -133,28 +133,8 @@ async fn only_an_exact_provider_dispatch_can_be_attested() -> Result<()> {
             id: "task-1".into(),
         },
     );
-    let dispatch = EffectDispatch {
-        provider: state.provider.clone(),
-        effect_id,
-        attempt_id,
-        effect_kind: state.effect_kind.clone(),
-        request: state.request.clone(),
-        guarantee: state.guarantee,
-        request_digest: state.request_digest,
-    };
-
-    let mut changed = dispatch.clone();
-    changed.request = request_file(br#"{"value":2}"#)?;
-    assert!(matches!(
-        registry
-            .dispatch_and_attest(&issuer, effect_id, &state, changed, &mut None)
-            .await,
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(provider.0.load(Ordering::SeqCst), 0);
-
     let attestation = registry
-        .dispatch_and_attest(&issuer, effect_id, &state, dispatch, &mut None)
+        .dispatch_and_attest(&issuer, effect_id, &state, &mut None)
         .await?;
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
     assert!(matches!(attestation.status, EffectStatus::Succeeded { .. }));

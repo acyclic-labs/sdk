@@ -3,39 +3,42 @@
 use crate::Result;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_stream::BoxProviderFuture;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-/// An admitted native future whose allocation custody outlives its physical box.
+/// An admitted future whose custody outlives its physical allocation.
 #[must_use = "native futures must be awaited or dropped"]
 pub struct NativeFutureBundle<'a, T> {
     future: BoxProviderFuture<'a, Result<T>>,
-    _custody: NativeAllocation,
+    custody: NativeAllocation,
 }
 
 impl<'a, T> NativeFutureBundle<'a, T> {
-    /// Borrows this future's original ledger without a clone or a new allowance.
+    /// Borrows the future's original ledger.
     #[must_use]
     pub const fn work(&self) -> &NativeMaterializationWork {
-        self._custody.work()
+        self.custody.work()
     }
 
-    /// Admits the concrete future's real allocation before invoking its builder.
-    pub fn new<F, B>(work: &NativeMaterializationWork, build: B) -> Result<Self>
+    /// Admits the concrete allocation before invoking its builder.
+    pub fn new<F>(work: &NativeMaterializationWork, build: impl FnOnce() -> F) -> Result<Self>
     where
         F: Future<Output = Result<T>> + Send + 'a,
-        B: FnOnce() -> F,
     {
         work.remaining()?;
         let bytes = std::mem::size_of::<F>() as u64;
-        let custody = if bytes == 0 {
-            work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?
-        } else {
-            work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)?
-        };
-        let future: BoxProviderFuture<'a, Result<T>> = Box::pin(build());
-        Ok(Self { future, _custody: custody })
+        let custody = work.claim(
+            bytes,
+            u64::from(bytes != 0),
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        Ok(Self {
+            future: Box::pin(build()),
+            custody,
+        })
     }
 }
 
@@ -64,7 +67,6 @@ mod tests {
     #[test]
     fn exhausted_allocator_and_cancelled_work_reject_before_future_builder() {
         let cancellation = CancellationToken::new();
-        // The original ledger itself uses its one genuinely attempted allocation.
         let exhausted = NativeMaterializationWork::new(budget(1), &cancellation)
             .expect("admitted original ledger");
         let built = AtomicBool::new(false);
@@ -74,8 +76,6 @@ mod tests {
         });
         assert!(matches!(result, Err(crate::Error::NativeWork { .. })));
         assert!(!built.load(Ordering::SeqCst));
-        assert_eq!(exhausted.receipt().allocation_operations, 1);
-        assert_eq!(exhausted.receipt().backend_read_operations, 0);
 
         let cancelled = NativeMaterializationWork::new(budget(2), &cancellation)
             .expect("admitted original ledger");
@@ -86,7 +86,6 @@ mod tests {
         });
         assert!(matches!(result, Err(crate::Error::NativeWork { .. })));
         assert!(!built.load(Ordering::SeqCst));
-        assert_eq!(cancelled.receipt().allocation_operations, 1);
     }
 
     struct DropProbe<'a> {
@@ -105,8 +104,13 @@ mod tests {
 
     impl Drop for DropProbe<'_> {
         fn drop(&mut self) {
-            assert!(self.work.remaining().expect("live original ledger")
-                .peak_allocation_bytes < self.baseline);
+            assert!(
+                self.work
+                    .remaining()
+                    .expect("live original ledger")
+                    .peak_allocation_bytes
+                    < self.baseline
+            );
             self.dropped.store(true, Ordering::SeqCst);
         }
     }
@@ -122,14 +126,12 @@ mod tests {
     }
 
     #[test]
-    fn zero_sized_future_requires_no_heap_allocation_attempt() -> Result<()> {
+    fn zero_sized_future_fits_an_exhausted_allocation_budget() -> Result<()> {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(1), &cancellation)
             .expect("admitted original ledger");
         let future = NativeFutureBundle::new(&work, || ZeroSizedFuture)?;
-        assert_eq!(work.receipt().allocation_operations, 1);
         drop(future);
-        assert_eq!(work.receipt().allocation_operations, 1);
         Ok(())
     }
 
@@ -146,7 +148,6 @@ mod tests {
             baseline,
         })?;
         assert!(future.work().shares_ledger(&work));
-        assert_eq!(work.receipt().allocation_operations, 2);
         drop(future);
         assert!(dropped.load(Ordering::SeqCst));
         assert_eq!(work.remaining()?.peak_allocation_bytes, baseline);

@@ -11,7 +11,7 @@ fn windows_names_validate_utf16_without_lossy_normalization()
     for opaque in [vec![0x00, 0xd8], vec![0x00, 0xdc], vec![0x00, 0xd8, b'x', 0]] {
         let name = LogicalName::new(NameEncoding::WindowsUtf16Le, opaque.clone(), 255)?;
         assert_eq!(name.as_bytes(), opaque);
-        assert!(name.unicode_text().is_none(), "opaque names must not be normalized into Unicode");
+        assert!(name.unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value).is_none(), "opaque names must not be normalized into Unicode");
     }
 
     for invalid in [

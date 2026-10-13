@@ -117,7 +117,7 @@ impl PiNativeSelectedSource {
         for entry in &page.0.entries {
             let (name, mut name_custody) = entry
                 .name
-                .unicode_text_with_native_work(work, cancellation)?;
+                .unicode_text(work, cancellation)?;
             output.2.absorb(&mut name_custody)?;
             output.0.push(PiNativeInspectionEntry {
                 name,

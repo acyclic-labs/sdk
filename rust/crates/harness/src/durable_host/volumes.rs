@@ -137,7 +137,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     receipt.allocation_generation.as_resource(),
                     &mut quota,
                 )?;
-                let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
+                let generation = GenerationRef::from_resource(reference, quota.work())?;
                 let snapshot = (origin, TaskVolumeSnapshot { volume, generation });
                 if !Self::proof_contains(&snapshots, &snapshot, quota.work())? {
                     let retained = Self::reserve_proof_slots(&mut snapshots, quota.work())?;

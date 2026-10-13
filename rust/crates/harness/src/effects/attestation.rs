@@ -1,7 +1,7 @@
 use super::*;
 
 impl EffectRegistry {
-    pub(crate) async fn dispatch_state_and_attest(
+    pub(crate) async fn dispatch_and_attest(
         &self,
         issuer: &AuthorityIssuer,
         effect_id: EffectId,
@@ -44,35 +44,32 @@ impl EffectRegistry {
             guarantee: effect.guarantee,
             request_digest: effect.request_digest,
         };
-        self.dispatch_and_attest(issuer, effect_id, effect, dispatch, custody.work())
-            .await
-    }
-
-    pub(crate) async fn dispatch_and_attest(
-        &self,
-        issuer: &AuthorityIssuer,
-        effect_id: EffectId,
-        effect: &EffectState,
-        dispatch: EffectDispatch,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<EffectAttestation> {
-        let provider = self.resolve(effect, work)?;
-        self.validate_dispatch(effect_id, effect, &dispatch, work)?;
+        let provider = self.resolve(effect, custody.work())?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+        if let Some(native) = custody
+            .work()
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+        {
             let future = provider.dispatch_with_native_work(dispatch, native)?;
-            let (observation, custody) = future.await?;
+            let (observation, incoming) = future.await?;
             return self
-                .attest_native_observation(issuer, effect_id, effect, (observation, custody), work)
+                .attest_native_observation(
+                    issuer,
+                    effect_id,
+                    effect,
+                    (observation, incoming),
+                    custody.work(),
+                )
                 .await;
         }
-        if work.is_some() {
+        if custody.work().is_some() {
             return Err(Error::Unsupported(
                 "effect observer has no original native ledger".into(),
             ));
         }
         let observation = provider.dispatch(dispatch).await?;
-        self.attest_provider_observation(issuer, effect_id, effect, observation, work)
+        self.attest_provider_observation(issuer, effect_id, effect, observation, custody.work())
             .await
     }
 
@@ -160,30 +157,6 @@ impl EffectRegistry {
                 Err(error)
             }
         }
-    }
-
-    pub(super) fn validate_dispatch(
-        &self,
-        effect_id: EffectId,
-        effect: &EffectState,
-        dispatch: &EffectDispatch,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        if dispatch.provider != effect.provider
-            || dispatch.effect_id != effect_id
-            || effect.attempts.last() != Some(&dispatch.attempt_id)
-            || dispatch.effect_kind != effect.effect_kind
-            || dispatch.request != effect.request
-            || dispatch.request_digest != effect.request_digest
-            || dispatch.guarantee != effect.guarantee
-        {
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Conflict,
-                "effect dispatch does not match durable state",
-            ));
-        }
-        Ok(())
     }
 
     pub(super) async fn attest_provider_observation(

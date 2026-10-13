@@ -150,7 +150,7 @@ pub(super) fn source_bytes(
     work: &Work,
     use_bytes: impl FnOnce(&[u8]) -> Result<c_int, NativeMountError>,
 ) -> Result<c_int, NativeMountError> {
-    let (bytes, capacity, intrinsic) = chunk.into_owned_parts();
+    let crate::kernel::OwnedSourceChunk { bytes, logical_owned_bytes: capacity, intrinsic } = chunk;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_bytes(&bytes)));
     drop(bytes);
     if !intrinsic {

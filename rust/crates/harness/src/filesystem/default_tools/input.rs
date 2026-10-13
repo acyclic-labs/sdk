@@ -405,7 +405,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .as_ref()
                 .map(|source| {
                     with_history_io(io, |work| {
-                        source.authorization().clone_with_work_and_custody(work)
+                        source.authorization().copy(work)
                     })
                     .map(|copied| copied.0)
                 })

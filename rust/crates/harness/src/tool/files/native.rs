@@ -10,7 +10,7 @@ pub(in crate::tool) fn invalid(reason: &'static str) -> Error {
 macro_rules! record {
         ($ty:ty, $value:ident, $($bytes:expr),+ $(,)?) => {
             impl crate::filesystem::UploadRecord for $ty {
-                fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
+                fn diagnostic_label_bytes() -> u64 { crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES }
                 fn logical_owned_bytes(&$value) -> Result<u64> {
                     let mut bytes = 0_u64;
                     $(bytes = bytes.checked_add($bytes as u64)

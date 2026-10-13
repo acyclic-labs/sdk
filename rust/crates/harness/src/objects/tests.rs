@@ -1,4 +1,6 @@
+use super::store::storage;
 use super::*;
+use crate::conversation::Attachment;
 use crate::{
     AgentId, Capabilities,
     conversation::{ContentMountResolver, Limits, VolumeClass, VolumeOwner},
@@ -123,7 +125,11 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         Some("missing-version".into()),
     )?;
     assert!(owner_store.verify_artifact(&missing_version).await.is_err());
-    let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key().to_vec(), None)?;
+    let unpinned = ArtifactRef::new(
+        provider.clone(),
+        artifact.as_resource().key().to_vec(),
+        None,
+    )?;
     owner_store.verify_artifact(&unpinned).await?;
     let traversal = ArtifactRef::new(
         provider.clone(),

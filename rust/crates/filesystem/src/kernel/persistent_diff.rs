@@ -206,7 +206,7 @@ fn push_page<F: Format>(
                 if let Page::Leaf(entries) = page.as_ref() {
                     for value in entries {
                         if values.value.len() > maximum { *truncated = true; break; }
-                        let (value, guard) = persistent_io::clone_value_with_accounting::<F>(value, limits.maximum_name_bytes, accounting)?;
+                        let (value, guard) = persistent_io::clone_value::<F>(value, limits.maximum_name_bytes, accounting, None, 0)?;
                         let bytes = F::value_owned_bytes(&value);
                         insert_value::<F>(values, Owned::new(value, guard, bytes), before, maximum, limits, accounting)?;
                     }
@@ -228,7 +228,7 @@ fn insert_value<F: Format>(
         let position = super::search::binary_search_with_accounting(&values.value, accounting, |entry| entry.key.cmp(F::key(&value.value)))?;
         if let Err(index) = position {
             values.ensure_for_push(maximum.saturating_add(1), accounting).map_err(allocation_error)?;
-            let (key, mut guard) = persistent_io::clone_key_with_accounting::<F>(F::key(&value.value), limits.maximum_name_bytes, accounting)?;
+            let (key, mut guard) = persistent_io::clone_key::<F>(F::key(&value.value), limits.maximum_name_bytes, accounting, None, 0)?;
             let bytes = F::key_owned_bytes(&key);
             values.allocation.absorb(&mut guard)?;
             values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;

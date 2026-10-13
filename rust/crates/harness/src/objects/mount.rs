@@ -42,9 +42,7 @@ impl crate::conversation::ContentMountResolver for ObjectContentMountResolver {
                 .ok_or_else(|| {
                     Error::Unsupported("Objects content volume is not registered".into())
                 })?;
-            // Authenticate the current scope against this exact content reference before returning either the grant or the owner reader.
             let grant = ContentGrant::verify_read(&store.verifier, &store.scope, reference)?;
-            grant.require_file_read(reference, None)?;
             Ok((grant, store as Arc<dyn ContentResidencyVerifier>))
         })
     }
