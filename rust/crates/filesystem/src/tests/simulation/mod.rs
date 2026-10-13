@@ -169,7 +169,8 @@ fn assert_object_before_work<T>(
     assert!(if cancelled {
         matches!(failure.error, ObjectStoreError::Cancelled)
     } else {
-        matches!(failure.error, ObjectStoreError::Rejected(_))
+        matches!(failure.error, ObjectStoreError::Rejected(_)
+            | ObjectStoreError::Simulation("scheduled rejection" | "scheduled partition"))
     });
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())

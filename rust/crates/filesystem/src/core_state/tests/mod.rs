@@ -294,6 +294,7 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
 }
 
 pub(super) fn crash_store(root: &Path, owned: bool) -> LocalCoreStateStore {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
     if owned {
         LocalCoreStateStore::open_owned(root).unwrap()
     } else {

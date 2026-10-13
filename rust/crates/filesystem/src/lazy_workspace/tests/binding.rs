@@ -124,6 +124,15 @@ async fn full_directory_page_is_funded_before_projection() {
         peak_allocation_bytes: ctx.spent().peak_allocation_bytes - 1,
         ..WorkBudget::UNBOUNDED
     };
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        Arc::new(CountingSource {
+            directory_entries: 1024,
+            ..CountingSource::new(Bytes::from_static(b"content"))
+        }),
+        MemoryLazyWorkspaceStore::default(),
+    ).await.unwrap();
     assert!(
         root.list_directory(
             "/",

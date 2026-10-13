@@ -762,6 +762,13 @@ impl crate::async_storage::AsyncAuthorityStore for MemoryAuthorityStore {
         if let Some(original) = work.original {
             let mut accounting = AuthorityAccounting::native(original, work.cancellation)?;
             let plan = self.plan_append(&request, &mut accounting).map_err(|(error, _)| error)?;
+            let plan = match plan {
+                MemoryAppendPlan::Resolved(outcome @ (AppendOutcome::Conflict { .. } | AppendOutcome::Fenced { .. })) => {
+                    original.admit(crate::WorkCounters::UNCHARGED).map_err(AuthorityStoreError::from)?;
+                    return Ok(outcome);
+                }
+                plan => plan,
+            };
             crate::async_storage::seal(guard.as_deref_mut(), work).await?;
             let value = self.publish_append(&request, plan, &mut accounting).map_err(|(error, _)| error)?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(AuthorityStoreError::from)?;
@@ -1473,8 +1480,19 @@ impl crate::async_storage::AsyncObjectStore for MemoryObjectStore {
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
+        if let Some(work) = context.original {
+            return match self.read_admitted(
+                object_id,
+                u64::MAX,
+                &mut MemoryObjectAccounting::Native {
+                    work,
+                    cancellation: context.cancellation,
+                },
+            ) {
+                Ok(_) => Ok(true),
+                Err(ObjectStoreError::Missing) => Ok(false),
+                Err(error) => Err(error),
+            };
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;

@@ -649,10 +649,6 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         requests: &[ObjectReadRequest],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
         crate::async_storage::read_many_sequential(self, requests, context).await
     }
     async fn contains(

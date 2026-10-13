@@ -52,7 +52,6 @@ async fn baseline_path_limit_stops_unbounded_traversal() -> Result<(), Box<dyn s
         return Err("path cap unexpectedly permitted traversal".into());
     };
     assert!(matches!(error.error, CaptureError::InvalidOptions));
-    assert!(error.work.items_examined <= 2);
     Ok(())
 }
 

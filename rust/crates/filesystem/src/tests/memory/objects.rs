@@ -85,7 +85,7 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
     assert!(matches!(
         provider!(store, read_many(&[]), WorkBudget::UNBOUNDED),
         Err(ObjectFailure {
-            error: ObjectStoreError::Rejected(_),
+            error: ObjectStoreError::EmptyReadBatch,
             ..
         })
     ));
