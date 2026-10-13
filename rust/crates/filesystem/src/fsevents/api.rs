@@ -21,15 +21,7 @@ unsafe impl Send for Api {}
 unsafe impl Sync for Api {}
 
 impl Api {
-    pub(super) fn get() -> notify::Result<&'static Self> {
-        let cancellation = crate::cancellation::CancellationToken::new();
-        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        Self::get_measured(&mut work).map_err(notify_error)
-    }
-
-    pub(super) fn get_measured<W: SourceDemandReadWork>(
-        work: &mut W,
-    ) -> Result<&'static Self, DemandError> {
+    pub(super) fn get<W: SourceDemandReadWork>(work: &mut W) -> Result<&'static Self, DemandError> {
         static API: OnceLock<Api> = OnceLock::new();
         static LOADING: Mutex<()> = Mutex::new(());
         work.check()?;
@@ -46,12 +38,12 @@ impl Api {
         if let Some(api) = API.get() {
             return Ok(api);
         }
-        let api = work.with_original_leaf(Self::load_measured)?;
+        let api = work.with_original_leaf(Self::load)?;
         let _ = API.set(api);
         API.get().ok_or(DemandError::WorkerUnavailable)
     }
 
-    fn load_measured(work: &mut DemandWork) -> Result<Self, DemandError> {
+    fn load(work: &mut DemandWork) -> Result<Self, DemandError> {
         const CORE_SERVICES: &CStr =
             c"/System/Library/Frameworks/CoreServices.framework/CoreServices";
         // Framework-private loader state has no canonical payload, but the
@@ -131,7 +123,7 @@ impl Api {
 
     /// The array owns the canonical UTF-8 path payload and its pointer slots.
     /// Opaque CF headers add allocation operations, not guessed payload sizes.
-    pub(super) fn path_array_measured<W: SourceDemandReadWork>(
+    pub(super) fn path_array<W: SourceDemandReadWork>(
         &self,
         paths: &[PathBuf],
         work: &mut W,

@@ -34,10 +34,40 @@ pub(crate) struct PluginGitExecutor<'a> {
     pub(crate) switched: Mutex<Option<LocalLazyWorkspace>>,
 }
 
+fn committed(
+    outcome: TransactionCommit<LocalAuthorityBackend, LocalObjectBackend>,
+) -> Result<GitFilesystemResult, PluginGitError> {
+    let generation = match outcome {
+        TransactionCommit::Committed(generation)
+        | TransactionCommit::AlreadyCommitted(generation) => generation,
+        TransactionCommit::Conflict { .. } => {
+            return Err(PluginGitExecutor::error(
+                "Git transaction raced with another workspace writer",
+            ));
+        }
+        TransactionCommit::Fenced => {
+            return Err(PluginGitExecutor::error("Git transaction was fenced"));
+        }
+        TransactionCommit::IdempotencyConflict => {
+            return Err(PluginGitExecutor::error(
+                "Git transaction retry identity was reused",
+            ));
+        }
+    };
+    Ok(GitFilesystemResult::Applied {
+        tree: Some(GitTreeRef::exact(
+            generation.workspace_id(),
+            generation.id(),
+        )),
+        tracked_paths: None,
+    })
+}
+
 mod commands;
 mod executor;
 mod materialize;
 mod resolve;
+mod restore;
 pub(crate) use commands::{
     git_apply_patch, git_ignore_policy, git_policy, git_requires_exact_workspace,
     git_transition_command, git_workspace_tree, run_git_command,

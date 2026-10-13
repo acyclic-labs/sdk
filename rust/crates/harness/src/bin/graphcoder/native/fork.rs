@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskSpawner as _;
 impl NativeSession {
     pub async fn select_fork(
         &self,

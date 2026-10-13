@@ -21,15 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn finite_budget() -> Result<WorkBudget, serde_json::Error> {
-    let mut value = serde_json::to_value(WorkBudget::UNBOUNDED)?;
-    if let serde_json::Value::Object(fields) = &mut value {
-        for allowance in fields.values_mut() {
-            *allowance = serde_json::json!(100_000_000_u64);
-        }
-    }
-    serde_json::from_value(value)
-}
+const FINITE_BUDGET: WorkBudget = acyclic_fs::performance::work_budget(100_000_000, 100_000_000);
 
 async fn open_source(
     path: &std::path::Path,

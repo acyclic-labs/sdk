@@ -61,7 +61,6 @@ pub fn encode_original_generation_evidence(
     }
     let (generation_root, generation_id) = generation_root_id(&proof.root)?;
     if proof.generation_id != generation_id
-        || proof.object_count != u64::try_from(proof.objects.len()).unwrap_or(u64::MAX)
     {
         return Err(PublicationEvidenceError::Mismatch);
     }

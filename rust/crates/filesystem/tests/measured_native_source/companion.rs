@@ -15,11 +15,10 @@ impl FaultingCompanion {
     }
 
     fn finish<T>(&self, stage: usize, value: T) -> Result<T, LazyWorkspaceError> {
-        if stage != 0
-            && self
-                .fault
-                .compare_exchange(stage, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
+        if self
+            .fault
+            .compare_exchange(stage, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
         {
             return Err(LazyWorkspaceError::Store(
                 "lost real companion acknowledgement".to_owned(),
@@ -94,7 +93,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         epoch: 3,
     };
     let observer = Arc::new(DirectoryObserver::default());
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let source = Arc::new(
         NativeDemandSource::open(
             std::borrow::Cow::Owned(directory.path().to_path_buf()),
@@ -123,9 +122,8 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             .await?;
         let fs = Fs::memory();
         let store = FaultingCompanion::new(stage);
-        let failure = async {
+        let failure = {
             let cancellation = &CancellationToken::new();
-            let budget = budget;
             let mut accounting = budget.accounting(cancellation);
             let result = LazyWorkspace::attach(
                 &fs,
@@ -139,7 +137,6 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             .await;
             budget.finish(result, &accounting)
         }
-        .await
         .err()
         .ok_or("real companion fault did not fail attachment")?;
         assert!(matches!(
@@ -192,9 +189,8 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             .map_err(|failure| failure.error)?
             .id();
         assert_ne!(head, initial.id());
-        let recovered = async {
+        let recovered = {
             let cancellation = &CancellationToken::new();
-            let budget = budget;
             let mut accounting = budget.accounting(cancellation);
             let result = LazyWorkspace::attach(
                 &fs,
@@ -207,8 +203,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             )
             .await;
             budget.finish(result, &accounting)
-        }
-        .await?;
+        }?;
         recovered.work.verify(budget)?;
         let (lazy, original) = recovered.value;
         assert_eq!(original.id(), initial.id());

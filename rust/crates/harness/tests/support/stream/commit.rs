@@ -6,7 +6,12 @@ impl<P: StreamProvider> LostSessionAck<P> {
         &self,
         request: &acyclic_stream::CommitRequest,
     ) -> Result<(u8, u8), StreamError> {
-        self.measure_commit_request(request);
+        self.io.writes.fetch_add(1, Ordering::SeqCst);
+        for mutation in &request.mutations {
+            if let acyclic_stream::CommitMutation::Append { records, .. } = mutation {
+                self.measure_write(records);
+            }
+        }
         if self.forbid_writes.load(Ordering::SeqCst) {
             self.observation_writes.fetch_add(1, Ordering::SeqCst);
             return Err(StreamError::Unavailable);
@@ -71,7 +76,9 @@ impl<P: StreamProvider> LostSessionAck<P> {
         fault: u8,
         aggregate_fault: u8,
     ) -> Result<(), StreamError> {
-        self.measure_committed(outcome);
+        if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
+            self.measure_received(envelope);
+        }
         if aggregate_fault == 3 {
             self.hide_receipt.store(true, Ordering::SeqCst);
         }

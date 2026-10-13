@@ -2,7 +2,6 @@ use super::*;
 
 use crate::model::{ModelContent, ModelContentPart};
 
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) fn dependency_fixture(requirements: &[(&str, &[&str])]) -> Result<Bindings> {
@@ -212,7 +211,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
             digest: [9; 32],
         },
         decision: ToolPolicyDecision::RequireApproval {
-            prompt: "Approve ÃƒÅ½Ã‚Â» ÃƒÂ°Ã…Â¸Ã‚Â¦Ã¢â€šÂ¬?".into(),
+            prompt: "Approve \u{03bb} \u{1f980}?".into(),
         },
     };
     let definition = ToolDefinition {
@@ -227,7 +226,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
         operation_id: OperationId::new(),
         call_id: "provider-call".into(),
         name: definition.name.clone(),
-        arguments: serde_json::json!({"z":[true,null],"a":"ÃƒÅ½Ã‚Â»"}),
+        arguments: serde_json::json!({"z":[true,null],"a":"\u{03bb}"}),
     };
     (policy, definition, invocation)
 }

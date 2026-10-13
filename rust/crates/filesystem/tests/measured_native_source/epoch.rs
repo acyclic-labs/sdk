@@ -14,7 +14,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         identity: [51; 16],
         epoch: 8,
     };
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let cancellation = CancellationToken::new();
     let source = Arc::new(
         NativeDemandSource::open(
@@ -30,13 +30,11 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         .value,
     );
     let fs = Fs::memory();
-    let store = FaultingCompanion::new(0);
+    let store = MemoryLazyWorkspaceStore::default();
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let operation = OperationId::new();
-    let created = async {
-        let cancellation = &cancellation;
-        let budget = budget;
-        let mut accounting = budget.accounting(cancellation);
+    let created = {
+        let mut accounting = budget.accounting(&cancellation);
         let result = LazyWorkspace::attach(
             &fs,
             "epoch-attachment",
@@ -48,8 +46,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         )
         .await;
         budget.finish(result, &accounting)
-    }
-    .await?;
+    }?;
     created.work.verify(budget)?;
     let (lazy, original) = created.value;
     let initial = lazy
@@ -100,10 +97,8 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         .await?
         .value,
     );
-    let recovered = async {
-        let cancellation = &cancellation;
-        let budget = budget;
-        let mut accounting = budget.accounting(cancellation);
+    let recovered = {
+        let mut accounting = budget.accounting(&cancellation);
         let result = LazyWorkspace::attach(
             &fs,
             "epoch-attachment",
@@ -115,8 +110,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         )
         .await;
         budget.finish(result, &accounting)
-    }
-    .await?;
+    }?;
     recovered.work.verify(budget)?;
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
@@ -172,10 +166,8 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         .await?
         .value,
     );
-    let rejected = async {
-        let cancellation = &cancellation;
-        let budget = budget;
-        let mut accounting = budget.accounting(cancellation);
+    let rejected = {
+        let mut accounting = budget.accounting(&cancellation);
         let result = LazyWorkspace::attach(
             &fs,
             "epoch-attachment",
@@ -188,7 +180,6 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         .await;
         budget.finish(result, &accounting)
     }
-    .await
     .err()
     .ok_or("foreign source adopted an original binding")?;
     assert!(matches!(
