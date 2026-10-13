@@ -180,7 +180,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             None => None,
         };
         #[cfg(target_arch = "wasm32")]
-        let lease = None;
+        let lease = None::<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>;
         if let Some(lease) = lease {
             match io {
                 Some(io) => lease.verify(Some(io))?.await?,
@@ -222,7 +222,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     })?;
             }
         }
-        self.writer()?.publish(operation, source, path, bytes, media, display, io, lease, root).await
+        self.writer()?
+            .publish(
+                operation, source, path, bytes, media, display, io, lease, root,
+            )
+            .await
     }
     async fn observe(
         &self,
@@ -240,7 +244,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     crate::resource_preparation::ScratchCreationIdentity for CreatedFilesystemAccess<A, O>
 {
-
     fn volume(&self) -> &VolumeRef {
         self.volume()
     }
