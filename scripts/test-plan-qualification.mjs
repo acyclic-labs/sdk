@@ -177,7 +177,7 @@ test("Windows native audits are independent required lanes without moving public
   for (const name of names) {
     const selected = matrix.filter(lane => lane.lane === name);
     assert.equal(selected.length, 1);
-    assert.equal(selected[0].runner, "blacksmith-4vcpu-windows-2025");
+    assert.equal(selected[0].runner, name === "windows-clippy" ? "blacksmith-16vcpu-windows-2025" : "blacksmith-4vcpu-windows-2025");
     assert.equal(selected[0].artifact, "");
   }
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
@@ -224,14 +224,21 @@ test("ARM workspace compilation uses the larger runner's complete CPU allocation
 });
 
 
-test("Windows workspace compilation uses sixteen CPUs while audit runners stay bounded", () => {
+test("Windows package and clippy compilation use sixteen CPUs while cross-check runners stay bounded", () => {
   const matrix = lanes;
   const windows = matrix.find(lane => lane.lane === "windows");
   assert.equal(windows.runner, "blacksmith-16vcpu-windows-2025");
   assert.equal(windows.workers, 16);
   assert.equal(windows.artifact, "stream-native-windows");
   assert.equal(windows.artifact_path, "stream-native-bundle");
-  for (const name of ["windows-napi", "windows-arm64", "windows-clippy"]) {
+  const clippy = matrix.find(lane => lane.lane === "windows-clippy") ?? assert.fail("missing Windows clippy lane");
+  assert.equal(clippy.runner, windows.runner);
+  assert.equal(clippy.workers, 16);
+  const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
+  const clippyBody = script.split("    'windows-clippy' {")[1]?.split("        return")[0] ?? assert.fail("missing Windows clippy dispatch");
+  assert.ok(clippyBody.includes("cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings"));
+  assert.ok(clippyBody.includes("node scripts/clippy-feature-sets.mjs"));
+  for (const name of ["windows-napi", "windows-arm64"]) {
     const audit = matrix.find(lane => lane.lane === name);
     assert.equal(audit.runner, "blacksmith-4vcpu-windows-2025");
     assert.equal(audit.workers, 4);

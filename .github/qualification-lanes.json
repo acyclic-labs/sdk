@@ -106,8 +106,8 @@
   },
   {
     "lane": "windows-clippy",
-    "runner": "blacksmith-4vcpu-windows-2025",
-    "workers": 4,
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
     "artifact": "",
     "artifact_path": ""
   },
