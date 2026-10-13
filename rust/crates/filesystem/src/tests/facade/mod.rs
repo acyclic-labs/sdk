@@ -732,3 +732,6 @@ fn allow<E>(
         work: WorkCounters::UNCHARGED,
     }))
 }
+
+mod fixtures;
+use fixtures::*;
