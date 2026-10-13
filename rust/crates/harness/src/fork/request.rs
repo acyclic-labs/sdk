@@ -64,7 +64,7 @@ impl ForkRequest {
             ));
         }
         if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let full_cut = conversation.logical_revision();
         let (through_sequence, summary) = match policy {

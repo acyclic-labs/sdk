@@ -1,7 +1,7 @@
 //! Authenticated same-graph source selection over the original Filesystem.
 
 use super::FilesystemHost;
-use crate::contract::JsonBounds;
+use crate::executor::json::JsonBounds;
 use crate::conversation::{VolumeClass, VolumeRef};
 use crate::core::Authority;
 use crate::source_authorization::{
@@ -115,7 +115,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<Self> {
         work.remaining()?;
         if proof.owner() != &self.owner
-            || proof.witness.binding().original_task() != self.graph_root
+            || proof.witness.0.original_task() != self.graph_root
             || proof.request.volume.class() != VolumeClass::Project
             || !Arc::ptr_eq(&proof.host, &self.host)
         {

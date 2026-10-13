@@ -125,8 +125,8 @@ pub(super) fn encode_line<T: Serialize + ?Sized>(
     if let Some(work) = work {
         let diagnostic_custody = work
             .claim(
-                crate::contract::sdk_json_diagnostic_bytes()
-                    .max(crate::contract::lexical_json_diagnostic_bytes()),
+                crate::executor::json::sdk_json_diagnostic_bytes()
+                    .max(crate::executor::json::lexical_json_diagnostic_bytes()),
                 0,
                 acyclic_fs::WorkCounters::UNCHARGED,
             )
@@ -179,10 +179,10 @@ pub(super) fn decode_value(
         let quota = (body.len() as u64)
             .max(8)
             .checked_mul(per_token)
-            .and_then(|n| n.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
+            .and_then(|n| n.checked_add(crate::executor::json::sdk_json_diagnostic_bytes()))
             .ok_or_else(|| error(Some(work), ErrorCode::Invalid, "MCP frame quota overflows"))?;
         let mut custody = Some(work.claim(quota, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
-        let value = crate::contract::json_from_slice_bounded(
+        let value = crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<Value>,
             body,
             bounds(maximum),

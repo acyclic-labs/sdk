@@ -172,7 +172,7 @@ where
             return Ok(false);
         };
         owner
-            .release_quiescent_execution_with_native_work(*operation, tail, &pending, work)
+            .release_quiescent_execution(*operation, tail, &pending, &mut Some(&mut io.history_io()))
             .await
     }
 
@@ -210,7 +210,7 @@ where
                 }
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
-                    .suspend_quiescent_execution_with_work(
+                    .suspend_quiescent_execution(
                         *operation,
                         summary.tail,
                         revision,
@@ -375,7 +375,7 @@ where
         }
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
         let event_digest = crate::executor::with_history_io(io, |work|
-            crate::contract::canonical_json_digest(event,
+            crate::executor::json::canonical_json_digest(event,
                 if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?;
         let mut shared = if io.is_none() {
             Some(self.verified.lock().await)
@@ -389,7 +389,7 @@ where
             if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
-                    .verify_execution_with_work(
+                    .verify_execution(
                         operation_id,
                         event,
                         &mut borrowed
@@ -420,7 +420,7 @@ where
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
-                    .append_execution_with_work(
+                    .append_execution(
                         operation_id,
                         summary.tail,
                         &key,

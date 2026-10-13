@@ -83,7 +83,7 @@ pub(crate) fn guarded_boundary(
 
 /// Original canonical ROOT binding custody, constructed only by this store.
 #[cfg(feature = "filesystem")]
-pub(crate) struct VerifiedRootBinding {
+pub struct VerifiedRootBinding {
     original_task: crate::TaskId,
     admission_digest: [u8; 32],
     fence: crate::scheduler::LeaseFence,

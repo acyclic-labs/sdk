@@ -1,6 +1,5 @@
 //! Canonical hosted Stream response projection shared by native servers and WASM.
 use crate::{http_validation::validate, wire};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use prost::Message;
 use serde_json::Value;
 type Result<T> = std::result::Result<T, &'static str>;
@@ -23,7 +22,39 @@ pub(crate) fn json_u64(value: u64) -> Value {
 }
 
 pub(crate) fn json_bytes(value: &[u8]) -> Value {
-    json_string(STANDARD.encode(value))
+    json_string(encode_base64(value))
+}
+
+fn encode_base64(value: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let table_char = |index: u8| TABLE.get(index as usize).copied().unwrap_or_default() as char;
+    let mut output = String::with_capacity(value.len().div_ceil(3) * 4);
+    for chunk in value.chunks(3) {
+        let Some(&first) = chunk.first() else {
+            continue;
+        };
+        output.push(table_char(first >> 2));
+        if chunk.len() == 1 {
+            output.push(table_char((first & 0x03) << 4));
+            output.push_str("==");
+            continue;
+        }
+        let Some(&second) = chunk.get(1) else {
+            continue;
+        };
+        output.push(table_char(((first & 0x03) << 4) | (second >> 4)));
+        if chunk.len() == 2 {
+            output.push(table_char((second & 0x0f) << 2));
+            output.push('=');
+            continue;
+        }
+        let Some(&third) = chunk.get(2) else {
+            continue;
+        };
+        output.push(table_char(((second & 0x0f) << 2) | (third >> 6)));
+        output.push(table_char(third & 0x3f));
+    }
+    output
 }
 
 /// Encode a generated response for one canonical HTTP route.
@@ -40,10 +71,6 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
-        "delivery/acknowledge" => {
-            wire::AcknowledgeDeliveryResponse::decode(input).map_err(|_| "invalid_response")?;
-            json_object(vec![])
-        }
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
         }
@@ -194,6 +221,7 @@ fn commit_value(value: wire::CommitResponse) -> Result<Value> {
     let outcome = value.outcome.ok_or("invalid_response")?;
     Ok(match outcome {
         wire::commit_response::Outcome::Committed(envelope) => {
+            // Commit responses can be larger than the bounded command
             let envelope_json = envelope_value(&envelope)?;
             validate("commits/read", &envelope_json)?;
             let mut tails = serde_json::Map::new();
@@ -267,26 +295,4 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
         ),
         ("outcome", outcome),
     ])))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn delivery_ack_response_projects_empty_protobuf_to_validated_object() {
-        let response = wire::AcknowledgeDeliveryResponse {}.encode_to_vec();
-        assert_eq!(
-            encode("delivery/acknowledge", &response, 2),
-            Ok(b"{}".to_vec())
-        );
-        assert_eq!(
-            encode("delivery/acknowledge", &[0xff], 1024),
-            Err("invalid_response")
-        );
-        assert_eq!(
-            encode("delivery/acknowledge", &response, 1),
-            Err("limit_exceeded")
-        );
-    }
 }

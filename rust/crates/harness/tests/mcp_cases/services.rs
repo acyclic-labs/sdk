@@ -285,7 +285,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
             let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs().collect::<Vec<_>>();
             assert_eq!(files.len(), 2);
             let mut bytes = Vec::new();
-            for file in files { bytes.push(context.read_file(file).await?); }
+            for file in files { bytes.push(context.read_file(file, None).await?); }
             assert_eq!(bytes.len(), 2);
             assert_eq!(bytes[0].as_ref(), b"media");
             assert_eq!(bytes[1].as_ref(), b"audio");

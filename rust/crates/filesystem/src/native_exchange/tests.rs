@@ -1,5 +1,4 @@
 use super::*;
-use crate::demand::NativeSourceWork;
 use crate::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use std::{fs, sync::Arc};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -52,11 +51,10 @@ impl Fixture {
             &Path,
             &cap_std::fs::Dir,
             &Path,
-            &mut NativeSourceWork,
+            &mut NativeMaterializationWork,
         ) -> Result<T, crate::demand::DemandError>,
     ) -> Result<T, Box<dyn std::error::Error>> {
-        let original = NativeMaterializationWork::new(budget, token).map_err(|(error, _)| error)?;
-        let mut work = NativeSourceWork::from_native_materialization_work(&original);
+        let mut work = NativeMaterializationWork::new(budget, token).map_err(|(error, _)| error)?;
         let (left, _) =
             crate::native_host::open_root_directory(self.live.parent().unwrap(), &mut work)?;
         let (right, _) =
@@ -335,9 +333,8 @@ fn held_entries_keep_the_original_parent_and_committed_prefix() -> TestResult {
     let f = Fixture::new(false)?;
     #[cfg(windows)]
     f.witness()?;
-    let original = NativeMaterializationWork::new(finite_budget(), &CancellationToken::new())
+    let mut work = NativeMaterializationWork::new(finite_budget(), &CancellationToken::new())
         .map_err(|(error, _)| error)?;
-    let mut work = NativeSourceWork::from_native_materialization_work(&original);
     let (parent, _) = crate::native_host::open_root_directory(
         f.live.parent().ok_or(NativeExchangeError::InvalidLayout)?,
         &mut work,

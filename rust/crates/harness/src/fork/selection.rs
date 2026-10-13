@@ -74,7 +74,7 @@ impl ResourceRevision {
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         match self {
             Self::PrivateVolume {

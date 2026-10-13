@@ -197,7 +197,7 @@ impl TaskRegistry {
     ) -> Result<&Arc<dyn RegisteredTaskDefinition>> {
         for definition in &self.0 {
             if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             let identity = definition.identity();
             if identity.name == name && identity.version == version {
@@ -346,7 +346,7 @@ impl TaskRegistry {
             let mut descendant = false;
             for grant in scope.grants().iter() {
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if grant
                     .strip_prefix("task:spawn:")
@@ -449,7 +449,7 @@ impl TaskRegistry {
             ));
         }
         if let Some(input) = input {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 definition.input_schema(),
                 input,
                 "task input",

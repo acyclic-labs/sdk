@@ -130,7 +130,7 @@ impl DurableToolRunner {
                     ));
                 }
                 crate::executor::with_history_io(io, |work| {
-                    crate::contract::validate_json_schema_value(
+                    crate::executor::validate_json_schema_value(
                         &definition.output_schema,
                         &result.0.value,
                         "tool output",
@@ -238,7 +238,7 @@ impl DurableToolRunner {
                 }
             };
             if let Err(error) = crate::executor::with_history_io(io, |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &definition.output_schema,
                     &result.0.value,
                     "tool output",

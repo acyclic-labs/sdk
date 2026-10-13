@@ -67,7 +67,7 @@ impl McpRuntimeCallbacks {
         context: ToolContext,
         request: &McpCallbackRequest,
     ) -> Result<(OperationId, Value)> {
-        crate::contract::json_byte_length(request, context.scope().limits().file_bytes, &mut None)
+        crate::executor::json::json_byte_length(request, context.scope().limits().file_bytes, &mut None)
             .map(|_| ())?;
         let operation = request.validate()?;
         if request.parent != context.operation_id() {

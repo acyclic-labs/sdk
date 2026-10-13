@@ -93,15 +93,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.admission(operation_id).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        let operation = coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-                &mut None,
-            )?
-            .clone();
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+            &mut None,
+        )?;
         if operation.spec != lease.operation
             || operation.reservation.as_ref() != Some(&lease.reservation)
         {
@@ -110,7 +108,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         if operation.phase == crate::scheduler::OperationPhase::Running {
-            return crate::scheduler::require_execution_owner(&operation, &fence, false, &mut None);
+            return crate::scheduler::require_execution_owner(operation, &fence, false, &mut None);
         }
         let event = if operation.phase == crate::scheduler::OperationPhase::Reconciling {
             crate::scheduler::SchedulerEvent::ReconciliationResumed {
@@ -123,13 +121,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 fence: fence.clone(),
             }
         };
-        coordinator
-            .apply(
-                worker_key("start", operation_id, &fence, operation.revision)?,
-                event,
-                &mut None,
-            )
-            .await?;
+        let key = worker_key("start", operation_id, &fence, operation.revision, &mut None)?;
+        coordinator.apply(key, event, &mut None).await?;
         Ok(())
     }
 
@@ -145,14 +138,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let admission = self.admission(operation_id).await?;
         self.verify_owner(task, &fence, true).await?;
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &outcome,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut None,
         )?;
         let key = IdempotencyKey::new(format!(
             "task-settle:{operation_id}:{}:{}",
-            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(
+            blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
                 &fence,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
                 &mut None
@@ -162,7 +155,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         ))?;
         let outcome = match outcome {
             Outcome::Succeeded(value) => {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &admission.output_schema,
                     &value,
                     "task output",
@@ -209,16 +202,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        let operation = coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                OperationId::from_bytes(task_id.into_bytes()),
-                &mut None,
-            )?
-            .clone();
-        crate::scheduler::require_execution_owner(&operation, fence, settlement, &mut None)
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task_id.into_bytes()),
+            &mut None,
+        )?;
+        crate::scheduler::require_execution_owner(operation, fence, settlement, &mut None)
     }
 
     /// Binds journal publications to the authenticated task's exact current lease.
@@ -226,36 +217,127 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub async fn journal_owner(
         self: &Arc<Self>,
         task_id: TaskId,
-        fence: crate::scheduler::LeaseFence,
+        fence: &crate::scheduler::LeaseFence,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<TaskJournalOwner<P>> {
-        let admission = self
-            .admission(OperationId::from_bytes(task_id.into_bytes()))
-            .await?;
-        let machine = self
+        let operation = OperationId::from_bytes(task_id.into_bytes());
+        #[cfg(not(target_arch = "wasm32"))]
+        let (admission, mut custody) = match io {
+            Some(io) if io.original_native_work().is_some() => {
+                let (admission, custody) = self.readonly_admission(operation, io).await?;
+                (admission, Some(custody))
+            }
+            _ => (self.admission(operation).await?, None),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let admission = self.admission(operation).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(native) = io.and_then(|io| io.original_native_work()) {
+            if admission.resource_proofs.is_empty() {
+                self.root_scope.validate_narrowing_with_native_work(
+                    &admission.grants,
+                    &admission.limits,
+                    native,
+                )?;
+            }
+        }
+        let mut history = io.map(|io| io.history_io());
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh(&mut work).await?;
+        let declared_agent = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation,
+                &mut work,
+            )?
+            .spec
+            .owner_scope
+            .agent();
+        drop(coordinator);
+        if admission.parent.is_none() && declared_agent != self.owner_scope.agent() {
+            return Err(Error::Unauthorized(
+                "root actor differs from its declaration".into(),
+            ));
+        }
+        let request_digest = crate::contract::canonical_json_digest(
+            &admission,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            &mut work,
+        )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let state = match io.and_then(|io| io.original_native_work()) {
+            Some(native) => {
+                let (state, mut held) = self.machines.initialize_with_native_work(
+                    &admission.machine,
+                    &admission.input,
+                    native,
+                )?;
+                custody
+                    .as_mut()
+                    .expect("native admission custody")
+                    .absorb(&mut held)?;
+                state
+            }
+            None => self
+                .machines
+                .resolve(&admission.machine, &mut work)?
+                .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?
+                .initialize(&admission.input)?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let state = self
             .machines
-            .resolve(&admission.machine, &mut None)?
-            .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?;
+            .resolve(&admission.machine, &mut work)?
+            .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?
+            .initialize(&admission.input)?;
+        let machine = crate::workflow::workflow_copy_identity(&admission.machine, io)?;
         let workflow = crate::workflow::WorkflowAdmission {
-            operation_id: admission.operation_id,
-            request_digest: crate::contract::canonical_json_digest(
-                &admission,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut None,
-            )?,
+            operation_id: operation,
+            request_digest,
             initial: crate::workflow::MachineCheckpoint {
-                machine: admission.machine.clone(),
+                machine,
                 revision: 0,
-                state: machine.initialize(&admission.input)?,
+                state,
             },
         };
-        self.machines.validate_checkpoint(&workflow.initial, None)?;
+        self.machines.validate_checkpoint(&workflow.initial, io)?;
+        if let Some(io) = work.as_deref_mut() {
+            io.retain_owned(std::mem::size_of::<TaskJournalOwner<P>>() as u64)?;
+        }
+        let fence = fence.clone_with_work(&mut work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = custody.as_mut() {
+            let retained = std::mem::size_of::<TaskJournalOwner<P>>() as u64
+                + fence.reservation_id.capacity() as u64
+                + fence.placement.capacity() as u64
+                + workflow.initial.machine.name.capacity() as u64
+                + workflow.initial.machine.version.capacity() as u64;
+            custody.absorb(
+                &mut work
+                    .as_deref_mut()
+                    .expect("native history")
+                    .take_native_custody(retained)?,
+            )?;
+        }
         let owner = TaskJournalOwner {
             host: self.clone(),
             fence,
             workflow,
             admission: Arc::new(admission),
+            input_agent: declared_agent,
+            invocation_cancellation: None,
+            root_binding: std::sync::OnceLock::new(),
+            root_choice: std::sync::OnceLock::new(),
+            root_gate: Mutex::new(()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: custody,
         };
-        owner.verify(true, &mut None).await?;
+        owner.verify(true, &mut work).await?;
         Ok(owner)
     }
 

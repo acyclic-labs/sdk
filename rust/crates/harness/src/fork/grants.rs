@@ -79,7 +79,7 @@ pub(in crate::fork) fn decode_fork_manifest(
         })
         .ok_or_else(|| Error::Invalid("attachment manifest schema storage overflows".into()))?;
     owned.retain(schema_bytes)?;
-    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
+    let diagnostic_bytes = crate::executor::json::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
         [
             "Attachment",
@@ -116,7 +116,7 @@ pub(in crate::fork) fn decode_fork_manifest(
         .map(|label| label.len() as u64 + 4)
         .sum(),
     )?;
-    let bounds = crate::contract::JsonBounds {
+    let bounds = crate::executor::json::JsonBounds {
         maximum_bytes: maximum,
         maximum_items: maximum.saturating_add(1),
         maximum_depth: 256,
@@ -124,7 +124,7 @@ pub(in crate::fork) fn decode_fork_manifest(
     let mut observed_failure = false;
     let mut charge = |charge| {
         let result = match charge {
-            crate::contract::JsonCodecCharge::Admission { .. } => owned
+            crate::executor::json::JsonCodecCharge::Admission { .. } => owned
                 .retain(diagnostic_bytes)
                 .and_then(|()| owned.checkpoint()),
             _ => match owned.work().as_deref_mut() {
@@ -136,7 +136,7 @@ pub(in crate::fork) fn decode_fork_manifest(
         result
     };
     let decoded: Result<Vec<crate::conversation::Attachment>> =
-        crate::contract::json_from_slice_bounded(
+        crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData,
             bytes,
             bounds,
@@ -161,9 +161,9 @@ pub(in crate::fork) fn decode_fork_manifest(
         item.validate(&mut None)?;
     }
     let canonical =
-        crate::contract::json_bytes_bounded(&items, bounds, None, &mut |charge| match charge {
-            crate::contract::JsonCodecCharge::Retain { bytes } => owned.retain(bytes),
-            crate::contract::JsonCodecCharge::Release { bytes } => owned.release(bytes),
+        crate::executor::json::json_bytes_bounded(&items, bounds, None, &mut |charge| match charge {
+            crate::executor::json::JsonCodecCharge::Retain { bytes } => owned.retain(bytes),
+            crate::executor::json::JsonCodecCharge::Release { bytes } => owned.release(bytes),
             _ => match owned.work().as_deref_mut() {
                 Some(observer) => observer.codec_charge(charge),
                 None => Ok(()),

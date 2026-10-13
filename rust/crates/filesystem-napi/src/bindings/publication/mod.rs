@@ -3,81 +3,55 @@ use super::*;
 /// Successful authored mutation with exact work evidence.
 #[napi(object)]
 pub struct NativeMutationResult {
-    /// New file identity for create operations.
     pub file_id: Option<Buffer>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Conditional publication outcome with exact authority facts.
 #[napi(object)]
 pub struct NativeCommitResult {
-    /// `committed`, `already-committed`, `conflict`, `fenced`, or `idempotency-conflict`.
     pub status: String,
-    /// Candidate generation for successful publication.
     pub generation_id: Option<Buffer>,
-    /// Relevant active authority epoch.
     pub epoch: Option<BigInt>,
-    /// Relevant authority sequence.
     pub sequence: Option<BigInt>,
-    /// Existing fingerprint for an idempotency conflict.
     pub committed_fingerprint: Option<Buffer>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Observation-safe head-rebase outcome.
 #[napi(object)]
 pub struct NativeRebaseResult {
-    /// `safe` or `conflicted`.
     pub status: String,
-    /// New base generation when safe.
     pub generation_id: Option<Buffer>,
-    /// Number of exact changed regions returned.
     pub conflict_count: u32,
-    /// Whether additional conflicts exceeded the caller bound.
     pub truncated: bool,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Terminal result of publishing one explicitly staged direct-live transaction.
 #[napi(object)]
 pub struct NativeLiveMutationResult {
-    /// `committed`, `already-committed`, `conflicted`, `retry-limit`, `fenced`, or `idempotency-conflict`.
     pub status: String,
-    /// Published generation when successful.
     pub generation_id: Option<Buffer>,
-    /// Relevant authority epoch.
     pub epoch: Option<BigInt>,
-    /// Relevant authority sequence.
     pub sequence: Option<BigInt>,
-    /// Number of exact conflicts returned.
     pub conflict_count: u32,
-    /// Whether additional conflicts exceeded the caller bound.
     pub truncated: bool,
-    /// Existing fingerprint for operation-identity reuse with different content.
     pub committed_fingerprint: Option<Buffer>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Observation-safe retained transaction rebase result.
 #[napi(object)]
 pub struct NativeTransactionRebaseResult {
-    /// `rebased` or `conflicted`.
     pub status: String,
-    /// New immutable base generation when safe.
     pub generation_id: Option<Buffer>,
-    /// Exact bounded changed regions.
     pub conflicts: Vec<NativeTransactionConflict>,
-    /// Whether additional conflicts exceeded the caller bound.
     pub truncated: bool,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Builds an immutable candidate generation without publishing authority.
     #[napi]
     pub async fn checkpoint(&self) -> Result<NativeCheckpointResult> {
         let checkout = Box::pin(self.inner.lock()).await;
@@ -91,7 +65,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Explicitly advances a clean manual checkout to the authority head.
     #[napi]
     pub async fn refresh_head(&self) -> Result<NativeCheckpointResult> {
         let mut checkout = Box::pin(self.inner.lock()).await;
@@ -103,7 +76,6 @@ impl NativeCheckout {
         encode_checkpoint_receipt(&receipt)
     }
 
-    /// Explicitly performs observation-safe synchronization for a live checkout.
     #[napi]
     pub async fn refresh_live(&self) -> Result<NativeCheckpointResult> {
         let mut checkout = Box::pin(self.inner.lock()).await;
@@ -115,15 +87,9 @@ impl NativeCheckout {
         encode_checkpoint_receipt(&receipt)
     }
 
-    /// Checkpoints and conditionally publishes this private overlay.
     #[napi]
-    pub async fn commit(
-        &self,
-        operation_id: Buffer,
-        lease: Option<NativeOperationWindowLease>,
-    ) -> Result<NativeCommitResult> {
+    pub async fn commit(&self, operation_id: Buffer) -> Result<NativeCommitResult> {
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
-        let permit = publication_permit(lease.as_ref())?;
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout
             .retain_operation_id(operation_id)
@@ -134,7 +100,7 @@ impl NativeCheckout {
                 None,
                 None,
                 None,
-                permit,
+                acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
                 |_| async {
@@ -155,7 +121,6 @@ impl NativeCheckout {
         commit_result(receipt.value, receipt.work)
     }
 
-    /// Applies and publishes one direct-live transaction with bounded safe retries.
     #[napi]
     pub async fn mutate_live(
         &self,
@@ -229,7 +194,6 @@ impl NativeCheckout {
         }
     }
 
-    /// Resumes an unresolved direct-live transaction with bounded safe retries.
     #[napi]
     pub async fn resume_live(
         &self,
@@ -266,7 +230,6 @@ impl NativeCheckout {
         live_mutation_result(receipt.value, receipt.work)
     }
 
-    /// Safely advances to head and sparsely replays private mutations.
     #[napi]
     pub async fn rebase_head(&self, maximum_conflicts: NapiU32) -> Result<NativeRebaseResult> {
         let maximum_conflicts = maximum_conflicts.into_inner();
@@ -299,13 +262,6 @@ impl NativeCheckout {
             work_json: work_json(&receipt.work)?,
         })
     }
-}
-
-pub(in crate::bindings) fn commit_id(bytes: &[u8]) -> Result<GitCommitId> {
-    Ok(GitCommitId::from_bytes(fixed_32(
-        bytes,
-        "Git compatibility commit identity",
-    )?))
 }
 
 pub(in crate::bindings) fn encode_created_mutation(

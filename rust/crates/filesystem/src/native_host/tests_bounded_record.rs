@@ -43,38 +43,38 @@ fn canonical_wide_directory_retains_native_capacity_without_scalar_conversion()
     Ok(())
 }
 #[test]
-fn owned_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dyn std::error::Error>>
+fn held_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dyn std::error::Error>>
 {
     let temporary = tempfile::tempdir()?;
     let original = temporary.path().join("original");
     std::fs::create_dir(&original)?;
     std::fs::create_dir(original.join("child"))?;
-    let parent = Dir::open_ambient_dir(&original, cap_std::ambient_authority())?;
+    let parent = HostRoot::open(&original, &mut ordinary_work()).map_err(ordinary_error)?;
     let child = Dir::open_ambient_dir(original.join("child"), cap_std::ambient_authority())?;
-    let expected = held_root_identity(&child)?;
+    let expected = directory_identity(&child, &mut ordinary_work()).map_err(ordinary_error)?;
     std::fs::rename(&original, temporary.path().join("moved"))?;
     std::fs::create_dir(&original)?;
     std::fs::create_dir(original.join("child"))?;
     #[cfg(unix)]
-    let name = OsStr::new("child");
+    let name = Path::new("child");
     #[cfg(windows)]
     let name = &[99_u16, 104, 105, 108, 100][..];
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
-    let actual = open_owned_child_directory(&parent, name, &mut work)?;
-    assert_eq!(held_root_identity(&actual)?, expected);
+    let actual = parent.open_child(name, &mut work)?;
+    assert_eq!(actual.identity(), expected);
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
 #[cfg(unix)]
 #[test]
-fn owned_child_refuses_symlinks_and_nonleaf_names() -> Result<(), Box<dyn std::error::Error>> {
+fn held_child_refuses_symlinks_and_nonleaf_names() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     std::fs::create_dir(temporary.path().join("child"))?;
     std::os::unix::fs::symlink("child", temporary.path().join("link"))?;
-    let parent = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+    let parent = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     for name in ["link", "..", "child/../child"] {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
-        assert!(open_owned_child_directory(&parent, OsStr::new(name), &mut work).is_err());
+        assert!(parent.open_child(Path::new(name), &mut work).is_err());
         assert_eq!(work.live_allocation_bytes(), 0);
     }
     Ok(())
@@ -94,12 +94,15 @@ fn held_ancestry_survives_aliases_and_lexical_parent_replacement()
         temporary.path().join("alias/child"),
         cap_std::ambient_authority(),
     )?;
-    let parent_identity = held_root_identity(&parent)?;
-    let child_identity = held_root_identity(&child)?;
+    let parent_identity =
+        directory_identity(&parent, &mut ordinary_work()).map_err(ordinary_error)?;
+    let child_identity =
+        directory_identity(&child, &mut ordinary_work()).map_err(ordinary_error)?;
     std::fs::rename(&parent_path, temporary.path().join("moved"))?;
     std::fs::create_dir(&parent_path)?;
     let replacement = Dir::open_ambient_dir(&parent_path, cap_std::ambient_authority())?;
-    let replacement_identity = held_root_identity(&replacement)?;
+    let replacement_identity =
+        directory_identity(&replacement, &mut ordinary_work()).map_err(ordinary_error)?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 0;
     let mut work = DemandWork::new(budget, &crate::CancellationToken::new());
@@ -111,102 +114,6 @@ fn held_ancestry_survives_aliases_and_lexical_parent_replacement()
         &mut work
     )?);
     assert_eq!(work.live_allocation_bytes(), 0);
-    Ok(())
-}
-struct CancelAfterName<'a> {
-    work: &'a NativeMaterializationWork,
-    cancellation: &'a crate::CancellationToken,
-}
-impl NativeHostWork for CancelAfterName<'_> {
-    type Error = NativeTreeMaterializationError;
-    type Allocation = NativeAllocation;
-    type CleanupWrite = NativeCleanupWrite;
-    fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
-        <&NativeMaterializationWork as NativeHostWork>::io_error_kind(error)
-    }
-    fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
-        NativeTreeMaterializationError::AllocationFailed(error)
-    }
-    fn check(&self) -> Result<(), Self::Error> {
-        self.work.admit(WorkCounters::UNCHARGED)
-    }
-    fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        self.work.admit(delta)
-    }
-    fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        self.work.record_admitted(delta)?;
-        if delta.bytes_copied != 0 {
-            self.cancellation.cancel();
-        }
-        Ok(())
-    }
-    fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        self.work.charge(delta)
-    }
-    fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
-        self.work
-            .claim(bytes, u64::from((bytes) != 0), WorkCounters::UNCHARGED)
-    }
-    fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.work.claim(logical_max, 0, WorkCounters::UNCHARGED)
-    }
-    fn reconcile_allocation(
-        &mut self,
-        allocation: &mut Self::Allocation,
-        actual: u64,
-    ) -> Result<(), Self::Error> {
-        allocation.reconcile_capacity(actual)
-    }
-    fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> {
-        drop(allocation);
-        Ok(())
-    }
-    fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
-        self.work.reserve_cleanup_write()
-    }
-    fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
-        drop(reservation);
-    }
-    fn attempt_cleanup_write<T>(
-        &mut self,
-        reservation: Self::CleanupWrite,
-        operation: impl FnOnce() -> T,
-    ) -> (T, Result<(), Self::Error>) {
-        reservation.attempt(operation)
-    }
-}
-#[test]
-fn cancellation_after_native_name_copy_releases_it_without_consuming_the_record()
--> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    std::fs::write(temporary.path().join("kept"), b"data")?;
-    let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-    let cancellation = crate::CancellationToken::new();
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.peak_allocation_bytes =
-        ACCOUNTING_STATE_BYTES + HostStatReader::BUFFER_BYTES as u64 + 32;
-    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
-    let mut boundary = CancelAfterName {
-        work: &work,
-        cancellation: &cancellation,
-    };
-    let (mut reader, allocation) = read_dir_held(&directory, &mut boundary)?;
-    let failure = reader.next(&mut boundary);
-    assert!(matches!(
-        failure,
-        Err(NativeTreeMaterializationError::Cancelled)
-    ));
-    assert_eq!(
-        materialization_live_bytes(&work)?,
-        ACCOUNTING_STATE_BYTES + HostStatReader::BUFFER_BYTES as u64
-    );
-    let repeated = reader.next(&mut boundary);
-    assert!(matches!(
-        repeated,
-        Err(NativeTreeMaterializationError::Cancelled)
-    ));
-    drop((reader, allocation));
-    assert_eq!(materialization_live_bytes(&work)?, ACCOUNTING_STATE_BYTES);
     Ok(())
 }
 fn materialization_live_bytes(
@@ -272,7 +179,13 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
     std::fs::write(temporary.path().join("kept"), b"data")?;
     let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let mut first = ordinary_work();
-    let (mut reader, _) = root.read_dir_stats(Path::new(""), &mut first)?;
+    let (mut reader, _) = root.read_dir_stats(
+        #[cfg(unix)]
+        Path::new(""),
+        #[cfg(windows)]
+        &[],
+        &mut first,
+    )?;
     first.budget.backend_read_operations = first.work.backend_read_operations + 1;
     let failure = reader.next(&mut first);
     assert!(matches!(
@@ -283,7 +196,7 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
         }))
     ));
     let mut retry = ordinary_work();
-    retry.adopt(reader.logical_owned_bytes())?;
+    retry.claim_allocation(reader.logical_owned_bytes(), 0, WorkCounters::UNCHARGED)?;
     let entry = reader.next(&mut retry)?;
     let (entry, _) = entry.ok_or_else(|| io::Error::other("denied native record was lost"))?;
     #[cfg(unix)]

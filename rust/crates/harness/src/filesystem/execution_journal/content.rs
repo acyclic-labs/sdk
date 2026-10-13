@@ -14,7 +14,7 @@ where
     ) -> Result<(IdempotencyKey, String)> {
         let digest = {
             let _input_hold;
-            let input = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{operation_id}:{idempotency_key}"), work))?;
+            let input = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{operation_id}:{idempotency_key}"), work))?;
             _input_hold = io
                 .map(|io| io.guard_owned(input.capacity() as u64))
                 .transpose()?;
@@ -28,8 +28,8 @@ where
             }
             blake3::hash(input.as_bytes())
         };
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("journal-{}", digest.to_hex()), work))?)?;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), work))?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work))?)?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), work))?;
         Ok((key, path))
     }
 
@@ -464,7 +464,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
             .as_mut()
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(&mut work)?;
+            owner.require_interaction_grant(io)?;
             owner.verify(true, &mut work).await?;
         }
         host.verify_approval_with_io(id, operation, digest, io)

@@ -30,7 +30,7 @@ impl ReducerRegistry {
         entrypoint: EntrypointRef,
         reducer: fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>,
     ) -> Result<()> {
-        crate::contract::compile_json_schema(
+        crate::executor::compile_json_schema(
             &entrypoint.result_schema,
             "reducer result",
             &mut None,
@@ -199,8 +199,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .verify(bytes.as_ref(), custody.work())?;
         let (value, value_bytes) = decode_json(
             bytes.as_ref(),
-            crate::contract::JsonValueSchema::Root,
-            crate::contract::json_value_logical_owned_bytes,
+            crate::executor::json::JsonValueSchema::Root,
+            crate::executor::json::json_value_logical_owned_bytes,
             custody.work(),
         )?;
         custody.adopt(value_bytes)?;

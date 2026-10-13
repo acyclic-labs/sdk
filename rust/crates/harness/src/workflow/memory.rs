@@ -34,36 +34,63 @@ impl WorkflowJournal for MemoryWorkflowJournal {
             }
         })
     }
-    fn admission(&self) -> BoxFuture<'_, Result<Option<WorkflowAdmission>>> {
-        Box::pin(async move {
-            self.state
-                .lock()
-                .map(|state| state.admission.clone())
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))
+    fn admission<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<
+        crate::store::history::HistoryContentFuture<'a, (Option<WorkflowAdmission>, NativeCustody)>,
+    > {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io.is_some() {
+            return Err(unsupported("journal has no native admission callback"));
+        }
+        let _ = io;
+        Ok(crate::store::history::HistoryContentFuture::Ordinary {
+            future: Box::pin(async move {
+                self.state
+                    .lock()
+                    .map(|state| (state.admission.clone(), None))
+                    .map_err(|_| Error::Storage("workflow journal poisoned".into()))
+            }),
+            frame_bytes: 0,
         })
     }
-    fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
-        Box::pin(async move {
-            if maximum == 0 {
-                return Err(Error::Invalid("workflow page bounds are invalid".into()));
-            }
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let after = usize::try_from(after)
-                .map_err(|_| Error::Invalid("workflow revision is not portable".into()))?;
-            let records = state
-                .records
-                .iter()
-                .skip(after)
-                .take(maximum as usize)
-                .cloned()
-                .collect::<Vec<_>>();
-            for record in &records {
-                record.validate(None)?;
-            }
-            Ok(records)
+    fn replay<'a>(
+        &'a self,
+        after: u64,
+        maximum: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, (Vec<WorkflowRecord>, NativeCustody)>>
+    {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io.is_some() {
+            return Err(unsupported("journal has no native replay callback"));
+        }
+        let _ = io;
+        Ok(crate::store::history::HistoryContentFuture::Ordinary {
+            future: Box::pin(async move {
+                if maximum == 0 {
+                    return Err(Error::Invalid("workflow page bounds are invalid".into()));
+                }
+                let state = self
+                    .state
+                    .lock()
+                    .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
+                let after = usize::try_from(after)
+                    .map_err(|_| Error::Invalid("workflow revision is not portable".into()))?;
+                let records = state
+                    .records
+                    .iter()
+                    .skip(after)
+                    .take(maximum as usize)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for record in &records {
+                    record.validate(None)?;
+                }
+                Ok((records, None))
+            }),
+            frame_bytes: 0,
         })
     }
     fn commit<'a>(
@@ -103,11 +130,21 @@ impl WorkflowJournal for MemoryWorkflowJournal {
             let admission = state.admission.as_ref().ok_or_else(|| {
                 Error::Conflict("workflow transition has no retained admission".into())
             })?;
-            if &record.prior
-                != state
-                    .records
-                    .last()
-                    .map_or(&admission.initial, |last| &last.next)
+            let checkpoint = state
+                .records
+                .last()
+                .map(WorkflowRecord::checkpoint)
+                .transpose()?
+                .unwrap_or((
+                    &admission.initial.machine,
+                    admission.initial.revision,
+                    &admission.initial.state,
+                ));
+            if (
+                &record.prior.machine,
+                record.prior.revision,
+                &record.prior.state,
+            ) != checkpoint
             {
                 return Err(Error::Conflict(
                     "workflow transition differs from admission".into(),

@@ -185,6 +185,111 @@ fn event(scheduler: &Scheduler, exercise: Exercise) -> Result<Option<SchedulerEv
     }
 }
 
+fn check_lifecycle(
+    orchestration: u8,
+    steps: Vec<Exercise>,
+) -> proptest::test_runner::TestCaseResult {
+    let fail = |error: Error| TestCaseError::fail(error.to_string());
+    let mut scheduler = Scheduler::new();
+    for (op, parent) in [(1, None), (2, Some(1)), (3, Some(1))] {
+        let declared = declaration(
+            op,
+            parent,
+            None,
+            if parent.is_none() { orchestration } else { 0 },
+            1,
+        )
+        .map_err(fail)?;
+        scheduler.apply(&declared, &mut None).map_err(fail)?;
+        if parent.is_none() {
+            scheduler
+                .apply(
+                    &SchedulerEvent::SessionConfigured {
+                        operation_id: id(op),
+                        limits: SessionLimits {
+                            active_tasks: 2,
+                            total_tasks: 5,
+                            depth: 3,
+                            model_steps: 2,
+                        },
+                    },
+                    &mut None,
+                )
+                .map_err(fail)?;
+        }
+    }
+    for step in steps {
+        let Some(event) = event(&scheduler, step).map_err(fail)? else {
+            continue;
+        };
+        let before = scheduler.clone();
+        if scheduler.apply(&event, &mut None).is_err() {
+            prop_assert_eq!(&scheduler, &before);
+            continue;
+        }
+        for (id, prior) in &before.operations {
+            let current = scheduler.operations.get(id);
+            prop_assert!(current.is_some_and(|current| current.revision >= prior.revision));
+            if prior.phase == OperationPhase::Terminal {
+                prop_assert_eq!(current, Some(prior), "terminal is absorbing");
+            }
+        }
+        for operation in scheduler.operations.values() {
+            prop_assert!(
+                !operation.cancellation_requested
+                    || operation.phase != OperationPhase::WaitingForChildren
+            );
+            prop_assert_eq!(
+                operation.outcome.is_some(),
+                matches!(
+                    operation.phase,
+                    OperationPhase::Terminal | OperationPhase::Reconciling
+                )
+            );
+            prop_assert!(
+                operation.reservation.is_none()
+                    || matches!(
+                        operation.phase,
+                        OperationPhase::WaitingForCapacity
+                            | OperationPhase::Admitted
+                            | OperationPhase::Running
+                            | OperationPhase::Reconciling
+                    )
+            );
+        }
+        prop_assert!(claims_preserved(&before, &scheduler));
+        for (root, limits) in &scheduler.sessions {
+            let used = scheduler
+                .model_claims
+                .iter()
+                .filter(|(op, _)| {
+                    scheduler
+                        .session_root(**op, &mut None)
+                        .is_ok_and(|(candidate, _)| candidate == *root)
+                })
+                .map(|(_, claims)| claims.used())
+                .sum::<u64>();
+            prop_assert!(used <= limits.model_steps);
+        }
+        prop_assert!(
+            scheduler
+                .model_claims
+                .values()
+                .all(|claims| claims.used() <= claims.ceiling)
+        );
+        let completed = scheduler.completion_order.iter().collect::<BTreeSet<_>>();
+        prop_assert_eq!(completed.len(), scheduler.completion_order.len());
+        let terminal = scheduler
+            .operations
+            .values()
+            .filter(|operation| operation.phase == OperationPhase::Terminal)
+            .map(|operation| &operation.spec.operation_id)
+            .collect::<BTreeSet<_>>();
+        prop_assert_eq!(completed, terminal);
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
@@ -193,52 +298,6 @@ proptest! {
         orchestration in 0..3_u8,
         steps in proptest::collection::vec(exercise(), 1..64),
     ) {
-        let fail = |error: Error| TestCaseError::fail(error.to_string());
-        let mut scheduler = Scheduler::new();
-        for (op, parent) in [(1, None), (2, Some(1)), (3, Some(1))] {
-            let declared = declaration(op, parent, None, if parent.is_none() { orchestration } else { 0 }, 1).map_err(fail)?;
-            scheduler.apply(&declared, &mut None).map_err(fail)?;
-            if parent.is_none() {
-                scheduler.apply(&SchedulerEvent::SessionConfigured {
-                    operation_id: id(op),
-                    limits: SessionLimits { active_tasks: 2, total_tasks: 5, depth: 3, model_steps: 2 },
-                }, &mut None).map_err(fail)?;
-            }
-        }
-        for step in steps {
-            let Some(event) = event(&scheduler, step).map_err(fail)? else { continue };
-            let before = scheduler.clone();
-            if scheduler.apply(&event, &mut None).is_err() {
-                prop_assert_eq!(&scheduler, &before);
-                continue;
-            }
-            for (id, prior) in &before.operations {
-                let current = scheduler.operations.get(id);
-                prop_assert!(current.is_some_and(|current| current.revision >= prior.revision));
-                if prior.phase == OperationPhase::Terminal {
-                    prop_assert_eq!(current, Some(prior), "terminal is absorbing");
-                }
-            }
-            for operation in scheduler.operations.values() {
-                prop_assert!(!operation.cancellation_requested || operation.phase != OperationPhase::WaitingForChildren);
-                prop_assert_eq!(operation.outcome.is_some(), matches!(operation.phase, OperationPhase::Terminal | OperationPhase::Reconciling));
-                prop_assert!(operation.reservation.is_none() || matches!(operation.phase,
-                    OperationPhase::WaitingForCapacity | OperationPhase::Admitted | OperationPhase::Running | OperationPhase::Reconciling));
-            }
-            prop_assert!(claims_preserved(&before, &scheduler));
-            for (root, limits) in &scheduler.sessions {
-                let used = scheduler.model_claims.iter()
-                    .filter(|(op, _)| scheduler.session_root(**op, &mut None).is_ok_and(|(candidate, _)| candidate == *root))
-                    .map(|(_, claims)| claims.used()).sum::<u64>();
-                prop_assert!(used <= limits.model_steps);
-            }
-            prop_assert!(scheduler.model_claims.values().all(|claims| claims.used() <= claims.ceiling));
-            let completed = scheduler.completion_order.iter().collect::<BTreeSet<_>>();
-            prop_assert_eq!(completed.len(), scheduler.completion_order.len());
-            let terminal = scheduler.operations.values()
-                .filter(|operation| operation.phase == OperationPhase::Terminal)
-                .map(|operation| &operation.spec.operation_id).collect::<BTreeSet<_>>();
-            prop_assert_eq!(completed, terminal);
-        }
+        check_lifecycle(orchestration, steps)?;
     }
 }

@@ -296,12 +296,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 if this.tracks_observations() {
                     let (cursor, allocation) = match after {
                         std::ops::Bound::Excluded(name) => {
+                            accounting.charge(WorkCounters {
+                                items_examined: 1,
+                                ..WorkCounters::UNCHARGED
+                            })?;
                             let (name, allocation) =
-                                this.dependencies.copy_observation_name_with_accounting(
-                                    name,
-                                    accounting,
-                                    cancellation,
-                                )?;
+                                name.clone_with_accounting(accounting, cancellation)?;
                             (Some(name), allocation)
                         }
                         std::ops::Bound::Unbounded => (None, accounting.claim_owned(0, 0)?),

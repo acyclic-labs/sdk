@@ -1,9 +1,6 @@
-use crate::executor::stock_boundary;
 use super::*;
-use crate::filesystem::{
-    PreparationIo,
-    fork_preparer_io,
-};
+use crate::executor::stock_boundary;
+use crate::filesystem::{PreparationIo, fork_preparer_io};
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -37,8 +34,8 @@ where
             || intent.source_task != arguments.source.unwrap_or(caller.task)
             || intent.child_operation_id != allocation.admission.operation_id
             || intent.request.operation_id != context.operation_id()
-            || &intent.request.parent != caller.owner.authority()
-            || &intent.request.child != allocation.child.authority()
+            || &intent.request.parent != caller.owner.issuer.audience()
+            || &intent.request.child != allocation.child.issuer.audience()
             || intent.request.child_agent != arguments.id
             || intent.request.preparation.child_project_volume != allocation.project
             || intent.request.preparation.child_private_volume != allocation.private_volume
@@ -133,7 +130,7 @@ where
                 )?;
                 let bytes_hold = observer.guard_bytes(&bytes)?;
                 let path = crate::executor::with_history_io(io, |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!(
                             "recursive-tools/{}/source-checkpoint.json",
                             context.operation_id()
@@ -144,36 +141,9 @@ where
                 let path_hold = io
                     .map(|io| io.guard_owned(path.capacity() as u64))
                     .transpose()?;
-                let file = 'staged: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = observer.original_native_work() {
-                        let (file, custody) = context
-                            .stage_file_once_with_native_work(
-                                operation,
-                                &path,
-                                &bytes,
-                                "application/json",
-                                "source-checkpoint.json",
-                                work,
-                            )
-                            .await?;
-                        observer.absorb_native_custody(custody)?;
-                        break 'staged file;
-                    }
-                    observer.receive_content(
-                        context
-                            .stage_file_once_measured(
-                                operation,
-                                &path,
-                                &bytes,
-                                "application/json",
-                                "source-checkpoint.json",
-                                observer.remaining()?,
-                                observer.cancellation(),
-                            )
-                            .await,
-                    )?
-                };
+                let (file, _) = context.stage_file_once(
+                    operation, &path, &bytes, "application/json", "source-checkpoint.json", Some(observer),
+                ).await?;
                 drop((path, path_hold));
                 drop(bytes);
                 drop(bytes_hold);

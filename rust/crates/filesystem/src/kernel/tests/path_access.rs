@@ -57,16 +57,6 @@ fn completed_backend_failure(
     }
 }
 
-fn remaining_callback(
-    prior: WorkCounters, budget: WorkBudget, resident: u64,
-) -> Result<WorkBudget, OperationFailure<crate::FsError>> {
-    let cancellation = CancellationToken::new();
-    let accounting = KernelAccounting::Standalone {
-        allocations: AllocationLedger::default(), work: prior, budget, cancellation: &cancellation,
-    };
-    provider_remaining(&accounting, resident).map_err(|error| OperationFailure::new(error, accounting.spent()))
-}
-
 fn config() -> VolumeConfig {
     VolumeConfig {
         profile: FilesystemProfile::Portable,
@@ -1232,7 +1222,7 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
     let cold = (async {
         let __object_args = (
             object_id,
-            u64::try_from(bytes.len())?,
+            u64::try_from(bytes.len()).expect("test payload length"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
@@ -1249,7 +1239,7 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
     let warm = (async {
         let __object_args = (
             object_id,
-            u64::try_from(bytes.len())?,
+            u64::try_from(bytes.len()).expect("test payload length"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
@@ -1279,7 +1269,7 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
     let too_small = (async {
         let __object_args = (
             object_id,
-            u64::try_from(bytes.len())?.saturating_sub(1),
+            u64::try_from(bytes.len()).expect("test payload length").saturating_sub(1),
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
@@ -1984,12 +1974,12 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
     })).await;
     assert!(unwind.is_err());
     let frame_bytes = u64::try_from(size_of::<PanicAfterAdmission<'_>>())?;
-    let completed = custody.pending_data_work();
+    let completed = custody.take_completed_data_work();
     assert_eq!(completed.allocation_operations, 2);
     assert_eq!(completed.peak_allocation_bytes, setup.peak_allocation_bytes + frame_bytes);
     assert_eq!(custody.retained_bytes(), 0, "cache and frames are not retained proof keys");
     drop(cache);
-    assert_eq!(custody.take_completed_data_work(), completed);
+    assert_eq!(custody.take_completed_data_work(), WorkCounters::default());
     let next_observer = |event| custody.record_heap_future_event(event);
     let next = (crate::heap_future::in_heap_measured(
         |_| {
@@ -2000,7 +1990,7 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
         WorkBudget::UNBOUNDED, &cancellation,
         PathLookupError::Tree(TreeReadError::Cancelled), Some(&next_observer),
     )).await?;
-    assert_eq!(custody.pending_data_work(), next.work, "dead cache backing is not carried forward");
+    assert_eq!(custody.take_completed_data_work(), next.work, "dead cache backing is not carried forward");
     Ok(())
 }
 

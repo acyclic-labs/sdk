@@ -12,11 +12,10 @@ use crate::{
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
-        ForkToolArguments, MergeToolArguments, RecursiveDefaultToolSource, RecursiveDefaultToolset,
-        RecursiveForkConfig, RecursiveForkSourceIntent, RecursiveForkToolBinding,
-        RecursiveForkToolPlan, RecursiveMergeToolBinding, RecursiveMergeToolPlan,
-        RecursiveToolOwner, RetainedSourceBinding, recursive_default_tools,
-        restore_recursive_fork_source,
+        ForkToolArguments, MergeToolArguments, RecursiveDefaultToolSource, RecursiveForkConfig,
+        RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
+        RecursiveMergeToolBinding, RecursiveMergeToolPlan, RecursiveToolOwner,
+        RetainedSourceBinding, restore_recursive_fork_source,
     },
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
@@ -91,7 +90,7 @@ where
                 Error::Unauthorized("configured caller has no signed agent".into())
             })?;
             if let Some(native) = &caller.native_snapshot {
-                crate::contract::json_byte_length(native, limits.file_bytes, &mut None)
+                crate::executor::json::json_byte_length(native, limits.file_bytes, &mut None)
                     .map(|_| ())?;
             }
             if let Some(result) = &caller.result_volume {
@@ -186,10 +185,6 @@ where
             Error::Conflict("configured source project policy was already bound".into())
         })
     }
-    /// Builds the default tools from this source.
-    pub fn tools(self: &Arc<Self>, maximum_bytes: u64) -> Result<RecursiveDefaultToolset> {
-        recursive_default_tools(Some(self.clone()), maximum_bytes)
-    }
     pub(super) fn runtime(
         &self,
         io: Option<&super::PreparationIo>,
@@ -210,7 +205,7 @@ where
         for caller in &self.config.callers {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work {
+                    crate::executor::json::JsonCodecCharge::Work {
                         bytes: 16,
                         items: 1,
                     },
@@ -236,7 +231,7 @@ where
         for allocation in &self.config.forks {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work {
+                    crate::executor::json::JsonCodecCharge::Work {
                         bytes: 32,
                         items: 1,
                     },
@@ -452,7 +447,7 @@ fn validate_result_volume(
 }
 
 fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = binding.issuer().verifier(&mut None).expect("verifier copy");
+    let verifier = binding.issuer.verifier(&mut None).expect("verifier copy");
     verifier.verify(&binding.scope, &mut None)?;
     Ok(verifier)
 }
@@ -481,8 +476,8 @@ fn allocation_digest(
         let descriptor = Descriptor {
             contract: "harness.configured-recursive-allocation.v2",
             admission: admission.canonical_payload(),
-            authority: allocation.child.authority(),
-            issuer: allocation.child.issuer().id(),
+            authority: allocation.child.issuer.audience(),
+            issuer: allocation.child.issuer.id(),
             agent: scope.agent(),
             grants: scope.capabilities(),
             message_pointer: &allocation.child_message_pointer,
@@ -491,7 +486,7 @@ fn allocation_digest(
             limits: allocation.limits,
         };
         crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest(
+            crate::executor::json::canonical_json_digest(
                 &descriptor,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
                 work,
