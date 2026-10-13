@@ -393,32 +393,10 @@ impl TaskAdmissionRecord {
 
     /// Decodes the canonical admission and reports its new container bytes.
     pub fn from_canonical_value(
-        mut value: Value,
+        value: Value,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<(Self, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        value.sort_all_objects();
-        let code = quota
-            .work()
-            .as_deref()
-            .is_some_and(crate::store::operations::original_native_decode_mode)
-            .then_some(crate::wire::ErrorCode::Invalid);
-        let canonical = crate::executor::json::json_bytes_bounded(
-            &value,
-            crate::executor::json::JsonBounds {
-                maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-                maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
-                maximum_depth: 256,
-            },
-            code,
-            &mut |charge| {
-                quota
-                    .work()
-                    .as_deref_mut()
-                    .map_or(Ok(()), |io| io.codec_charge(charge))
-            },
-        )?;
-        quota.adopt(canonical.capacity() as u64)?;
         let mut body = value;
         let fields = match body.as_object_mut() {
             Some(fields) => fields,
@@ -438,16 +416,31 @@ impl TaskAdmissionRecord {
                 "unsupported task admission contract",
             ));
         }
-        let (admission, added) = Self::decode_body(body, quota.work())?;
+        let (admission, added) = Self::decode_body(&body, quota.work())?;
         quota.adopt(added)?;
         admission.validate(quota.work())?;
-        let expected = crate::store::history::canonical_bytes_with_work(
-            &admission.canonical_payload(),
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            quota.work(),
-        )?;
-        quota.adopt(expected.capacity() as u64)?;
-        if expected != canonical {
+        let expected = match quota.work().as_deref_mut() {
+            Some(io) => {
+                let code = crate::store::operations::original_native_decode_mode(io)
+                    .then_some(crate::wire::ErrorCode::Invalid);
+                crate::executor::json::json_value_bounded(
+                    &admission,
+                    crate::executor::json::JsonBounds {
+                        maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+                        maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
+                        maximum_depth: 256,
+                    },
+                    code,
+                    &mut |charge| io.codec_charge(charge),
+                )?
+            }
+            None => serde_json::to_value(&admission)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        quota.adopt(crate::executor::json::json_value_logical_owned_bytes(
+            &expected,
+        )?)?;
+        if expected != body {
             return Err(crate::store::guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Invalid,
@@ -455,14 +448,14 @@ impl TaskAdmissionRecord {
             ));
         }
         drop(expected);
-        drop(canonical);
+        drop(body);
         quota.replace(added)?;
         quota.transfer();
         Ok((admission, added))
     }
 
-    pub(super) fn decode_body(
-        body: Value,
+    fn decode_body(
+        body: &Value,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -472,7 +465,7 @@ impl TaskAdmissionRecord {
         {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let decoded = crate::executor::json::json_from_value_bounded(
-                std::borrow::Cow::Owned(body),
+                std::borrow::Cow::Borrowed(body),
                 crate::executor::json::JsonBounds {
                     maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -484,9 +477,7 @@ impl TaskAdmissionRecord {
                 &mut |charge| match charge {
                     crate::executor::json::JsonCodecCharge::Admission { value_shape, .. } => {
                         let containers =
-                            crate::executor::json::json_owned_value_conversion_additional_bytes(
-                                value_shape,
-                            )?;
+                            crate::executor::json::json_value_decode_owned_bytes(value_shape)?;
                         let diagnostics = crate::executor::json::json_typed_diagnostic_owned_bytes(
                             value_shape,
                             crate::executor::json::preparation_serde_diagnostic_label_bytes(),
@@ -535,7 +526,7 @@ impl TaskAdmissionRecord {
             return Ok((admission, bytes));
         }
         Ok((
-            serde_json::from_value(body).map_err(|source| Error::Invalid(source.to_string()))?,
+            Self::deserialize(body).map_err(|source| Error::Invalid(source.to_string()))?,
             0,
         ))
     }
