@@ -23,16 +23,12 @@ impl DriverSessionResources {
             ..
         } = state;
         if let Some((_, destination, _)) = resources.as_ref() {
-            let loan = crate::materializer::NativeCleanupLoan {
-                credit: &self.credit,
-                wait,
-            };
             if !control.detached || control.controls_pending() {
                 control.detach(
                     Path::new(std::ffi::OsStr::from_bytes(destination.as_bytes())),
                     Some(destination.as_c_str()),
                     probe,
-                    &ProbeWork::Cleanup(&loan),
+                    &ProbeWork::Cleanup(&self.credit, wait),
                 )?;
             }
             if control.controls_pending() {
@@ -208,11 +204,7 @@ impl DarwinMountSession {
         wait.check()
             .map_err(|_| NativeMountError::from(crate::DemandError::Cancelled))?;
         let events = Arc::clone(&self.unmount);
-        let loan = crate::materializer::NativeCleanupLoan {
-            credit: &events.credit,
-            wait: Some(wait),
-        };
-        let work = ProbeWork::Cleanup(&loan);
+        let work = ProbeWork::Cleanup(&events.credit, Some(wait));
         let was_mounted = {
             let mut state = events.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.resources.is_none() && self.thread.is_none() {
@@ -271,7 +263,7 @@ impl DarwinMountSession {
             events.wait_until(STOP_POLL_INTERVAL, |_| thread.is_finished());
         }
         if self.thread.is_some() {
-            events.sdk_credit.loan(Some(wait)).started_io(READ_WORK)?;
+            events.sdk_credit.started_io(READ_WORK, Some(wait))?;
             self.loop_result = Some(
                 self.thread
                     .take()

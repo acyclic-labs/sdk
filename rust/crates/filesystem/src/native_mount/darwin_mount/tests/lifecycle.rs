@@ -125,14 +125,14 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
         ..WorkCounters::UNCHARGED
     })?;
     assert!(matches!(
-        detach.poll(&ProbeWork::Cleanup(&credit.loan(None)))?,
+        detach.poll(&ProbeWork::Cleanup(&credit, None))?,
         std::task::Poll::Pending
     ));
     drop(release);
     let deadline = Instant::now() + Duration::from_secs(3);
     let error = loop {
         if let std::task::Poll::Ready(result) =
-            detach.poll(&ProbeWork::Cleanup(&credit.loan(None)))?
+            detach.poll(&ProbeWork::Cleanup(&credit, None))?
         {
             break result.expect_err("original panic");
         }
