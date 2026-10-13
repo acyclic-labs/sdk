@@ -372,7 +372,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native seed binding requires its original issued creation guard",
                 })?
-                .verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
+                .verify(
+                    false,
+                    Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+                )?
                 .await?;
         }
         let binding = seed_digest(seed, MAX_REPORT_BYTES, io)?;

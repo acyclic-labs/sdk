@@ -27,7 +27,7 @@ where
     pub fn native_source_io_lease(
         &self,
     ) -> Result<super::super::adapter::NativeSourceIoLease, NativeMountError> {
-        self.source.native_source_io_lease().map_err(Into::into)
+        self.source.native_source_io_lease(self.source.clone()).map_err(Into::into)
     }
 
     /// Revalidates the selected root and generation before presentation.

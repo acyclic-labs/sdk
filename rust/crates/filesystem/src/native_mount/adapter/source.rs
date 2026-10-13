@@ -108,17 +108,11 @@ impl<A, O> CheckoutMountSource<A, O> {
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let mut inputs = InputBuffers::new(carrier)?;
         let path = self.namespace_inputs(path, &mut inputs)?;
-        let mut inspector = if let Some(work) = inputs.carrier.original_native_work() {
-            checkout.inspector(&work, &cancellation).map_err(fs_error)?
-        } else {
-            let (budget, live) = inputs.carrier.remaining()?;
-            inputs.carrier.accept_with_prior_live(
-                checkout.inspector(budget, &cancellation),
-                live,
-                fs_error,
-            )?
-        };
-        inputs.adopt_checkout(&inspector)?;
+        let work = inputs
+            .carrier
+            .original_native_work()
+            .expect("native SDK callback");
+        let mut inspector = checkout.inspector(&work, &cancellation).map_err(fs_error)?;
         self.read_lookup(&mut inspector, &path, &mut inputs, &cancellation)
             .await
     }
@@ -148,7 +142,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NotFound)?;
         candidate
             .checkout
-            .change_named_attribute_by_id(lookup.node.file_id, &name, value, work, cancellation)
+            .change_named_attribute(lookup.node.file_id, &name, value, work, cancellation)
             .await
             .map_err(fs_error)?;
         self.checkout
@@ -188,48 +182,26 @@ impl<A, O> CheckoutMountSource<A, O> {
                 Some(&self.cancellation),
             )
             .await?;
-        let mut checkout = inputs.observer(&observation, &cancellation)?;
-        let chunk = if let Some(original) = inputs.carrier.original_native_work() {
-            match range {
-                Some(range) => {
-                    let read = checkout
-                        .read_file_range(&path, range, &original, &cancellation)
-                        .await
-                        .map_err(fs_error)?;
-                    let bytes = read.logical_owned_bytes();
-                    crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, bytes)
-                }
-                None => checkout
-                    .read_symbolic_link(&path, &original, &cancellation)
+        let original = inputs
+            .carrier
+            .original_native_work()
+            .expect("native SDK callback");
+        let mut checkout = observation
+            .observer(&original, &cancellation)
+            .map_err(fs_error)?;
+        let chunk = match range {
+            Some(range) => {
+                let read = checkout
+                    .read_file_range(&path, range, &original, &cancellation)
                     .await
-                    .map_err(fs_error)?,
+                    .map_err(fs_error)?;
+                let bytes = read.logical_owned_bytes();
+                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, bytes)
             }
-        } else {
-            let (budget, live) = inputs.carrier.remaining()?;
-            let result = match range {
-                Some(range) => checkout
-                    .read_file_range(&path, range, budget, &cancellation)
-                    .await
-                    .map(|receipt| {
-                        let bytes = receipt.value.logical_owned_bytes();
-                        crate::OperationReceipt {
-                            value: crate::kernel::OwnedSourceChunk::claimed(
-                                receipt.value.bytes,
-                                bytes,
-                            ),
-                            work: receipt.work,
-                        }
-                    }),
-                None => {
-                    checkout
-                        .read_symbolic_link(&path, budget, &cancellation)
-                        .await
-                }
-            };
-            checkout.proof_data_take_completed_work();
-            inputs
-                .carrier
-                .accept_with_prior_live(result, live, fs_error)?
+            None => checkout
+                .read_symbolic_link(&path, &original, &cancellation)
+                .await
+                .map_err(fs_error)?,
         };
         inputs
             .carrier
@@ -259,7 +231,13 @@ impl<A, O> CheckoutMountSource<A, O> {
                 Some(&self.cancellation),
             )
             .await?;
-        let mut checkout = inputs.observer(&observation, &cancellation)?;
+        let original = inputs
+            .carrier
+            .original_native_work()
+            .expect("native SDK callback");
+        let mut checkout = observation
+            .observer(&original, &cancellation)
+            .map_err(fs_error)?;
         self.read_lookup(&mut checkout, &path, &mut inputs, &cancellation)
             .await
     }
@@ -275,22 +253,14 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let result = if let Some(work) = inputs.carrier.original_native_work() {
-            checkout
-                .lookup_no_follow_with_metadata(path, &work, cancellation)
-                .await
-                .map_err(fs_error)
-        } else {
-            let (budget, live) = inputs.carrier.remaining()?;
-            let result = checkout
-                .lookup_no_follow_with_metadata(path, budget, cancellation)
-                .await;
-            checkout.proof_data_take_completed_work();
-            inputs
-                .carrier
-                .accept_with_prior_live(result, live, fs_error)
-        };
-        let value = result?;
+        let work = inputs
+            .carrier
+            .original_native_work()
+            .expect("native SDK callback");
+        let value = checkout
+            .lookup_no_follow_with_metadata(path, &work, cancellation)
+            .await
+            .map_err(fs_error)?;
         inputs
             .carrier
             .check(cancellation, Some(&self.cancellation))?;
@@ -328,22 +298,17 @@ impl<A, O> CheckoutMountSource<A, O> {
             )
             .await?;
         observation.ensure_publication_resolved()?;
-        let mut checkout = inputs.observer(&observation, &cancellation)?;
-        let record = if let Some(original) = inputs.carrier.original_native_work() {
-            checkout
-                .read_file_record_by_id(file_id, &original, &cancellation)
-                .await
-                .map_err(fs_error)?
-        } else {
-            let (budget, live) = inputs.carrier.remaining()?;
-            let result = checkout
-                .read_file_record_by_id(file_id, budget, &cancellation)
-                .await;
-            checkout.proof_data_take_completed_work();
-            inputs
-                .carrier
-                .accept_with_prior_live(result, live, fs_error)?
-        };
+        let original = inputs
+            .carrier
+            .original_native_work()
+            .expect("native SDK callback");
+        let mut checkout = observation
+            .observer(&original, &cancellation)
+            .map_err(fs_error)?;
+        let record = checkout
+            .read_file_record_by_id(file_id, &original, &cancellation)
+            .await
+            .map_err(fs_error)?;
         inputs
             .carrier
             .check(&cancellation, Some(&self.cancellation))?;
@@ -366,44 +331,20 @@ impl<A, O> CheckoutMountSource<A, O> {
             .checkout
             .observe(owner, carrier, &cancellation, Some(&self.cancellation))
             .await?;
-        let bytes = std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64;
-        let (file, allocation) = if let Some(work) = carrier.original_native_work() {
-            let allocation = work
-                .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
-                .map_err(MountSourceError::NativeWork)?;
-            let file = checkout
-                .detached_from_record(record, &work, &cancellation)
-                .map_err(fs_error)?;
-            (file, Some(allocation))
-        } else {
-            let (budget, live) = carrier.remaining()?;
-            let file = carrier.accept_with_prior_live(
-                checkout.detached_from_record(record, budget, &cancellation),
-                live,
-                fs_error,
-            )?;
-            carrier
-                .with_work(|work| {
-                    work.claim_allocation(
-                        bytes,
-                        u64::from(bytes != 0),
-                        crate::WorkCounters::UNCHARGED,
-                    )
-                })
-                .map_err(super::lazy::mount_demand_error)?;
-            (file, None)
-        };
-        if let Err(error) = carrier.check(&cancellation, Some(&self.cancellation)) {
-            drop(file);
-            if allocation.is_none() {
-                carrier
-                    .with_work(|work| work.release(bytes))
-                    .map_err(super::lazy::mount_demand_error)?;
-            }
-            return Err(error);
-        }
+        let work = carrier.original_native_work().expect("native SDK callback");
+        let allocation = work
+            .claim(
+                std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64,
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )
+            .map_err(MountSourceError::NativeWork)?;
+        let file = checkout
+            .detached_from_record(record, &work, &cancellation)
+            .map_err(fs_error)?;
+        carrier.check(&cancellation, Some(&self.cancellation))?;
         Ok(Arc::new(CheckoutDetachedFile {
-            _native_allocation: allocation,
+            _native_allocation: Some(allocation),
             state: tokio::sync::Mutex::new(DetachedMountState {
                 file,
                 metadata,
@@ -600,12 +541,12 @@ impl<A, O> CheckoutMountSource<A, O> {
         // by the whole checkout, whichever root a composing source mounts.
         let root =
             NamespacePath::new(Vec::new(), self.limits).map_err(MountSourceError::NamespacePath)?;
-        let mut work = crate::demand::DemandWork::new(boundary_budget(), &self.cancellation);
+        let work = capture_meter(boundary_budget(), &self.cancellation)?;
         let (installed, _allocation) = installed_changes(
             base,
             checkout,
             InstallScope::Subtree(&root),
-            &mut NativeDemandCarrier::Borrowed(&mut work),
+            &mut NativeDemandCarrier::Native(&work),
             &self.cancellation,
         )
         .await?;

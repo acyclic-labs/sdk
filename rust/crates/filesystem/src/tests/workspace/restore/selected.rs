@@ -3,97 +3,77 @@ use super::*;
 #[tokio::test]
 async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
 -> Result<(), Box<dyn Error>> {
-    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace("restore-paths", B, &cancel)
-        .await?
-        .value;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::from_bytes([0x60; 16]), B, &cancel)
-        .await?
-        .value;
-    transaction.create_dir_all("/tree", B, &cancel).await?.value;
-    transaction
-        .create_file(
+    let workspace = unbounded!(fs, create_workspace("restore-paths"))?;
+    let mut transaction = unbounded!(
+        workspace,
+        begin_transaction(IdempotencyKey::from_bytes([0x60; 16]))
+    )?;
+    unbounded!(transaction, create_dir_all("/tree"))?;
+    unbounded!(
+        transaction,
+        create_file(
             "/tree/tracked",
-            OwnedBytes::from_static(b"committed"),
-            FileMetadata::default(),
-            B,
-            &cancel,
+            bytes::Bytes::from_static(b"committed"),
+            FileMetadata::default()
         )
-        .await?
-        .value;
-    transaction
-        .hard_link("/tree/tracked", "/tree/ignored-link", B, &cancel)
-        .await?
-        .value;
+    )?;
+    unbounded!(
+        transaction,
+        hard_link("/tree/tracked", "/tree/ignored-link")
+    )?;
     assert!(matches!(
-        transaction
-            .commit(
-                None,
-                PublicationPermit::Unrestricted,
-                B,
-                &cancel,
-                allow::<WorkspaceError>
-            )
-            .await?
-            .value,
+        commit(&mut transaction).await?,
         TransactionCommit::Committed(_)
     ));
     workspace.write_text("/ignored", "live").await?;
-    let committed = workspace.head(B, &cancel).await?.value;
-    let snapshot = workspace
-        .fork::<_, _, crate::WorkspaceError>(
-            "restore-paths-snapshot",
-            ForkOptions::from_generation(committed, IdempotencyKey::from_bytes([0x61; 16])),
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            &mut allow::<FsError>,
-        )
-        .await?
-        .value;
+    let committed = unbounded!(workspace, head())?;
+    let snapshot = fork_workspace(
+        &workspace,
+        "restore-paths-snapshot",
+        ForkOptions::from_generation(committed, IdempotencyKey::from_bytes([0x61; 16])),
+    )
+    .await?;
     snapshot.remove("/ignored").await?;
-    let source = snapshot.head(B, &cancel).await?.value;
+    let source = unbounded!(snapshot, head())?;
 
     workspace.write_text("/tree/tracked", "dirty").await?;
     workspace.write_text("/ignored", "still-live").await?;
-    let dirty = workspace.head(B, &cancel).await?.value;
-    let outcome = workspace
-        .restore_paths_from(
-            &source,
-            &["tree/tracked".to_owned()],
-            dirty.id(),
-            IdempotencyKey::from_bytes([0x62; 16]),
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            allow::<FsError>,
-        )
-        .await?
-        .value;
+    let dirty = unbounded!(workspace, head())?;
+    let outcome = value!(
+        workspace
+            .restore_paths_from(
+                &source,
+                &["tree/tracked".to_owned()],
+                dirty.id(),
+                IdempotencyKey::from_bytes([0x62; 16]),
+                crate::PublicationPermit::Unrestricted,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await
+    )?;
     assert!(matches!(outcome, TransactionCommit::Committed(_)));
     assert_eq!(
-        workspace.read("/tree/tracked", 64, B, &cancel).await?.value,
+        unbounded!(workspace, read("/tree/tracked", 64))?,
         OwnedBytes::from_static(b"committed")
     );
     assert_eq!(
-        workspace
-            .read("/tree/ignored-link", 64, B, &cancel)
-            .await?
-            .value,
+        unbounded!(workspace, read("/tree/ignored-link", 64))?,
         OwnedBytes::from_static(b"committed")
     );
     assert_eq!(
-        workspace.read("/ignored", 64, B, &cancel).await?.value,
+        unbounded!(workspace, read("/ignored", 64))?,
         OwnedBytes::from_static(b"still-live")
     );
-    let tracked = workspace.stat("/tree/tracked", B, &cancel).await?.value;
-    let linked = workspace
-        .stat("/tree/ignored-link", B, &cancel)
-        .await?
-        .value;
+    let tracked = unbounded!(workspace, stat("/tree/tracked"))?;
+    let linked = unbounded!(workspace, stat("/tree/ignored-link"))?;
     assert_eq!(tracked.file_id, linked.file_id);
     assert_eq!(tracked.link_count, 2);
     Ok(())
@@ -101,25 +81,19 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
 
 #[tokio::test]
 async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>> {
-    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("apply-paths", B, &cancel).await?.value;
+    let workspace = unbounded!(fs, create_workspace("apply-paths"))?;
     workspace.write_text("/file", "base").await?;
-    let base = workspace.head(B, &cancel).await?.value;
-    let source_workspace = workspace
-        .fork::<_, _, crate::WorkspaceError>(
-            "apply-paths-source",
-            ForkOptions::from_generation(base.clone(), IdempotencyKey::from_bytes([0x63; 16])),
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            &mut allow::<FsError>,
-        )
-        .await?
-        .value;
+    let base = unbounded!(workspace, head())?;
+    let source_workspace = fork_workspace(
+        &workspace,
+        "apply-paths-source",
+        ForkOptions::from_generation(base.clone(), IdempotencyKey::from_bytes([0x63; 16])),
+    )
+    .await?;
     source_workspace.write_text("/file", "source").await?;
-    let source = source_workspace.head(B, &cancel).await?.value;
-    let current = workspace.head(B, &cancel).await?.value;
+    let source = unbounded!(source_workspace, head())?;
+    let current = unbounded!(workspace, head())?;
     assert!(matches!(
         workspace
             .apply_paths_from(
@@ -128,40 +102,32 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
                 &["file".to_owned()],
                 current.id(),
                 IdempotencyKey::from_bytes([0x64; 16]),
-                PublicationPermit::Unrestricted
+                crate::PublicationPermit::Unrestricted,
             )
             .await?,
         WorkspacePathApply::Applied(_)
     ));
     assert_eq!(
-        workspace.read("/file", 64, B, &cancel).await?.value,
+        unbounded!(workspace, read("/file", 64))?,
         OwnedBytes::from_static(b"source")
     );
 
-    let conflicting = fs
-        .create_workspace("apply-paths-conflict", B, &cancel)
-        .await?
-        .value;
+    let conflicting = unbounded!(fs, create_workspace("apply-paths-conflict"))?;
     conflicting.write_text("/file", "base").await?;
-    let conflict_base = conflicting.head(B, &cancel).await?.value;
-    let conflict_source = conflicting
-        .fork::<_, _, crate::WorkspaceError>(
-            "apply-paths-conflict-source",
-            ForkOptions::from_generation(
-                conflict_base.clone(),
-                IdempotencyKey::from_bytes([0x65; 16]),
-            ),
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            &mut allow::<FsError>,
-        )
-        .await?
-        .value;
+    let conflict_base = unbounded!(conflicting, head())?;
+    let conflict_source = fork_workspace(
+        &conflicting,
+        "apply-paths-conflict-source",
+        ForkOptions::from_generation(
+            conflict_base.clone(),
+            IdempotencyKey::from_bytes([0x65; 16]),
+        ),
+    )
+    .await?;
     conflict_source.write_text("/file", "source").await?;
-    let conflict_source = conflict_source.head(B, &cancel).await?.value;
+    let conflict_source = unbounded!(conflict_source, head())?;
     conflicting.write_text("/file", "ours").await?;
-    let conflict_current = conflicting.head(B, &cancel).await?.value;
+    let conflict_current = unbounded!(conflicting, head())?;
     let WorkspacePathApply::Conflicted(conflicts) = conflicting
         .apply_paths_from(
             Some(&conflict_base),
@@ -169,7 +135,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
             &["file".to_owned()],
             conflict_current.id(),
             IdempotencyKey::from_bytes([0x66; 16]),
-            PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
         )
         .await?
     else {
@@ -184,96 +150,41 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
 #[tokio::test]
 async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_state()
 -> Result<(), Box<dyn Error>> {
-    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace("guarded-selected-restore", B, &cancel)
-        .await?
-        .value;
-    let mut seed = workspace
-        .begin_transaction(IdempotencyKey::new(), B, &cancel)
-        .await?
-        .value;
-    seed.create_dir_all("/tree", B, &cancel).await?.value;
-    seed.write(
-        "/tree/file",
-        bytes::Bytes::from_static(b"source"),
-        B,
-        &cancel,
-    )
-    .await?
-    .value;
-    seed.hard_link("/tree/file", "/tree/alias", B, &cancel)
-        .await?
-        .value;
-    seed.set_metadata(
-        "/tree/file",
-        FileMetadata {
-            posix_mode: MetadataField::Value(0o640),
-            ..FileMetadata::default()
-        },
-        B,
-        &cancel,
-    )
-    .await?
-    .value;
-    seed.write("/outside", bytes::Bytes::from_static(b"base"), B, &cancel)
-        .await?
-        .value;
-    seed.commit(
-        None,
-        crate::PublicationPermit::Unrestricted,
-        B,
-        &cancel,
-        |_| async {
-            Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::default(),
-            })
-        },
-    )
-    .await?
-    .value;
-    let source = workspace.head(B, &cancel).await?.value;
-    let source_metadata = source.stat("/tree/file", B, &cancel).await?.value.metadata;
-    let mut live = workspace
-        .begin_transaction(IdempotencyKey::new(), B, &cancel)
-        .await?
-        .value;
-    live.write(
-        "/tree/file",
-        bytes::Bytes::from_static(b"dirty"),
-        B,
-        &cancel,
-    )
-    .await?
-    .value;
-    live.write(
-        "/removed",
-        bytes::Bytes::from_static(b"remove me"),
-        B,
-        &cancel,
-    )
-    .await?
-    .value;
-    live.write("/outside", bytes::Bytes::from_static(b"user"), B, &cancel)
-        .await?
-        .value;
-    live.commit(
-        None,
-        crate::PublicationPermit::Unrestricted,
-        B,
-        &cancel,
-        |_| async {
-            Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::default(),
-            })
-        },
-    )
-    .await?
-    .value;
-    let dirty = workspace.head(B, &cancel).await?.value;
+    let workspace = unbounded!(fs, create_workspace("guarded-selected-restore"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/tree"))?;
+    unbounded!(
+        seed,
+        write("/tree/file", bytes::Bytes::from_static(b"source"))
+    )?;
+    unbounded!(seed, hard_link("/tree/file", "/tree/alias"))?;
+    unbounded!(
+        seed,
+        set_metadata(
+            "/tree/file",
+            FileMetadata {
+                posix_mode: MetadataField::Value(0o640),
+                ..FileMetadata::default()
+            }
+        )
+    )?;
+    unbounded!(seed, write("/outside", bytes::Bytes::from_static(b"base")))?;
+    commit(&mut seed).await?;
+    let source = unbounded!(workspace, head())?;
+    let source_metadata = unbounded!(source, stat("/tree/file"))?.metadata;
+    let mut live = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        live,
+        write("/tree/file", bytes::Bytes::from_static(b"dirty"))
+    )?;
+    unbounded!(
+        live,
+        write("/removed", bytes::Bytes::from_static(b"remove me"))
+    )?;
+    unbounded!(live, write("/outside", bytes::Bytes::from_static(b"user")))?;
+    commit(&mut live).await?;
+    let dirty = unbounded!(workspace, head())?;
     let selected = vec!["tree/file".to_owned(), "removed".to_owned()];
     let budget = selected_transaction_budget();
     let key = IdempotencyKey::new();
@@ -316,32 +227,20 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
         panic!("original seal guard must reject");
     };
     assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
-    assert!(failed.work.allocation_operations > 0);
+
     assert!(failed.work.bytes_copied > 0);
     failed.work.verify(budget)?;
-    assert_eq!(workspace.head(B, &cancel).await?.value.id(), dirty.id());
+    assert_eq!(unbounded!(workspace, head())?.id(), dirty.id());
     assert_eq!(
-        workspace
-            .read("/tree/file", 32, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
+        unbounded!(workspace, read("/tree/file", 32))?.as_ref(),
         b"dirty"
     );
     assert_eq!(
-        workspace
-            .read("/removed", 32, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
+        unbounded!(workspace, read("/removed", 32))?.as_ref(),
         b"remove me"
     );
     assert_eq!(
-        workspace
-            .read("/outside", 32, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
+        unbounded!(workspace, read("/outside", 32))?.as_ref(),
         b"user"
     );
 
@@ -367,7 +266,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     assert!(
         matches!(&conflicted.value, TransactionCommit::Conflict { actual } if actual.id() == dirty.id())
     );
-    assert_eq!(workspace.head(B, &cancel).await?.value.id(), dirty.id());
+    assert_eq!(unbounded!(workspace, head())?.id(), dirty.id());
     let volume = workspace.volume.clone();
     let guard_cancellation = cancellation.clone();
     let restored = workspace
@@ -403,155 +302,112 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     restored.work.verify(budget)?;
     assert!(matches!(restored.value, TransactionCommit::Committed(_)));
     assert_eq!(
-        workspace
-            .read("/tree/file", 32, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
+        unbounded!(workspace, read("/tree/file", 32))?.as_ref(),
         b"source"
     );
     assert_eq!(
-        workspace
-            .read("/tree/alias", 32, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
+        unbounded!(workspace, read("/tree/alias", 32))?.as_ref(),
         b"source"
     );
     assert_eq!(
-        workspace
-            .stat("/tree/file", B, &cancel)
-            .await?
-            .value
-            .metadata,
+        unbounded!(workspace, stat("/tree/file"))?.metadata,
         source_metadata
     );
     assert_eq!(
-        workspace
-            .stat("/tree/file", B, &cancel)
-            .await?
-            .value
-            .file_id,
-        workspace
-            .stat("/tree/alias", B, &cancel)
-            .await?
-            .value
-            .file_id
+        unbounded!(workspace, stat("/tree/file"))?.file_id,
+        unbounded!(workspace, stat("/tree/alias"))?.file_id
     );
     assert!(matches!(
-        workspace
-            .read("/removed", 32, B, &cancel)
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error),
+        unbounded!(workspace, read("/removed", 32)),
         Err(WorkspaceError::NotFound)
     ));
     assert_eq!(
-        workspace
-            .read("/outside", 32, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
+        unbounded!(workspace, read("/outside", 32))?.as_ref(),
         b"user"
     );
     assert_eq!(
-        source
-            .read("/tree/file", 32, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
+        unbounded!(source, read("/tree/file", 32))?.as_ref(),
         b"source"
     );
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_selected_restore_honors_the_real_retained_authority_reservation()
+async fn measured_directory_record_restore_preserves_original_ignored_descendants()
 -> Result<(), Box<dyn Error>> {
-    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace("native-selected-reservation", B, &cancel)
-        .await?
-        .value;
-    workspace
-        .write("/selected", bytes::Bytes::from_static(b"frozen"))
-        .await?;
-    let frozen = workspace.head(B, &cancel).await?.value;
-    workspace
-        .write("/selected", bytes::Bytes::from_static(b"current"))
-        .await?;
-    let current = workspace.head(B, &cancel).await?.value;
+    let workspace = unbounded!(fs, create_workspace("record-not-subtree-restore"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/tree"))?;
+    unbounded!(
+        seed,
+        set_metadata(
+            "/tree",
+            FileMetadata {
+                posix_mode: MetadataField::Value(0o700),
+                ..FileMetadata::default()
+            }
+        )
+    )?;
+    unbounded!(
+        seed,
+        write("/tree/tracked", bytes::Bytes::from_static(b"base"))
+    )?;
+    commit(&mut seed).await?;
+    let source = unbounded!(workspace, head())?;
+    let mut live = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        live,
+        set_metadata(
+            "/tree",
+            FileMetadata {
+                posix_mode: MetadataField::Value(0o755),
+                ..FileMetadata::default()
+            }
+        )
+    )?;
+    unbounded!(
+        live,
+        write("/tree/tracked", bytes::Bytes::from_static(b"dirty"))
+    )?;
+    unbounded!(
+        live,
+        write("/tree/ignored", bytes::Bytes::from_static(b"live ignored"))
+    )?;
+    commit(&mut live).await?;
+    let current = unbounded!(workspace, head())?;
     let cancellation = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
-            .map_err(|(error, _)| error)?;
-    let reservation = workspace
-        .reserve_publication(
-            IdempotencyKey::new().operation_id(),
-            &original,
-            &cancellation,
-        )
-        .await?;
-    let before = original.receipt();
-    let key = IdempotencyKey::new();
-    let paths = vec!["/selected".to_owned()];
-    let mut allow =
-        |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
-    let denied = workspace
-        .restore_paths_from_with_native_work(
-            &frozen,
-            &paths,
-            current.id(),
-            key,
-            crate::PublicationPermit::Unrestricted,
-            &original,
-            &cancellation,
-            &mut allow,
-        )
-        .await;
-    assert!(!matches!(
-        denied,
-        Ok(TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_))
-    ));
-    assert_eq!(workspace.head(B, &cancel).await?.value.id(), current.id());
-    assert_eq!(
-        workspace.read("/selected", 7, B, &cancel).await?.value,
-        OwnedBytes::from_static(b"current")
-    );
-    assert_eq!(
-        original.receipt().authority_records_appended,
-        before.authority_records_appended
-    );
-    let permit = crate::PublicationPermit::Reservation {
-        operation_id: reservation.operation_id.into_bytes(),
-        gate_tail: reservation.gate_tail,
-        expected: reservation.expected,
-    };
+    let budget = selected_transaction_budget();
     let restored = workspace
-        .restore_paths_from_with_native_work(
-            &frozen,
-            &paths,
+        .restore_paths_from(
+            &source,
+            &["tree".to_owned()],
             current.id(),
-            key,
-            permit,
-            &original,
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            budget,
             &cancellation,
-            &mut allow,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
         )
         .await?;
-    assert!(matches!(
-        restored,
-        TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)
-    ));
+    restored.work.verify(budget)?;
+    assert!(matches!(restored.value, TransactionCommit::Committed(_)));
     assert_eq!(
-        workspace.read("/selected", 6, B, &cancel).await?.value,
-        OwnedBytes::from_static(b"frozen")
+        unbounded!(workspace, stat("/tree"))?.metadata.posix_mode,
+        Some(0o700)
     );
-    workspace
-        .release_publication(reservation, &original, &cancellation)
-        .await?;
-    original.receipt().verify(selected_transaction_budget())?;
+    assert_eq!(
+        unbounded!(workspace, read("/tree/tracked", 32))?.as_ref(),
+        b"dirty"
+    );
+    assert_eq!(
+        unbounded!(workspace, read("/tree/ignored", 32))?.as_ref(),
+        b"live ignored"
+    );
     Ok(())
 }

@@ -147,21 +147,6 @@ impl HostRoot {
         }
     }
 
-    #[cfg(unix)]
-    pub(crate) fn read_link<W: NativeHostWork>(
-        &self,
-        path: &Path,
-        maximum: u64,
-        work: &mut W,
-    ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
-        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
-            read_unix_link(parent, leaf, maximum, work)
-        })
-        .map(|(mut bytes, count, allocation)| {
-            bytes.truncate(count);
-            (bytes, allocation)
-        })
-    }
     #[cfg(windows)]
     pub(crate) fn open_root_wide<W: NativeHostWork>(
         name: &[u16],

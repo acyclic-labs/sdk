@@ -10,7 +10,7 @@ mod rpc;
 pub mod services;
 pub mod stdio;
 pub use catalog::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure};
-pub use protocol::{McpToolDefinition, McpToolTransport, McpToolsPage, PROTOCOL_VERSION};
+pub use protocol::{McpToolDefinition, McpToolTransport, PROTOCOL_VERSION};
 #[cfg(test)]
 mod tests;
 

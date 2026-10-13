@@ -165,18 +165,6 @@ pub(crate) fn host_name_bytes_with_native_work(
     Ok((name, allocation.ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?))
 }
 
-#[cfg(windows)]
-pub(crate) fn host_wide_name_bytes_with_native_work(
-    name: &[u16], profile: FilesystemProfile, maximum_bytes: u32,
-    original: &crate::NativeMaterializationWork,
-) -> Result<((NameEncoding, Vec<u8>), crate::materializer::NativeAllocation), crate::NativeTreeMaterializationError> {
-    let mut accounting: NameWork<'_> = NameWork::Original { work: original, allocation: None, source: None };
-    let name = host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)
-        .map_err(name_native_error)?;
-    let NameWork::Original { allocation, .. } = accounting else { unreachable!() };
-    Ok((name, allocation.ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?))
-}
-
 /// Same name producer with its original source request's private stop fence.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
@@ -569,17 +557,18 @@ mod tests {
             WorkBudget { peak_allocation_bytes: 64 * 1024, ..finite_name_budget() },
             &cancellation,
         ).map_err(|(error, _)| error)?;
-        let ((encoding, bytes), allocation) = host_wide_name_bytes_with_native_work(
-            &[0xd800, 0x0061], FilesystemProfile::Windows, 255, &original,
+        let ((encoding, bytes), allocation) = host_wide_name_bytes_with_source_work(
+            &[0xd800, 0x0061], FilesystemProfile::Windows, 255, &mut original.clone(),
         )?;
         assert_eq!(encoding, NameEncoding::WindowsUtf16Le);
         assert_eq!(bytes, [0, 0xd8, 0x61, 0]);
+        let allocation = allocation.expect("native name allocation");
         assert_eq!(allocation.bytes(), bytes.capacity() as u64);
         drop(bytes);
         drop(allocation);
-        assert!(matches!(host_wide_name_bytes_with_native_work(
-            &[0xd800], FilesystemProfile::Portable, 255, &original,
-        ), Err(crate::NativeTreeMaterializationError::InvalidLayout)));
+        assert!(matches!(host_wide_name_bytes_with_source_work(
+            &[0xd800], FilesystemProfile::Portable, 255, &mut original.clone(),
+        ), Err(DemandError::InvalidRequest)));
         Ok(())
     }
 }

@@ -6,11 +6,13 @@ use acyclic_fs::{
 };
 
 pub(super) async fn verify_binding<P: StreamProvider + 'static, A, O>(
-    owner: &TaskJournalOwner<P>,
+    owner: &Arc<TaskJournalOwner<P>>,
     binding: &BorrowedNativeVolumeBinding<'_, A, O>,
-    guard: &crate::runtime::NativeVolumeCallbackGuard<P>,
+    guard: &Arc<crate::runtime::TaskContext>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
+    let metadata = guard.native_work()?;
+    guard.verify_volume_owner(owner, metadata).await?;
     guard.require_volume(owner, binding.volume, binding.writable, work)?;
     let io = PreparationIo::from_native_work(work)?;
     for operation in [VolumeOperation::Read]
@@ -36,7 +38,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
     /// Prepares exact authorized volumes through the existing protected materializer.
     pub fn prepare<'a, P: StreamProvider + 'static>(
         owner: &'a Arc<TaskJournalOwner<P>>,
-        guards: &'a [crate::runtime::NativeVolumeCallbackGuard<P>],
+        guards: &'a [Arc<crate::runtime::TaskContext>],
         allocation: &'a NativePreparationRoot,
         options: &'a NativeViewOptions,
         bindings: &'a [BorrowedNativeVolumeBinding<'a, A, O>],
@@ -299,7 +301,6 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                             &paths,
                             &options,
                             journal,
-                            volume_work,
                             &mut { verify },
                         )
                         .await?;
@@ -326,7 +327,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     None => {
                         let identity =
                             materializer.backend().mapping_root_identity(binding.path)?;
-                        let callback = guards[index].for_volume(
+                        let callback = guards[index].volume_callback(
                             owner,
                             binding.volume,
                             binding.writable,
@@ -338,7 +339,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         } else {
                             acyclic_fs::MountOptions::read_only()
                         };
-                        let mount = mount.native_context(&volume_work, Some(sdk), Some(&volume_work));
+                        let mount = mount.native_context(&volume_work, Some(Arc::clone(&callback)), Some(&volume_work));
                         let view = generation
                             .attach_native_working_set(
                                 &mount,

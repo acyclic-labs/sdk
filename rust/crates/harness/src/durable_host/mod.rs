@@ -92,7 +92,7 @@ fn worker_key(
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
     )?;
-    IdempotencyKey::new(crate::contract::preparation_format(
+    IdempotencyKey::new(crate::executor::preparation_format(
         format_args!(
             "task-worker:{kind}:{operation}:{}:{revision}",
             blake3::Hash::from_bytes(digest).to_hex()
@@ -144,14 +144,19 @@ pub struct TaskJournalOwner<P> {
 }
 
 mod admission;
+mod admission_read;
 #[cfg(feature = "filesystem")]
 mod authorization;
 mod batch;
+mod control;
 mod dispatch;
 mod host;
 mod journal;
 mod lifecycle;
 mod mail;
+mod observations;
+#[cfg(feature = "filesystem")]
+mod owner_access;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod readonly;
 #[cfg(feature = "filesystem")]
