@@ -36,22 +36,10 @@ impl NativeDemandCarrier<'_> {
         &mut self,
     ) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
         match self.original_native_work() {
-            Some(work) => super::NativeMountAllocationCustody::new(
-                &mut crate::NativeMaterializationWork::clone(&work),
-            ),
+            Some(mut work) => super::NativeMountAllocationCustody::new(&mut work),
             None => self.with_work(super::NativeMountAllocationCustody::new),
         }
         .map_err(super::lazy::mount_demand_error)
-    }
-
-    fn finish_read(
-        &mut self,
-        chunk: crate::kernel::OwnedSourceChunk,
-        cancellation: &CancellationToken,
-        lifetime: Option<&CancellationToken>,
-    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.check(cancellation, lifetime)?;
-        Ok(chunk)
     }
 }
 
