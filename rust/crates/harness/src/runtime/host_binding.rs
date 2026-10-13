@@ -212,7 +212,7 @@ impl AgentHarness {
             ));
         }
         if let Some(execution) = &self.execution {
-            let current = match work {
+            let current: std::borrow::Cow<'_, ComponentIdentity> = match work {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Some(work) => {
                     std::borrow::Cow::Borrowed(execution.identity_with_native_work(work)?)

@@ -207,7 +207,6 @@ impl McpRuntimeCallbacks {
             }
         };
         let reply = json!({"jsonrpc":"2.0","id":request.message.get("id"),"result":result});
-        request.validate_reply(&reply)?;
         Ok((operation, reply))
     }
 }

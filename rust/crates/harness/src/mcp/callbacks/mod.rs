@@ -138,52 +138,6 @@ impl McpCallbackRequest {
         bytes.copy_from_slice(&digest[..16]);
         Ok((OperationId::from_bytes(bytes), decoded.request))
     }
-
-    /// Validates the reply identity and result schema before any response POST.
-    pub fn validate_reply(&self, reply: &Value) -> Result<()> {
-        if reply.get("id") != self.message.get("id")
-            || reply.get("method").is_some()
-            || reply.get("error").is_some()
-        {
-            return Err(Error::Invalid(
-                "MCP callback reply identity or envelope differs".into(),
-            ));
-        }
-        let response: rmcp::model::JsonRpcResponse<Value> =
-            rmcp::model::JsonRpcResponse::deserialize(reply)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        match self.message.get("method").and_then(Value::as_str) {
-            Some("sampling/createMessage") => {
-                let result: rmcp::model::CreateMessageResult =
-                    serde_json::from_value(response.result)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                result.validate().map_err(Error::Invalid)
-            }
-            Some("elicitation/create") => {
-                let _: rmcp::model::ElicitResult =
-                    rmcp::model::ElicitResult::deserialize(&response.result)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                if response.result.get("action").and_then(Value::as_str) == Some("accept")
-                    && let Some(schema) = self.message.pointer("/params/requestedSchema")
-                {
-                    let content = response
-                        .result
-                        .get("content")
-                        .ok_or_else(|| Error::Invalid("accepted MCP form has no content".into()))?;
-                    crate::executor::validate_json_schema_value(
-                        schema,
-                        content,
-                        "MCP elicitation answer",
-                        &mut None,
-                    )?;
-                }
-                Ok(())
-            }
-            _ => Err(Error::Unsupported(
-                "MCP callback reply method is unsupported".into(),
-            )),
-        }
-    }
 }
 
 mod runtime;

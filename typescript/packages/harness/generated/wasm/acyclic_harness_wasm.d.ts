@@ -22,10 +22,13 @@ export interface ContextDiscoveryReader {
 
 
 
-
-
-
-
+export type WasmLimitsInput = WasmNativeLimitsWire;
+export type WasmTaskRunLimitsInput = WasmTaskRunLimitsWire;
+export interface WasmWorkflowAdmissionWire {
+    readonly operation_id: string;
+    readonly request_digest: readonly number[];
+    readonly initial: Readonly<{ readonly machine: WasmMachineIdentityWire; readonly revision: bigint; readonly state: unknown }>;
+}
 export interface WasmMachineIdentityWire {
     readonly name: string;
     readonly version: string;
@@ -344,59 +347,25 @@ export interface ContextAttribute {
 }
 
 /**
- * Available logical resources advertised to admission policy.
+ * Bounded native input contract.
  */
-
-/**
- * Bounded immutable remote catalog.
- */
-export interface McpCatalog {
+export interface NativeMediaPolicy {
     /**
-     * Consumer-selected namespace; names do not convey remote authority.
+     * Modality and processing intent.
      */
-    server: string;
+    intent: NativeMediaIntent;
     /**
-     * Exact transport/configuration/catalog revision selected by the host.
+     * Positive finite byte ceiling.
      */
-    revision: string;
+    maximum_bytes: number;
     /**
-     * Explicit schema selection pinned with this configuration revision.
+     * Positive finite provider work ceiling.
      */
-    schema_exposure: McpSchemaExposure;
+    maximum_work: number;
     /**
-     * Explicit local discovery selection; notifications cannot change it.
+     * Registered immutable adapter options.
      */
-    discovery: McpDiscoveryPolicy;
-    /**
-     * Host-selected schema for complete model-facing result envelopes.
-     */
-    projection_schema: WasmToolJsonSchema;
-    /**
-     * Complete bounded catalog, not a partially fetched `tools/list` page.
-     */
-    tools: McpToolDefinition[];
-}
-
-/**
- * Canonical MCP result; content stays ordered and may be multimodal.
- */
-export interface McpToolResult {
-    /**
-     * Protocol content blocks. Validation occurs at the protocol boundary.
-     */
-    content: WasmToolJsonValue[];
-    /**
-     * Structured value checked against the remote output contract.
-     */
-    structuredContent?: WasmToolJsonValue;
-    /**
-     * A tool failure is a recorded result, rather than a transport failure.
-     */
-    isError?: boolean;
-    /**
-     * Opaque protocol metadata retained for the owning consumer.
-     */
-    _meta?: WasmToolJsonValue;
+    configuration: NativeConfigurationBinding | null;
 }
 
 /**
@@ -420,27 +389,14 @@ export interface FileResult {
 }
 
 /**
- * Claim to verify against original task admission and linked implementation.
- */
-export interface NativeConfigurationBinding {
-    /**
-     * Original immutable extension admission event.
-     */
-    source: WasmEventReferenceWire;
-    /**
-     * Exact registered option schema and immutable JSON file.
-     */
-    configuration: WasmExtensionConfigurationWire;
-    /**
-     * Original owner-linked executable implementation.
-     */
-    implementation_digest: readonly number[];
-}
-
-/**
- * Closed provider-neutral role set; adapters may reject unsupported combinations.
+ * Closed semantic prompt roles.
  */
 export type ModelRole = "system" | "user" | "assistant" | "tool";
+
+/**
+ * Common image quality intent.
+ */
+export type ImageDetail = "auto" | "low" | "high";
 
 /**
  * Complete declarative inventory, without granting file or option authority.
@@ -451,11 +407,11 @@ export interface WasmModelContentInventoryWire {
 }
 
 /**
- * Complete immutable request to a model provider.
+ * Complete immutable provider-neutral model request.
  */
 export interface ModelRequest {
     /**
-     * Selected model value.
+     * Pinned model selection.
      */
     model: Model;
     /**
@@ -463,13 +419,43 @@ export interface ModelRequest {
      */
     messages: ModelMessage[];
     /**
-     * Tools visible for this request.
+     * Visible registered tools.
      */
     tools: ToolDefinition[];
     /**
-     * Maximum output tokens when constrained.
+     * Optional output token ceiling.
      */
     max_output_tokens: number | undefined;
+}
+
+/**
+ * Complete immutable remote catalog.
+ */
+export interface McpCatalog {
+    /**
+     * Host namespace.
+     */
+    server: string;
+    /**
+     * Pinned configuration revision.
+     */
+    revision: string;
+    /**
+     * Model schema selection.
+     */
+    schema_exposure: McpSchemaExposure;
+    /**
+     * Local discovery policy.
+     */
+    discovery: McpDiscoveryPolicy;
+    /**
+     * Host result projection schema.
+     */
+    projection_schema: WasmToolJsonSchema;
+    /**
+     * Complete tool contracts.
+     */
+    tools: McpToolDefinition[];
 }
 
 /**
@@ -492,6 +478,29 @@ export interface SearchMatches {
      * Individual byte comparisons actually performed.
      */
     work: number;
+}
+
+/**
+ * Complete model-visible tool projection envelope.
+ */
+export type ToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: ModelDataPart[] };
+
+/**
+ * Configuration claim bound to original task admission and code.
+ */
+export interface NativeConfigurationBinding {
+    /**
+     * Immutable extension admission event.
+     */
+    source: WasmEventReferenceWire;
+    /**
+     * Registered option schema and pinned JSON file.
+     */
+    configuration: WasmExtensionConfigurationWire;
+    /**
+     * Owner-linked executable implementation.
+     */
+    implementation_digest: readonly number[];
 }
 
 /**
@@ -545,11 +554,6 @@ export interface SearchOptions {
 }
 
 /**
- * Data in a tool result cannot contain another call or result.
- */
-export type ModelDataPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy };
-
-/**
  * Deterministic capability set.
  */
 export type Capabilities = string[];
@@ -573,11 +577,6 @@ export interface SearchResult {
 }
 
 /**
- * Durable orchestration behavior represented as data.
- */
-export type Orchestration = { kind: "leaf" } | { kind: "join" } | { kind: "race" } | { kind: "quorum"; required: number } | { kind: "reduce"; reducer: EntrypointRef };
-
-/**
  * Durable read result retaining exact source identity and explicit omissions.
  */
 export interface ReadResult {
@@ -592,6 +591,11 @@ export interface ReadResult {
 }
 
 /**
+ * Durable structured-concurrency policy.
+ */
+export type Orchestration = { kind: "leaf" } | { kind: "join" } | { kind: "race" } | { kind: "quorum"; required: number } | { kind: "reduce"; reducer: EntrypointRef };
+
+/**
  * Exact UTF-8 byte interval; offsets refer to the original immutable source.
  */
 export interface TextRange {
@@ -603,6 +607,24 @@ export interface TextRange {
      * Exclusive byte offset.
      */
     end: number;
+}
+
+/**
+ * Exact callback request retained in the execution journal.
+ */
+export interface McpCallbackRequest {
+    /**
+     * Operation enclosing the server request.
+     */
+    parent: string;
+    /**
+     * Pinned callback admission policy.
+     */
+    policy: McpCallbackPolicy;
+    /**
+     * Complete JSON-RPC request, including opaque server ID and exact parameters.
+     */
+    message: WasmToolJsonValue;
 }
 
 /**
@@ -652,36 +674,6 @@ export interface ReadInput {
 }
 
 /**
- * Exact portable HTTP input. Credentials belong to the bound provider.
- */
-export interface McpHttpRequest {
-    /**
-     * Pinned HTTP(S) endpoint.
-     */
-    endpoint: string;
-    /**
-     * HTTP method selected by the protocol owner.
-     */
-    method: string;
-    /**
-     * Protocol headers; keys use lowercase ASCII.
-     */
-    headers: Map<string, string>;
-    /**
-     * One UTF-8 JSON-RPC message, or empty for GET/DELETE.
-     */
-    body: number[];
-    /**
-     * Finite whole-exchange provider deadline.
-     */
-    timeout_ms: number;
-    /**
-     * Finite total response-body allowance.
-     */
-    maximum_response_bytes: number;
-}
-
-/**
  * Exact portable exchange descriptor included in native process approval.
  */
 export interface McpStdioRequest {
@@ -726,37 +718,33 @@ export interface EditFileInput {
 }
 
 /**
- * Exact request pin retained in the existing execution journal, never a new ledger.
+ * Exact volume and generation selected by authenticated allocation metadata.
  */
-export interface McpCallbackRequest {
+export interface TaskVolumeSnapshot {
     /**
-     * Operation enclosing the server request.
+     * Selected volume identity.
      */
-    parent: string;
+    volume: WasmVolumeRefWire;
     /**
-     * Pinned callback admission policy.
+     * Selected immutable generation.
      */
-    policy: McpCallbackPolicy;
-    /**
-     * Complete JSON-RPC request, including opaque server ID and exact parameters.
-     */
-    message: WasmToolJsonValue;
+    generation: WasmResourceRefWire;
 }
 
 /**
- * Executor-owned identity supplied separately from canonical model-visible bytes.
+ * Executor identity supplied separately from canonical model bytes.
  */
 export interface ModelDispatch {
     /**
-     * Admitted execution operation identity.
+     * Admitted operation identity.
      */
     operation_id: string;
     /**
-     * Zero-based logical executor step.
+     * Zero-based executor step.
      */
     step: number;
     /**
-     * Digest of the exact canonical request supplied with this dispatch.
+     * Canonical request digest.
      */
     request_digest: readonly number[];
 }
@@ -765,11 +753,6 @@ export interface ModelDispatch {
  * Explicit bounded selection from a pinned source.
  */
 export type ContextExtent = { kind: "whole" } | { kind: "span"; start: number; end: number };
-
-/**
- * Explicit common image quality intent.
- */
-export type ImageDetail = "auto" | "low" | "high";
 
 /**
  * Explicit finite discovery bounds, independent of the retained workspace count.
@@ -794,41 +777,9 @@ export interface ContextDiscoveryLimits {
 }
 
 /**
- * Explicit lifetime owner for durable work.
- */
-export type DurableOwner = { kind: "attached"; authority: Authority } | { kind: "detached"; authority: Authority };
-
-/**
  * Explicit model representation, independent of the retained canonical result.
  */
 export type ProjectionMode = "full" | "reference";
-
-/**
- * Explicit model schema exposure for an installed complete catalog.
- */
-export type McpSchemaExposure = { kind: "eager" } | { kind: "selected"; names: string[] };
-
-/**
- * Explicit native input contract; no implicit conversion or fallback.
- */
-export interface NativeMediaPolicy {
-    /**
-     * Common modality and processing intent.
-     */
-    intent: NativeMediaIntent;
-    /**
-     * Positive finite byte ceiling, also bounded by task content limits.
-     */
-    maximum_bytes: number;
-    /**
-     * Positive finite work ceiling interpreted by the selected adapter.
-     */
-    maximum_work: number;
-    /**
-     * Optional immutable registered adapter options; never bearer authority.
-     */
-    configuration: NativeConfigurationBinding | null;
-}
 
 /**
  * Explicit single-file V4A update arguments.
@@ -845,7 +796,7 @@ export interface PatchFileInput {
 }
 
 /**
- * File handling policy selected before provider dispatch.
+ * File policy chosen before dispatch.
  */
 export type FileProjectionPolicy = "reference" | "bounded_full" | { native: NativeMediaPolicy };
 
@@ -904,11 +855,6 @@ export interface ContextSelection {
 }
 
 /**
- * Host-selected local discovery policy; neither variant grants call authority.
- */
-export type McpDiscoveryPolicy = "disabled" | "search";
-
-/**
  * Idempotent request to capture selected resources for a new child.
  */
 export interface ForkRequest {
@@ -955,36 +901,6 @@ export interface ForkRequest {
 }
 
 /**
- * Immutable authorization scope captured at admission.
- */
-export interface Scope {
-    /**
-     * Stable scope identity.
-     */
-    id: string;
-    /**
-     * Effective capabilities after policy intersection.
-     */
-    capabilities: Capabilities;
-    /**
-     * Host-attested agent on whose behalf this operation runs, if any.
-     */
-    agent: string | null;
-    /**
-     * Trusted issuer identity.
-     */
-    issuer: string;
-    /**
-     * Parent proof, present for attenuated scopes.
-     */
-    parent_proof: number[] | null;
-    /**
-     * Keyed proof over the complete grant.
-     */
-    proof: number[];
-}
-
-/**
  * Immutable checkpoint and bounded canonical work selected before fork admission.
  */
 export interface SummaryForkSelection {
@@ -1021,21 +937,7 @@ export interface ComponentIdentity {
 }
 
 /**
- * Immutable discovery revision.
- */
-export interface DiscoveredContext {
-    /**
-     * Root-to-leaf instructions in declared root/filename order.
-     */
-    instructions: WasmFileRefWire[];
-    /**
-     * Skills in declared root and lexical directory order; duplicate names reject discovery.
-     */
-    skills: SkillMetadata[];
-}
-
-/**
- * Immutable durable operation declaration.
+ * Immutable declaration of one durable operation.
  */
 export interface OperationSpec {
     /**
@@ -1047,15 +949,15 @@ export interface OperationSpec {
      */
     parent: ParentLink | null;
     /**
-     * Explicit durable owner.
+     * Lifetime owner.
      */
     owner: DurableOwner;
     /**
-     * Original signed owner grant retained with this immutable declaration.
+     * Original signed owner grant.
      */
     owner_scope: Scope;
     /**
-     * Restartable implementation identity.
+     * Restartable implementation.
      */
     entrypoint: EntrypointRef;
     /**
@@ -1063,21 +965,35 @@ export interface OperationSpec {
      */
     dependencies: string[];
     /**
-     * Logical capacity requirements.
+     * Required logical capacity.
      */
     resources: ResourceRequest;
     /**
-     * Small provider-neutral placement labels, not process or file content.
+     * Provider-neutral placement labels.
      */
     placement: Record<string, string>;
     /**
-     * Orchestration behavior.
+     * Structured-concurrency policy.
      */
     orchestration: Orchestration;
     /**
-     * Immutable, provider-owned initial state bytes.
+     * Pinned initial state.
      */
     state: WasmFileRefWire;
+}
+
+/**
+ * Immutable discovery revision.
+ */
+export interface DiscoveredContext {
+    /**
+     * Root-to-leaf instructions in declared root/filename order.
+     */
+    instructions: WasmFileRefWire[];
+    /**
+     * Skills in declared root and lexical directory order; duplicate names reject discovery.
+     */
+    skills: SkillMetadata[];
 }
 
 /**
@@ -1137,7 +1053,7 @@ export interface ForkPreparation {
      */
     child_private_volume: WasmVolumeRefWire;
     /**
-     * Optional child-owned unmounted result namespace, distinct from scratch.
+     * Optional child-owned result namespace, distinct from scratch.
      */
     child_result_volume?: WasmVolumeRefWire | null;
     /**
@@ -1163,11 +1079,11 @@ export interface ForkPreparation {
 }
 
 /**
- * Immutable provider-owned model selection; there is no global catalog.
+ * Immutable provider-owned model selection.
  */
 export interface Model {
     /**
-     * Provider selected by application code.
+     * Application-selected provider.
      */
     provider: string;
     /**
@@ -1175,17 +1091,18 @@ export interface Model {
      */
     name: string;
     /**
-     * Immutable model revision or digest.
+     * Immutable revision or digest.
      */
     revision: string;
     /**
-     * Provider-specific options retained as typed JSON.
+     * Provider-specific options.
      */
     options: WasmModelJsonValue;
 }
 
 /**
- * JavaScript-facing tool definition shape.
+ * JavaScript-facing tool definition shape. The public TypeScript facade uses
+ * camelCase names while the native definition remains `snake_case`.
  */
 export interface WasmToolDefinitionInput {
     name: string;
@@ -1202,6 +1119,11 @@ export interface WasmToolDefinitionInput {
 export type AggregateKind = "agent" | "conversation" | "session" | "turn" | "task";
 
 /**
+ * Lifetime owner of durable work.
+ */
+export type DurableOwner = { kind: "attached"; authority: Authority } | { kind: "detached"; authority: Authority };
+
+/**
  * Literal search arguments; there is no implicit regex, directory or shell search.
  */
 export interface SearchInput {
@@ -1216,9 +1138,14 @@ export interface SearchInput {
 }
 
 /**
- * Logical resource quantities; providers decide how they map to capacity.
+ * Local discovery policy.
  */
-export type ResourceRequest = Record<string, bigint>;
+export type McpDiscoveryPolicy = "disabled" | "search";
+
+/**
+ * Model schema selection.
+ */
+export type McpSchemaExposure = { kind: "eager" } | { kind: "selected"; names: string[] };
 
 /**
  * Model-visible tool definition with immutable schemas.
@@ -1269,40 +1196,14 @@ export interface Context {
 }
 
 /**
- * Negotiated server initialization, retained with the admitted session.
+ * Nonrecursive text and file data inside a tool result.
  */
-export interface McpInitializeResult {
-    /**
-     * Explicit supported protocol revision, with no silent downgrade.
-     */
-    protocolVersion: string;
-    /**
-     * Server-advertised feature set; it does not grant host authority.
-     */
-    capabilities: WasmToolJsonValue;
-    /**
-     * Server implementation name and version.
-     */
-    serverInfo: WasmToolJsonValue;
-    /**
-     * Optional server instructions, treated as external content.
-     */
-    instructions?: string;
-}
+export type ModelDataPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy };
 
 /**
- * One bounded discovery page.
+ * One admission result per submitted input.
  */
-export interface McpToolsPage {
-    /**
-     * Remote contracts in this page.
-     */
-    tools: McpToolDefinition[];
-    /**
-     * Opaque server cursor for the next explicitly admitted discovery request.
-     */
-    nextCursor?: string;
-}
+export type Admission<T> = { Accepted: T } | { Rejected: { reason: string } } | { Indeterminate: { operation_id: string } };
 
 /**
  * One exact retained resource revision selected for a child.
@@ -1332,6 +1233,28 @@ export interface TextSelection {
 }
 
 /**
+ * One gapless committed task-inbox item.
+ */
+export interface InboxItem {
+    /**
+     * Owning task.
+     */
+    task_id: string;
+    /**
+     * One-based sequence.
+     */
+    sequence: bigint;
+    /**
+     * Sender's idempotency identity.
+     */
+    message_id: string;
+    /**
+     * Pinned payload staged before publication.
+     */
+    payload: WasmFileRefWire;
+}
+
+/**
  * One lazily discovered name, without eager byte or ref transfer.
  */
 export interface PrivateDirectoryEntry {
@@ -1346,44 +1269,47 @@ export interface PrivateDirectoryEntry {
 }
 
 /**
- * One provider-neutral part requiring an explicit provider projection.
+ * One portable HTTP request with finite I/O bounds.
  */
-export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
+export interface McpHttpRequest {
+    /**
+     * Pinned endpoint.
+     */
+    endpoint: string;
+    /**
+     * Protocol HTTP method.
+     */
+    method: string;
+    /**
+     * Lowercase protocol headers.
+     */
+    headers: Map<string, string>;
+    /**
+     * UTF-8 JSON-RPC message, or empty GET/DELETE body.
+     */
+    body: number[];
+    /**
+     * Whole-exchange deadline.
+     */
+    timeout_ms: number;
+    /**
+     * Total response body allowance.
+     */
+    maximum_response_bytes: number;
+}
 
 /**
  * One provider-neutral prompt item.
  */
 export interface ModelMessage {
     /**
-     * Semantic role (`system`, `user`, `assistant`, or `tool`).
+     * Semantic prompt role.
      */
     role: ModelRole;
     /**
-     * Typed, provider-neutral content; file bytes are never part of this value.
+     * Transient content; canonical history retains references.
      */
     content: ModelContent;
-}
-
-/**
- * One ref-only durable inbox item with a gapless per-task sequence.
- */
-export interface InboxItem {
-    /**
-     * Owning task.
-     */
-    task_id: string;
-    /**
-     * Gapless one-based sequence.
-     */
-    sequence: bigint;
-    /**
-     * Sender-defined idempotency identity.
-     */
-    message_id: string;
-    /**
-     * Immutable payload bytes staged before Stream publication.
-     */
-    payload: WasmFileRefWire;
 }
 
 /**
@@ -1392,7 +1318,7 @@ export interface InboxItem {
 export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
 
 /**
- * Ordered event emitted by a model run.
+ * Ordered streaming model event.
  */
 export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
 
@@ -1437,35 +1363,43 @@ export interface ContextDiscovery {
 }
 
 /**
- * Original immutable project/scratch snapshot proved by a retained allocation.
- */
-export interface TaskVolumeSnapshot {
-    /**
-     * Exact provider/owner volume identity authenticated by the creation receipt.
-     */
-    volume: WasmVolumeRefWire;
-    /**
-     * Original allocation generation; later source edits require a new selection.
-     */
-    generation: WasmResourceRefWire;
-}
-
-/**
- * Pinned resource allocation.
+ * Pinned logical resource allocation and worker placement.
  */
 export interface Reservation {
     /**
-     * Provider-owned stable lease identity.
+     * Provider lease identity.
      */
     id: string;
     /**
-     * Selected worker/placement identity.
+     * Worker or placement identity.
      */
     placement: string;
     /**
-     * Resources actually admitted; partial admission remains observable.
+     * Actually admitted resources, including partial admission.
      */
     admitted: ResourceRequest;
+}
+
+/**
+ * Pinned resumable entrypoint and result schema.
+ */
+export interface EntrypointRef {
+    /**
+     * Namespaced entrypoint name.
+     */
+    name: string;
+    /**
+     * Implementation version.
+     */
+    version: string;
+    /**
+     * Implementation and schema digest.
+     */
+    digest: number[];
+    /**
+     * Durable result schema.
+     */
+    result_schema: WasmModelJsonSchema;
 }
 
 /**
@@ -1506,6 +1440,11 @@ export interface AttestedBoundary {
 }
 
 /**
+ * Provider-neutral logical resource quantities.
+ */
+export type ResourceRequest = Record<string, bigint>;
+
+/**
  * Provider-owned additive upper bounds for an exact prepared request.
  */
 export interface ModelTokenCount {
@@ -1521,15 +1460,6 @@ export interface ModelTokenCount {
      * Ordered per-message upper bounds, including message-specific framing.
      */
     message_tokens: number[];
-}
-
-/**
- * Public Rust projection for the immutable workflow admission envelope.
- */
-export interface WasmWorkflowAdmissionWire {
-    operation_id: string;
-    request_digest: readonly number[];
-    initial: Readonly<{ readonly machine: WasmMachineIdentityWire; readonly revision: bigint; readonly state: unknown }>;
 }
 
 /**
@@ -1556,27 +1486,27 @@ export interface Worker {
 export type ContextReloadPolicy = "explicit" | "next_request";
 
 /**
- * Remote JSON Schema contract returned by `tools/list`.
+ * Remote tool contract.
  */
 export interface McpToolDefinition {
     /**
-     * Server-local name, preserved independently of the Harness namespace.
+     * Server-local tool name.
      */
     name: string;
     /**
-     * Optional human-facing title.
+     * Human-facing title.
      */
     title?: string;
     /**
-     * Description supplied by the server.
+     * Server-provided description.
      */
     description?: string;
     /**
-     * Runtime-validated arguments.
+     * Argument schema.
      */
     inputSchema: WasmToolJsonSchema;
     /**
-     * Runtime-validated structured output when supplied by the server.
+     * Structured output schema.
      */
     outputSchema?: WasmToolJsonSchema;
 }
@@ -1601,11 +1531,6 @@ export interface ContextDiscoveryPolicy {
 }
 
 /**
- * Replaceable primitive policy.
- */
-export type CompactionPolicy = { kind: "disabled" } | { kind: "threshold"; config: ThresholdCompaction };
-
-/**
  * Repository instruction scope, evaluated from the declared root to the active directory.
  */
 export interface InstructionScope {
@@ -1620,7 +1545,7 @@ export interface InstructionScope {
 }
 
 /**
- * Requested modality is independent of the stored file's MIME type.
+ * Requested modality, independent of the stored MIME type.
  */
 export type NativeMediaIntent = { kind: "image"; detail: ImageDetail } | { kind: "audio"; maximum_duration_ms: number } | { kind: "video"; maximum_duration_ms: number; maximum_frames: number } | { kind: "document"; maximum_pages: number };
 
@@ -1656,6 +1581,11 @@ export interface TaskWakeCursor {
  * Selection of authoritative logical history before a fork is admitted.
  */
 export type ForkHistoryPolicy = "fork" | "fresh" | { summary: SummaryForkSelection };
+
+/**
+ * Selects automatic threshold compaction or the installed context pipeline.
+ */
+export type CompactionPolicy = { kind: "disabled" } | { kind: "threshold"; config: ThresholdCompaction };
 
 /**
  * Single-operation UTF-8 publication arguments.
@@ -1694,20 +1624,6 @@ export interface Authority {
 }
 
 /**
- * Stable parent link and child slot.
- */
-export interface ParentLink {
-    /**
-     * Parent operation.
-     */
-    operation_id: string;
-    /**
-     * Stable logical slot, independent of observation order.
-     */
-    slot: string;
-}
-
-/**
  * Stable wire identity used during compatibility handshakes.
  */
 export interface ProtocolIdentity {
@@ -1727,45 +1643,33 @@ export interface ProtocolIdentity {
 export type ToolFailureKind = "executor_rejected" | "invalid_output" | "projection_rejected" | "publication_rejected";
 
 /**
+ * Structured content requiring an explicit provider projection.
+ */
+export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
+
+/**
+ * Structured parent and stable logical child slot.
+ */
+export interface ParentLink {
+    /**
+     * Parent operation.
+     */
+    operation_id: string;
+    /**
+     * Stable slot, independent of observation order.
+     */
+    slot: string;
+}
+
+/**
  * Terminal outcome of admitted work.
  */
 export type Outcome<T> = { Succeeded: T } | { Failed: { message: string } } | "Cancelled" | { Indeterminate: { operation_id: string } };
 
 /**
- * The complete model-visible projection envelope.
- */
-export type ToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: ModelDataPart[] };
-
-/**
- * The only operations this one-shot client can admit.
- */
-
-/**
- * Transient model-visible content. Canonical conversation storage always retains refs.
+ * Transient model-visible text or structured parts.
  */
 export type ModelContent = string | ModelContentPart | ModelContentPart[];
-
-/**
- * Versioned resumable entrypoint for durable work.
- */
-export interface EntrypointRef {
-    /**
-     * Stable namespaced entrypoint name.
-     */
-    name: string;
-    /**
-     * Semantic implementation version.
-     */
-    version: string;
-    /**
-     * Digest of the state/input schema and implementation contract.
-     */
-    digest: number[];
-    /**
-     * JSON Schema for the durable result value.
-     */
-    result_schema: WasmModelJsonSchema;
-}
 
 /**
  * Work atomically claimed from the coordinator.
@@ -1784,7 +1688,8 @@ export interface WorkLease {
      */
     checkpoint: (WasmResourceRefWire & { kind: 'checkpoint' }) | null;
     /**
-     * Coordinator-observed revision associated with this reservation.
+     * Coordinator-observed revision associated with this reservation. Recovery
+     * may observe progress since the reservation's initial admission.
      */
     operation_revision: bigint;
 }
@@ -1836,17 +1741,6 @@ export interface WasmBatchAdmissionInput {
 export interface WasmExtensionDependencyDefinition {
     name: string;
     version: number;
-}
-
-export interface WasmLimitsInput {
-    file_bytes: bigint;
-    path_bytes: bigint;
-    attachments: bigint;
-    render_bytes: bigint;
-    model_steps: bigint;
-    model_events_per_step: bigint;
-    tool_calls_per_step: bigint;
-    context_messages: bigint;
 }
 
 export interface WasmModelEventAdmission {
@@ -1915,12 +1809,6 @@ export interface WasmTaskIdentityInput {
     output_schema: WasmToolJsonSchema;
     requirements: readonly string[];
     machine_digest: readonly number[];
-}
-
-export interface WasmTaskRunLimitsInput {
-    concurrency: bigint | null;
-    max_steps: bigint | null;
-    deadline_epoch_ms: bigint | null;
 }
 
 export interface WasmToolDependencyDefinition {
@@ -1998,7 +1886,7 @@ export class WasmBrowserHistoryReader {
 }
 
 /**
- * Browser facade. All transitions, bounds and reconciliation use Client<D>.
+ * Browser client using the kernel's transitions, limits and reconciliation.
  */
 export class WasmClientViews {
     free(): void;
@@ -2008,7 +1896,7 @@ export class WasmClientViews {
      */
     advance(now: bigint): any;
     /**
-     * Begin one explicit hypothesis; values stay as JavaScript references.
+     * Begins an explicit hypothesis while preserving JavaScript value references.
      */
     begin(metadata: any, predicted: any, assumption: any): string;
     /**
@@ -2020,13 +1908,9 @@ export class WasmClientViews {
      */
     discard(branch: string): any;
     /**
-     * Configure the trusted restore validator once, before importing branches.
-     */
-    enableRestore(validator: Function): void;
-    /**
      * Pure construction; callbacks run only on explicit transitions.
      */
-    constructor(identity: string, namespace: string, sequence: bigint, limits: any, validate: Function, observe: Function, corresponds: Function);
+    constructor(identity: string, namespace: string, sequence: bigint, limits: any, validate: Function, observe: Function, corresponds: Function, restore?: Function | null);
     /**
      * Narrow changed hypothesis IDs and work; no full-state export.
      */
@@ -2040,7 +1924,7 @@ export class WasmClientViews {
      */
     residency(): any;
     /**
-     * Import a bounded checkpoint only through the trusted domain validator.
+     * Imports a checkpoint only through the trusted domain validator.
      */
     restore(checkpoint: any): void;
     /**
@@ -2177,97 +2061,51 @@ export class WasmMcpHttpTransport {
 export class WasmReducer {
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Applies a deterministic command.
-     */
     apply(command: any): any;
     /**
-     * Applies one canonical Protobuf command, excluding fresh migrations that require executable content admission, and returns a response.
+     * Applies an authority-bound canonical Protobuf command.
      */
     applyWire(command: Uint8Array): Uint8Array;
     /**
      * Attenuates a scope without permitting capability expansion.
      */
     attenuate(parent: any, id: string, capabilities: any): any;
-    /**
-     * Reads one admitted selection through the reducer's retained identity index.
-     */
     contextSelectionForOperation(operation: any): any;
     /**
-     * Returns the authoritative conversation projection, never a parallel JS reducer.
-     */
-    conversationJson(): string;
-    /**
-     * Returns the same bounded page with Rust-owned JS integer projection: revisions and cursors stay `BigInt`, validated file lengths become Number.
+     * Returns a bounded conversation page with exact revisions and cursors.
      */
     conversationPage(after_sequence: bigint, limit: number): any;
-    /**
-     * Returns an immutable, bounded page of canonical conversation records. `after_sequence` is an exclusive cursor in the message sequence, not the potentially larger aggregate event revision.
-     */
-    conversationPageJson(after_sequence: bigint, limit: number): string;
-    /**
-     * Delegates a segment-bounded private directory to a reader without a fork.
-     */
     delegatePrivateDirectoryRead(owner_scope: any, reader: string, id: string, volume: any, prefix: string): any;
-    /**
-     * Delegates one pinned private file from its signed owner to a reader.
-     */
     delegatePrivateFileRead(owner_scope: any, reader: string, id: string, file: any): any;
-    /**
-     * Computes the canonical capability for one private directory boundary.
-     */
     directoryReadCapability(volume: any, prefix: string): string;
-    /**
-     * Computes the exact-version read capability without embedding it in a ref.
-     */
     fileReadCapability(file: any): string;
-    /**
-     * Returns only authority and revision; command admission needs no snapshot.
-     */
     head(): any;
     /**
-     * Issues a root scope from this host's explicit authority object.
+     * Issues a host grant, optionally bound to an acting agent.
      */
-    issueScope(id: string, capabilities: any): any;
+    issueScope(id: string, capabilities: any, agent?: string | null): any;
     /**
-     * Issues a root scope signed for one acting agent.
+     * Resolves policy layers and issues their effective grant.
      */
-    issueScopeForAgent(agent: string, id: string, capabilities: any): any;
-    /**
-     * Resolves named policy layers and issues only their effective grant.
-     */
-    issueScopeWithPolicies(id: string, layers: any): any;
-    /**
-     * Resolves hierarchy policy and binds its result to one acting agent.
-     */
-    issueScopeWithPoliciesForAgent(agent: string, id: string, layers: any): any;
+    issueScopeWithPolicies(id: string, layers: any, agent?: string | null): any;
     /**
      * Creates an empty reducer with explicit host-managed authority.
      */
     constructor(authority: any, issuer_id: string, issuer_key: Uint8Array, schemas: any);
     /**
-     * Selects logical fork history against this reducer before provider preparation.
+     * Selects fork history against this reducer before provider preparation.
      */
     prepareForkRequest(request: unknown, policy: ForkHistoryPolicy | null): ForkRequest;
     /**
-     * Composes the native immutable prefix after authenticating every exact reference against this owner's signed scope.
+     * Composes a captured immutable prefix after owner authorization.
      */
     prepareInheritedModelRequest(scope: any, request: any, prefix: any, files: any, limits: any): Promise<Uint8Array>;
-    /**
-     * Returns the exact wire identity used by this compiled core.
-     */
     protocolIdentity(): any;
     /**
      * Restores a snapshot under explicit host-managed authority.
      */
     static restore(snapshot: any, issuer_id: string, issuer_key: Uint8Array, schemas: any): WasmReducer;
-    /**
-     * Returns a versioned issuer-authenticated restoration snapshot.
-     */
     snapshot(): any;
-    /**
-     * Applies configured runtime bounds to one exact file reference.
-     */
     validateFileUnderLimits(file: any, limits: any): void;
     /**
      * Authenticates an owner-issued read grant for this exact immutable file.
@@ -2278,16 +2116,13 @@ export class WasmReducer {
      */
     verifyContentWrite(scope: any, volume: any): void;
     /**
-     * Authenticates lazy directory and named-path access against the owner's signed, segment-bounded private-volume read grant.
+     * Authenticates access beneath an owner-granted private directory.
      */
     verifyPrivateDirectoryRead(scope: any, volume: any, granted_prefix: string, path: string): void;
     /**
      * Authenticates the signed scope before provider discovery or routing.
      */
     verifyScope(scope: any): void;
-    /**
-     * Computes the canonical Rust capability for one validated volume operation.
-     */
     volumeCapability(volume: any, operation: string): string;
     /**
      * Stable physical namespace shared by Filesystem and Objects adapters.
@@ -2330,7 +2165,9 @@ export class WasmStream {
 export function __streamErrorCodeContract(value: StreamErrorCode): StreamErrorCode;
 
 /**
- * Builds and validates the complete immutable batch request before any member admission.
+ * Builds and validates the complete immutable batch request before any
+ * member admission. Inputs, task identity, limits, policy, and route are
+ * projected by the same Rust constructor used by native hosts.
  */
 export function admitBatch(value: WasmBatchAdmissionInput): WasmDurableBatchWire;
 
@@ -2351,6 +2188,7 @@ export function admitTask(value: WasmTaskAdmissionInput): WasmTaskAdmissionWire;
 
 /**
  * Applies a host renderer's output using the same native placement and bounds.
+ * Hosts supply authorized reads; this call performs no I/O or model admission.
  */
 export function applyContextProjection(context: Context, messages: readonly WasmModelMessageInput[], mode: ContextRenderMode, placement: ContextPlacement, limits: WasmModelLimitsInput): Context;
 
@@ -2369,9 +2207,6 @@ export function captureDiscoveredContext(declaration: ContextDiscovery, reader: 
  */
 export function contextForRequest(declaration: ContextDiscovery, reader: ContextDiscoveryReader, current: DiscoveredContext, reload: ContextReloadPolicy): Promise<DiscoveredContext>;
 
-/**
- * Decodes a generated aggregate kind using the native enum mapping.
- */
 export function decodeAggregateKind(value: number): any;
 
 /**
@@ -2380,7 +2215,8 @@ export function decodeAggregateKind(value: number): any;
 export function decodeAttachmentManifest(manifest: any, bytes: Uint8Array, item_count: number): any;
 
 /**
- * Parses canonical JSON without passing full-width integer literals through JavaScript Number.
+ * Parses canonical JSON without passing full-width integer literals through
+ * JavaScript Number. Large serde integers are returned as `BigInt`.
  */
 export function decodeCanonicalJson(bytes: Uint8Array): any;
 
@@ -2395,15 +2231,20 @@ export function decodeEventPayload(event_type: string, canonical_payload_json: U
 export function decodeExecutionEventJson(bytes: Uint8Array): ExecutionEvent;
 
 /**
- * Validate and project one hosted HTTP JSON success response into the public JavaScript shape.
+ * Validate and project one hosted HTTP JSON success response into the public
  */
 export function decodeHttpResponse(route: string, response_json: string): unknown;
 
 /**
- * Parses external JSON with exact integers but without demanding canonical key order or whitespace.
+ * Parses external JSON with exact integers but without demanding canonical
+ * key order or whitespace. Callers must still apply their schema and numeric
+ * range policy before presenting model-authored values to an executor.
  */
 export function decodeJson(bytes: Uint8Array): any;
 
+/**
+ * Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
+ */
 export function decodeReadResponse(codec: number, data: Uint8Array, decoded_length: bigint): Uint8Array;
 
 /**
@@ -2412,7 +2253,8 @@ export function decodeReadResponse(codec: number, data: Uint8Array, decoded_leng
 export function defaultCompactionPolicy(): CompactionPolicy;
 
 /**
- * Derives a stable child operation/message identity from one admitted operation and a local role label without duplicating UUID bit manipulation in hosts.
+ * Derives a stable child operation/message identity from one admitted operation
+ * and a local role label without duplicating UUID bit manipulation in hosts.
  */
 export function deriveOperationUuid(operation: string, label: string): string;
 
@@ -2427,7 +2269,9 @@ export function digestCanonicalJson(value: any): Uint8Array;
 export function encodeAttachmentManifest(items: any): Uint8Array;
 
 /**
- * Serializes a plain JavaScript data value through Rust's canonical JSON representation.
+ * Serializes a plain JavaScript data value through Rust's canonical JSON
+ * representation. Unsafe integer Numbers are rejected before conversion;
+ * callers must supply `BigInt` for exact full-width identities and counters.
  */
 export function encodeCanonicalJson(value: any): Uint8Array;
 
@@ -2487,7 +2331,10 @@ export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
 export function parseSkillMetadata(prefix: Uint8Array, source: PinnedContextPath): SkillMetadata;
 
 /**
- * Plans one deterministic conversation turn before any model or content callback runs.
+ * Plans one deterministic conversation turn before any model or content
+ * callback runs.  The reducer state and payload checks are shared with the
+ * native filesystem memory host; JavaScript retains ownership of asynchronous
+ * reads and model dispatch after this plan is committed.
  */
 export function prepareConversationTurn(conversation: any, operation_id: string, content: any, attachments: any, limits: any, existing_selection: any, has_completed_output: boolean, can_reconcile: boolean): WasmTurnPreparation;
 
@@ -2502,7 +2349,7 @@ export function prepareModelRequest(request: any, limits: any): Uint8Array;
 export function projectDiscoveredContext(snapshot: DiscoveredContext, context: Context, placement: ContextPlacement, limits: WasmModelLimitsInput): Context;
 
 /**
- * Decode one unary memory-provider response from canonical protobuf bytes into the public JavaScript result shape.
+ * Decode one unary memory-provider response from canonical protobuf bytes
  */
 export function projectMemoryResponse(operation: string, input: Uint8Array): unknown;
 
@@ -2527,7 +2374,9 @@ export function searchMcpCatalog(catalog: McpCatalog, query: string, after: stri
 export function selectModelContext(conversation: any, selection: any, files: any, maximum_messages: number, maximum_attachments: number, maximum_render_bytes: number, maximum_projected_attachments: number): Promise<any>;
 
 /**
- * Derives the exact task and machine identities retained by durable admission.
+ * Derives the exact task and machine identities retained by durable
+ * admission. The digest envelope and resumable machine pin are shared with
+ * native Rust registration.
  */
 export function taskAdmissionIdentities(value: WasmTaskIdentityInput): WasmTaskAdmissionIdentities;
 
@@ -2538,6 +2387,8 @@ export function taskIdentityDigest(name: string, version: string, input_schema: 
 
 /**
  * Uses one half of a canonical action digest as a stable local identity.
+ * The digest is already SHA-256; the two halves separate approval operations
+ * from their interaction tickets without a second hashing convention.
  */
 export function uuidFromDigestHalf(digest: Uint8Array, second: boolean): string;
 
@@ -2552,7 +2403,8 @@ export function validateAppendRequest(input: Uint8Array): string;
 export function validateAuthorityPathSegment(value: string): string;
 
 /**
- * Validates one component name with the canonical Rust byte and character policy.
+ * Validates one component name with the canonical Rust byte and character
+ * policy. The field-specific error text remains a thin TypeScript concern.
  */
 export function validateComponentLabel(value: string): string;
 
@@ -2572,12 +2424,13 @@ export function validateContract(kind: string, value: any, context: any): any;
 export function validateConversationMessageId(value: string): string;
 
 /**
- * Validate one hosted HTTP JSON success response using the same path, width, identity, and tagged-union rules as the canonical Stream domain.
+ * Validate one hosted HTTP JSON success response using the same path, width,
  */
 export function validateHttpResponse(route: string, response_json: string): void;
 
 /**
- * Parses one public Harness identity with the canonical Rust contract and returns its normalized UUID spelling for a branded TypeScript facade.
+ * Parses one public Harness identity with the canonical Rust contract and
+ * returns its normalized UUID spelling for a branded TypeScript facade.
  */
 export function validateIdentity(kind: string, value: string): string;
 
@@ -2617,7 +2470,7 @@ export function validateModelMessages(messages: readonly WasmModelMessageInput[]
 export function validateModelTokenCount(request: ModelRequest, count: ModelTokenCount, limits: any): bigint;
 
 /**
- * Validate one canonical Stream path using the same parser used by every provider and wire decoder.
+ * Validate one canonical Stream path using the same parser used by every
  */
 export function validatePath(path: string): string;
 
@@ -2637,7 +2490,8 @@ export function validateSelectedModelContext(selected: any, limits: any): void;
 export function validateSequence(value: string): string;
 
 /**
- * Validates and reprojects one owner-retained direct-child page using the same bounds and bytewise slot ordering as native Harness hosts.
+ * Validates and reprojects one owner-retained direct-child page using the
+ * same bounds and bytewise slot ordering as native Harness hosts.
  */
 export function validateTaskChildrenPage(value: WasmTaskChildrenPageInput): WasmTaskChildrenPage;
 
@@ -2727,7 +2581,7 @@ export function validateWireResume(request: Uint8Array): Uint8Array;
 export function validateWireStatus(request: Uint8Array, status: Uint8Array): Uint8Array;
 
 /**
- * Validates and projects one immutable workflow admission through Rust.
+ * Validates the immutable workflow admission through its core serde type.
  */
 export function validateWorkflowAdmission(value: WasmWorkflowAdmissionWire): WasmWorkflowAdmissionWire;
 
@@ -2833,8 +2687,7 @@ export interface InitOutput {
     readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
     readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_enableRestore: (a: number, b: any) => [number, number];
-    readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any) => [number, number, number];
+    readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: number) => [number, number, number];
     readonly wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];
     readonly wasmclientviews_release: (a: number, b: any) => [number, number];
     readonly wasmclientviews_residency: (a: number) => [number, number, number];
@@ -2864,18 +2717,14 @@ export interface InitOutput {
     readonly wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];
     readonly wasmreducer_contextSelectionForOperation: (a: number, b: any) => [number, number, number];
-    readonly wasmreducer_conversationJson: (a: number) => [number, number, number, number];
     readonly wasmreducer_conversationPage: (a: number, b: bigint, c: number) => [number, number, number];
-    readonly wasmreducer_conversationPageJson: (a: number, b: bigint, c: number) => [number, number, number, number];
     readonly wasmreducer_delegatePrivateDirectoryRead: (a: number, b: any, c: number, d: number, e: number, f: number, g: any, h: number, i: number) => [number, number, number];
     readonly wasmreducer_delegatePrivateFileRead: (a: number, b: any, c: number, d: number, e: number, f: number, g: any) => [number, number, number];
     readonly wasmreducer_directoryReadCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_fileReadCapability: (a: number, b: any) => [number, number, number, number];
     readonly wasmreducer_head: (a: number) => [number, number, number];
-    readonly wasmreducer_issueScope: (a: number, b: number, c: number, d: any) => [number, number, number];
-    readonly wasmreducer_issueScopeForAgent: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
-    readonly wasmreducer_issueScopeWithPolicies: (a: number, b: number, c: number, d: any) => [number, number, number];
-    readonly wasmreducer_issueScopeWithPoliciesForAgent: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
+    readonly wasmreducer_issueScope: (a: number, b: number, c: number, d: any, e: number, f: number) => [number, number, number];
+    readonly wasmreducer_issueScopeWithPolicies: (a: number, b: number, c: number, d: any, e: number, f: number) => [number, number, number];
     readonly wasmreducer_new: (a: any, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
     readonly wasmreducer_prepareForkRequest: (a: number, b: any, c: any) => [number, number, number];
     readonly wasmreducer_prepareInheritedModelRequest: (a: number, b: any, c: any, d: any, e: any, f: any) => any;

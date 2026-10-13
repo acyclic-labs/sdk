@@ -268,7 +268,16 @@ impl Bindings {
                 }
             }
         }
-        super::dependencies::validate_task_dependencies(&self, startup)?;
+        super::dependencies::validate_task_dependencies(
+            self.tasks.0.len(),
+            |index| {
+                let definition = &self.tasks.0[index];
+                let identity = definition.identity();
+                (&identity.name, &identity.version, definition.requirements())
+            },
+            |requirement| super::dependencies::requirement_available(&self, requirement, startup),
+            startup,
+        )?;
         let state = self
             .state
             .or_else(|| self.execution.as_ref().map(|route| route.state()))

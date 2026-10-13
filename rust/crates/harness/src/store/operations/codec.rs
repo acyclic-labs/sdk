@@ -25,26 +25,14 @@ where
     T: serde::de::DeserializeOwned,
     F: FnMut(crate::executor::json::JsonCodecCharge) -> Result<()>,
 {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if native {
-        return crate::executor::json::json_from_slice_bounded(
-            std::marker::PhantomData,
-            bytes,
-            bounds,
-            maximum_owned_bytes,
-            Some(code),
-            Some(value_schema),
-            charge,
-        );
-    }
-    let _ = (native, code, value_schema);
+    let native = native && cfg!(all(feature = "filesystem", not(target_arch = "wasm32")));
     crate::executor::json::json_from_slice_bounded(
         std::marker::PhantomData,
         bytes,
         bounds,
         maximum_owned_bytes,
-        None,
-        None,
+        native.then_some(code),
+        native.then_some(value_schema),
         charge,
     )
 }

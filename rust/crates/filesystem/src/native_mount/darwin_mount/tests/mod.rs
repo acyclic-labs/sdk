@@ -1,7 +1,7 @@
 #[test]
 fn filtered_callback_error_does_not_overwrite_parent_errno() {
-    crate::obs::assert_filtered_callback_isolation(|span| {
-        let status = super::ffi(0, span, false, |_, _| Ok(0));
+    crate::obs::assert_filtered_callback_isolation(|_span| {
+        let status = super::ffi(0, false, |_, _| Ok(0));
         assert_eq!(status, -libc::ESTALE);
         -status
     });
