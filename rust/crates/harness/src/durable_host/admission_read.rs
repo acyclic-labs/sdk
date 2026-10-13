@@ -73,7 +73,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &admission.machine,
             Some(&admission.input_schema),
             &admission.output_schema,
-            Some(&admission.input),
+            // The record already validated input; the registry checks exact schema identity.
+            None,
             quota.work(),
         )?;
         if self
