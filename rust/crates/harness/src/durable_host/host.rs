@@ -2,22 +2,6 @@
 use super::*;
 
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
-    fn verify_dispatch_owner<'a>(
-        &'a self,
-        task_id: TaskId,
-        fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner(task_id, &fence, false, &mut None).await })
-    }
-
-    fn verify_execution_owner<'a>(
-        &'a self,
-        task_id: TaskId,
-        fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner(task_id, &fence, true, &mut None).await })
-    }
-
     fn claim_model_dispatch<'a>(
         &'a self,
         task_id: TaskId,
@@ -279,6 +263,41 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
 }
 
 impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
+    fn verify_dispatch_owner<'a>(
+        &'a self,
+        task: TaskId,
+        fence: &'a crate::scheduler::LeaseFence,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(feature = "filesystem")]
+            {
+                let mut history = io.map(crate::conversation::ContentIo::history_io);
+                self.verify_owner(task, fence, false,
+                    &mut history.as_mut().map(|history| history as &mut dyn crate::store::HistoryIo)).await
+            }
+            #[cfg(not(feature = "filesystem"))]
+            self.verify_owner(task, fence, false, &mut None).await
+        })
+    }
+    fn verify_execution_owner<'a>(
+        &'a self,
+        task: TaskId,
+        fence: &'a crate::scheduler::LeaseFence,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(feature = "filesystem")]
+            {
+                let mut history = io.map(crate::conversation::ContentIo::history_io);
+                self.verify_owner(task, fence, true,
+                    &mut history.as_mut().map(|history| history as &mut dyn crate::store::HistoryIo)).await
+            }
+            #[cfg(not(feature = "filesystem"))]
+            self.verify_owner(task, fence, true, &mut None).await
+        })
+    }
+
     fn children<'a>(
         &'a self,
         parent: TaskId,

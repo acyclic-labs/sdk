@@ -18,10 +18,7 @@ impl NativeSession {
             .await?;
         self.runtime
             .task_host()
-            .verify_dispatch_owner(
-                binding.caller,
-                LeaseFence::from(&request.caller_lease.reservation),
-            )
+            .verify_dispatch_owner(binding.caller, &LeaseFence::from(&request.caller_lease.reservation), None)?
             .await?;
         if original.phase == MaterializationPhase::Applied {
             return Ok(observed);

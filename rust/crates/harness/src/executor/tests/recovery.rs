@@ -164,19 +164,6 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
         }
     }
     impl DurableTaskHost for DispatchObserver {
-        fn verify_execution_owner<'a>(
-            &'a self,
-            _: TaskId,
-            _: crate::scheduler::LeaseFence,
-        ) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
-                if self.owned.load(Ordering::SeqCst) {
-                    Ok(())
-                } else {
-                    Err(Error::Conflict("stale test owner".into()))
-                }
-            })
-        }
         fn claim_model_dispatch<'a>(
             &'a self,
             _: TaskId,
@@ -193,6 +180,20 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
     }
 
     impl crate::runtime::TaskStateProvider for DispatchObserver {
+        fn verify_execution_owner<'a>(
+            &'a self,
+            _: TaskId,
+            _: &'a crate::scheduler::LeaseFence,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if self.owned.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err(Error::Conflict("stale test owner".into()))
+                }
+            })
+        }
         fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
             Box::pin(async { Err(Error::Unsupported("test observer".into())) })
         }

@@ -6,24 +6,6 @@ fn unbound<'a, T>(reason: &'static str) -> BoxFuture<'a, Result<T>> {
 
 /// Provider boundary for stable durable admission and outcome observation.
 pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
-    /// Requires the current uncancelled running lease before a fresh task step or dispatch.
-    fn verify_dispatch_owner<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable dispatch ownership is not bound")
-    }
-
-    /// Checks that this lease still owns execution or reconciliation.
-    fn verify_execution_owner<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<()>> {
-        unbound("durable execution ownership is not bound")
-    }
-
     /// Native execution support is an allocation-free preflight, not authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
@@ -65,6 +47,32 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
 
 /// Owner-bound durable task state, independently replaceable from admission and execution.
 pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
+    /// Verifies the current dispatch owner on caller IO.
+    fn verify_dispatch_owner<'a>(
+        &'a self,
+        _task: TaskId,
+        _fence: &'a crate::scheduler::LeaseFence,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(crate::conversation::content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "durable dispatch ownership is not bound",
+        ))
+    }
+    /// Verifies the current execution owner on caller IO.
+    fn verify_execution_owner<'a>(
+        &'a self,
+        _task: TaskId,
+        _fence: &'a crate::scheduler::LeaseFence,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(crate::conversation::content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "durable execution ownership is not bound",
+        ))
+    }
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route retained and observable by this state owner.
@@ -143,33 +151,6 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Verifies fresh dispatch ownership on the original work.
-    fn verify_dispatch_owner_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger fresh owner verifier",
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Verifies execution ownership on the original work.
-    fn verify_execution_owner_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger settlement owner verifier",
-        })
-    }
     /// Observes a terminal result or ordinary pending state without dispatch.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
 

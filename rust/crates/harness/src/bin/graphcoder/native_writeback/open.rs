@@ -8,10 +8,7 @@ impl NativeSession {
         let binding = self.publication_binding(request).await?;
         self.runtime
             .task_host()
-            .verify_dispatch_owner(
-                binding.caller,
-                LeaseFence::from(&request.caller_lease.reservation),
-            )
+            .verify_dispatch_owner(binding.caller, &LeaseFence::from(&request.caller_lease.reservation), None)?
             .await?;
         let (journal, interactions) = self.publication_journal(binding, request).await?;
         let state = acyclic_fs::LocalCoreStateStore::new(&binding.state_root);
@@ -47,10 +44,7 @@ impl NativeSession {
         let options = publication_options(binding);
         self.runtime
             .task_host()
-            .verify_dispatch_owner(
-                binding.caller,
-                LeaseFence::from(&request.caller_lease.reservation),
-            )
+            .verify_dispatch_owner(binding.caller, &LeaseFence::from(&request.caller_lease.reservation), None)?
             .await?;
         match acyclic_fs::prepare_native_generation_transition(
             &from,

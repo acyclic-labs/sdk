@@ -374,7 +374,7 @@ async fn verify_pending_task(
     )
     .await?;
     task.task_host()
-        .verify_dispatch_owner(seed.task, seed.fence.clone())
+        .verify_dispatch_owner(seed.task, &seed.fence, None)?
         .await?;
     if task.task_host().outcome(seed.task).await?.is_some() {
         return Err("host-death task acquired a terminal outcome".into());
@@ -382,20 +382,20 @@ async fn verify_pending_task(
     task.task_host().cancel(seed.task, None).await?;
     if !matches!(
         task.task_host()
-            .verify_dispatch_owner(seed.task, seed.fence.clone())
+            .verify_dispatch_owner(seed.task, &seed.fence, None)?
             .await,
         Err(acyclic_harness::Error::Conflict(_))
     ) {
         return Err("cancelled host-death task still permits a fresh dispatch".into());
     }
     task.task_host()
-        .verify_execution_owner(seed.task, seed.fence.clone())
+        .verify_execution_owner(seed.task, &seed.fence, None)?
         .await?;
     let mut wrong_fence = seed.fence.clone();
     wrong_fence.placement.push_str(".different");
     let rejection = task
         .task_host()
-        .verify_execution_owner(seed.task, wrong_fence)
+        .verify_execution_owner(seed.task, &wrong_fence, None)?
         .await;
     if !matches!(&rejection, Err(acyclic_harness::Error::Unauthorized(_))) {
         return Err(format!("wrong-placement settlement check returned {rejection:?}").into());
