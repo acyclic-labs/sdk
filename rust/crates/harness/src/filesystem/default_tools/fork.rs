@@ -1,5 +1,7 @@
 use super::*;
 use crate::executor::stock_string_copy;
+use crate::filesystem::PreparationIo;
+use crate::runtime::TaskSpawner as _;
 
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     RecursiveExecutor<P, A, O>
@@ -18,6 +20,21 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         let (runtime, journal_owner) = owner;
         let temporary_io = recursive_temporary_io(output_io)?;
         let io = temporary_io.as_ref();
+        #[cfg(not(target_arch = "wasm32"))]
+        if io.and_then(PreparationIo::original_native_work).is_some() {
+            let original = context.native_task().ok_or_else(|| {
+                recursive_reject(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "admission has no original task",
+                )
+            })?;
+            deny(
+                !original
+                    .original_task_binding_matches(fork.caller, journal_owner.task_binding().1),
+                io,
+            )?;
+        }
         let intent = RecursiveForkSourceIntent {
             arguments: ForkToolArguments {
                 id: fork.arguments.id,
@@ -74,18 +91,50 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             io,
         )?;
         deny(restored != fork.request, io)?;
-        if self
-            .admit(
-                context,
-                owner,
-                &fork.preparation,
-                derived(context.operation_id(), "prepare", io)?,
-                io,
-            )
-            .await?
-            .is_none()
-        {
-            return Ok(None);
+        let record = &fork.preparation;
+        deny(
+            record.parent != context.durable_task_id()
+                || record.operation_id.into_bytes() == fork.caller.into_bytes()
+                || record.operation_id == derived(context.operation_id(), "prepare", io)?,
+            io,
+        )?;
+        let admission = 'admit: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                let (admission, custody) = runtime
+                    .task_host()
+                    .admit_owned_with_native_work(
+                        record.clone_with_native_work(work)?,
+                        journal_owner
+                            .task_binding()
+                            .1
+                            .clone_with_native_work(work)?,
+                        work,
+                    )?
+                    .await?;
+                io.expect("native admission")
+                    .absorb_native_custody(custody)?;
+                break 'admit admission;
+            }
+            runtime
+                .task_host()
+                .admit_owned(record.clone(), journal_owner.task_binding().1.clone())
+                .await?
+        };
+        match admission {
+            crate::Admission::Accepted(task) => deny(task != record.task_id(), io)?,
+            crate::Admission::Indeterminate { .. } => return Ok(None),
+            crate::Admission::Rejected { reason } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(io) = io {
+                    return Err(Error::NativeDiagnostic {
+                        code: crate::wire::ErrorCode::Conflict,
+                        message: reason,
+                        custody: io.take_native_custody(io.owned_bytes()?)?,
+                    });
+                }
+                return Err(Error::Conflict(reason));
+            }
         }
         let before = io
             .map(super::super::PreparationIo::owned_bytes)
@@ -101,7 +150,17 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .await?
         {
             Some(Outcome::Succeeded(value)) => decode::<ForkReport>(&value, io)?,
-            Some(Outcome::Failed { message }) => return Err(outcome_error(message, io)?),
+            Some(Outcome::Failed { message }) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(io) = io {
+                    return Err(Error::NativeDiagnostic {
+                        code: crate::wire::ErrorCode::Conflict,
+                        message: message,
+                        custody: io.take_native_custody(io.owned_bytes()?)?,
+                    });
+                }
+                return Err(Error::Conflict(message));
+            }
             Some(Outcome::Cancelled) => {
                 return Err(recursive_reject(
                     io,
@@ -167,18 +226,50 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 &mut Some(&mut history),
             )
             .await?;
-        if self
-            .admit(
-                context,
-                owner,
-                &fork.request.child,
-                derived(context.operation_id(), "child-admit", io)?,
-                io,
-            )
-            .await?
-            .is_none()
-        {
-            return Ok(None);
+        let record = &fork.request.child;
+        deny(
+            record.parent != context.durable_task_id()
+                || record.operation_id.into_bytes() == fork.caller.into_bytes()
+                || record.operation_id == derived(context.operation_id(), "child-admit", io)?,
+            io,
+        )?;
+        let admission = 'admit: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                let (admission, custody) = runtime
+                    .task_host()
+                    .admit_owned_with_native_work(
+                        record.clone_with_native_work(work)?,
+                        journal_owner
+                            .task_binding()
+                            .1
+                            .clone_with_native_work(work)?,
+                        work,
+                    )?
+                    .await?;
+                io.expect("native admission")
+                    .absorb_native_custody(custody)?;
+                break 'admit admission;
+            }
+            runtime
+                .task_host()
+                .admit_owned(record.clone(), journal_owner.task_binding().1.clone())
+                .await?
+        };
+        match admission {
+            crate::Admission::Accepted(task) => deny(task != record.task_id(), io)?,
+            crate::Admission::Indeterminate { .. } => return Ok(None),
+            crate::Admission::Rejected { reason } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(io) = io {
+                    return Err(Error::NativeDiagnostic {
+                        code: crate::wire::ErrorCode::Conflict,
+                        message: reason,
+                        custody: io.take_native_custody(io.owned_bytes()?)?,
+                    });
+                }
+                return Err(Error::Conflict(reason));
+            }
         }
         #[derive(Serialize)]
         struct Admitted<'a> {

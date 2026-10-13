@@ -278,3 +278,17 @@ pub(in crate::filesystem) fn recursive_transition_owned_bytes(
     };
     recursive_owned_add(bytes, status)
 }
+
+pub(super) fn recursive_decode_bytes<T: crate::filesystem::PreparationRecord>(
+    bytes: &[u8],
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<T> {
+    if let Some(io) = io {
+        return Ok(crate::filesystem::retain_decoded(io.decode(
+            std::marker::PhantomData::<T>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
+        )?));
+    }
+    crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
+}

@@ -33,21 +33,72 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             ),
             io,
         )?;
-        stage(
-            context,
-            derived(invocation.operation_id, "binding-v5", io)?,
-            "binding-v5",
-            &digest,
-            self.maximum_request_bytes,
-            cancellation,
-            io,
-        )
-        .await?;
+        let maximum = self
+            .maximum_request_bytes
+            .min(context.effective_scope().limits().file_bytes);
+        {
+            let ordinary;
+            let observer = match io {
+                Some(io) => io,
+                None => {
+                    ordinary = PreparationIo::from_budget(
+                        acyclic_fs::performance::work_budget(
+                            self.maximum_request_bytes,
+                            self.maximum_request_bytes,
+                        ),
+                        cancellation,
+                    )?;
+                    &ordinary
+                }
+            };
+            let bytes = observer.encode(&digest, maximum, true)?;
+            let path = with_history_io(Some(observer), |work| {
+                crate::executor::preparation_format(
+                    format_args!("recursive-tools/{}/binding-v5.json", context.operation_id()),
+                    work,
+                )
+            })?;
+            let _path = observer.guard_owned(path.capacity() as u64)?;
+            context
+                .stage_file_once(
+                    derived(invocation.operation_id, "binding-v5", io)?,
+                    &path,
+                    &bytes,
+                    "application/json",
+                    "binding-v5.json",
+                    Some(observer),
+                )
+                .await?;
+        }
+        let ordinary;
+        let observer = match io {
+            Some(io) => io,
+            None => {
+                ordinary = PreparationIo::from_budget(
+                    acyclic_fs::performance::work_budget(
+                        self.maximum_request_bytes,
+                        self.maximum_request_bytes,
+                    ),
+                    cancellation,
+                )?;
+                &ordinary
+            }
+        };
         let operation = derived(invocation.operation_id, "plan-v5", io)?;
         let (original, _) = context.observe_staged_file_once(operation, io).await?;
         let plan = if let Some(file) = original {
-            retained_payload::<Plan>(context, &file, self.maximum_request_bytes, cancellation, io)
-                .await?
+            reject_if(
+                file.descriptor().byte_length() > maximum,
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "retained recursive payload exceeds its bound",
+            )?;
+            let bytes = context.read_file(&file, Some(observer)).await?;
+            crate::filesystem::retain_decoded(observer.decode(
+                std::marker::PhantomData::<Plan>,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            )?)
         } else {
             let intent = if self.definition.name == "acyclic.fork" {
                 Some(
@@ -68,16 +119,24 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     io,
                 )
                 .await?;
-            stage(
-                context,
-                operation,
-                "plan-v5",
-                &plan,
-                self.maximum_request_bytes,
-                cancellation,
-                io,
-            )
-            .await?;
+            let bytes = observer.encode(&plan, maximum, true)?;
+            let path = with_history_io(Some(observer), |work| {
+                crate::executor::preparation_format(
+                    format_args!("recursive-tools/{}/plan-v5.json", context.operation_id()),
+                    work,
+                )
+            })?;
+            let _path = observer.guard_owned(path.capacity() as u64)?;
+            context
+                .stage_file_once(
+                    operation,
+                    &path,
+                    &bytes,
+                    "application/json",
+                    "plan-v5.json",
+                    Some(observer),
+                )
+                .await?;
             plan
         };
         validate_plan(&plan, io)?;
@@ -110,9 +169,37 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             &[invocation.operation_id.into_bytes()],
             io,
         )?;
+        let ordinary;
+        let observer = match io {
+            Some(io) => io,
+            None => {
+                ordinary = PreparationIo::from_budget(
+                    acyclic_fs::performance::work_budget(
+                        self.maximum_request_bytes,
+                        self.maximum_request_bytes,
+                    ),
+                    cancellation,
+                )?;
+                &ordinary
+            }
+        };
+        let maximum = self
+            .maximum_request_bytes
+            .min(context.effective_scope().limits().file_bytes);
         let (original, _) = context.observe_staged_file_once(operation, io).await?;
         let intent = if let Some(file) = original {
-            retained_payload(context, &file, self.maximum_request_bytes, cancellation, io).await?
+            reject_if(
+                file.descriptor().byte_length() > maximum,
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "retained recursive payload exceeds its bound",
+            )?;
+            let bytes = context.read_file(&file, Some(observer)).await?;
+            crate::filesystem::retain_decoded(observer.decode(
+                std::marker::PhantomData::<RecursiveForkSourceIntent>,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            )?)
         } else {
             let arguments: ForkToolArguments = decode(&invocation.arguments, io)?;
             let intent = self
@@ -121,20 +208,6 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .expect("authorized source")
                 .select(context, &arguments, cancellation, io)
                 .await?;
-            let ordinary;
-            let observer = match io {
-                Some(io) => io,
-                None => {
-                    ordinary = PreparationIo::from_budget(
-                        acyclic_fs::performance::work_budget(
-                            self.maximum_request_bytes,
-                            self.maximum_request_bytes,
-                        ),
-                        cancellation,
-                    )?;
-                    &ordinary
-                }
-            };
             let bytes = observer.encode(
                 &intent,
                 self.maximum_request_bytes
@@ -163,9 +236,12 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .await?;
             intent
         };
-        validate_source_intent(&intent, io)?;
         deny(
-            !recursive_encoded_equal(&intent.arguments, &invocation.arguments, io)?
+            intent.request.child_agent != intent.arguments.id
+                || intent.source_task != intent.arguments.source.unwrap_or(intent.caller)
+                || intent.child_operation_id == intent.request.operation_id
+                || task_id_for_admission(intent.child_operation_id) == intent.caller
+                || !recursive_encoded_equal(&intent.arguments, &invocation.arguments, io)?
                 || Some(intent.caller) != context.durable_task_id()
                 || intent.request.operation_id != invocation.operation_id,
             io,
@@ -205,16 +281,47 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             )?;
             validate_fork_binding(context, &original, &binding, cancellation, io).await?;
             let operation = derived(context.operation_id(), "preparation-task", io)?;
-            let payload = stage(
-                context,
-                derived(context.operation_id(), "preparation-payload", io)?,
-                "preparation-payload",
-                &binding.source.request,
-                self.maximum_request_bytes,
-                cancellation,
-                io,
-            )
-            .await?;
+            let payload = {
+                let ordinary;
+                let observer = match io {
+                    Some(io) => io,
+                    None => {
+                        ordinary = PreparationIo::from_budget(
+                            acyclic_fs::performance::work_budget(
+                                self.maximum_request_bytes,
+                                self.maximum_request_bytes,
+                            ),
+                            cancellation,
+                        )?;
+                        &ordinary
+                    }
+                };
+                let maximum = self
+                    .maximum_request_bytes
+                    .min(context.effective_scope().limits().file_bytes);
+                let bytes = observer.encode(&binding.source.request, maximum, true)?;
+                let path = with_history_io(Some(observer), |work| {
+                    crate::executor::preparation_format(
+                        format_args!(
+                            "recursive-tools/{}/preparation-payload.json",
+                            context.operation_id()
+                        ),
+                        work,
+                    )
+                })?;
+                let _path = observer.guard_owned(path.capacity() as u64)?;
+                context
+                    .stage_file_once(
+                        derived(context.operation_id(), "preparation-payload", io)?,
+                        &path,
+                        &bytes,
+                        "application/json",
+                        "preparation-payload.json",
+                        Some(observer),
+                    )
+                    .await?
+                    .0
+            };
             let request = fork_preparation_request(
                 binding.source.preparer.as_ref(),
                 &binding.source.request,
@@ -278,7 +385,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             let binding = source
                 .merge(context, &original, None, cancellation, io)
                 .await?;
-            validate_merge_binding(context, original.source, &binding, io)?;
+            validate_merge_binding(context, &binding, io)?;
             let controller = ParentProjectController::new(
                 binding.filesystem.as_ref(),
                 binding.destination.reducer(),
