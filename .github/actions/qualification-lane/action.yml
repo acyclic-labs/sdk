@@ -185,7 +185,7 @@ runs:
         name: timings-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/sdk/observability
         if-no-files-found: ignore
-        retention-days: 7
+        retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
 
     # Saved even when a test fails: entries are content-addressed, and a red
     # main must not leave pull requests compiling cold.
@@ -205,4 +205,4 @@ runs:
         compression-level: 0
         if-no-files-found: error
         include-hidden-files: false
-        retention-days: 90
+        retention-days: ${{ contains(inputs.artifact, 'coverage') && 1 || contains(github.workflow, 'Release') && 30 || 3 }}

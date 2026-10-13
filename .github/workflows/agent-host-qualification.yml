@@ -166,7 +166,7 @@ jobs:
           name: agent-host-${{ matrix.platform.name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agent-host-receipts
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
 
   gate:
     if: always()

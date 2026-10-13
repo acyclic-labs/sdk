@@ -181,6 +181,7 @@ jobs:
       - name: Retain exact publication input
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: npm-publication-${{ steps.release.outputs.source_sha }}
           path: ${{ runner.temp }}/npm-publication
           if-no-files-found: error

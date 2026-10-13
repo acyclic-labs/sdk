@@ -151,6 +151,7 @@ jobs:
           esac
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: acyclic-${{ matrix.target }}
           # Preserve the target directory: assembly consumes a structural
           # target/name pair rather than guessing artifact flattening rules.
@@ -232,6 +233,7 @@ jobs:
         run: .\scripts\qualify-native-mount.ps1 -Backend '${{ matrix.backend }}'
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: native-mount-${{ matrix.backend }}
           path: ${{ runner.temp }}/native-mount-artifacts/${{ matrix.backend }}.json
           if-no-files-found: error
@@ -440,6 +442,7 @@ jobs:
           node scripts/release-evidence.mjs verify release/SHA256SUMS
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: acyclic-universal-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             release/SHA256SUMS

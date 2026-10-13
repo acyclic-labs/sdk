@@ -251,7 +251,7 @@ jobs:
           path: forward/packages-linux
           compression-level: 0
           if-no-files-found: error
-          retention-days: 90
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
       - name: Forward packages-linux-arm64
         if: hashFiles('forward/packages-linux-arm64/**') != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -260,7 +260,7 @@ jobs:
           path: forward/packages-linux-arm64
           compression-level: 0
           if-no-files-found: error
-          retention-days: 90
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
       - name: Forward packages-macos
         if: hashFiles('forward/packages-macos/**') != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -269,7 +269,7 @@ jobs:
           path: forward/packages-macos
           compression-level: 0
           if-no-files-found: error
-          retention-days: 90
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
       - name: Forward stream-native-windows
         if: hashFiles('forward/stream-native-windows/**') != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -278,7 +278,7 @@ jobs:
           path: forward/stream-native-windows
           compression-level: 0
           if-no-files-found: error
-          retention-days: 90
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
 
       - name: Record qualified lanes
         id: record
