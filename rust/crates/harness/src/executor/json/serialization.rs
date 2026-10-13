@@ -45,7 +45,7 @@ impl Scope<'_> {
         if self.failed.is_none() {
             self.failed = Some(error);
         }
-        std::io::ErrorKind::Interrupted.into()
+        std::io::ErrorKind::Other.into()
     }
 }
 impl Drop for Scope<'_> {

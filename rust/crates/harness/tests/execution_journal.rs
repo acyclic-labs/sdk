@@ -235,7 +235,15 @@ impl ExecutionJournal for TerminalCasLoser {
                 .inner
                 .append_if_tail(operation, tail, key, event, io)?
                 .await?;
-            if terminal && committed && self.losses.fetch_add(1, Ordering::SeqCst) < 2 {
+            if terminal
+                && committed
+                && self
+                    .losses
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |losses| {
+                        (losses < 2).then_some(losses + 1)
+                    })
+                    .is_ok()
+            {
                 return Ok(false);
             }
             Ok(committed)

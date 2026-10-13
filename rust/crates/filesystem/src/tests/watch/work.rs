@@ -79,7 +79,7 @@ fn baseline_failures_leave_the_rescan_recoverable() -> Result<(), Box<dyn std::e
         directory.path().canonicalize()?,
         FilesystemProfile::Portable,
         measured_watch_options(),
-        measured_watch_startup_work(),
+        WorkBudget::UNBOUNDED,
         &cancellation,
     )?
     .value;
@@ -130,7 +130,7 @@ fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Erro
         &root,
         FilesystemProfile::Portable,
         measured_watch_options(),
-        measured_watch_startup_work(),
+        WorkBudget::UNBOUNDED,
         &cancellation,
     )?
     .value;

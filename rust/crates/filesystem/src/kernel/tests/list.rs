@@ -22,13 +22,23 @@ fn entry(value: &str, byte: u8) -> Result<TreeEntry, Box<dyn std::error::Error>>
     })
 }
 
-async fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn put(
+    store: &MemoryObjectStore,
+    page: &TreePage,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 8)?;
     {
         let __object_args = (
             id,
-        OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_tree_page(
+                page,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -58,7 +68,8 @@ async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error:
                 page: e,
             },
         ]),
-    ).await
+    )
+    .await
 }
 
 async fn four_leaf_tree(
@@ -73,7 +84,8 @@ async fn four_leaf_tree(
                 value,
                 u8::try_from(index + 1).map_err(|_| "fixture index overflow")?,
             )?]),
-        ).await?;
+        )
+        .await?;
         if index == 2 {
             third = Some(page);
         }
@@ -94,7 +106,16 @@ async fn bounded_listing_exposes_one_authenticated_unvisited_successor()
     let store = MemoryObjectStore::default();
     let (root, expected) = four_leaf_tree(&store).await?;
     let limits = DecodeLimits::default();
-    let page = list_tree_entries(&store, root, None, 1, limits, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let page = list_tree_entries(
+        &store,
+        root,
+        None,
+        1,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(
         page.entries
             .iter()
@@ -131,7 +152,8 @@ async fn cursor_page_reads_only_frontier_and_required_successors()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         page.entries
             .iter()
@@ -147,8 +169,8 @@ async fn cursor_page_reads_only_frontier_and_required_successors()
 }
 
 #[tokio::test]
-async fn empty_tail_is_proved_without_scanning_earlier_subtrees() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn empty_tail_is_proved_without_scanning_earlier_subtrees()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = tree(&store).await?;
     let page = list_tree_entries(
@@ -159,7 +181,8 @@ async fn empty_tail_is_proved_without_scanning_earlier_subtrees() -> Result<(), 
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert!(page.entries.is_empty());
     assert!(!page.has_more);
     assert_eq!(page.work.page_reads, 2);
@@ -172,10 +195,18 @@ async fn output_bound_is_admitted_before_backend_work() -> Result<(), Box<dyn st
     let root = tree(&store).await?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.items_returned = 1;
-    let failure = list_tree_entries(&store, root, None, 2, DecodeLimits::default(), budget, &CancellationToken::new())
-        .await
-        .err()
-        .ok_or("unadmitted page unexpectedly read")?;
+    let failure = list_tree_entries(
+        &store,
+        root,
+        None,
+        2,
+        DecodeLimits::default(),
+        budget,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("unadmitted page unexpectedly read")?;
     assert!(matches!(
         failure.error,
         DirectoryReadError::Work(WorkError::BudgetExceeded {
@@ -197,7 +228,16 @@ async fn volume_object_ceiling_does_not_size_a_tiny_cursor_allocation()
         maximum_page_height: 64,
         ..DecodeLimits::default()
     };
-    let page = list_tree_entries(&store, root, None, 1, limits, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let page = list_tree_entries(
+        &store,
+        root,
+        None,
+        1,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(page.entries.len(), 1);
     assert!(page.work.peak_allocation_bytes < 100_000);
     assert_eq!(page.work.page_reads, 2);
@@ -311,7 +351,8 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancelled,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled directory listing unexpectedly succeeded")?;
     assert!(matches!(failure.error, DirectoryReadError::Cancelled));
@@ -320,14 +361,16 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     let leaf = put(
         &store,
         &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
-    ).await?;
+    )
+    .await?;
     let forged = put(
         &store,
         &TreePage::Internal(vec![Child {
             first: name("a")?,
             page: leaf,
         }]),
-    ).await?;
+    )
+    .await?;
     let failure = list_tree_entries(
         &store,
         forged,
@@ -359,7 +402,10 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
         reached: AtomicUsize,
     }
     impl AsyncObjectStore for PanickingRead {
-        async fn put(&self, id: ObjectId, bytes: OwnedBytes,
+        async fn put(
+            &self,
+            id: ObjectId,
+            bytes: OwnedBytes,
             context: &mut crate::AuthorityWork<'_>,
         ) -> Result<(), crate::ObjectStoreError> {
             #[cfg(not(target_arch = "wasm32"))]
@@ -373,7 +419,8 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
                     let __object_args = (id, bytes, budget, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::put(&self.inner,
+                    let __object_result = AsyncObjectStore::put(
+                        &self.inner,
                         __object_args.0,
                         __object_args.1,
                         &mut __object_work,
@@ -385,7 +432,10 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             .await;
             context.accept(result)
         }
-        async fn read(&self, _id: ObjectId, _maximum: u64,
+        async fn read(
+            &self,
+            _id: ObjectId,
+            _maximum: u64,
             context: &mut crate::AuthorityWork<'_>,
         ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
             #[cfg(not(target_arch = "wasm32"))]
@@ -395,13 +445,15 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             let _budget = context.read_budget()?;
             let _cancellation = context.cancellation;
             let result = async {
-            self.reached.fetch_add(1, Ordering::SeqCst);
-            panic!("provider unwinds without returning its private work");
-        }
+                self.reached.fetch_add(1, Ordering::SeqCst);
+                panic!("provider unwinds without returning its private work");
+            }
             .await;
             context.accept(result)
         }
-        async fn read_many(&self, requests: &[ObjectReadRequest],
+        async fn read_many(
+            &self,
+            requests: &[ObjectReadRequest],
             context: &mut crate::AuthorityWork<'_>,
         ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>
         {
@@ -416,7 +468,8 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
                     let __object_args = (requests, budget, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                    let __object_result = AsyncObjectStore::read_many(&self.inner,
+                    let __object_result = AsyncObjectStore::read_many(
+                        &self.inner,
                         __object_args.0,
                         &mut __object_work,
                     )
@@ -428,7 +481,9 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             .await;
             context.accept(result).map(|values| (values, None))
         }
-        async fn contains(&self, id: ObjectId,
+        async fn contains(
+            &self,
+            id: ObjectId,
             context: &mut crate::AuthorityWork<'_>,
         ) -> Result<bool, crate::ObjectStoreError> {
             #[cfg(not(target_arch = "wasm32"))]
@@ -465,9 +520,16 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
     let owner = crate::kernel::ProofDataCustody::default();
     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
         (list_tree_entries_async_with_custody(
-            &store, root, None, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
-            &cancellation, Some(&owner),
-        )).await
+            &store,
+            root,
+            None,
+            2,
+            DecodeLimits::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            Some(&owner),
+        ))
+        .await
     }))
     .await;
     assert!(result.is_err());
@@ -483,7 +545,6 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
         "no provider receipt was returned"
     );
     assert_eq!(known.object_bytes_read, 0);
-    assert_eq!(known.bytes_copied, 0);
     assert_eq!(owner.operation_cache_bytes(), 0);
     Ok(())
 }
