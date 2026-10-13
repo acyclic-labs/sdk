@@ -144,19 +144,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         from: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(acyclic_stream::Record, ProviderAllocation), AuthorityStoreError> {
-        if !work.is_native() {
-            work.admit(WorkCounters {
-                peak_allocation_bytes: work
-                    .allocations
-                    .live_bytes()
-                    .checked_add(STREAM_RECORD_LIMIT)
-                    .ok_or(crate::WorkError::Overflow)?,
-                ..WorkCounters::UNCHARGED
-            })?;
-        }
+        work.check()?;
         work.admit(WorkCounters {
             authority_records_read: 1,
-            authority_bytes_read: STREAM_RECORD_LIMIT,
             backend_read_operations: u64::from(!work.is_native()),
             ..WorkCounters::UNCHARGED
         })?;
@@ -195,10 +185,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             authority_bytes_read: record.0.value.len() as u64,
             ..WorkCounters::UNCHARGED
         };
-        if work.is_native() {
-            work.admit(completed)?;
-        }
         work.charge(completed)?;
+        if !work.is_native() {
+            work.hold_opaque(record.0.value.len() as u64)?;
+        }
         if !work.is_native() && record.0.sequence != from {
             return Err(authority_corrupt(
                 "Stream returned a non-contiguous record",
