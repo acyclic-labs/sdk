@@ -8,84 +8,68 @@ pub(crate) fn lowercase_unicode(
     cancellation: &CancellationToken,
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
     let mut owned = OriginalReadAccounting::new(accounting)?;
-    let result = lowercase_unicode_with_steps(text, cancellation, &mut |step| observe_path(&mut owned, step));
-    finish_owned(owned, result)
-}
-
-fn lowercase_unicode_with_steps(
-    text: &str,
-    cancellation: &CancellationToken,
-    steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), crate::FsError>,
-) -> Result<Vec<u8>, crate::FsError> {
-    lowercase_check(cancellation)?;
-    let mut length = 0_usize;
-    let mut scalars = text.chars();
-    while !scalars.as_str().is_empty() {
+    let result = (|| {
         lowercase_check(cancellation)?;
-        steps(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        }))?;
-        let scalar = scalars.next().expect("the borrowed scalar is present");
-        // Contextual sigma changes its spelling, but not its encoded size.
-        for mapped in scalar.to_lowercase() {
+        let mut length = 0_usize;
+        let mut scalars = text.chars();
+        while !scalars.as_str().is_empty() {
             lowercase_check(cancellation)?;
-            steps(NamespacePathStep::Charge(&WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            }))?;
-            length = length.checked_add(mapped.len_utf8()).ok_or_else(|| {
-                crate::FsError::from(NamespacePathError::Work(crate::WorkError::Overflow))
-            })?;
+            owned.observe(ReadAllocationStep::BeforeItem)?;
+            owned.observe(ReadAllocationStep::Item)?;
+            let scalar = scalars.next().expect("the borrowed scalar is present");
+            // Contextual sigma preserves the encoded size.
+            for mapped in scalar.to_lowercase() {
+                lowercase_check(cancellation)?;
+                owned.observe(ReadAllocationStep::BeforeItem)?;
+                owned.observe(ReadAllocationStep::Item)?;
+                length = length.checked_add(mapped.len_utf8()).ok_or_else(|| {
+                    crate::FsError::from(NamespacePathError::Work(crate::WorkError::Overflow))
+                })?;
+            }
         }
-    }
-    let requested = length as u64;
-    steps(NamespacePathStep::Allocation(
-        ReadAllocationStep::Allocate {
+        let requested = length as u64;
+        owned.observe(ReadAllocationStep::Allocate {
             bytes: requested,
             operations: u64::from(length != 0),
-        },
-    ))?;
-    let mut output = Vec::new();
-    if let Err(error) = output.try_reserve_exact(length) {
-        steps(NamespacePathStep::Allocation(
-            ReadAllocationStep::ReserveFailed(error),
-        ))?;
-        return Err(crate::FsError::from(NamespacePathError::AllocationFailed));
-    }
-    steps(NamespacePathStep::Allocation(
-        ReadAllocationStep::Capacity {
+        })?;
+        let mut output = Vec::new();
+        if let Err(error) = output.try_reserve_exact(length) {
+            owned.observe(ReadAllocationStep::ReserveFailed(error))?;
+            return Err(crate::FsError::from(NamespacePathError::AllocationFailed));
+        }
+        owned.observe(ReadAllocationStep::Capacity {
             admitted_bytes: requested,
             actual_bytes: output.capacity() as u64,
-        },
-    ))?;
-    let mut scalars = text.chars();
-    while !scalars.as_str().is_empty() {
-        lowercase_check(cancellation)?;
-        steps(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        }))?;
-        let offset = text.len() - scalars.as_str().len();
-        let scalar = scalars.next().expect("the borrowed scalar is present");
-        let scalar = if scalar == 'Σ' {
-            lowercase_sigma(text, offset, cancellation, steps)?
-        } else {
-            scalar
-        };
-        for mapped in scalar.to_lowercase() {
+        })?;
+        let mut scalars = text.chars();
+        while !scalars.as_str().is_empty() {
             lowercase_check(cancellation)?;
-            steps(NamespacePathStep::Charge(&WorkCounters {
-                items_examined: 1,
-                bytes_encoded: mapped.len_utf8() as u64,
-                ..WorkCounters::UNCHARGED
-            }))?;
-            let mut encoded = [0_u8; 4];
-            output.extend_from_slice(mapped.encode_utf8(&mut encoded).as_bytes());
+            owned.observe(ReadAllocationStep::BeforeItem)?;
+            owned.observe(ReadAllocationStep::Item)?;
+            let offset = text.len() - scalars.as_str().len();
+            let scalar = scalars.next().expect("the borrowed scalar is present");
+            let scalar = if scalar == 'Σ' {
+                lowercase_sigma(text, offset, cancellation, &mut owned)?
+            } else {
+                scalar
+            };
+            for mapped in scalar.to_lowercase() {
+                lowercase_check(cancellation)?;
+                let delta = WorkCounters {
+                    items_examined: 1,
+                    bytes_encoded: mapped.len_utf8() as u64,
+                    ..WorkCounters::UNCHARGED
+                };
+                owned.admit(delta)?;
+                owned.record_completed(delta)?;
+                let mut encoded = [0_u8; 4];
+                output.extend_from_slice(mapped.encode_utf8(&mut encoded).as_bytes());
+            }
         }
-    }
-    lowercase_check(cancellation)?;
-    Ok(output)
+        lowercase_check(cancellation)?;
+        Ok(output)
+    })();
+    finish_owned(owned, result)
 }
 
 fn lowercase_check(cancellation: &CancellationToken) -> Result<(), NamespacePathError> {
@@ -98,23 +82,21 @@ fn lowercase_sigma(
     text: &str,
     offset: usize,
     cancellation: &CancellationToken,
-    steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), crate::FsError>,
+    owned: &mut OriginalReadAccounting<'_, '_>,
 ) -> Result<char, crate::FsError> {
     fn non_ignorable_is_cased(
         mut scalars: std::str::Chars<'_>,
         reverse: bool,
         cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), crate::FsError>,
+        owned: &mut OriginalReadAccounting<'_, '_>,
     ) -> Result<bool, crate::FsError> {
         let ignorable =
             icu_properties::CodePointSetData::new::<icu_properties::props::CaseIgnorable>();
         let cased = icu_properties::CodePointSetData::new::<icu_properties::props::Cased>();
         while !scalars.as_str().is_empty() {
             lowercase_check(cancellation)?;
-            steps(NamespacePathStep::Charge(&WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            }))?;
+            owned.observe(ReadAllocationStep::BeforeItem)?;
+            owned.observe(ReadAllocationStep::Item)?;
             let scalar = if reverse {
                 scalars.next_back()
             } else {
@@ -127,15 +109,14 @@ fn lowercase_sigma(
         }
         Ok(false)
     }
-
     let preceded_by_cased =
-        non_ignorable_is_cased(text[..offset].chars(), true, cancellation, steps)?;
+        non_ignorable_is_cased(text[..offset].chars(), true, cancellation, owned)?;
     let final_sigma = preceded_by_cased
         && !non_ignorable_is_cased(
             text[offset + 'Σ'.len_utf8()..].chars(),
             false,
             cancellation,
-            steps,
+            owned,
         )?;
     Ok(if final_sigma { 'ς' } else { 'σ' })
 }
