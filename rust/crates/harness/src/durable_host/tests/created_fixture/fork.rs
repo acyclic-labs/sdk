@@ -212,7 +212,6 @@ impl CreationFixture {
             project,
             seed,
             report,
-            parent: aggregate.reducer().copy(&mut None)?,
             parent_scope,
             parent_verifier: verifier,
         })
