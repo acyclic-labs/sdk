@@ -9,7 +9,7 @@ use acyclic_harness::{Error as RootError, Result as RootResult};
 
 mod acquisition;
 pub(crate) use acquisition::{
-    acquire, acquire_with_native_work, native_source_error, native_watch_error, native_work_error,
+    acquire, acquire_with_native_work, native_watch_error, native_work_error,
     shutdown_pending_with_native_work,
 };
 
