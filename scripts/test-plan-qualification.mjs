@@ -308,6 +308,39 @@ test("Linux package qualification uses sixteen workers without changing publicat
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
 });
 
+test("browser profile cleanup is bounded without changing qualification results", () => {
+  const source = readFileSync("typescript/packages/filesystem/test/browser-qualify.mjs", "utf8").replaceAll("\r\n", "\n");
+  const start = source.indexOf("  try {\n    rmSync(profile,");
+  const chromeExit = source.indexOf("await launched.exited");
+  assert.ok(chromeExit > 0 && start > chromeExit);
+  const end = source.indexOf("\n}\nprocess.exit", start);
+  assert.ok(end > start);
+  const cleanup = source.slice(start, end) + source.slice(end + 2);
+  for (const failed of [false, true]) for (const busy of [false, true]) {
+    let attempts = 0;
+    let warning = "";
+    let exitCode;
+    runInNewContext(cleanup, {
+      failed, profile: "private-browser-profile",
+      rmSync: (profile, options) => {
+        attempts++;
+        assert.equal(profile, "private-browser-profile");
+        assert.equal(options.recursive, true);
+        assert.equal(options.force, true);
+        const retries = options.maxRetries ?? 0;
+        const delay = options.retryDelay ?? 100;
+        assert.ok(delay * retries * (retries + 1) / 2 <= 2000, "best-effort profile cleanup must not hold the CI lane for minutes");
+        if (busy) throw new Error("ENOTEMPTY");
+      },
+      process: { stderr: { write: text => { warning += text; } }, exit: code => { exitCode = code; } },
+    });
+    assert.equal(attempts, 1);
+    assert.equal(exitCode, failed ? 1 : 0);
+    if (busy) assert.match(warning, /could not remove browser profile private-browser-profile: ENOTEMPTY/);
+    else assert.equal(warning, "");
+  }
+});
+
 test("web browser commands overlap, finish before shell exit and retain named timings", () => {
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf("    browser_qualification() {");
