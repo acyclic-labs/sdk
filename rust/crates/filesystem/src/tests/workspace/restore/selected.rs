@@ -34,7 +34,7 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
         ForkOptions::from_generation(committed, IdempotencyKey::from_bytes([0x61; 16])),
     )
     .await?;
-    unbounded!(snapshot, remove("/ignored"))?;
+    snapshot.remove("/ignored").await?;
     let source = unbounded!(snapshot, head())?;
 
     workspace.write_text("/tree/tracked", "dirty").await?;

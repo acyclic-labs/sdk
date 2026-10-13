@@ -57,7 +57,7 @@ async fn fork_retry_keeps_original_creation_after_both_heads_advance() -> Result
                 PublicationPermit::Unrestricted,
                 selected_transaction_budget(),
                 &CancellationToken::new(),
-                |_| std::future::ready(Err(crate::OperationFailure::before_work(
+                &mut |_| std::future::ready(Err(crate::OperationFailure::before_work(
                     FsError::CreationRejected
                 ))),
             )
