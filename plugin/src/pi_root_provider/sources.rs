@@ -201,9 +201,15 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     )?;
     let effect = provider.effect_id_with_native_work(work)?;
     let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
-    provider
-        .authenticate_with_native_work(attempt, true, work)
-        .await?;
+    let original = provider
+        .authenticate_with_native_work(attempt, work)
+        .await?
+        .ok_or_else(|| PiRootProvider::native_failure("original root effect is absent"))?;
+    if !matches!(original.0.status, EffectStatus::Succeeded { .. }) {
+        return Err(PiRootProvider::native_failure(
+            "original root effect is not successful",
+        ));
+    }
     let reference = provider
         .original_artifact_with_native_work(effect, attempt, "result", work)
         .await?

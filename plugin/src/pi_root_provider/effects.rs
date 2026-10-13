@@ -12,8 +12,9 @@ impl PiRootProvider {
         self.require_native_creation()?;
         let mut state = self.state.lock().await;
         let original = self
-            .authenticate_with_native_work(request.attempt_id, false, work)
-            .await?;
+            .authenticate_with_native_work(request.attempt_id, work)
+            .await?
+            .ok_or_else(|| Self::native_failure("original root effect is absent"))?;
         let effect = self.effect_id_with_native_work(work)?;
         if request.effect_id != effect
             || request.provider != original.0.provider
@@ -63,8 +64,9 @@ impl PiRootProvider {
             )
             .await?;
         let original = self
-            .authenticate_with_native_work(attempt, false, work)
-            .await?;
+            .authenticate_with_native_work(attempt, work)
+            .await?
+            .ok_or_else(|| Self::native_failure("original root effect is absent"))?;
         let effect = self.effect_id_with_native_work(work)?;
         if let Some(observation) = self
             .observe_result_with_native_work(effect, attempt, &original.0, true, work)
@@ -254,9 +256,8 @@ impl PiRootProvider {
     pub(super) async fn authenticate_with_native_work(
         &self,
         attempt: EffectAttemptId,
-        require_success: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<(EffectState, NativeAllocation)> {
+    ) -> Result<Option<(EffectState, NativeAllocation)>> {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
         let verifier = self.owner.effect_verifier_with_native_work(work)?;
@@ -290,15 +291,10 @@ impl PiRootProvider {
                 Some(&mut io),
             )
             .await?;
-        let state = (
-            value
-                .ok_or(Error::NativeBoundary {
-                    code: ErrorCode::Unauthorized,
-                    reason: "original root effect is absent",
-                })?
-                .0,
-            io.into_custody()?,
-        );
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let state = (value.0, io.into_custody()?);
         let plan = &self.preparation.plan;
         if state.0.provider != ROOT_ALLOCATION_PROVIDER
             || state.0.effect_kind != ROOT_ALLOCATION_EFFECT
@@ -312,7 +308,6 @@ impl PiRootProvider {
                     | EffectStatus::Indeterminate
                     | EffectStatus::Succeeded { .. }
             )
-            || (require_success && !matches!(state.0.status, EffectStatus::Succeeded { .. }))
         {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
@@ -352,7 +347,7 @@ impl PiRootProvider {
                 });
             }
         }
-        Ok(state)
+        Ok(Some(state))
     }
 
     #[cfg(test)]

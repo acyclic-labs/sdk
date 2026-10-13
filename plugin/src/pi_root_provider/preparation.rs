@@ -145,8 +145,12 @@ impl PiRootProvider {
     ) -> Result<Option<((FileRef, PiRootAllocation), NativeAllocation)>> {
         self.check_native_ledger(work)?;
         let _state = self.state.lock().await;
-        self.authenticate_with_native_work(attempt, true, work)
-            .await?;
+        let Some(original) = self.authenticate_with_native_work(attempt, work).await? else {
+            return Ok(None);
+        };
+        if !matches!(original.0.status, EffectStatus::Succeeded { .. }) {
+            return Ok(None);
+        }
         let effect = self.effect_id_with_native_work(work)?;
         let Some(mut reference) = self
             .original_artifact_with_native_work(effect, attempt, "result", work)
@@ -183,8 +187,12 @@ impl PiRootProvider {
     ) -> Result<Option<(PiScratchCreation, acyclic_fs::OperationId, NativeAllocation)>> {
         self.check_native_ledger(work)?;
         let _state = self.state.lock().await;
-        self.authenticate_with_native_work(attempt, true, work)
-            .await?;
+        let Some(original) = self.authenticate_with_native_work(attempt, work).await? else {
+            return Ok(None);
+        };
+        if !matches!(original.0.status, EffectStatus::Succeeded { .. }) {
+            return Ok(None);
+        }
         let effect = self.effect_id_with_native_work(work)?;
         let Some(output) = self
             .original_artifact_with_native_work(effect, attempt, "result", work)

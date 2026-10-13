@@ -317,8 +317,9 @@ impl Fixture {
         let attempt = EffectAttemptId::from_bytes(id.into_bytes());
         let state = self
             .provider
-            .authenticate_with_native_work(attempt, false, &self.startup)
+            .authenticate_with_native_work(attempt, &self.startup)
             .await
+            .unwrap()
             .unwrap();
         EffectDispatch {
             provider: state.0.provider.clone(),
