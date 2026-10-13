@@ -272,6 +272,12 @@ case "$lane" in
       exit 1
     fi
     ;;
+  linux-runtime)
+    cargo fetch --locked
+    cargo test -p acyclic-fs --features native-mount --locked --lib -- \
+      --ignored --test-threads=1
+    fork_join_conformance
+    ;;
   linux)
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
@@ -282,9 +288,6 @@ case "$lane" in
     # when the Blacksmith dependency cache is cold.
     cargo fetch --locked
     background napi native_binding
-    cargo test -p acyclic-fs --features native-mount --locked --lib -- \
-      --ignored --test-threads=1
-    fork_join_conformance
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi

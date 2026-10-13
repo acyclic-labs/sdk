@@ -40,6 +40,16 @@
     "scope": "full"
   },
   {
+    "lane": "linux-runtime",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": true,
+    "scope": "full"
+  },
+  {
     "lane": "web",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,

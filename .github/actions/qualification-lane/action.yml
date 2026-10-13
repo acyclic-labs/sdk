@@ -91,6 +91,7 @@ runs:
           sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
           ${{ startsWith(inputs.lane, 'windows-') && format('sdk-sccache-v5-windows-{0}-{1}-{2}-', steps.sccache.outputs.scope, runner.os, runner.arch) || '' }}
           ${{ inputs.lane == 'linux-arm64-bindings' && format('sdk-sccache-v5-linux-arm64-{0}-{1}-{2}-', steps.sccache.outputs.scope, runner.os, runner.arch) || '' }}
+          ${{ inputs.lane == 'linux-runtime' && format('sdk-sccache-v5-linux-{0}-{1}-{2}-', steps.sccache.outputs.scope, runner.os, runner.arch) || '' }}
 
     - name: Enable compiler cache
       uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9

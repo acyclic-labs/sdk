@@ -472,7 +472,7 @@ test("recorded lanes are reused with their retained artifact", () => {
   assert.equal(reused.web.artifact, "");
 });
 
-test("full qualification rebuilds source-bound packages after a README-only change", () => {
+test("full qualification reruns source-bound packages and runtime tests after a README-only change", () => {
   const before = laneKeys(lanes, tree, "full");
   const after = laneKeys(lanes, changed("README.md"), "full");
   assert.deepEqual(before, after);
@@ -485,7 +485,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
     marker: everywhere,
     retained: retainedAll,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "windows", "macos"]);
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "linux-runtime", "windows", "macos"]);
   assert.equal(reused.linux, undefined);
   assert.equal(reused.gate.run_id, source.run_id);
 });
@@ -598,7 +598,7 @@ test("ARM native binding production runs independently and all original ARM chec
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
  assert.match(workflow,/name: Find linux-arm64-bindings marker/);assert.match(workflow,/name: Record linux-arm64-bindings/);
  assert.match(workflow,/needs: \[ plan, qualification \]/);assert.match(workflow,/test "\$RESULT" = success/);
- assert.ok(matrix.length<=15,"all ARM work fits in the simultaneous matrix");
+ assert.ok(matrix.length<=16,"all ARM work fits in the simultaneous matrix");
  const action=readFileSync(".github/actions/qualification-lane/action.yml","utf8");
  assert.match(action,/inputs\.lane == 'linux-arm64-bindings' && format\('sdk-sccache-v5-linux-arm64-/);
 });
@@ -614,8 +614,8 @@ test("the workspace gate, docs and generation run as independent required matrix
  const matrix=chooseLanes(lanes,{mainPush:false,force:true,marker:everywhere,retained:retainedAll}).matrix;
  for(const name of ["gate","docs","generation"])assert.equal(matrix.filter(lane=>lane.lane===name).length,1);
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
- assert.match(workflow,/max-parallel: 15/);
- assert.ok(matrix.length<=15,"all full lanes can start together");
+ assert.match(workflow,/max-parallel: 16/);
+ assert.ok(matrix.length<=16,"all full lanes can start together");
  for(const name of ["docs","generation"]){
   assert.match(workflow,new RegExp("name: Find "+name+" marker"));
   assert.match(workflow,new RegExp("name: Record "+name));
@@ -643,8 +643,8 @@ test("Windows native audits are independent required lanes without moving public
     assert.ok(script.includes(command), command);
   assert.match(script, /test-qualify-ci-windows\.ps1/);
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
-  assert.match(workflow, /max-parallel: 15/);
-  assert.ok(matrix.length <= 15);
+  assert.match(workflow, /max-parallel: 16/);
+  assert.ok(matrix.length <= 16);
   for (const name of names) {
     assert.ok(workflow.includes(`name: Find ${name} marker`));
     assert.ok(workflow.includes(`name: Record ${name}`));
@@ -699,4 +699,40 @@ test("Windows workspace compilation uses sixteen CPUs while audit runners stay b
   for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(windows.runner));
+});
+
+
+test("Linux mount and fork/join qualification overlap packages on an independent required runner", () => {
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  const branch = name => script.match(new RegExp("^  " + name + "\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)", "m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
+  const runtime = branch("linux-runtime"), packages = branch("linux");
+  assert.ok(runtime.includes("cargo fetch --locked"));
+  assert.ok(runtime.includes("cargo test -p acyclic-fs --features native-mount --locked --lib --"));
+  assert.ok(runtime.includes("--ignored --test-threads=1"));
+  assert.ok(runtime.includes("fork_join_conformance"));
+  assert.doesNotMatch(packages, /fork_join_conformance|cargo test -p acyclic-fs/);
+  for (const name of ["inference", "machines", "harness", "filesystem"])
+    assert.ok(packages.includes("check-" + name + "-package.sh"));
+  assert.ok(packages.includes("run-harness-conformance.mjs"));
+  const matrix = chooseLanes(lanes, { mainPush: false, force: true, marker: everywhere, retained: retainedAll }).matrix;
+  const lane = matrix.find(lane => lane.lane === "linux-runtime");
+  assert.equal(lane.runner, "blacksmith-4vcpu-ubuntu-2404");
+  assert.equal(lane.workers, 4);
+  assert.equal(lane.inputs, "rust");
+  assert.equal(lane.scope, "full");
+  assert.equal(lane.source_bound, true);
+  const full = chooseLanes(lanes, { mainPush: false, force: false, fullQualification: true, marker: everywhere, retained: retainedAll }).matrix;
+  assert.equal(full.filter(lane => lane.lane === "linux-runtime").length, 1);
+  assert.equal(lane.artifact, "");
+  assert.equal(matrix.find(lane => lane.lane === "linux").artifact, "packages-linux");
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  for (const marker of ["Find linux-runtime marker", "Record linux-runtime"])
+    assert.ok(workflow.includes(marker));
+  assert.ok(workflow.includes("include: ${{ fromJSON(needs.plan.outputs.matrix) }}"));
+  assert.ok(workflow.includes("lane: ${{ matrix.lane }}"));
+  assert.ok(matrix.length <= 16);
+  assert.ok(workflow.includes("max-parallel: 16"));
+  assert.ok(workflow.includes('test "$RESULT" = success'));
+  const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
+  assert.ok(action.includes("inputs.lane == 'linux-runtime' && format('sdk-sccache-v5-linux-"));
 });

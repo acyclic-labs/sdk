@@ -120,6 +120,12 @@ jobs:
         with:
           path: .qualification/linux.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux'] }}
+      - name: Find linux-runtime marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-runtime.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-runtime'] }}
       - name: Find web marker
         if: env.FORCE != 'true'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -205,7 +211,7 @@ jobs:
     if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
-      max-parallel: 15
+      max-parallel: 16
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
@@ -348,6 +354,12 @@ jobs:
         with:
           path: .qualification/linux.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux'] }}
+      - name: Record linux-runtime
+        if: contains(fromJSON(steps.record.outputs.recorded), 'linux-runtime')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-runtime.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['linux-runtime'] }}
       - name: Record web
         if: contains(fromJSON(steps.record.outputs.recorded), 'web')
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
