@@ -10,14 +10,17 @@ use crate::kernel::{
 use crate::memory::MemoryObjectStore;
 use crate::model::{CaseSensitivity, ConcurrencyMode, Lifecycle, UnicodePolicy, VolumeLimits};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStoreError, object_digest,
+    ObjectFailure, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectResult,
+    ObjectStoreError, object_digest,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::kernel::Child;
 fn setup_cache<'a, S>(
-    store: &'a S, entries: usize, budget: WorkBudget,
+    store: &'a S,
+    entries: usize,
+    budget: WorkBudget,
     custody: Option<&'a super::super::ProofDataCustody>,
 ) -> Result<(OperationReadCache<'a, S>, WorkCounters), PathLookupFailure> {
     let cancellation = CancellationToken::new();
@@ -25,7 +28,10 @@ fn setup_cache<'a, S>(
     let result = OperationReadCache::new(store, entries, &mut accounting, custody);
     let work = accounting.spent();
     let mut cache = result.map_err(|error| OperationFailure::new(path_error(error), work))?;
-    let state = cache.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let state = cache
+        .state
+        .get_mut()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.accounted_bytes = 0;
     state.accounted_slot_bytes = 0;
     Ok((cache, work))
@@ -33,23 +39,36 @@ fn setup_cache<'a, S>(
 
 fn cache_resident<S>(cache: &OperationReadCache<'_, S>) -> Result<u64, WorkError> {
     let state = cache.lock_state();
-    OperationReadCache::<S>::slot_bytes(&state)?.checked_add(state.retained_owned_bytes).ok_or(WorkError::Overflow)
+    OperationReadCache::<S>::slot_bytes(&state)?
+        .checked_add(state.retained_owned_bytes)
+        .ok_or(WorkError::Overflow)
 }
 
 fn completed_backend(
-    prior: WorkCounters, backend: WorkCounters, resident: u64, budget: WorkBudget,
+    prior: WorkCounters,
+    backend: WorkCounters,
+    resident: u64,
+    budget: WorkBudget,
 ) -> Result<WorkCounters, OperationFailure<crate::FsError>> {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::Standalone {
-        allocations: AllocationLedger::default(), work: prior, budget, cancellation: &cancellation,
+        allocations: AllocationLedger::default(),
+        work: prior,
+        budget,
+        cancellation: &cancellation,
     };
     let result = compose_backend(&mut accounting, backend, resident);
     let work = accounting.spent();
-    result.map(|()| work).map_err(|error| OperationFailure::new(error, work))
+    result
+        .map(|()| work)
+        .map_err(|error| OperationFailure::new(error, work))
 }
 
 fn completed_backend_failure(
-    prior: WorkCounters, backend: WorkCounters, resident: u64, error: crate::FsError,
+    prior: WorkCounters,
+    backend: WorkCounters,
+    resident: u64,
+    error: crate::FsError,
 ) -> OperationFailure<crate::FsError> {
     match completed_backend(prior, backend, resident, WorkBudget::UNBOUNDED) {
         Ok(work) => OperationFailure::new(error, work),
@@ -132,13 +151,14 @@ impl AsyncObjectStore for CancellingStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
             {
                 let __object_args = (object_id, bytes, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(&self.inner,
+                let __object_result = AsyncObjectStore::put(
+                    &self.inner,
                     __object_args.0,
                     __object_args.1,
                     &mut __object_work,
@@ -164,13 +184,14 @@ impl AsyncObjectStore for CancellingStore {
         let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let receipt = {
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            let receipt = {
                 let __object_args = (object_id, maximum_bytes, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::read(&self.inner,
+                let __object_result = AsyncObjectStore::read(
+                    &self.inner,
                     __object_args.0,
                     __object_args.1,
                     &mut __object_work,
@@ -178,10 +199,10 @@ impl AsyncObjectStore for CancellingStore {
                 .await;
                 __object_work.receipt(__object_result)
             }?;
-        if self.reads.fetch_add(1, Ordering::Relaxed) == 0 {
-            cancellation.cancel();
-        }
-        Ok(receipt)
+            if self.reads.fetch_add(1, Ordering::Relaxed) == 0 {
+                cancellation.cancel();
+            }
+            Ok(receipt)
         }
         .await;
         context.accept(result)
@@ -199,9 +220,9 @@ impl AsyncObjectStore for CancellingStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
             {
                 let __object_args = (requests, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -228,9 +249,9 @@ impl AsyncObjectStore for CancellingStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
             {
                 let __object_args = (object_id, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -264,23 +285,24 @@ impl AsyncObjectStore for OwnedRetentionStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        if self.fail.load(Ordering::Relaxed) {
-            return Err(ObjectFailure::new(
-                ObjectStoreError::Corrupt,
-                WorkCounters {
-                    backend_write_operations: 1,
-                    peak_allocation_bytes: 17,
-                    ..WorkCounters::default()
-                },
-            ));
-        }
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(ObjectFailure::new(
+                    ObjectStoreError::Corrupt,
+                    WorkCounters {
+                        backend_write_operations: 1,
+                        peak_allocation_bytes: 17,
+                        ..WorkCounters::default()
+                    },
+                ));
+            }
             {
                 let __object_args = (object_id, bytes, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(&self.inner,
+                let __object_result = AsyncObjectStore::put(
+                    &self.inner,
                     __object_args.0,
                     __object_args.1,
                     &mut __object_work,
@@ -306,23 +328,24 @@ impl AsyncObjectStore for OwnedRetentionStore {
         let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        if self.fail.load(Ordering::Relaxed) {
-            return Err(ObjectFailure::new(
-                ObjectStoreError::Corrupt,
-                WorkCounters {
-                    backend_read_operations: 1,
-                    peak_allocation_bytes: 17,
-                    ..WorkCounters::default()
-                },
-            ));
-        }
-        let receipt = {
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(ObjectFailure::new(
+                    ObjectStoreError::Corrupt,
+                    WorkCounters {
+                        backend_read_operations: 1,
+                        peak_allocation_bytes: 17,
+                        ..WorkCounters::default()
+                    },
+                ));
+            }
+            let receipt = {
                 let __object_args = (object_id, maximum_bytes, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::read(&self.inner,
+                let __object_result = AsyncObjectStore::read(
+                    &self.inner,
                     __object_args.0,
                     __object_args.1,
                     &mut __object_work,
@@ -330,28 +353,28 @@ impl AsyncObjectStore for OwnedRetentionStore {
                 .await;
                 __object_work.receipt(__object_result)
             }?;
-        let logical_bytes = u64::try_from(receipt.value.bytes.len()).map_err(|_| {
-            ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), receipt.work)
-        })?;
-        let mut work = receipt
-            .work
-            .checked_add(WorkCounters {
-                bytes_copied: logical_bytes,
-                allocation_operations: 1,
-                ..WorkCounters::default()
+            let logical_bytes = u64::try_from(receipt.value.bytes.len()).map_err(|_| {
+                ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), receipt.work)
+            })?;
+            let mut work = receipt
+                .work
+                .checked_add(WorkCounters {
+                    bytes_copied: logical_bytes,
+                    allocation_operations: 1,
+                    ..WorkCounters::default()
+                })
+                .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
+            work.peak_allocation_bytes = work.peak_allocation_bytes.max(logical_bytes);
+            work.verify(budget)
+                .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
+            Ok(crate::OperationReceipt {
+                value: ObjectRead {
+                    bytes: OwnedBytes::copy_from_slice(&receipt.value.bytes),
+                    retention: ObjectReadRetention::Owned { logical_bytes },
+                },
+                work,
             })
-            .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(logical_bytes);
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
-        Ok(crate::OperationReceipt {
-            value: ObjectRead {
-                bytes: OwnedBytes::copy_from_slice(&receipt.value.bytes),
-                retention: ObjectReadRetention::Owned { logical_bytes },
-            },
-            work,
-        })
-    }
+        }
         .await;
         context.accept(result)
     }
@@ -368,9 +391,9 @@ impl AsyncObjectStore for OwnedRetentionStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
             {
                 let __object_args = (requests, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -397,19 +420,19 @@ impl AsyncObjectStore for OwnedRetentionStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        if self.fail.load(Ordering::Relaxed) {
-            return Err(ObjectFailure::new(
-                ObjectStoreError::Corrupt,
-                WorkCounters {
-                    backend_read_operations: 1,
-                    peak_allocation_bytes: 17,
-                    ..WorkCounters::default()
-                },
-            ));
-        }
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(ObjectFailure::new(
+                    ObjectStoreError::Corrupt,
+                    WorkCounters {
+                        backend_read_operations: 1,
+                        peak_allocation_bytes: 17,
+                        ..WorkCounters::default()
+                    },
+                ));
+            }
             {
                 let __object_args = (object_id, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -433,24 +456,36 @@ async fn fixture(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            metadata(),
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let main_name = LogicalName::new(NameEncoding::Utf8, b"main.rs".to_vec(), 255)?;
     let src_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(
+            &TreePage::Leaf(vec![TreeEntry {
                 name: main_name.clone(),
                 file_id,
                 kind: FileKind::Regular,
-            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            }]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let src_name = LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?;
     let alias_name = LogicalName::new(NameEncoding::Utf8, b"alias".to_vec(), 255)?;
     let root_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(vec![
+        encode_tree_page(
+            &TreePage::Leaf(vec![
                 TreeEntry {
                     name: alias_name,
                     file_id: src_id,
@@ -461,12 +496,18 @@ async fn fixture(
                     file_id: src_id,
                     kind: FileKind::Directory,
                 },
-            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            ]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let file_table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(vec![
+        encode_file_table_page(
+            &FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_id,
                     kind: FileKind::Directory,
@@ -488,8 +529,13 @@ async fn fixture(
                     metadata,
                     payload: FilePayload::InlineRegular(InlineFileData::new(b"fn main() {}")?),
                 },
-            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            ]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     Ok((
         GenerationRoot {
             volume_id: VolumeId::from_bytes([4; 16]),
@@ -512,18 +558,29 @@ async fn binding_fixture(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            metadata(),
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
     let root_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(
+            &TreePage::Leaf(vec![TreeEntry {
                 name: child_name.clone(),
                 file_id: child_id,
                 kind: declared_kind,
-            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            }]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let mut records = vec![FileRecord {
         file_id: root_id,
         kind: FileKind::Directory,
@@ -537,8 +594,14 @@ async fn binding_fixture(
                 let empty_tree = put(
                     store,
                     ObjectKind::TreePage,
-                    encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-                ).await?;
+                    encode_tree_page(
+                        &TreePage::Leaf(Vec::new()),
+                        8,
+                        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+                    )?,
+                )
+                .await?;
                 FilePayload::Directory {
                     entries: empty_tree,
                 }
@@ -557,8 +620,14 @@ async fn binding_fixture(
     let file_table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_table_page(
+            &FileTablePage::Leaf(records),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     Ok((
         GenerationRoot {
             volume_id: VolumeId::from_bytes([23; 16]),
@@ -576,7 +645,15 @@ async fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
-    let found = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let found = lookup_path(
+        &store,
+        &generation,
+        &path,
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(
         found.record.map(|record| record.kind),
         Some(FileKind::Regular)
@@ -595,7 +672,8 @@ async fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(observed.lookup.record, found.record);
     assert_eq!(observed.dependencies.len(), 3);
     assert!(matches!(
@@ -620,7 +698,8 @@ async fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(absent.record, None);
     assert_eq!(
         absent.parent.map(|record| record.kind),
@@ -634,7 +713,8 @@ async fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     assert_eq!(observed_absent.lookup.record, None);
     assert_eq!(observed_absent.dependencies.len(), 2);
     assert!(matches!(
@@ -653,8 +733,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
     let cache_entries = maximum_cache_entries_for_components((&path).depth(), config())?;
-    let (cache, cache_work) =
-        setup_cache(&store, cache_entries, WorkBudget::UNBOUNDED, None)?;
+    let (cache, cache_work) = setup_cache(&store, cache_entries, WorkBudget::UNBOUNDED, None)?;
     let dependency_bytes = u64::try_from(path.depth().saturating_add(1))?
         .checked_mul(u64::try_from(size_of::<Dependency>())?)
         .ok_or("dependency byte count overflowed")?;
@@ -663,14 +742,29 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     // The same canonical path frame is a real simultaneous allocation too.
     let cancellation = CancellationToken::new();
     let zero_peak = observe_path_async(
-        &store, &generation, &path, config(),
-        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).await.expect_err("the original path frame must be admitted before allocation");
+        &store,
+        &generation,
+        &path,
+        config(),
+        WorkBudget {
+            peak_allocation_bytes: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .await
+    .expect_err("the original path frame must be admitted before allocation");
     let PathLookupError::Work(WorkError::BudgetExceeded {
-        counter: "peak_allocation_bytes", observed: frame_bytes, maximum: 0,
-    }) = zero_peak.error else { return Err("zero-peak request did not reject the actual path frame".into()); };
+        counter: "peak_allocation_bytes",
+        observed: frame_bytes,
+        maximum: 0,
+    }) = zero_peak.error
+    else {
+        return Err("zero-peak request did not reject the actual path frame".into());
+    };
     assert_eq!(zero_peak.work.backend_read_operations, 0);
-    let required_peak = frame_bytes.checked_add(cache_bytes)
+    let required_peak = frame_bytes
+        .checked_add(cache_bytes)
         .and_then(|bytes| bytes.checked_add(dependency_bytes))
         .ok_or("combined resident byte count overflowed")?;
 
@@ -683,7 +777,8 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
         config(),
         budget,
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("unadmitted dependency allocation unexpectedly succeeded")?;
     assert!(matches!(
@@ -704,22 +799,38 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     // A prior page's higher historical peak cannot disguise this field boundary.
     let (cache, _) = setup_cache(&store, cache_entries, WorkBudget::UNBOUNDED, None)?;
     let root = super::super::file_table::lookup_file_record(
-        &cache, generation.file_table, generation.root_file_id, DecodeLimits::for_volume(config()),
-        WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
+        &cache,
+        generation.file_table,
+        generation.root_file_id,
+        DecodeLimits::for_volume(config()),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
     assert!(root.work.backend_read_operations > 0);
     let cache_bytes = cache_resident(&cache)?;
     let first_name_bytes = u64::try_from(path.components()[0].retained_bytes())?;
-    let required_name_peak = cache_bytes.checked_add(dependency_bytes)
+    let required_name_peak = cache_bytes
+        .checked_add(dependency_bytes)
         .and_then(|bytes| bytes.checked_add(first_name_bytes))
         .ok_or("dependency name byte count overflowed")?;
-    let name_budget = WorkBudget { peak_allocation_bytes: required_name_peak - 1, ..WorkBudget::UNBOUNDED };
+    let name_budget = WorkBudget {
+        peak_allocation_bytes: required_name_peak - 1,
+        ..WorkBudget::UNBOUNDED
+    };
     let mut accounting = KernelAccounting::standalone(name_budget, &cancellation);
     let (_cache_allocation, completed) = accounting.record_actual_owned(cache_bytes)?;
     completed?;
-    let dependencies = reserve_slots::<Dependency>(path.depth().saturating_add(1), &mut accounting, None)?;
-    let failure = copy_name(&path.components()[0], config().limits.maximum_component_bytes, &mut accounting, None)
-        .err().ok_or("unadmitted dependency name unexpectedly succeeded")?;
+    let dependencies =
+        reserve_slots::<Dependency>(path.depth().saturating_add(1), &mut accounting, None)?;
+    let failure = copy_name(
+        &path.components()[0],
+        config().limits.maximum_component_bytes,
+        &mut accounting,
+        None,
+    )
+    .err()
+    .ok_or("unadmitted dependency name unexpectedly succeeded")?;
     assert!(matches!(
         failure,
         crate::FsError::Work(WorkError::BudgetExceeded {
@@ -741,9 +852,17 @@ async fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
     ] {
         let store = MemoryObjectStore::default();
         let (generation, path) = binding_fixture(&store, declared, recorded).await?;
-        let failure = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
-            .err()
-            .ok_or("inconsistent authenticated binding resolved")?;
+        let failure = lookup_path(
+            &store,
+            &generation,
+            &path,
+            config(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .ok_or("inconsistent authenticated binding resolved")?;
         assert!(matches!(failure.error, PathLookupError::KindMismatch));
         assert!(failure.work.backend_read_operations > 0);
         assert!(failure.work.page_reads > 0);
@@ -755,7 +874,8 @@ async fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await
+        )
+        .await
         .err()
         .ok_or("batch accepted inconsistent authenticated binding")?;
         assert!(matches!(batch_failure.error, PathLookupError::KindMismatch));
@@ -768,7 +888,8 @@ async fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )).await
+        ))
+        .await
         .err()
         .ok_or("observation accepted inconsistent binding")?;
         assert!(matches!(
@@ -790,29 +911,47 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let metadata = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            metadata(),
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let leaf = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(
+            &TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?,
                 file_id: src_id,
                 kind: FileKind::Directory,
-            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            }]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let malformed_root_tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Internal(vec![Child {
+        encode_tree_page(
+            &TreePage::Internal(vec![Child {
                 first: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
                 page: leaf,
-            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            }]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let file_table = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(
+            &FileTablePage::Leaf(vec![FileRecord {
                 file_id: root_id,
                 kind: FileKind::Directory,
                 link_count: 1,
@@ -820,8 +959,13 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
                 payload: FilePayload::Directory {
                     entries: malformed_root_tree,
                 },
-            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            }]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let malformed_generation = GenerationRoot {
         volume_id: generation.volume_id,
         root_file_id: root_id,
@@ -840,7 +984,8 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("malformed routing unexpectedly succeeded")?;
     assert!(matches!(
@@ -870,7 +1015,8 @@ async fn batch_cancellation_after_authenticated_progress_preserves_prior_work()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled batch unexpectedly succeeded")?;
     assert!(matches!(
@@ -903,7 +1049,8 @@ async fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicat
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(batch.entries.len(), 4);
     assert_eq!(
         batch.entries[0].record.map(|record| record.kind),
@@ -932,7 +1079,8 @@ async fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicat
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
     let owned = lookup_paths(
         &store,
         &generation,
@@ -940,7 +1088,8 @@ async fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicat
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(borrowed, owned);
     Ok(())
 }
@@ -968,8 +1117,17 @@ async fn batch_observation_captures_exactly_each_paths_observation()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
-    let looked_up = lookup_paths(&store, &generation, &paths, config(), WorkBudget::UNBOUNDED, &cancellation).await?;
+    ))
+    .await?;
+    let looked_up = lookup_paths(
+        &store,
+        &generation,
+        &paths,
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
     assert_eq!(observed.lookup.entries, looked_up.entries);
     let mut expected = std::collections::BTreeMap::new();
     for path in &paths {
@@ -980,7 +1138,8 @@ async fn batch_observation_captures_exactly_each_paths_observation()
             config(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        ))
+        .await?;
         for dependency in single.dependencies {
             expected.insert(dependency.region, dependency.expected);
         }
@@ -1013,7 +1172,8 @@ async fn hardlinked_directory_aliases_share_one_directory_frontier()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(batch.entries[0], batch.entries[1]);
     assert_eq!(batch.work.page_reads, 5);
     assert_eq!(batch.work.backend_read_operations, 3);
@@ -1036,7 +1196,8 @@ async fn copied_byte_budget_rejects_before_directory_frontier_read()
         config(),
         budget,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("copy budget unexpectedly admitted")?;
     assert!(matches!(
@@ -1064,8 +1225,12 @@ fn failed_cached_backend_work_includes_simultaneous_resident_peak() {
         peak_allocation_bytes: 17,
         ..WorkCounters::default()
     };
-    let failure = completed_backend_failure(prior,backend,101,(ObjectStoreError::Corrupt).into());
-    assert!(matches!(failure.error, crate::FsError::Object(ObjectStoreError::Corrupt)));
+    let failure =
+        completed_backend_failure(prior, backend, 101, (ObjectStoreError::Corrupt).into());
+    assert!(matches!(
+        failure.error,
+        crate::FsError::Object(ObjectStoreError::Corrupt)
+    ));
     assert_eq!(failure.work.items_examined, 3);
     assert_eq!(failure.work.backend_read_operations, 1);
     assert_eq!(failure.work.peak_allocation_bytes, 118);
@@ -1106,11 +1271,9 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
             AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }).await?;
-    assert!(matches!(
-        cold.value.retention,
-        ObjectReadRetention::Shared
-    ));
+    })
+    .await?;
+    assert!(matches!(cold.value.retention, ObjectReadRetention::Shared));
     let resident = cache_resident(&cache)?;
     assert!(resident > u64::try_from(cached_bytes.len())?);
 
@@ -1128,11 +1291,11 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
         let __object_args = (write_id, write_bytes, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
-            AsyncObjectStore::put(
-        &cache, __object_args.0, __object_args.1, &mut __object_work)
+            AsyncObjectStore::put(&cache, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }).await
+    })
+    .await
     .err()
     .ok_or("failing cache write unexpectedly succeeded")?;
     assert!(matches!(put_failure.error, ObjectStoreError::Corrupt));
@@ -1143,11 +1306,11 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
         let __object_args = (absent, u64::MAX, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
-            AsyncObjectStore::read(
-        &cache, __object_args.0, __object_args.1, &mut __object_work)
+            AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }).await
+    })
+    .await
     .err()
     .ok_or("failing cache read unexpectedly succeeded")?;
     assert!(matches!(read_failure.error, ObjectStoreError::Corrupt));
@@ -1159,10 +1322,10 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
         let __object_args = (absent, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
         let __object_result =
-            AsyncObjectStore::contains(
-        &cache, __object_args.0, &mut __object_work).await;
+            AsyncObjectStore::contains(&cache, __object_args.0, &mut __object_work).await;
         __object_work.receipt(__object_result)
-    }).await
+    })
+    .await
     .err()
     .ok_or("failing cache presence probe unexpectedly succeeded")?;
     assert!(matches!(contains_failure.error, ObjectStoreError::Corrupt));
@@ -1183,10 +1346,10 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
         let __object_args = (cached, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
         let __object_result =
-            AsyncObjectStore::contains(
-        &cache, __object_args.0, &mut __object_work).await;
+            AsyncObjectStore::contains(&cache, __object_args.0, &mut __object_work).await;
         __object_work.receipt(__object_result)
-    }).await?;
+    })
+    .await?;
     assert!(recovered.value);
     assert_eq!(recovered.work.backend_read_operations, 0);
     Ok(())
@@ -1269,7 +1432,9 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
     let too_small = (async {
         let __object_args = (
             object_id,
-            u64::try_from(bytes.len()).expect("test payload length").saturating_sub(1),
+            u64::try_from(bytes.len())
+                .expect("test payload length")
+                .saturating_sub(1),
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
@@ -1278,7 +1443,8 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
             AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }).await
+    })
+    .await
     .err()
     .ok_or("cache hit ignored maximum bytes")?;
     assert!(matches!(too_small.error, ObjectStoreError::TooLarge { .. }));
@@ -1291,11 +1457,11 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
         let __object_args = (object_id, u64::MAX, zero_items, &cancellation);
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
-            AsyncObjectStore::read(
-        &cache, __object_args.0, __object_args.1, &mut __object_work)
+            AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }).await
+    })
+    .await
     .err()
     .ok_or("cache hit exceeded work budget")?;
     assert!(matches!(
@@ -1305,7 +1471,7 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
             ..
         })
     ));
-    assert!(unadmitted.work.items_examined > 0);
+    assert_eq!(unadmitted.work.items_examined, 0);
     assert_eq!(unadmitted.work.backend_read_operations, 0);
     Ok(())
 }
@@ -1328,7 +1494,8 @@ async fn pre_cancelled_single_path_operations_do_no_backend_work()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("pre-cancelled path lookup unexpectedly succeeded")?;
     assert!(matches!(
@@ -1344,7 +1511,8 @@ async fn pre_cancelled_single_path_operations_do_no_backend_work()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("pre-cancelled path observation unexpectedly succeeded")?;
     assert!(matches!(
@@ -1366,7 +1534,15 @@ async fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
     let paths = vec![&path; 1_224];
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 16 * 1024 * 1024;
-    let result = lookup_path_refs(&store, &generation, &paths, config(), budget, &CancellationToken::new()).await?;
+    let result = lookup_path_refs(
+        &store,
+        &generation,
+        &paths,
+        config(),
+        budget,
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(result.entries.len(), paths.len());
     assert!(result.entries.iter().all(|entry| entry.record.is_none()));
     assert!(result.work.peak_allocation_bytes <= budget.peak_allocation_bytes);
@@ -1403,7 +1579,10 @@ async fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
     {
         let __object_args = (
             second,
-            second_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            second_bytes,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
@@ -1418,7 +1597,7 @@ async fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
             let __object_args = (object_id, u64::MAX, WorkBudget::UNBOUNDED, &cancellation);
             let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
             let __object_result = AsyncObjectStore::read(
-            &cache,
+                &cache,
                 __object_args.0,
                 __object_args.1,
                 &mut __object_work,
@@ -1430,17 +1609,14 @@ async fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
         assert_eq!(receipt.work.backend_read_operations, 1);
     }
     let warm_first = (async {
-        let __object_args = (first,
-            u64::MAX,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
+        let __object_args = (first, u64::MAX, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }).await?;
+    })
+    .await?;
     assert_eq!(warm_first.work.backend_read_operations, 0);
     Ok(())
 }
@@ -1450,9 +1626,17 @@ async fn empty_and_excessive_path_batches_reject_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
-    let empty = lookup_paths(&store, &generation, &[], config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
-        .err()
-        .ok_or("empty path batch succeeded")?;
+    let empty = lookup_paths(
+        &store,
+        &generation,
+        &[],
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("empty path batch succeeded")?;
     assert!(matches!(empty.error, PathLookupError::EmptyBatch));
     assert_eq!(*empty.work, WorkCounters::default());
 
@@ -1465,7 +1649,8 @@ async fn empty_and_excessive_path_batches_reject_before_backend_work()
         bounded,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("excessive path batch succeeded")?;
     assert!(matches!(excessive.error, PathLookupError::TooManyPaths));
@@ -1487,7 +1672,8 @@ async fn cancelled_and_unadmitted_batches_perform_no_backend_work()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled path batch succeeded")?;
     assert!(matches!(
@@ -1498,9 +1684,17 @@ async fn cancelled_and_unadmitted_batches_perform_no_backend_work()
 
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 0;
-    let unadmitted = lookup_paths(&store, &generation, &[path], config(), budget, &CancellationToken::new()).await
-        .err()
-        .ok_or("zero-allocation path batch succeeded")?;
+    let unadmitted = lookup_paths(
+        &store,
+        &generation,
+        &[path],
+        config(),
+        budget,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("zero-allocation path batch succeeded")?;
     assert!(matches!(unadmitted.error, PathLookupError::Work(_)));
     assert_eq!(unadmitted.work.backend_read_operations, 0);
     Ok(())
@@ -1521,7 +1715,8 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         mixed.entries[0].record.map(|record| record.kind),
         Some(FileKind::Regular)
@@ -1549,7 +1744,8 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("non-directory descent succeeded")?;
     assert!(matches!(failure.error, PathLookupError::NotDirectory));
@@ -1558,22 +1754,36 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
 }
 
 #[tokio::test]
-async fn unsupported_name_encoding_rejects_before_backend_work() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn unsupported_name_encoding_rejects_before_backend_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, _) = fixture(&store).await?;
     let path = NamespacePath::new(
         vec![LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?],
         config().limits,
     )?;
-    let failure = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
-        .err()
-        .ok_or("unsupported encoding succeeded")?;
+    let failure = lookup_path(
+        &store,
+        &generation,
+        &path,
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("unsupported encoding succeeded")?;
     assert!(matches!(
         failure.error,
         PathLookupError::UnsupportedNameEncoding
     ));
-    assert_eq!(*failure.work, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED });
+    assert_eq!(
+        *failure.work,
+        WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        }
+    );
     Ok(())
 }
 
@@ -1607,7 +1817,8 @@ async fn profile_specific_name_encodings_reach_authenticated_absence()
             profile_config,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?;
+        )
+        .await?;
         assert!(lookup.record.is_none());
         assert_eq!(lookup.resolved_components, 0);
         assert!(lookup.work.backend_read_operations > 0);
@@ -1635,7 +1846,8 @@ async fn single_path_cancellation_after_authenticated_progress_preserves_work()
                 config(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )).await
+            ))
+            .await
             .err()
             .ok_or("cancelled path observation unexpectedly succeeded")?
         } else {
@@ -1646,7 +1858,8 @@ async fn single_path_cancellation_after_authenticated_progress_preserves_work()
                 config(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )).await
+            ))
+            .await
             .err()
             .ok_or("cancelled path lookup unexpectedly succeeded")?
         };
@@ -1664,12 +1877,20 @@ async fn single_path_cancellation_after_authenticated_progress_preserves_work()
 }
 
 #[tokio::test]
-async fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn root_observation_and_missing_root_identity_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
     let root = NamespacePath::new(Vec::new(), config().limits)?;
-    let lookup = lookup_path(&store, &generation, &root, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let lookup = lookup_path(
+        &store,
+        &generation,
+        &root,
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(lookup.parent, None);
     assert_eq!(lookup.resolved_components, 0);
     assert_eq!(
@@ -1685,8 +1906,25 @@ async fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Bo
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
-    let root_edges = (async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); observe_path_async_with_accounting(&store, &generation, &root, config(), &mut accounting, cancellation, None, false).await.map(|result| result.value) }).await?;
+    ))
+    .await?;
+    let root_edges = (async {
+        let cancellation = &cancellation;
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+        observe_path_async_with_accounting(
+            &store,
+            &generation,
+            &root,
+            config(),
+            &mut accounting,
+            cancellation,
+            None,
+            false,
+        )
+        .await
+        .map(|result| result.value)
+    })
+    .await?;
     assert_eq!(observed_root.lookup.record, root_edges.lookup.record);
     assert_eq!(observed_root.lookup.parent, root_edges.lookup.parent);
     assert_eq!(
@@ -1703,8 +1941,25 @@ async fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Bo
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
-    let edges = (async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); observe_path_async_with_accounting(&store, &generation, &path, config(), &mut accounting, cancellation, None, false).await.map(|result| result.value) }).await?;
+    ))
+    .await?;
+    let edges = (async {
+        let cancellation = &cancellation;
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+        observe_path_async_with_accounting(
+            &store,
+            &generation,
+            &path,
+            config(),
+            &mut accounting,
+            cancellation,
+            None,
+            false,
+        )
+        .await
+        .map(|result| result.value)
+    })
+    .await?;
     assert_eq!(observed.lookup.record, edges.lookup.record);
     assert_eq!(observed.lookup.parent, edges.lookup.parent);
     assert_eq!(
@@ -1722,16 +1977,25 @@ async fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Bo
 
     let mut missing = generation.clone();
     missing.root_file_id = FileId::from_bytes([99; 16]);
-    let failure = lookup_path(&store, &missing, &root, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
-        .err()
-        .ok_or("missing root record unexpectedly succeeded")?;
+    let failure = lookup_path(
+        &store,
+        &missing,
+        &root,
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("missing root record unexpectedly succeeded")?;
     assert!(matches!(failure.error, PathLookupError::MissingRootRecord));
     assert!(failure.work.page_reads > 0);
     Ok(())
 }
 
 #[tokio::test]
-async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
     let mut shallow = config();
@@ -1742,15 +2006,37 @@ async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dy
         let examined = if path.depth() > usize::from(candidate.limits.maximum_path_depth) {
             0
         } else {
-            u64::try_from(path.components().iter().position(|component| {
-                        component.as_bytes().len() > usize::try_from(candidate.limits.maximum_component_bytes).unwrap_or(usize::MAX)
-                    }).ok_or("component-bound fixture no longer rejects a reached component")? + 1)?
+            u64::try_from(
+                path.components()
+                    .iter()
+                    .position(|component| {
+                        component.as_bytes().len()
+                            > usize::try_from(candidate.limits.maximum_component_bytes)
+                                .unwrap_or(usize::MAX)
+                    })
+                    .ok_or("component-bound fixture no longer rejects a reached component")?
+                    + 1,
+            )?
         };
-        let failure = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
-            .err()
-            .ok_or("unsupported path semantics unexpectedly succeeded")?;
+        let failure = lookup_path(
+            &store,
+            &generation,
+            &path,
+            candidate,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .ok_or("unsupported path semantics unexpectedly succeeded")?;
         assert!(matches!(failure.error, PathLookupError::PathBounds));
-        assert_eq!(*failure.work, WorkCounters { items_examined: examined, ..WorkCounters::UNCHARGED });
+        assert_eq!(
+            *failure.work,
+            WorkCounters {
+                items_examined: examined,
+                ..WorkCounters::UNCHARGED
+            }
+        );
     }
 
     let large_component = LogicalName::new(NameEncoding::Utf8, vec![b'x'; 200], 255)?;
@@ -1767,7 +2053,8 @@ async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dy
         short_path,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("oversized encoded path unexpectedly succeeded")?;
     assert!(matches!(failure.error, PathLookupError::PathBounds));
@@ -1782,14 +2069,21 @@ async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dy
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("Windows name in portable profile unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
         PathLookupError::UnsupportedNameEncoding
     ));
-    assert_eq!(*failure.work, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED });
+    assert_eq!(
+        *failure.work,
+        WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        }
+    );
     Ok(())
 }
 
@@ -1806,7 +2100,15 @@ async fn exact_lookup_succeeds_regardless_of_case_and_unicode_policy()
     let mut normalized = config();
     normalized.unicode = UnicodePolicy::RequireNfc;
     for candidate in [folded, normalized] {
-        let lookup = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+        let lookup = lookup_path(
+            &store,
+            &generation,
+            &path,
+            candidate,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
         assert!(lookup.record.is_some());
     }
     Ok(())
@@ -1830,10 +2132,14 @@ fn cache_and_fixed_vector_admission_fail_before_impossible_allocations()
     let cancellation = CancellationToken::new();
     let fixed = {
         let mut accounting = KernelAccounting::borrowed_standalone(
-            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+            &mut allocations,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
         );
         reserve_slots::<u8>(usize::MAX, &mut accounting, None)
-            .err().ok_or("impossible fixed vector allocation succeeded")?
+            .err()
+            .ok_or("impossible fixed vector allocation succeeded")?
     };
     assert!(matches!(fixed, crate::FsError::HandleAllocationFailed));
     assert_eq!(allocations.live_bytes(), 0);
@@ -1846,20 +2152,54 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store).await?;
     let child = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
-    let impossible = main.child_measured(
-        &child, config().limits, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0,
-    )?.value;
-    let missing = NamespacePath::new(vec![
-        LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?, child,
-    ], config().limits)?;
-    let queries = [impossible.clone(), main.clone(), missing, impossible.clone()];
-    let selected = async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &queries, config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await?;
+    let impossible = main
+        .child_measured(
+            &child,
+            config().limits,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            0,
+        )?
+        .value;
+    let missing = NamespacePath::new(
+        vec![
+            LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?,
+            child,
+        ],
+        config().limits,
+    )?;
+    let queries = [
+        impossible.clone(),
+        main.clone(),
+        missing,
+        impossible.clone(),
+    ];
+    let selected = async {
+        let cancellation = &CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+        lookup_paths_selected_async_with_accounting(
+            &store,
+            &generation,
+            &queries,
+            config(),
+            &mut accounting,
+            cancellation,
+            None,
+        )
+        .await
+        .map(|result| result.value)
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+    }
+    .await?;
     assert_eq!(selected.entries.len(), queries.len());
     assert!(selected.entries[0].record.is_none());
     assert!(selected.entries[0].parent.is_none());
     assert_eq!(selected.entries[0].resolved_components, main.depth() as u16);
     assert_eq!(selected.entries[0], selected.entries[3]);
-    assert_eq!(selected.entries[1].record.map(|record| record.kind), Some(FileKind::Regular));
+    assert_eq!(
+        selected.entries[1].record.map(|record| record.kind),
+        Some(FileKind::Regular)
+    );
     assert!(selected.entries[2].record.is_none());
     assert_eq!(selected.entries[2].resolved_components, 0);
     assert!(selected.work.backend_read_operations > 0);
@@ -1871,21 +2211,39 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
         let live_before = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let actual = lookup_paths_selected_async_with_accounting(
-            &store, &generation, &queries, config(), &mut accounting, &cancellation, None,
-        ).await?;
+            &store,
+            &generation,
+            &queries,
+            config(),
+            &mut accounting,
+            &cancellation,
+            None,
+        )
+        .await?;
         assert_eq!(actual.value().entries, selected.entries);
         let (value, allocation) = actual.into_parts();
         let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
             return Err("selected original lookup returned standalone custody".into());
         };
         assert_eq!(allocation.bytes(), value.retained_allocation_bytes);
-        assert_eq!(original.live_allocation_bytes(), live_before + allocation.bytes());
+        assert_eq!(
+            original.live_allocation_bytes(),
+            live_before + allocation.bytes()
+        );
         drop(value);
         drop(allocation);
         assert_eq!(original.live_allocation_bytes(), live_before);
     }
-    let ordinary = lookup_paths(&store, &generation, &[impossible], config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
-        .expect_err("ordinary no-follow semantics remain an error");
+    let ordinary = lookup_paths(
+        &store,
+        &generation,
+        &[impossible],
+        config(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect_err("ordinary no-follow semantics remain an error");
     assert!(matches!(ordinary.error, PathLookupError::NotDirectory));
     assert!(ordinary.work.backend_read_operations > 0);
     Ok(())
@@ -1895,20 +2253,83 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
 async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, path) = binding_fixture(&store, FileKind::Regular, Some(FileKind::Directory)).await?;
-    let query = path.child_measured(
-        &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
-        config().limits, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0,
-    )?.value;
-    let failure = async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &[query.clone()], config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await.expect_err("a malformed binding is not authenticated absence");
+    let (generation, path) =
+        binding_fixture(&store, FileKind::Regular, Some(FileKind::Directory)).await?;
+    let query = path
+        .child_measured(
+            &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
+            config().limits,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            0,
+        )?
+        .value;
+    let failure = async {
+        let cancellation = &CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+        lookup_paths_selected_async_with_accounting(
+            &store,
+            &generation,
+            &[query.clone()],
+            config(),
+            &mut accounting,
+            cancellation,
+            None,
+        )
+        .await
+        .map(|result| result.value)
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+    }
+    .await
+    .expect_err("a malformed binding is not authenticated absence");
     assert!(matches!(failure.error, PathLookupError::KindMismatch));
     assert!(failure.work.backend_read_operations > 0);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = async { let cancellation = &cancellation; let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &[query.clone()], config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await.expect_err("cancelled selected batch must fail before allocation/read");
+    let failure = async {
+        let cancellation = &cancellation;
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+        lookup_paths_selected_async_with_accounting(
+            &store,
+            &generation,
+            &[query.clone()],
+            config(),
+            &mut accounting,
+            cancellation,
+            None,
+        )
+        .await
+        .map(|result| result.value)
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+    }
+    .await
+    .expect_err("cancelled selected batch must fail before allocation/read");
     assert_eq!(failure.work.allocation_operations, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
-    let failure = async { let cancellation = &CancellationToken::new(); let mut accounting = KernelAccounting::standalone(WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, cancellation); lookup_paths_selected_async_with_accounting(&store, &generation, &[query], config(), &mut accounting, cancellation, None).await.map(|result| result.value).map_err(|error| OperationFailure::new(path_error(error), accounting.spent())) }.await.expect_err("unadmitted selected batch must fail before allocation/read");
+    let failure = async {
+        let cancellation = &CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(
+            WorkBudget {
+                allocation_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            cancellation,
+        );
+        lookup_paths_selected_async_with_accounting(
+            &store,
+            &generation,
+            &[query],
+            config(),
+            &mut accounting,
+            cancellation,
+            None,
+        )
+        .await
+        .map(|result| result.value)
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+    }
+    .await
+    .expect_err("unadmitted selected batch must fail before allocation/read");
     assert_eq!(failure.work.allocation_operations, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
     Ok(())
@@ -1928,16 +2349,21 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
         }
     }
     impl Drop for PanicAfterAdmission<'_> {
-        fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
     }
 
     let store = MemoryObjectStore::default();
     let custody = super::super::ProofDataCustody::default();
-    let (cache, setup) = setup_cache(&store, 64, WorkBudget::UNBOUNDED, Some(&custody),)?;
+    let (cache, setup) = setup_cache(&store, 64, WorkBudget::UNBOUNDED, Some(&custody))?;
     let dropped = AtomicBool::new(false);
     let observer = |event| {
         if matches!(event, crate::heap_future::HeapFutureEvent::Released(_)) {
-            assert!(dropped.load(Ordering::Acquire), "whole box dies before frame retirement");
+            assert!(
+                dropped.load(Ordering::Acquire),
+                "whole box dies before frame retirement"
+            );
         }
         custody.record_heap_future_event(event)
     };
@@ -1945,29 +2371,48 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
     let unwind = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
         (crate::heap_future::in_heap_measured(
             |_| PanicAfterAdmission(&dropped),
-            WorkBudget::UNBOUNDED, &cancellation,
-            PathLookupError::Tree(TreeReadError::Cancelled), Some(&observer),
-        )).await
-    })).await;
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            PathLookupError::Tree(TreeReadError::Cancelled),
+            Some(&observer),
+        ))
+        .await
+    }))
+    .await;
     assert!(unwind.is_err());
     let frame_bytes = u64::try_from(size_of::<PanicAfterAdmission<'_>>())?;
     let completed = custody.take_completed_data_work();
     assert_eq!(completed.allocation_operations, 2);
-    assert_eq!(completed.peak_allocation_bytes, setup.peak_allocation_bytes + frame_bytes);
-    assert_eq!(custody.retained_bytes(), 0, "cache and frames are not retained proof keys");
+    assert_eq!(
+        completed.peak_allocation_bytes,
+        setup.peak_allocation_bytes + frame_bytes
+    );
+    assert_eq!(
+        custody.retained_bytes(),
+        0,
+        "cache and frames are not retained proof keys"
+    );
     drop(cache);
     assert_eq!(custody.take_completed_data_work(), WorkCounters::default());
     let next_observer = |event| custody.record_heap_future_event(event);
     let next = (crate::heap_future::in_heap_measured(
         |_| {
             std::future::ready(Ok::<_, PathLookupFailure>(crate::OperationReceipt {
-            value: (), work: WorkCounters::default(),
-        }))
+                value: (),
+                work: WorkCounters::default(),
+            }))
         },
-        WorkBudget::UNBOUNDED, &cancellation,
-        PathLookupError::Tree(TreeReadError::Cancelled), Some(&next_observer),
-    )).await?;
-    assert_eq!(custody.take_completed_data_work(), next.work, "dead cache backing is not carried forward");
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        PathLookupError::Tree(TreeReadError::Cancelled),
+        Some(&next_observer),
+    ))
+    .await?;
+    assert_eq!(
+        custody.take_completed_data_work(),
+        next.work,
+        "dead cache backing is not carried forward"
+    );
     Ok(())
 }
 
@@ -1979,19 +2424,45 @@ async fn original_path_frame_refusal_preserves_successful_prefix_without_backend
     let (generation, path) = fixture(&store).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
-        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            allocation_operations: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let before = original.receipt();
     let live_before = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let failure = lookup_path_async_with_accounting(
-        &store, &generation, &path, config(), &mut accounting, &cancellation, None,
-    ).await.expect_err("a refused original frame cannot start a backend read");
-    assert!(matches!(failure, crate::FsError::Work(WorkError::BudgetExceeded {
-        counter: "allocation_operations", observed: 2, maximum: 1,
-    })));
-    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
-    assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
+        &store,
+        &generation,
+        &path,
+        config(),
+        &mut accounting,
+        &cancellation,
+        None,
+    )
+    .await
+    .expect_err("a refused original frame cannot start a backend read");
+    assert!(matches!(
+        failure,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                observed: 2,
+                maximum: 1,
+            }
+        ))
+    ));
+    assert_eq!(
+        original.receipt().allocation_operations,
+        before.allocation_operations
+    );
+    assert_eq!(
+        original.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
     assert!(original.receipt().items_examined > before.items_examined);
     assert_eq!(original.live_allocation_bytes(), live_before);
     Ok(())
@@ -2007,12 +2478,18 @@ fn original_path_item_effect_runs_without_root_loan_and_survives_late_cancellati
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let inspected = examine_item(&mut accounting, None, || original.receipt())?;
-    assert_eq!(inspected, before, "the actual inspection precedes the item completion");
+    assert_eq!(
+        inspected, before,
+        "the actual inspection precedes the item completion"
+    );
     let mut expected = before;
     expected.items_examined += 1;
     assert_eq!(original.receipt(), expected);
     let failure = examine_item(&mut accounting, None, || cancellation.cancel());
-    assert!(failure.is_err(), "late cancellation refuses only after recording the actual item");
+    assert!(
+        failure.is_err(),
+        "late cancellation refuses only after recording the actual item"
+    );
     expected.items_examined += 1;
     assert_eq!(original.receipt(), expected);
     Ok(())
@@ -2028,15 +2505,21 @@ fn original_path_slot_reserve_failure_keeps_actual_cause_and_retires_only_claime
     let before = original.receipt();
     let live_before = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let count = (isize::MAX as usize).checked_add(1).ok_or("reserve bound overflowed")?;
+    let count = (isize::MAX as usize)
+        .checked_add(1)
+        .ok_or("reserve bound overflowed")?;
     let failure = reserve_slots::<u8>(count, &mut accounting, None)
-        .err().ok_or("an impossible physical reserve unexpectedly succeeded")?;
-    assert!(matches!(failure, crate::FsError::NativeKernel(
-        crate::NativeTreeMaterializationError::AllocationFailed(_),
-    )));
+        .err()
+        .ok_or("an impossible physical reserve unexpectedly succeeded")?;
+    assert!(matches!(
+        failure,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(_),)
+    ));
     let mut expected = before;
     expected.allocation_operations += 1;
-    expected.peak_allocation_bytes = expected.peak_allocation_bytes.max(live_before + count as u64);
+    expected.peak_allocation_bytes = expected
+        .peak_allocation_bytes
+        .max(live_before + count as u64);
     assert_eq!(original.receipt(), expected);
     assert_eq!(original.live_allocation_bytes(), live_before);
     Ok(())

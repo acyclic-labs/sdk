@@ -65,9 +65,9 @@ pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<GenerationProof, GenerationProofFailure> {
-    let (proof, guard) = prove_generation_closure_owned_async(
-        store, generation_root, limits, budget, cancellation,
-    ).await?;
+    let (proof, guard) =
+        prove_generation_closure_owned_async(store, generation_root, limits, budget, cancellation)
+            .await?;
     drop(guard);
     Ok(proof)
 }
@@ -79,10 +79,23 @@ pub(crate) async fn prove_generation_closure_owned_async<S: crate::AsyncObjectSt
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationProof, ProofGuard), GenerationProofFailure> {
+    if generation_root.kind != ObjectKind::GenerationRoot {
+        return Err(OperationFailure::before_work(ClosureError::WrongObjectKind));
+    }
+    if limits.maximum_objects == 0 {
+        return Err(OperationFailure::before_work(
+            ClosureError::TooManyObjects {
+                observed: 1,
+                maximum: 0,
+            },
+        ));
+    }
     let meter = ProofMeter::standalone(budget, cancellation)
         .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::default()))?;
     let mut context = ProofContext::new(store, limits, meter, cancellation);
-    context.prove(generation_root).await
+    context
+        .prove(generation_root)
+        .await
         .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))
 }
 
@@ -113,14 +126,18 @@ pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
     let meter = ProofMeter::standalone(budget, cancellation)
         .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::default()))?;
     let mut context = ProofContext::new(store, limits, meter, cancellation);
-    let logical_bytes = context.prove_blob(root).await
+    let logical_bytes = context
+        .prove_blob(root)
+        .await
         .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
     if logical_bytes != expected_bytes {
         return Err(OperationFailure::new(
-            ClosureError::BlobLengthMismatch, context.meter.work(),
+            ClosureError::BlobLengthMismatch,
+            context.meter.work(),
         ));
     }
-    let (objects, guard) = context.take_objects()
+    let (objects, guard) = context
+        .take_objects()
         .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
     drop(guard);
     Ok((objects, context.meter.work()))
@@ -136,7 +153,9 @@ pub(crate) async fn prove_record_closure_async<S: crate::AsyncObjectStore>(
     let meter = ProofMeter::standalone(budget, cancellation)
         .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::default()))?;
     let mut context = ProofContext::new(store, limits, meter, cancellation);
-    let (objects, guard) = context.prove_record_closure(records).await
+    let (objects, guard) = context
+        .prove_record_closure(records)
+        .await
         .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
     drop(guard);
     Ok((objects, context.meter.work()))
@@ -223,8 +242,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let file_count = usize_to_u64(records.len());
         if file_count > self.limits.maximum_files {
             return Err(ClosureError::TooManyFiles {
-                observed: file_count, maximum: self.limits.maximum_files,
-            }.into());
+                observed: file_count,
+                maximum: self.limits.maximum_files,
+            }
+            .into());
         }
         let mut logical_file_bytes = 0_u128;
         for record in records.iter().map(|(_, value)| value) {
@@ -234,18 +255,28 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 FilePayload::Regular { logical_bytes, .. } => u128::from(logical_bytes),
                 _ => 0,
             };
-            logical_file_bytes = logical_file_bytes.checked_add(bytes)
+            logical_file_bytes = logical_file_bytes
+                .checked_add(bytes)
                 .ok_or(ClosureError::LogicalBytesOverflow)?;
         }
-        self.prove_records_and_namespace(root.0.root_file_id, &records).await?;
+        self.prove_records_and_namespace(root.0.root_file_id, &records)
+            .await?;
         drop(records);
         let object_count = usize_to_u64(self.objects.len());
         let objects = self.take_objects()?;
         let mut root = root;
-        let mut output = (GenerationProof {
-            root: root.0, generation_id, object_count, file_count, logical_file_bytes,
-            objects: objects.0, work: self.meter.work(),
-        }, objects.1);
+        let mut output = (
+            GenerationProof {
+                root: root.0,
+                generation_id,
+                object_count,
+                file_count,
+                logical_file_bytes,
+                objects: objects.0,
+                work: self.meter.work(),
+            },
+            objects.1,
+        );
         output.1.absorb(&mut root.1)?;
         Ok(output)
     }
@@ -256,27 +287,42 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         page: bool,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
         let count = usize_to_u64(self.objects.len())
-            .checked_add(u64::from(self.objects.values.binary_search(&object).is_err()))
+            .checked_add(u64::from(
+                self.objects.values.binary_search(&object).is_err(),
+            ))
             .ok_or(WorkError::Overflow)?;
         if count > self.limits.maximum_objects {
             return Err(ClosureError::TooManyObjects {
-                observed: count, maximum: self.limits.maximum_objects,
-            }.into());
+                observed: count,
+                maximum: self.limits.maximum_objects,
+            }
+            .into());
         }
         set_insert(&mut self.objects, object)?;
         self.meter.charge(WorkCounters {
-            page_reads: u64::from(page), ..WorkCounters::default()
+            page_reads: u64::from(page),
+            ..WorkCounters::default()
         })?;
-        let read = self.meter.read(
-            self.store, object, self.limits.decode.maximum_object_bytes, self.cancellation,
-        ).await?;
-        self.object_bytes = self.object_bytes.checked_add(usize_to_u64(read.0.bytes.len()))
+        let read = self
+            .meter
+            .read(
+                self.store,
+                object,
+                self.limits.decode.maximum_object_bytes,
+                self.cancellation,
+            )
+            .await?;
+        self.object_bytes = self
+            .object_bytes
+            .checked_add(usize_to_u64(read.0.bytes.len()))
             .ok_or(WorkError::Overflow)?;
         let observed = self.object_bytes;
         if observed > self.limits.maximum_object_bytes {
             return Err(ClosureError::ClosureBytesExceeded {
-                observed, maximum: self.limits.maximum_object_bytes,
-            }.into());
+                observed,
+                maximum: self.limits.maximum_object_bytes,
+            }
+            .into());
         }
         Ok(read)
     }
@@ -312,8 +358,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     validate_file_child_bounds(children, lower, upper)?;
                     for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
-                        let child_upper = children.get(index + 1)
-                            .map(|next| next.first).or(upper);
+                        let child_upper = children.get(index + 1).map(|next| next.first).or(upper);
                         pending.push((child.page, Some(child.first), child_upper))?;
                     }
                 }
@@ -353,12 +398,21 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         self.prove_metadata(record.metadata).await?;
         match record.payload {
-            FilePayload::Regular { logical_bytes, extents } => {
+            FilePayload::Regular {
+                logical_bytes,
+                extents,
+            } => {
                 self.prove_extent_tree(extents, logical_bytes).await?;
             }
             FilePayload::Directory { entries } => return Ok(Some(self.prove_tree(entries).await?)),
-            FilePayload::SymbolicLink { target_bytes, target }
-            | FilePayload::ReparsePoint { payload_bytes: target_bytes, payload: target } => {
+            FilePayload::SymbolicLink {
+                target_bytes,
+                target,
+            }
+            | FilePayload::ReparsePoint {
+                payload_bytes: target_bytes,
+                payload: target,
+            } => {
                 if self.prove_blob(target).await? != target_bytes {
                     return Err(ClosureError::BlobLengthMismatch.into());
                 }
@@ -397,9 +451,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     ) -> Result<ProofVec<'a, (TreePage, ProofGuard)>, crate::FsError> {
         Self::require_kind(root, ObjectKind::TreePage)?;
         let mut leaves = ProofVec::new(&self.meter);
-        let mut pending: ProofVec<'a, (
-            ObjectId, Option<(LogicalName, ProofGuard)>, Option<(LogicalName, ProofGuard)>,
-        ),
+        let mut pending: ProofVec<
+            'a,
+            (
+                ObjectId,
+                Option<(LogicalName, ProofGuard)>,
+                Option<(LogicalName, ProofGuard)>,
+            ),
         > = ProofVec::new(&self.meter);
         pending.push((root, None, None))?;
         let mut pages = ProofVec::new(&self.meter);
@@ -413,23 +471,38 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             drop(bytes);
             match &page.0 {
                 TreePage::Leaf(values) => {
-                    validate_tree_bounds(values, lower.as_ref().map(|key| &key.0), upper.as_ref().map(|key| &key.0))?;
+                    validate_tree_bounds(
+                        values,
+                        lower.as_ref().map(|key| &key.0),
+                        upper.as_ref().map(|key| &key.0),
+                    )?;
                     leaves.push(page)?;
                 }
                 TreePage::Internal(children) => {
-                    validate_tree_child_bounds(children, lower.as_ref().map(|key| &key.0), upper.as_ref().map(|key| &key.0))?;
+                    validate_tree_child_bounds(
+                        children,
+                        lower.as_ref().map(|key| &key.0),
+                        upper.as_ref().map(|key| &key.0),
+                    )?;
                     for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
-                        let child_lower = self.meter.clone_key::<super::tree_mutation::TreeFormat>(
-                            &child.first, self.limits.decode.maximum_name_bytes,
-                        )?;
-                        let upper_key = children.get(index + 1)
-                            .map(|next| &next.first).or(upper.as_ref().map(|key| &key.0));
-                        let child_upper = upper_key.map(|key| {
+                        let child_lower =
                             self.meter.clone_key::<super::tree_mutation::TreeFormat>(
-                                key, self.limits.decode.maximum_name_bytes,
-                            )
-                        }).transpose()?;
+                                &child.first,
+                                self.limits.decode.maximum_name_bytes,
+                            )?;
+                        let upper_key = children
+                            .get(index + 1)
+                            .map(|next| &next.first)
+                            .or(upper.as_ref().map(|key| &key.0));
+                        let child_upper = upper_key
+                            .map(|key| {
+                                self.meter.clone_key::<super::tree_mutation::TreeFormat>(
+                                    key,
+                                    self.limits.decode.maximum_name_bytes,
+                                )
+                            })
+                            .transpose()?;
                         pending.push((child.page, Some(child_lower), child_upper))?;
                     }
                 }
@@ -470,8 +543,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                         {
                             return Err(ClosureError::UnsupportedVolumeSemantics.into());
                         }
-                        if let ExtentKind::Content { object, object_offset } = extent.kind {
-                            let content_end = object_offset.checked_add(extent.length)
+                        if let ExtentKind::Content {
+                            object,
+                            object_offset,
+                        } = extent.kind
+                        {
+                            let content_end = object_offset
+                                .checked_add(extent.length)
                                 .ok_or(ClosureError::RangeOverflow)?;
                             if content_end > self.prove_blob(object).await? {
                                 return Err(ClosureError::BlobSpanOutsideObject.into());
@@ -546,9 +624,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     async fn prove_attributes(&mut self, root: ObjectId) -> Result<(), crate::FsError> {
         Self::require_kind(root, ObjectKind::AttributePage)?;
-        let mut pending: ProofVec<'a, (
-            ObjectId, Option<(AttributeName, ProofGuard)>, Option<(AttributeName, ProofGuard)>,
-        ),
+        let mut pending: ProofVec<
+            'a,
+            (
+                ObjectId,
+                Option<(AttributeName, ProofGuard)>,
+                Option<(AttributeName, ProofGuard)>,
+            ),
         > = ProofVec::new(&self.meter);
         pending.push((root, None, None))?;
         let mut pages = ProofVec::new(&self.meter);
@@ -562,7 +644,11 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             drop(bytes);
             match &page.0 {
                 AttributePage::Leaf(entries) => {
-                    validate_attribute_bounds(entries, lower.as_ref().map(|key| &key.0), upper.as_ref().map(|key| &key.0))?;
+                    validate_attribute_bounds(
+                        entries,
+                        lower.as_ref().map(|key| &key.0),
+                        upper.as_ref().map(|key| &key.0),
+                    )?;
                     for entry in entries {
                         self.examine(1)?;
                         if self.prove_blob(entry.value).await? != entry.value_bytes {
@@ -571,19 +657,32 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     }
                 }
                 AttributePage::Internal(children) => {
-                    validate_attribute_child_bounds(children, lower.as_ref().map(|key| &key.0), upper.as_ref().map(|key| &key.0))?;
+                    validate_attribute_child_bounds(
+                        children,
+                        lower.as_ref().map(|key| &key.0),
+                        upper.as_ref().map(|key| &key.0),
+                    )?;
                     for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
-                        let child_lower = self.meter.clone_key::<super::attribute_mutation::AttributeFormat>(
-                            &child.first, self.limits.decode.maximum_name_bytes,
-                        )?;
-                        let upper_key = children.get(index + 1)
-                            .map(|next| &next.first).or(upper.as_ref().map(|key| &key.0));
-                        let child_upper = upper_key.map(|key| {
-                            self.meter.clone_key::<super::attribute_mutation::AttributeFormat>(
-                                key, self.limits.decode.maximum_name_bytes,
-                            )
-                        }).transpose()?;
+                        let child_lower = self
+                            .meter
+                            .clone_key::<super::attribute_mutation::AttributeFormat>(
+                                &child.first,
+                                self.limits.decode.maximum_name_bytes,
+                            )?;
+                        let upper_key = children
+                            .get(index + 1)
+                            .map(|next| &next.first)
+                            .or(upper.as_ref().map(|key| &key.0));
+                        let child_upper = upper_key
+                            .map(|key| {
+                                self.meter
+                                    .clone_key::<super::attribute_mutation::AttributeFormat>(
+                                        key,
+                                        self.limits.decode.maximum_name_bytes,
+                                    )
+                            })
+                            .transpose()?;
                         pending.push((child.page, Some(child_lower), child_upper))?;
                     }
                 }
@@ -617,8 +716,11 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 if record.kind != entry.kind {
                     return Err(ClosureError::NamespaceKindMismatch(entry.file_id).into());
                 }
-                let count = map_get(&links, &entry.file_id).copied().unwrap_or(0_u64)
-                    .checked_add(1).ok_or(ClosureError::RangeOverflow)?;
+                let count = map_get(&links, &entry.file_id)
+                    .copied()
+                    .unwrap_or(0_u64)
+                    .checked_add(1)
+                    .ok_or(ClosureError::RangeOverflow)?;
                 map_insert(&mut links, entry.file_id, count)?;
             }
         }
@@ -685,9 +787,7 @@ fn validate_file_child_bounds(
     upper: Option<FileId>,
 ) -> Result<(), ClosureError> {
     if lower.is_some_and(|value| children.first().map(|child| child.first) != Some(value))
-        || upper.is_some_and(|value| children
-                .last()
-                .is_some_and(|child| child.first >= value))
+        || upper.is_some_and(|value| children.last().is_some_and(|child| child.first >= value))
     {
         return Err(ClosureError::RoutingBoundsMismatch);
     }
@@ -713,9 +813,7 @@ fn validate_tree_child_bounds(
     upper: Option<&LogicalName>,
 ) -> Result<(), ClosureError> {
     if lower.is_some_and(|value| children.first().map(|child| &child.first) != Some(value))
-        || upper.is_some_and(|value| children
-                .last()
-                .is_some_and(|child| child.first >= *value))
+        || upper.is_some_and(|value| children.last().is_some_and(|child| child.first >= *value))
     {
         return Err(ClosureError::RoutingBoundsMismatch);
     }
@@ -760,9 +858,7 @@ fn validate_attribute_child_bounds(
     upper: Option<&AttributeName>,
 ) -> Result<(), ClosureError> {
     if lower.is_some_and(|value| children.first().map(|child| &child.first) != Some(value))
-        || upper.is_some_and(|value| children
-                .last()
-                .is_some_and(|child| child.first >= *value))
+        || upper.is_some_and(|value| children.last().is_some_and(|child| child.first >= *value))
     {
         return Err(ClosureError::RoutingBoundsMismatch);
     }
@@ -877,8 +973,9 @@ fn closure_error(error: crate::FsError) -> ClosureError {
         crate::FsError::Cancelled(_) => ClosureError::Storage(ObjectStoreError::Cancelled),
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => ClosureError::Native(error),
-        crate::FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(error))) =>
-            ClosureError::Decode(error),
+        crate::FsError::FileRead(super::FileRangeReadError::Extent(
+            super::ExtentReadError::Decode(error),
+        )) => ClosureError::Decode(error),
         crate::FsError::BlobRead(super::BlobReadError::Decode(error)) => {
             ClosureError::Decode(error)
         }
@@ -902,7 +999,10 @@ fn proof_standalone_control_bytes() -> u64 {
 
 #[derive(Clone)]
 enum ProofMeterKind<'a> {
-    Standalone(std::sync::Arc<std::sync::Mutex<StandaloneProofState>>, std::marker::PhantomData<&'a ()>),
+    Standalone(
+        std::sync::Arc<std::sync::Mutex<StandaloneProofState>>,
+        std::marker::PhantomData<&'a ()>,
+    ),
     #[cfg(not(target_arch = "wasm32"))]
     Native(&'a crate::NativeMaterializationWork),
 }
@@ -914,7 +1014,10 @@ struct ProofMeter<'a> {
 }
 
 impl<'a> ProofMeter<'a> {
-    fn standalone(budget: WorkBudget, cancellation: &'a CancellationToken) -> Result<Self, crate::FsError> {
+    fn standalone(
+        budget: WorkBudget,
+        cancellation: &'a CancellationToken,
+    ) -> Result<Self, crate::FsError> {
         cancellation.check()?;
         let mut state = StandaloneProofState {
             allocations: super::allocation::AllocationLedger::default(),
@@ -922,32 +1025,52 @@ impl<'a> ProofMeter<'a> {
             budget,
         };
         let controls = proof_standalone_control_bytes();
-        state.allocations.claim_bytes(controls, 1, &mut state.work, budget)
+        state
+            .allocations
+            .claim_bytes(controls, 1, &mut state.work, budget)
             .map_err(proof_allocation_error)?;
         Ok(Self {
             kind: ProofMeterKind::Standalone(
-                std::sync::Arc::new(std::sync::Mutex::new(state)), std::marker::PhantomData,
+                std::sync::Arc::new(std::sync::Mutex::new(state)),
+                std::marker::PhantomData,
             ),
             cancellation,
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn native(original: &'a crate::NativeMaterializationWork, cancellation: &'a CancellationToken) -> Self {
-        Self { kind: ProofMeterKind::Native(original), cancellation }
+    fn native(
+        original: &'a crate::NativeMaterializationWork,
+        cancellation: &'a CancellationToken,
+    ) -> Self {
+        Self {
+            kind: ProofMeterKind::Native(original),
+            cancellation,
+        }
     }
 
     fn with_accounting<T>(
         &self,
-        operation: impl FnOnce(&mut super::allocation::KernelAccounting<'_>) -> Result<T, crate::FsError>,
+        operation: impl FnOnce(
+            &mut super::allocation::KernelAccounting<'_>,
+        ) -> Result<T, crate::FsError>,
     ) -> Result<T, crate::FsError> {
         match &self.kind {
             ProofMeterKind::Standalone(state, _) => {
                 let mut state = state.lock().map_err(|_| WorkError::Overflow)?;
-                let StandaloneProofState { allocations, work, budget } = &mut *state;
-                operation(&mut super::allocation::KernelAccounting::borrowed_standalone(
-                    allocations, work, *budget, self.cancellation,
-                ))
+                let StandaloneProofState {
+                    allocations,
+                    work,
+                    budget,
+                } = &mut *state;
+                operation(
+                    &mut super::allocation::KernelAccounting::borrowed_standalone(
+                        allocations,
+                        work,
+                        *budget,
+                        self.cancellation,
+                    ),
+                )
             }
             #[cfg(not(target_arch = "wasm32"))]
             ProofMeterKind::Native(original) => operation(
@@ -961,20 +1084,36 @@ impl<'a> ProofMeter<'a> {
     // Tuple field order destroys physical data before retiring its guard.
     fn owned<T>(
         &self,
-        operation: impl FnOnce(&mut super::allocation::KernelAccounting<'_>)
-            -> Result<(T, super::allocation::KernelOwnedAllocation, u64), crate::FsError,
+        operation: impl FnOnce(
+            &mut super::allocation::KernelAccounting<'_>,
+        ) -> Result<
+            (T, super::allocation::KernelOwnedAllocation, u64),
+            crate::FsError,
         >,
     ) -> Result<(T, ProofGuard), crate::FsError> {
         match &self.kind {
             ProofMeterKind::Standalone(state, _) => {
                 let mut state_lock = state.lock().map_err(|_| WorkError::Overflow)?;
-                let StandaloneProofState { allocations, work, budget } = &mut *state_lock;
-                let (value, _, bytes) = operation(&mut super::allocation::KernelAccounting::borrowed_standalone(
-                    allocations, work, *budget, self.cancellation,
-                ))?;
-                Ok((value, ProofGuard::Standalone {
-                        state: std::sync::Arc::clone(state), bytes,
-                    }))
+                let StandaloneProofState {
+                    allocations,
+                    work,
+                    budget,
+                } = &mut *state_lock;
+                let (value, _, bytes) = operation(
+                    &mut super::allocation::KernelAccounting::borrowed_standalone(
+                        allocations,
+                        work,
+                        *budget,
+                        self.cancellation,
+                    ),
+                )?;
+                Ok((
+                    value,
+                    ProofGuard::Standalone {
+                        state: std::sync::Arc::clone(state),
+                        bytes,
+                    },
+                ))
             }
             #[cfg(not(target_arch = "wasm32"))]
             ProofMeterKind::Native(original) => {
@@ -1001,8 +1140,10 @@ impl<'a> ProofMeter<'a> {
     fn work(&self) -> WorkCounters {
         match &self.kind {
             ProofMeterKind::Standalone(state, _) => {
-                state.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner).work
+                state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .work
             }
             #[cfg(not(target_arch = "wasm32"))]
             ProofMeterKind::Native(original) => original.receipt(),
@@ -1026,7 +1167,11 @@ impl<'a> ProofMeter<'a> {
     }
 
     async fn read<S: crate::AsyncObjectStore>(
-        &self, store: &S, object: ObjectId, maximum: u64, cancellation: &CancellationToken,
+        &self,
+        store: &S,
+        object: ObjectId,
+        maximum: u64,
+        cancellation: &CancellationToken,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
         self.cancellation.check()?;
         cancellation.check()?;
@@ -1042,9 +1187,9 @@ impl<'a> ProofMeter<'a> {
                 __object_result
             }
             .map_err(|error| match error {
-                    ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
-                    error => error.into(),
-                })?;
+                ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
+                error => error.into(),
+            })?;
             // The returned Bytes keeps the provider's real original guard.
             return Ok((read, self.empty_guard()?));
         }
@@ -1057,16 +1202,22 @@ impl<'a> ProofMeter<'a> {
             __object_work.receipt(__object_result)
         };
         self.owned(|accounting| {
-            super::file_read::accept_standalone_object_read(result, accounting)
-                .map(|(read, bytes)| {
-                    (read, super::allocation::KernelOwnedAllocation::Standalone, bytes)
+            super::file_read::accept_standalone_object_read(result, accounting).map(
+                |(read, bytes)| {
+                    (
+                        read,
+                        super::allocation::KernelOwnedAllocation::Standalone,
+                        bytes,
+                    )
                 },
             )
         })
     }
 
     fn decode_root(
-        &self, read: &crate::storage::ObjectRead, limits: DecodeLimits,
+        &self,
+        read: &crate::storage::ObjectRead,
+        limits: DecodeLimits,
     ) -> Result<(GenerationRoot, ProofGuard), crate::FsError> {
         self.decode_steps(|observe| {
             super::generation::decode_generation_root(&read.bytes, limits, observe)
@@ -1075,9 +1226,9 @@ impl<'a> ProofMeter<'a> {
 
     fn decode_steps<T>(
         &self,
-        decode: impl FnOnce(&mut dyn FnMut(super::codec::ReadAllocationStep)
-            -> Result<(), crate::FsError>)
-            -> Result<T, crate::FsError>,
+        decode: impl FnOnce(
+            &mut dyn FnMut(super::codec::ReadAllocationStep) -> Result<(), crate::FsError>,
+        ) -> Result<T, crate::FsError>,
     ) -> Result<(T, ProofGuard), crate::FsError> {
         self.owned(|accounting| {
             let mut collector = super::file_read::OriginalReadAccounting::new(accounting)?;
@@ -1094,8 +1245,11 @@ impl<'a> ProofMeter<'a> {
         })
     }
 
-    fn decode_file_table(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
-        -> Result<(FileTablePage, ProofGuard), crate::FsError> {
+    fn decode_file_table(
+        &self,
+        read: &crate::storage::ObjectRead,
+        limits: DecodeLimits,
+    ) -> Result<(FileTablePage, ProofGuard), crate::FsError> {
         self.decode_steps(|observe| {
             super::file_table::decode_file_table_page(&read.bytes, limits, &mut |step| {
                 observe(step)
@@ -1103,56 +1257,67 @@ impl<'a> ProofMeter<'a> {
         })
     }
 
-    fn decode_tree(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
-        -> Result<(TreePage, ProofGuard), crate::FsError> {
+    fn decode_tree(
+        &self,
+        read: &crate::storage::ObjectRead,
+        limits: DecodeLimits,
+    ) -> Result<(TreePage, ProofGuard), crate::FsError> {
         self.decode_steps(|observe| {
             super::tree::decode_tree_page(&read.bytes, limits, &mut |step| observe(step))
         })
     }
 
-    fn decode_attributes(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
-        -> Result<(AttributePage, ProofGuard), crate::FsError> {
+    fn decode_attributes(
+        &self,
+        read: &crate::storage::ObjectRead,
+        limits: DecodeLimits,
+    ) -> Result<(AttributePage, ProofGuard), crate::FsError> {
         self.decode_steps(|observe| {
             super::attribute::decode_attribute_page(&read.bytes, limits, &mut |step| observe(step))
         })
     }
 
-    fn decode_extent(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
-        -> Result<(ExtentPage, ProofGuard), crate::FsError> {
+    fn decode_extent(
+        &self,
+        read: &crate::storage::ObjectRead,
+        limits: DecodeLimits,
+    ) -> Result<(ExtentPage, ProofGuard), crate::FsError> {
         self.decode_steps(|observe| {
-            super::extent::decode_extent_page(
-            &read.bytes, limits, &mut |step| observe(step),
-        )
+            super::extent::decode_extent_page(&read.bytes, limits, &mut |step| observe(step))
         })
     }
 
-    fn decode_blob(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
-        -> Result<(super::BlobPage, ProofGuard), crate::FsError> {
+    fn decode_blob(
+        &self,
+        read: &crate::storage::ObjectRead,
+        limits: DecodeLimits,
+    ) -> Result<(super::BlobPage, ProofGuard), crate::FsError> {
         self.decode_steps(|observe| {
-            super::blob::decode_blob_page(
-            &read.bytes, limits, &mut |step| observe(step),
-        )
+            super::blob::decode_blob_page(&read.bytes, limits, &mut |step| observe(step))
         })
     }
 
     fn clone_key<F: super::persistent_btree::Format>(
-        &self, key: &F::Key, maximum: u32,
+        &self,
+        key: &F::Key,
+        maximum: u32,
     ) -> Result<(F::Key, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| F::try_clone_key(
-            key, maximum, &mut |step| observe(step),
-        ))
+        self.decode_steps(|observe| F::try_clone_key(key, maximum, &mut |step| observe(step)))
     }
 }
 
 fn proof_allocation_error(error: super::allocation::AllocationError) -> crate::FsError {
-    error.into_work_or(crate::FsError::Decode(super::CanonicalDecodeError::AllocationFailed))
+    error.into_work_or(crate::FsError::Decode(
+        super::CanonicalDecodeError::AllocationFailed,
+    ))
 }
 
 fn proof_capacity_bytes<T>(capacity: usize) -> Result<u64, crate::FsError> {
-    capacity.checked_mul(size_of::<T>()).map(usize_to_u64)
+    capacity
+        .checked_mul(size_of::<T>())
+        .map(usize_to_u64)
         .ok_or_else(|| WorkError::Overflow.into())
 }
-
 
 pub(crate) enum ProofGuard {
     Standalone {
@@ -1178,12 +1343,17 @@ impl ProofGuard {
 
     fn absorb(&mut self, incoming: &mut Self) -> Result<(), crate::FsError> {
         match (self, incoming) {
-            (ProofGuard::Standalone { state, bytes }, ProofGuard::Standalone { state: source, bytes: added })
-                if std::sync::Arc::ptr_eq(state, source) => {
-                    *bytes = bytes.checked_add(*added).ok_or(WorkError::Overflow)?;
-                    *added = 0;
-                    Ok(())
-                }
+            (
+                ProofGuard::Standalone { state, bytes },
+                ProofGuard::Standalone {
+                    state: source,
+                    bytes: added,
+                },
+            ) if std::sync::Arc::ptr_eq(state, source) => {
+                *bytes = bytes.checked_add(*added).ok_or(WorkError::Overflow)?;
+                *added = 0;
+                Ok(())
+            }
             #[cfg(not(target_arch = "wasm32"))]
             (ProofGuard::Native(target), ProofGuard::Native(source)) => {
                 target.absorb(source).map_err(Into::into)
@@ -1201,7 +1371,6 @@ impl ProofGuard {
             }
         }
     }
-
 }
 
 impl Drop for ProofGuard {
@@ -1209,8 +1378,12 @@ impl Drop for ProofGuard {
         match self {
             Self::Standalone { state, bytes } => {
                 if *bytes != 0 {
-                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .allocations.release(*bytes).expect("proof allocation ownership invariant");
+                    state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .allocations
+                        .release(*bytes)
+                        .expect("proof allocation ownership invariant");
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1227,13 +1400,24 @@ struct ProofVec<'a, T> {
 
 impl<'a, T> ProofVec<'a, T> {
     fn new(meter: &ProofMeter<'a>) -> Self {
-        Self { values: Vec::new(), guard: None, meter: meter.clone() }
+        Self {
+            values: Vec::new(),
+            guard: None,
+            meter: meter.clone(),
+        }
     }
 
     fn ensure_capacity(&mut self) -> Result<(), crate::FsError> {
-        if self.values.len() < self.values.capacity() { return Ok(()); }
-        let capacity = self.values.len().checked_add(1).ok_or(WorkError::Overflow)?
-            .checked_next_power_of_two().ok_or(WorkError::Overflow)?;
+        if self.values.len() < self.values.capacity() {
+            return Ok(());
+        }
+        let capacity = self
+            .values
+            .len()
+            .checked_add(1)
+            .ok_or(WorkError::Overflow)?
+            .checked_next_power_of_two()
+            .ok_or(WorkError::Overflow)?;
         let mut replacement = self.meter.owned(|accounting| {
             let requested = proof_capacity_bytes::<T>(capacity)?;
             let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
@@ -1243,7 +1427,9 @@ impl<'a, T> ProofVec<'a, T> {
                 accounting.release_owned(&mut allocation, requested)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if matches!(&self.meter.kind, ProofMeterKind::Native(_)) {
-                    return Err(crate::NativeTreeMaterializationError::AllocationFailed(error).into());
+                    return Err(
+                        crate::NativeTreeMaterializationError::AllocationFailed(error).into(),
+                    );
                 }
                 let _ = error;
                 return Err(super::CanonicalDecodeError::AllocationFailed.into());
@@ -1274,7 +1460,8 @@ impl<'a, T> ProofVec<'a, T> {
     fn push(&mut self, value: T) -> Result<(), crate::FsError> {
         self.ensure_capacity()?;
         let copied = WorkCounters {
-            bytes_copied: usize_to_u64(size_of::<T>()), ..WorkCounters::UNCHARGED
+            bytes_copied: usize_to_u64(size_of::<T>()),
+            ..WorkCounters::UNCHARGED
         };
         self.meter.admit(copied)?;
         self.values.push(value);
@@ -1284,10 +1471,16 @@ impl<'a, T> ProofVec<'a, T> {
 
     fn insert(&mut self, index: usize, value: T) -> Result<(), crate::FsError> {
         self.ensure_capacity()?;
-        let moved = self.values.len().checked_sub(index).ok_or(WorkError::Overflow)?
-            .checked_add(1).ok_or(WorkError::Overflow)?;
+        let moved = self
+            .values
+            .len()
+            .checked_sub(index)
+            .ok_or(WorkError::Overflow)?
+            .checked_add(1)
+            .ok_or(WorkError::Overflow)?;
         let copied = WorkCounters {
-            bytes_copied: proof_capacity_bytes::<T>(moved)?, ..WorkCounters::UNCHARGED
+            bytes_copied: proof_capacity_bytes::<T>(moved)?,
+            ..WorkCounters::UNCHARGED
         };
         self.meter.admit(copied)?;
         self.values.insert(index, value);
@@ -1295,9 +1488,15 @@ impl<'a, T> ProofVec<'a, T> {
         Ok(())
     }
 
-    fn pop(&mut self) -> Option<T> { self.values.pop() }
-    fn len(&self) -> usize { self.values.len() }
-    fn iter(&self) -> std::slice::Iter<'_, T> { self.values.iter() }
+    fn pop(&mut self) -> Option<T> {
+        self.values.pop()
+    }
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+    fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.values.iter()
+    }
     fn into_parts(mut self) -> Result<(Vec<T>, ProofGuard), crate::FsError> {
         let guard = match self.guard.take() {
             Some(guard) => guard,
@@ -1319,26 +1518,42 @@ impl<T> Drop for ProofVec<'_, T> {
 mod tests;
 
 fn map_get<'v, K: Ord, V>(entries: &'v ProofVec<'_, (K, V)>, key: &K) -> Option<&'v V> {
-    entries.values.binary_search_by(|entry| entry.0.cmp(key)).ok()
+    entries
+        .values
+        .binary_search_by(|entry| entry.0.cmp(key))
+        .ok()
         .map(|index| &entries.values[index].1)
 }
 
-fn map_insert<K: Ord, V>(entries: &mut ProofVec<'_, (K, V)>, key: K, value: V) -> Result<Option<V>, crate::FsError> {
+fn map_insert<K: Ord, V>(
+    entries: &mut ProofVec<'_, (K, V)>,
+    key: K,
+    value: V,
+) -> Result<Option<V>, crate::FsError> {
     match entries.values.binary_search_by(|entry| entry.0.cmp(&key)) {
         Ok(index) => {
-            let copied = WorkCounters { bytes_copied: usize_to_u64(size_of::<V>()), ..WorkCounters::UNCHARGED };
+            let copied = WorkCounters {
+                bytes_copied: usize_to_u64(size_of::<V>()),
+                ..WorkCounters::UNCHARGED
+            };
             entries.meter.admit(copied)?;
             let previous = std::mem::replace(&mut entries.values[index].1, value);
             entries.meter.record_completed(copied)?;
             Ok(Some(previous))
         }
-        Err(index) => { entries.insert(index, (key, value))?; Ok(None) }
+        Err(index) => {
+            entries.insert(index, (key, value))?;
+            Ok(None)
+        }
     }
 }
 
 fn set_insert<K: Ord>(entries: &mut ProofVec<'_, K>, key: K) -> Result<bool, crate::FsError> {
     match entries.values.binary_search(&key) {
         Ok(_) => Ok(false),
-        Err(index) => { entries.insert(index, key)?; Ok(true) }
+        Err(index) => {
+            entries.insert(index, key)?;
+            Ok(true)
+        }
     }
 }

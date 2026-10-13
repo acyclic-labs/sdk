@@ -60,9 +60,7 @@ pub(crate) use fork_preparer::bounded_io::{
     DecodeReservation, PreparationRecord, UploadRecord, preparation_slot_bytes, retain_decoded,
 };
 mod summary_fork;
-pub use fork_preparer::{
-    FilesystemForkPreparer, FilesystemResourceCreationProvider,
-};
+pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;
@@ -344,21 +342,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => self.retain_generation(&workspace, &generation).await?,
             }
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-            let receipt_descriptor = crate::executor::with_history_io(io, |work| {
-                FileDescriptor::from_bytes(&receipt_bytes, "application/json", work)
+            let receipt_path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
             })?;
-            let receipt = crate::executor::with_history_io(io, |work| {
-                FileRef::new(
-                    volume.copy(work)?,
-                    stock_string_copy(&receipt_path, io)?,
-                    stock_string_copy(&version, io)?,
-                    receipt_descriptor,
-                    stock_string_copy("receipt.json", io)?,
-                    work,
-                )
-            })?;
-            self.read_pinned_io(&receipt, receipt_bytes.len() as u64, io)
-                .await?;
+            const RECORD_BYTES: u64 = 6
+                * (crate::conversation::MAX_PATH_BYTES as u64
+                    + 32 * crate::conversation::MAX_LABEL_BYTES as u64
+                    + 1024);
+            let original_receipt = read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
+            if original_receipt.as_ref() != receipt_bytes.as_ref() {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "upload identity belongs to a different request",
+                ));
+            }
+            drop(original_receipt);
             let indexed = match io {
                 Some(io) => {
                     let indexed_path = crate::executor::with_history_io(Some(io), |work| {
@@ -372,7 +371,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         &workspace,
                         Some(&generation),
                         &format!("/{metadata_path}"),
-                        metadata_bytes.len() as u64, None)
+                        metadata_bytes.len() as u64,
+                        None,
+                    )
                     .await?
                 }
             };
@@ -445,11 +446,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })?,
             bytes: receipt_bytes,
         });
-        let generation = self.apply_generation(
-            &workspace, expected_generation, &mutations, IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?), io, None,
-        ).await?;
-        let generation_reference =
-            (self).generation_ref_id(generation.id(), io)?;
+        let generation = self
+            .apply_generation(
+                &workspace,
+                expected_generation,
+                &mutations,
+                IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
+                io,
+                None,
+            )
+            .await?;
+        let generation_reference = (self).generation_ref_id(generation.id(), io)?;
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
         {
             match io {
