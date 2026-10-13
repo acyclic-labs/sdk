@@ -163,7 +163,7 @@ impl ExecutionSummary {
         }
         let tool_key = self.require_next(&record.event, io)?;
         let digest = crate::executor::with_history_io(io, |work|
-            crate::executor::json::canonical_json_digest(&record.event, u64::MAX, work))?;
+            crate::contract::canonical_json_digest(&record.event, u64::MAX, work))?;
         if let Some(io) = io {
             let extra = match &record.event {
                 ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
@@ -322,6 +322,6 @@ impl PreparationRecord for Observation {
             }
             bytes
         };
-        crate::executor::json::preparation_serde_diagnostic_label_bytes() + PRIVATE_LABEL_BYTES
+        crate::contract::preparation_serde_diagnostic_label_bytes() + PRIVATE_LABEL_BYTES
     }
 }

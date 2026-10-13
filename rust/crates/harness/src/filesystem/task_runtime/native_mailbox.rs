@@ -71,14 +71,18 @@ pub(super) fn inbox<'a, P: StreamProvider + 'static>(
     crate::NativeFutureBundle::new(work, || async move {
         let owner = mailbox.owner.as_ref();
         owner
-            .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))
+            .verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))
             .await?;
         let items = mailbox
             .host
             .inbox_with_native_work(owner.task_id(), after, maximum, work)
             .await?;
         owner
-            .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))
+            .verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))
             .await?;
         Ok(items)
     })

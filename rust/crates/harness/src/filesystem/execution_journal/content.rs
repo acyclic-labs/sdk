@@ -14,7 +14,12 @@ where
     ) -> Result<(IdempotencyKey, String)> {
         let digest = {
             let _input_hold;
-            let input = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{operation_id}:{idempotency_key}"), work))?;
+            let input = crate::executor::with_history_io(io, |work| {
+                crate::contract::preparation_format(
+                    format_args!("{operation_id}:{idempotency_key}"),
+                    work,
+                )
+            })?;
             _input_hold = io
                 .map(|io| io.guard_owned(input.capacity() as u64))
                 .transpose()?;
@@ -28,8 +33,15 @@ where
             }
             blake3::hash(input.as_bytes())
         };
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work))?)?;
-        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), work))?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
+        })?)?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
+                work,
+            )
+        })?;
         Ok((key, path))
     }
 
@@ -279,7 +291,9 @@ where
         }
         if let Some(io) = io {
             crate::model::charge_items(Some(io), 1)?;
-if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?; }
+            if let Some(io) = Some(io) {
+                io.retain_owned(reference.logical_owned_bytes()?)?;
+            }
             reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
@@ -356,41 +370,13 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
         content: &ModelContent,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let mut count = 0_usize;
+        if let Some(io) = io {
+            io.remaining()?;
+        }
         for _ in content.file_refs() {
             crate::model::charge_items(io, 1)?;
-            count = count.checked_add(1).ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "model reference count overflow",
-                )
-            })?;
         }
-        let references_hold;
-        let bytes = (count as u64)
-            .checked_mul(std::mem::size_of::<(
-                &FileRef,
-                Option<&crate::model::NativeConfigurationBinding>,
-            )>() as u64)
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "model reference ownership overflow",
-                )
-            })?;
-        if let Some(io) = io {
-            io.retain_owned(bytes)?;
-            references_hold = Some(io.guard_owned(bytes)?);
-            if count != 0 {
-                io.allocation_attempt(bytes)?;
-            }
-        } else {
-            references_hold = None;
-        }
-        let mut references = Vec::with_capacity(count);
-        for (file, binding) in content.file_bindings() {
+        for (file, _) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
                 owner.validate_input_file(file, io)?;
             }
@@ -401,9 +387,8 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
                     "model content exceeds journal limit",
                 ));
             }
-            references.push((file, binding));
         }
-        for (_, binding) in &references {
+        for (_, binding) in content.file_bindings() {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| {
                     canonical_boundary(
@@ -415,7 +400,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
                 owner.validate_native_configuration(binding, io)?;
             }
         }
-        for (_, binding) in &references {
+        for (_, binding) in content.file_bindings() {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| {
                     canonical_boundary(
@@ -427,11 +412,11 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
                 owner.verify_native_configuration(binding, io).await?;
             }
         }
-        for (file, _) in &references {
+        for (file, _) in content.file_bindings() {
             let mut configuration = false;
-            for (_, binding) in &references {
+            for (_, binding) in content.file_bindings() {
                 crate::model::charge_items(io, 1)?;
-                if binding.is_some_and(|binding| &binding.configuration.content == *file) {
+                if binding.is_some_and(|binding| &binding.configuration.content == file) {
                     configuration = true;
                     break;
                 }
@@ -440,8 +425,6 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
                 self.verify_input_file_with_io(file, io).await?;
             }
         }
-        drop(references);
-        drop(references_hold);
         Ok(())
     }
     pub(super) async fn verify_tool_approval_with_io(
@@ -476,4 +459,4 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
     }
 }
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;

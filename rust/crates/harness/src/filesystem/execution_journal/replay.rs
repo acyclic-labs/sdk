@@ -59,7 +59,7 @@ where
         }
         let mut result: Vec<(ExecutionRecord, Option<ModelEvent>)> = Vec::with_capacity(capacity);
         let _path_hold;
-        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/execution/{operation_id}"), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/execution/{operation_id}"), work))?;
         _path_hold = io
             .map(|io| io.guard_owned(path.capacity() as u64))
             .transpose()?;
