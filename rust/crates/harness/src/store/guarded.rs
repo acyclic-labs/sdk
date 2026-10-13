@@ -82,7 +82,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             *choice.finalize().as_bytes(),
             &mut None,
         )?;
-        let (original_task, admission_digest, original_fence) = owner.binding_origin();
+        let (original_task, admission_digest, original_fence) = owner.binding_origin(work)?;
         let proof = VerifiedRootBinding {
             original_task,
             admission_digest,

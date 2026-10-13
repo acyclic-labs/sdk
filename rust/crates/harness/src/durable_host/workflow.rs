@@ -2,101 +2,73 @@
 use super::*;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    /// Releases an owned slot after the worker durably retains its checkpoint
-    /// and knows there is no uncertain active dispatch. No passive future is kept.
+    /// Suspends the exact lease with optional atomic execution and workflow guards.
+    #[allow(clippy::too_many_arguments)]
     pub async fn suspend_workflow(
         &self,
         task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        revision: u64,
-    ) -> Result<()> {
-        self.suspend_workflow_command(task, fence, revision, None)
-            .await
-    }
-
-    /// Retains the exact passive command in the existing suspension slot.
-    pub async fn suspend_workflow_command(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        revision: u64,
-        waiting_command: Option<OperationId>,
-    ) -> Result<()> {
-        self.suspend_workflow_command_guarded(task, fence, revision, waiting_command, None)
-            .await
-    }
-
-    /// Releases a passive command's slot only while its existing execution
-    /// journal is empty, atomically with the scheduler publication. The caller
-    /// supplies the exact execution identity; this is not an effects settlement.
-    pub async fn suspend_workflow_command_if_execution_idle(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        revision: u64,
-        command: OperationId,
-        execution: OperationId,
-    ) -> Result<()> {
-        self.suspend_workflow_command_guarded(
-            task,
-            fence,
-            revision,
-            Some(command),
-            Some((execution, 0)),
-        )
-        .await
-    }
-
-    pub(super) async fn suspend_workflow_command_guarded(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
+        fence: &crate::scheduler::LeaseFence,
         revision: u64,
         waiting_command: Option<OperationId>,
         idle_execution: Option<(OperationId, u64)>,
+        pending: Option<(&acyclic_stream::StreamPath, u64)>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
+        if pending.is_some() && idle_execution.is_none() {
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "workflow tail guard requires its execution guard",
+            ));
+        }
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh(&mut None).await?;
-        coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-                &mut None,
-            )?
-            .clone();
-        let key = worker_key("suspend", operation_id, &fence, revision)?;
+        coordinator.refresh(work).await?;
+        coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+            work,
+        )?;
+        let key = worker_key("suspend", operation_id, fence, revision, work)?;
         let event = crate::scheduler::SchedulerEvent::WorkflowSuspended {
             operation_id,
-            fence,
+            fence: fence.clone_with_work(work)?,
             workflow_revision: revision,
             waiting_command,
         };
         if let Some((execution, tail)) = idle_execution {
             coordinator
-                .apply_if_execution_quiescent(key, event, execution, tail, None, &mut None)
+                .apply_if_execution_quiescent(
+                    key,
+                    event,
+                    execution,
+                    tail,
+                    pending.map(|(path, tail)| (path.as_str(), tail)),
+                    work,
+                )
                 .await?;
         } else {
-            coordinator.apply(key, event, &mut None).await?;
+            coordinator.apply(key, event, work).await?;
         }
-        let current = coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-                &mut None,
-            )?
-            .clone();
+        let current = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+            work,
+        )?;
         if current.phase != crate::scheduler::OperationPhase::Suspended
+            || current.cancellation_requested
             || current.workflow.as_ref().is_none_or(|slot| {
                 slot.revision != revision || slot.waiting_command != waiting_command
             })
         {
-            return Err(Error::Conflict(
-                "workflow suspension receipt is no longer current".into(),
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Conflict,
+                "workflow suspension receipt is no longer current",
             ));
         }
         Ok(())
@@ -109,7 +81,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         after_revision: u64,
         through_revision: Option<u64>,
         limit: u32,
-    ) -> Result<WorkflowWaitPage> {
+    ) -> Result<(u64, u64, u32, Vec<TaskId>)> {
         if limit == 0 {
             return Err(Error::Invalid("wake page limit is out of bounds".into()));
         }
@@ -161,15 +133,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if operation.spec.owner.authority() != &self.owner {
                 continue;
             }
-            let operation = coordinator
-                .observe_operation(
-                    &self.owner,
-                    &self.owner_scope,
-                    &self.verifier,
-                    event.operation_id(),
-                    &mut None,
-                )?
-                .clone();
+            let operation = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                event.operation_id(),
+                &mut None,
+            )?;
             if operation.phase == crate::scheduler::OperationPhase::Suspended
                 && !operation.cancellation_requested
                 && operation
@@ -180,12 +150,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 tasks.insert(TaskId::from_bytes(event.operation_id().into_bytes()));
             }
         }
-        Ok(WorkflowWaitPage {
-            next_revision: after_revision + u64::from(count),
+        Ok((
+            after_revision + u64::from(count),
             through_revision,
-            events_read: count,
-            tasks: tasks.into_iter().collect(),
-        })
+            count,
+            tasks.into_iter().collect(),
+        ))
     }
 
     /// Authenticated read of a passive slot; never claims execution ownership.
@@ -193,24 +163,27 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub(crate) async fn workflow_suspension(
         &self,
         task: TaskId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh(&mut None).await?;
-        let operation = coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                OperationId::from_bytes(task.into_bytes()),
-                &mut None,
-            )?
-            .clone();
+        coordinator.refresh(work).await?;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+            work,
+        )?;
         if operation.phase != crate::scheduler::OperationPhase::Suspended
             || operation.cancellation_requested
         {
             return Ok(None);
         }
-        Ok(operation.workflow)
+        operation
+            .workflow
+            .as_ref()
+            .map(|slot| slot.clone_with_work(work))
+            .transpose()
     }
 
     #[cfg(feature = "filesystem")]
@@ -302,17 +275,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let slot = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh(&mut None).await?;
-            let operation = coordinator
-                .observe_operation(
-                    &self.owner,
-                    &self.owner_scope,
-                    &self.verifier,
-                    operation_id,
-                    &mut None,
-                )?
-                .clone();
-            crate::scheduler::require_execution_owner(&operation, fence, false, &mut None)?;
-            operation.workflow
+            let operation = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?;
+            crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
+            operation.workflow.clone()
         };
         let Some(slot) = slot else { return Ok(None) };
         let Some(input) = slot.input else {

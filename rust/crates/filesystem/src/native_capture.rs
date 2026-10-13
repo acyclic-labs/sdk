@@ -3840,7 +3840,7 @@ fn ensure_current_host_node(
 fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter =
         crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat(path, &mut meter).map_err(capture_demand_error)
+    { #[cfg(unix)] { root.stat(path, &mut meter) } #[cfg(windows)] { crate::native_host::with_wide_path(path, &mut meter, |path, work| root.stat(path, work)) } }.map_err(capture_demand_error)
 }
 
 #[cfg(test)]

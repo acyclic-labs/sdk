@@ -88,7 +88,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_process::{
-    NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider,
+    NativeProcessAuthority, NativeProcessProvider,
     NativeProcessPublishedVolume, NativeProcessReceipt,
 };
 mod native_capture_bounds;
@@ -119,7 +119,11 @@ pub(in crate::filesystem) use default_tools::{
 };
 pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_execution::*;
+pub use native_execution::{
+    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationRoot, NativeRecordedPreparation, NativeRootOutputSource,
+    NativeTaskWorkingView, NativeViewPublicationError,
+    NativeVolumeView, observe_preparation,
+};
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,

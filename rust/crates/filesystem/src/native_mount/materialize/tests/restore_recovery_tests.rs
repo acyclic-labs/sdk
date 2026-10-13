@@ -601,36 +601,7 @@ fn live_mount_recovery_preserves_the_correct_entry() -> Result<(), Box<dyn std::
         if published {
             std::fs::write(root.join(&backup), b"before")?;
         } else {
-            {
-                #[cfg(unix)]
-                {
-                    crate::native_host::rename_held(
-                        &(parent).directory,
-                        relative,
-                        &(&parent).directory,
-                        &backup,
-                        acyclic_native_runtime::RenameMode::Replace,
-                        None,
-                        &mut work,
-                    )
-                }
-                #[cfg(windows)]
-                {
-                    crate::native_host::with_wide_path(relative, &mut work, |name, work| {
-                        crate::native_host::with_wide_path(&backup, work, |target, work| {
-                            crate::native_host::rename_held(
-                                &(parent).directory,
-                                name,
-                                &(&parent).directory,
-                                target,
-                                acyclic_native_runtime::RenameMode::Replace,
-                                None,
-                                work,
-                            )
-                        })
-                    })
-                }
-            }?;
+            rename_entry(&parent, relative, &parent, &backup, &mut work)?;
         }
         recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
         assert_eq!(std::fs::read(&destination)?, expected);

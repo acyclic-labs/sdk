@@ -236,7 +236,7 @@ impl NativeChanges {
                                 native = Some(incoming);
                             }
                         }
-                        let metadata = inner.root.stat(relative, work);
+                        let metadata = { #[cfg(unix)] { inner.root.stat(relative, work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, work, |path, work| inner.root.stat(path, work)) } };
                         let node = match metadata {
                             Ok(metadata) => Some(file_identity(&metadata)),
                             Err(DemandError::Io(error))

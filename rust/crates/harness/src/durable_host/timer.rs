@@ -15,7 +15,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if deadline_unix_ms == 0 {
             return Err(Error::Invalid("timer deadline is invalid".into()));
         }
-        let owner = self.journal_owner(task, fence.clone()).await?;
+        let owner = self.journal_owner(task, &(fence.clone()), None).await?;
         if !owner.admission.grants.contains("timer:wait") {
             return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
         }

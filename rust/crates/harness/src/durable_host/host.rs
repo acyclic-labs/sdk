@@ -39,16 +39,14 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             self.validate_parent_scope(admission.parent, &scope).await?;
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh(&mut None).await?;
-            let operation = coordinator
-                .observe_operation(
-                    &self.owner,
-                    &self.owner_scope,
-                    &self.verifier,
-                    operation_id,
-                    &mut None,
-                )?
-                .clone();
-            crate::scheduler::require_execution_owner(&operation, &fence, false, &mut None)?;
+            let operation = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?;
+            crate::scheduler::require_execution_owner(operation, &fence, false, &mut None)?;
             let session = coordinator
                 .scheduler()
                 .session_limits(operation_id, &mut None)?;

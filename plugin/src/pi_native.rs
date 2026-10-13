@@ -1380,7 +1380,7 @@ pub(crate) async fn approve_command(
     let digest = request
         .0
         .approval_digest_with_native_work(owner.task_id(), command, work)?;
-    let approval = task_interaction_id(owner.task_id(), command);
+    let approval = task_interaction_id(owner.task_id(), command, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
     let title = native_fixed_text(format_args!(
         "Run pinned Pi child {}",
         binding.native_session_id
