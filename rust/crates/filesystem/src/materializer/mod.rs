@@ -36,7 +36,6 @@ native_modules! {
     pub work;
     pub(crate) allowance;
     pub allocation;
-    pub(crate) checkout_work;
     pub(crate) views;
     pub reservation;
     pub preparation;
@@ -44,10 +43,12 @@ native_modules! {
     pub buffers;
     pub backend;
     pub paths;
-    pub witness;
-    pub metadata;
-    pub directories;
+    witness;
+    metadata;
+    directories;
 }
+#[cfg(not(target_arch = "wasm32"))]
+mod checkout_work;
 #[cfg(not(target_arch = "wasm32"))]
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]

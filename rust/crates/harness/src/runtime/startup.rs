@@ -31,7 +31,7 @@ impl AgentHarness {
             || receipt.id != uuid::Uuid::from_bytes(id.into_bytes())
             || !matches!(
                 (&receipt.outcome, approved),
-                (InteractionOutcome::Approved, true) | (InteractionOutcome::Declined, false)
+                (InteractionOutcome::Approved {}, true) | (InteractionOutcome::Declined {}, false)
             )
         {
             return Err(Error::Conflict(

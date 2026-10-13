@@ -114,8 +114,8 @@ pub(super) async fn observe_writeback(
     } else {
         let io = PreparationIo::from_native_work(work)?;
         match journal.interaction_outcome(id, Some(&io))?.await? {
-            Some(InteractionOutcome::Declined) => "declined",
-            Some(InteractionOutcome::Approved) => "pending",
+            Some(InteractionOutcome::Declined {}) => "declined",
+            Some(InteractionOutcome::Approved {}) => "pending",
             _ if native
                 .as_ref()
                 .is_some_and(|journal| journal.phase == MaterializationPhase::Prepared) =>

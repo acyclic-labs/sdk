@@ -67,9 +67,9 @@ pub(crate) fn namespace_path(
             .reconcile_capacity(buffer.capacity() * std::mem::size_of::<NamespacePathUnit>())?;
     }
     #[cfg(unix)]
-    let (encoded, copied) = (0, length);
+    let (encoded, copied) = (0_usize, length);
     #[cfg(windows)]
-    let (encoded, copied) = (length * 2, 0);
+    let (encoded, copied) = (length * 2, 0_usize);
     if let Some(meter) = meter {
         meter.admit_codec(encoded as u64, copied as u64, 0)?;
     }
@@ -91,7 +91,10 @@ pub(crate) fn namespace_path(
 }
 
 /// Publishes a new entry without replacing an existing one.
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "passes held NUL-terminated paths to the native link API"
+)]
 pub fn publish_new(
     from: &Path,
     to: &Path,
@@ -107,9 +110,11 @@ pub fn publish_new(
                 meter.admit_write(0)?;
             }
             #[cfg(unix)]
+            // SAFETY: both owned NUL-terminated paths remain live through link.
             let failed =
                 unsafe { libc::link(from_path.0.as_ptr().cast(), to_path.0.as_ptr().cast()) } != 0;
             #[cfg(windows)]
+            // SAFETY: both owned NUL-terminated paths remain live through CreateHardLinkW.
             let failed = unsafe {
                 windows_sys::Win32::Storage::FileSystem::CreateHardLinkW(
                     to_path.0.as_ptr(),
@@ -138,7 +143,10 @@ pub fn publish_new(
 }
 
 /// Renames an entry and durably publishes the affected namespace.
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "passes held NUL-terminated paths to the native rename API"
+)]
 pub fn durable_rename(
     from: &Path,
     to: &Path,
@@ -157,6 +165,7 @@ pub fn durable_rename(
                 meter.admit_durability()?;
             }
             #[cfg(target_os = "linux")]
+            // SAFETY: both owned paths remain live through the atomic rename syscall.
             let failed = unsafe {
                 libc::syscall(
                     libc::SYS_renameat2,
@@ -172,6 +181,7 @@ pub fn durable_rename(
                 )
             } != 0;
             #[cfg(target_os = "macos")]
+            // SAFETY: both owned paths remain live through renamex_np.
             let failed = unsafe {
                 libc::renamex_np(
                     from_path.0.as_ptr().cast(),
@@ -184,6 +194,7 @@ pub fn durable_rename(
                 )
             } != 0;
             #[cfg(windows)]
+            // SAFETY: both owned paths remain live through MoveFileExW.
             let failed = unsafe {
                 use windows_sys::Win32::Storage::FileSystem::{
                     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,

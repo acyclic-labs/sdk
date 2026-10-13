@@ -78,7 +78,13 @@ impl FileHealthRegistry {
                 meter.examine(1, 0)?;
             }
             let middle = low + (high - low) / 2;
-            match self.entries[middle].0.cmp(&identity) {
+            match self
+                .entries
+                .get(middle)
+                .ok_or(io::ErrorKind::InvalidData)?
+                .0
+                .cmp(&identity)
+            {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,
                 std::cmp::Ordering::Equal => return Ok(Ok(middle)),
@@ -95,7 +101,7 @@ impl FileHealthRegistry {
                 meter.examine(1, 0)?;
             }
             if entry.live() {
-                live[index / 64] |= 1 << (index % 64);
+                *live.get_mut(index / 64).ok_or(io::ErrorKind::InvalidData)? |= 1 << (index % 64);
                 if removed != 0 {
                     shifted += 1;
                 }
@@ -111,7 +117,11 @@ impl FileHealthRegistry {
         }
         let mut index = 0;
         self.entries.retain(|_| {
-            let keep = live[index / 64] & (1 << (index % 64)) != 0;
+            let keep = live
+                .get(index / 64)
+                .unwrap_or_else(|| std::process::abort())
+                & (1 << (index % 64))
+                != 0;
             index += 1;
             keep
         });
@@ -139,7 +149,13 @@ pub(crate) fn shared_file_health(
     let result = (|| {
         let row = std::mem::size_of::<(FileIdentity, Entry)>();
         if let Ok(index) = registry.find(identity, meter)? {
-            if let Some(owner) = registry.entries[index].1.owner() {
+            if let Some(owner) = registry
+                .entries
+                .get(index)
+                .ok_or(io::ErrorKind::InvalidData)?
+                .1
+                .owner()
+            {
                 return Ok(owner);
             }
             if let Some(meter) = meter {
@@ -218,10 +234,11 @@ pub(crate) fn poison_file_health(file: &Arc<NativeFilePayload>, health: &Arc<Fil
         .find(identity, None)
         .unwrap_or_else(|_| std::process::abort())
         .unwrap_or_else(|_| std::process::abort());
-    let registered = registry.entries[index]
-        .1
-        .owner()
+    let entry = registry
+        .entries
+        .get_mut(index)
         .unwrap_or_else(|| std::process::abort());
+    let registered = entry.1.owner().unwrap_or_else(|| std::process::abort());
     if !Arc::ptr_eq(&registered, health) {
         std::process::abort();
     }
@@ -229,7 +246,7 @@ pub(crate) fn poison_file_health(file: &Arc<NativeFilePayload>, health: &Arc<Fil
         .poison_anchor
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(file));
-    registry.entries[index].1 = Entry::Poisoned(registered);
+    entry.1 = Entry::Poisoned(registered);
     health.uncertain.store(true, Ordering::Release);
     tracing::debug!(name: "acyclic.runtime.file_uncertain", "file health poisoned");
 }

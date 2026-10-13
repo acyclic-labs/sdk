@@ -376,7 +376,6 @@ fn cleanup_wait_ordinary_wrapper_rejects_before_stop_and_still_delivers() -> Tes
 
 #[test]
 fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
@@ -465,7 +464,6 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
 
 #[test]
 fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cancel() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
@@ -517,7 +515,6 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
 
 #[test]
 fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;

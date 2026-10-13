@@ -146,10 +146,7 @@ pub use runtime::initialize_native_mount_services;
 use runtime::invoke;
 pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
 mod source_io;
-use source_io::CaptureProducer;
 pub use source_io::NativeSourceIoLease;
-#[cfg(windows)]
-pub(super) use source_io::namespace_gate_is_fresh;
 include!("detached.rs");
 include!("attached.rs");
 include!("checkout.rs");

@@ -88,7 +88,7 @@ impl crate::pi_host::PiControlHost<'_> {
         }
         if decision == PiOperatorDecision::Decline {
             let outcome = journal.interaction_outcome(id, Some(&io))?.await?;
-            if !matches!(outcome, Some(InteractionOutcome::Declined)) {
+            if !matches!(outcome, Some(InteractionOutcome::Declined {})) {
                 return Ok(TaskCommandProgress::Pending);
             }
             return ready(&status_response(&prepared, "declined", None), work);
