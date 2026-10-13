@@ -39,9 +39,7 @@ use reconcile::*;
 mod checkout_walk;
 use checkout_walk::*;
 mod watch_replay;
-use watch_replay::*;
-#[cfg(test)]
-mod shared_watch_capture_tests;
+pub use watch_replay::capture_watch_batch;
 mod watch_paths;
 use watch_paths::*;
 mod transaction;
@@ -66,9 +64,7 @@ mod windows_sparse_tests;
 #[cfg(feature = "native-mount")]
 pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
-pub use entry::{
-    capture_baseline, capture_paths, capture_root_identity, capture_subtree, capture_watch_batch,
-};
+pub use entry::{capture_baseline, capture_paths, capture_root_identity, capture_subtree};
 pub(crate) use metadata::system_time;
 #[cfg(feature = "native-mount")]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
