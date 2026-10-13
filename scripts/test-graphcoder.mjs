@@ -404,7 +404,7 @@ if (scenarioDirectory) {
       const selection = await active.commandJson(`/fork-selection ${input({
         caller: root, lease: leases.root, operation: originalFork.request.operation_id, history,
       })}`, "fork-selection");
-      assert.equal(selection.parent_revision, originalFork.snapshot.revision);
+      assert.equal(selection.parent_revision, originalFork.request.parent_revision);
       if (history === "fresh") assert.equal(selection.preparation.inherited_through_sequence, 0);
       else assert.ok(selection.preparation.inherited_through_sequence > 0);
       assert.equal(selection.child_agent, originalFork.request.child_agent);

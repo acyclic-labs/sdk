@@ -114,19 +114,11 @@ impl NativeSession {
         let agent = self.runtime.inspect_source(caller, caller).await?.agent()?;
         let binding = self
             .config
-            .fork_sources
+            .tools
+            .callers
             .iter()
-            .rev()
-            .find(|source| source.caller == caller)
+            .find(|source| source.task == caller)
             .map(|source| &source.owner)
-            .or_else(|| {
-                self.config
-                    .tools
-                    .callers
-                    .iter()
-                    .find(|source| source.task == caller)
-                    .map(|source| &source.owner)
-            })
             .or_else(|| {
                 self.config
                     .tools
