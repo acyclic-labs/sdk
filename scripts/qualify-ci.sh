@@ -84,7 +84,7 @@ background() {
   echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"
 }
 finish() {
-  local name status=0
+  local name status=0 result=0
   for name in "$@"; do
     status=0
     wait "$(cat "$SDK_TEMP_DIR/background-$name.pid")" || status=$?
@@ -94,9 +94,10 @@ finish() {
     if ((status != 0)); then
       echo "::error::$name failed with exit status $status"
       tail -n 80 "$SDK_TEMP_DIR/background-$name.log" >&2
-      exit "$status"
+      ((result != 0)) || result=$status
     fi
   done
+  return "$result"
 }
 native_binding() {
   CARGO_TARGET_DIR="$target_dir-napi" cargo build -p acyclic-fs-napi --locked
@@ -460,14 +461,22 @@ case "$lane" in
     bun install --frozen-lockfile
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo fetch --locked
-    background napi native_binding
-    background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
+    finish_macos() {
+      local status="${1:-0}" background_status=0
+      trap - EXIT
+      finish napi x86_64 fork-join-build || background_status=$?
+      ((status != 0)) || status=$background_status
+      return "$status"
+    }
+    CARGO_BUILD_JOBS=2 background napi native_binding
+    CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
-    background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join \
+    CARGO_BUILD_JOBS=1 background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join \
       --no-run --target-dir "$target_dir-fork-join"
-    nextest --workspace --all-features --locked
-    cargo test --workspace --all-features --locked --doc
-    finish napi x86_64 fork-join-build
+    trap 'status=$?; finish_macos "$status" || status=$?; exit "$status"' EXIT
+    CARGO_BUILD_JOBS=8 nextest --workspace --all-features --locked
+    CARGO_BUILD_JOBS=8 cargo test --workspace --all-features --locked --doc
+    finish_macos
     stream_binding
     client_bindings
     native_mount_tests

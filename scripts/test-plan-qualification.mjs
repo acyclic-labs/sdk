@@ -286,10 +286,15 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
   const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const macosBody = script.match(/^  macos\)\n([\s\S]*?)(?=^  \*\))/m)?.[1] ?? assert.fail("missing macOS lane");
   const prepare = 'background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join';
-  const join = 'finish napi x86_64 fork-join-build';
+  const join = '    finish_macos\n';
   const execute = 'CARGO_TARGET_DIR="$target_dir-fork-join" fork_join_conformance';
   assert.ok(macosBody.includes(prepare));
   assert.ok(macosBody.includes('--no-run --target-dir "$target_dir-fork-join"'));
+  for (const marker of [join, execute, "nextest --workspace --all-features --locked", "cargo test --workspace --all-features --locked --doc", "native_mount_tests"])
+    assert.ok(macosBody.includes(marker), marker);
+  assert.ok(macosBody.includes("finish napi x86_64 fork-join-build"));
+  for (const command of ["CARGO_BUILD_JOBS=2 background napi", "CARGO_BUILD_JOBS=1 background x86_64", "CARGO_BUILD_JOBS=1 background fork-join-build", "CARGO_BUILD_JOBS=8 nextest", "CARGO_BUILD_JOBS=8 cargo test --workspace"])
+    assert.ok(macosBody.includes(command), command);
   assert.ok(macosBody.indexOf(prepare) < macosBody.indexOf("nextest --workspace --all-features --locked"));
   assert.ok(macosBody.indexOf(join) > macosBody.indexOf("cargo test --workspace --all-features --locked --doc"));
   assert.ok(macosBody.indexOf(execute) > macosBody.indexOf(join));
@@ -304,6 +309,56 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(macos.runner));
 });
 
+
+test("macOS joins every background build on foreground and background failures", () => {
+  const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
+  const macos = source.match(/^  macos\)\n([\s\S]*?)(?=^  \*\))/m)?.[1] ?? assert.fail("missing macOS lane");
+  const commands = macos.slice(macos.indexOf("    finish_macos() {"), macos.indexOf("    stream_binding"));
+  assert.ok(commands.includes("    finish_macos\n"));
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/macos-joins-").replaceAll("\\", "/");
+  assert.match(root, /^\.tools\/macos-joins-[A-Za-z0-9]+$/);
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  try {
+    for (const [workspace, docs, napi, fork] of [[0, 0, 0, 0], [7, 0, 0, 0], [0, 17, 0, 0], [0, 0, 11, 0], [0, 0, 0, 13], [7, 0, 11, 13], [0, 0, 11, 13]]) {
+      const fixture = `${root}/${workspace}-${docs}-${napi}-${fork}`;
+      mkdirSync(fixture);
+      const result = spawnSync(bash, ["-c", `set -euo pipefail
+fixture='${fixture}'
+export SDK_TEMP_DIR="$fixture" CARGO_BUILD_JOBS=12
+target_dir="$fixture/target"
+native_binding() { [[ "$CARGO_BUILD_JOBS" == 2 ]]; touch "$fixture/napi.done"; return ${napi}; }
+nextest() { [[ "$CARGO_BUILD_JOBS" == 8 ]]; touch "$fixture/workspace-started"; return ${workspace}; }
+cargo() {
+  if [[ "$1" == check ]]; then
+    [[ "$CARGO_BUILD_JOBS" == 1 ]]; touch "$fixture/x86_64.done"
+  elif [[ "$*" == *--no-run* ]]; then
+    [[ "$CARGO_BUILD_JOBS" == 1 && "$*" == *"--target-dir $target_dir-fork-join"* ]]
+    for ((attempt=0; attempt<200; attempt++)); do [[ -f "$fixture/workspace-started" ]] && break; sleep 0.01; done
+    [[ -f "$fixture/workspace-started" ]]
+    touch "$fixture/fork.done"; return ${fork}
+  else
+    [[ "$CARGO_BUILD_JOBS" == 8 && "$*" == *--doc* ]]; return ${docs}
+  fi
+}
+${helpers}
+${commands}
+printf 'joined\\n'
+`], { encoding: "utf8", timeout: 10000 });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, workspace || docs || napi || fork, result.stderr);
+      for (const name of ["napi", "x86_64", "fork"])
+        assert.ok(readdirSync(fixture).includes(`${name}.done`), `${name} not joined`);
+      for (const name of ["napi", "x86_64", "fork-join-build"])
+        assert.ok(result.stdout.includes(`::group::${name}`), `${name} result missing`);
+      assert.equal(result.stdout.includes("joined"), workspace + docs + napi + fork === 0);
+    }
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Linux package qualification uses sixteen workers without changing publication inputs", () => {
   const matrix = lanes;
