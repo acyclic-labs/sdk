@@ -35,7 +35,7 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
         changed_ns: crate::kernel::MetadataField::Value(1),
         ..metadata()
     };
-    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     source.create_file(&path, timed, None, &work)?;
     source.write_range(&path, 0, Bytes::from_static(b"before"))?;
     let detached = source.detach_file(&path)?;
@@ -98,7 +98,7 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
                 .lock()
                 .await
                 .private_candidate(&work, &cancellation)
-                .map_err(fs_error)
+                .map_err(MountSourceError::from)
         })?;
         let result = source.runtime.block_on(
             || {
@@ -152,7 +152,7 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
         ),
     ] {
         let (source, _) = sources(profile, ConsistencyMode::Pinned, policy)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())?;
+        let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
         let before = checkout_state(&source).0;
         let directory = native_test_path("src");
         if profile == native && publishes {
@@ -198,7 +198,7 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
         MountPublication::CloseAndSync,
     )?;
     let path = native_test_path("observed.bin");
-    let work = capture_meter(boundary_budget(), writer.cancellation())?;
+    let work = capture_meter(BOUNDARY_BUDGET, writer.cancellation())?;
     writer.create_file(&path, metadata(), None, &work)?;
     writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
     writer.sync()?;
@@ -230,7 +230,7 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
     };
     for detached in [false, true] {
         let source = source(profile)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())?;
+        let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
         let original = native_test_path("original");
         let alias = native_test_path("alias");
         let renamed = native_test_path("renamed");
@@ -329,7 +329,7 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
 fn host_capture_preserves_unobservable_named_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
     let path = native_test_path("metadata.bin");
-    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     source.create_file(&path, metadata(), None, &work)?;
     source.write_attribute(
         &path,
@@ -357,7 +357,7 @@ fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
     let file = native_test_path("sparse");
-    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     source.create_file(&file, metadata(), None, &work)?;
     source.resize(&file, 100)?;
     source.write_range(&file, 20, Bytes::from_static(b"data"))?;
@@ -388,7 +388,7 @@ fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
 fn writable_projfs_captures_closes_renames_links_and_deletes()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Windows)?);
-    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("projection");
     std::fs::create_dir(&destination)?;

@@ -448,7 +448,7 @@ fn native_name_encoding_and_capture_cases() -> Result<(), Box<dyn std::error::Er
     let (profile, name, exact_metadata) =
         (FilesystemProfile::Posix, vec![b'r', 0xff, b'w'], metadata());
     let source = source(profile)?;
-    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let path = MountPath::root().child(name.clone());
     let created = source.create_file(&path, exact_metadata, None, &work)?;
     assert_eq!(source.lookup(&path)?, Some(created));

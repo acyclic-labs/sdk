@@ -42,7 +42,7 @@ pub(super) fn native_mount_name(
 
 impl<A, O> CheckoutMountSource<A, O> {
     fn path(&self, path: &MountPath) -> Result<NamespacePath, MountSourceError> {
-        let mut work = crate::demand::DemandWork::new(boundary_budget(), &self.cancellation);
+        let mut work = crate::demand::DemandWork::new(BOUNDARY_BUDGET, &self.cancellation);
         let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         self.namespace_inputs(path, &mut inputs)
