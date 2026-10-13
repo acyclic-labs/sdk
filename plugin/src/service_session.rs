@@ -556,7 +556,7 @@ impl PiSession {
         let context = self
             .runtime
             .runtime
-            .task_context(caller, fence.clone())
+            .task_context_with_native_work(caller, &fence, &work)
             .await?;
         let command = pi_mail::prepare_send(
             &context,

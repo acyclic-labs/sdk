@@ -68,7 +68,7 @@ impl ConcurrentServiceControl {
                 session_id,
                 Arc::new(SessionHandle::new(
                     key,
-                    SessionController::HostManaged(Box::new(control)),
+                    control,
                     (actor_resources.0, Some(actor_resources.1)),
                 )),
             );
@@ -240,7 +240,7 @@ impl ConcurrentServiceControl {
                         .await
                         .map(|value| (value, None))
                         .map_err(Error::Storage);
-                    Ok((control.into(), opened, (self.resources.clone(), None)))
+                    Ok((SessionController::HostManaged(Box::new(control)), opened, (self.resources.clone(), None)))
                 }
             }
             .await;

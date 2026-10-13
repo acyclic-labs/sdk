@@ -415,7 +415,7 @@ mod tests {
         assert!(prefix.allocation_operations > 1);
         registry.prune().await;
         let slot = registry.roots.lock().await.get(path).cloned().unwrap();
-        assert!(slot.lock().await.pending_watcher.is_some());
+        assert!(slot.state.lock().await.pending_watcher.is_some());
         assert_eq!(registry.live_roots().await, 0);
         let cleanup = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
         assert!(
@@ -426,7 +426,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let state = slot.lock().await;
+        let state = slot.state.lock().await;
         assert!(state.pending_raw_watcher.is_none());
         assert!(state.pending_watcher.is_none());
         assert!(state.pending_source.is_none());

@@ -164,7 +164,7 @@ impl ServiceResources {
                 retained_sources.extend(roots);
                 let (session_id, key_custody) =
                     original_bootstrap_work.display(&control.state.root_session_id)?;
-                let control = SessionController::from(control)
+                let control = SessionController::HostManaged(Box::new(control))
                     .retain_original_input(directory_custody)?
                     .retain_original_input(key_custody)?;
                 sessions.insert(session_id, control);
