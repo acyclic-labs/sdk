@@ -659,3 +659,23 @@ test("Windows native audits are independent required lanes without moving public
     assert.match(step, /inputs\.lane == 'windows' \|\| inputs\.lane == 'windows-arm64'/);
   }
 });
+
+
+test("ARM workspace compilation uses the larger runner's complete CPU allocation", () => {
+  const matrix = chooseLanes(lanes, { mainPush: false, force: true, marker: everywhere, retained: retainedAll }).matrix;
+  const arm = matrix.find(lane => lane.lane === "linux-arm64");
+  assert.equal(arm.runner, "blacksmith-16vcpu-ubuntu-2404-arm");
+  assert.equal(arm.workers, 16);
+  assert.equal(arm.scope, "full");
+  assert.equal(arm.artifact, "");
+  for (const name of ["linux-arm64-bindings", "linux-arm64-musl"]) {
+    const lane = matrix.find(lane => lane.lane === name);
+    assert.equal(lane.runner, "blacksmith-4vcpu-ubuntu-2404-arm");
+    assert.equal(lane.workers, 4);
+  }
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
+  for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
+    assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
+  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(arm.runner));
+});

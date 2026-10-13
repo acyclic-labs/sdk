@@ -61,8 +61,8 @@
   },
   {
     "lane": "linux-arm64",
-    "runner": "blacksmith-4vcpu-ubuntu-2404-arm",
-    "workers": 4,
+    "runner": "blacksmith-16vcpu-ubuntu-2404-arm",
+    "workers": 16,
     "artifact": "",
     "artifact_path": "",
     "inputs": "rust",
