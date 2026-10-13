@@ -93,10 +93,21 @@ where
                     .await?,
             )
         };
-        let fork: crate::fork::ForkRequest = match io {
-            Some(io) => mail::decode_borrowed_command(&preparation.request().payload, io)?,
-            None => mail::decode_command(preparation.request().payload.clone(), None)?,
-        };
+        let fork: crate::fork::ForkRequest =
+            match io {
+                Some(io) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    io.check_json_byte_bound(
+                        &preparation.request().payload,
+                        acyclic_stream::MAX_RECORD_BYTES as u64,
+                    )?;
+                    crate::filesystem::retain_decoded(io.value_decode_preparation(
+                        &preparation.request().payload,
+                        ErrorCode::Storage,
+                    )?)
+                }
+                None => mail::decode_command(preparation.request().payload.clone(), None)?,
+            };
         let preparer = 'preparer: {
             if io.is_none()
                 && let Some(preparer) = &self.fork_preparer

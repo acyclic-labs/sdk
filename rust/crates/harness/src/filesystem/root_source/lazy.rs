@@ -33,12 +33,12 @@ fn root_lazy_mutations(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
-struct RootPublicationGuard<'a> {
-    lease: &'a dyn crate::resource_preparation::CreatedTaskLease,
+struct RootPublicationGuard {
+    lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl acyclic_fs::AuthorityGuard for RootPublicationGuard<'_> {
+impl acyclic_fs::AuthorityGuard for RootPublicationGuard {
     type Error = Error;
     async fn seal(
         &mut self,
@@ -205,7 +205,7 @@ where
         }
         BoundedContentFuture::new(Some(io), || async move {
             let mut guard = RootPublicationGuard {
-                lease: lease.as_ref(),
+                lease: Arc::clone(lease),
             };
             let mut accounting = (&io).accounting(io.cancellation());
             let result = self

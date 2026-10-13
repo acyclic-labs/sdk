@@ -1,5 +1,4 @@
-//! Mail branches share their original stock dispatch with optional native custody.
-
+//! Stock mail commands over the existing task host.
 use super::*;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use crate::runtime::TaskStateProvider;
@@ -47,32 +46,26 @@ pub(super) fn decode_command<T: PreparationRecord>(
     payload: Value,
     io: Option<&PreparationIo>,
 ) -> Result<T> {
-    let Some(io) = io else {
-        return serde_json::from_value(payload)
-            .map_err(|cause| Error::Invalid(format!("invalid stock command: {cause}")));
-    };
-    decode_borrowed_command(&payload, io)
-}
-
-pub(super) fn decode_borrowed_command<T: PreparationRecord>(
-    payload: &Value,
-    io: &PreparationIo,
-) -> Result<T> {
-    #[cfg(not(target_arch = "wasm32"))]
-    io.check_json_byte_bound(payload, acyclic_stream::MAX_RECORD_BYTES as u64)?;
-    Ok(crate::filesystem::retain_decoded(
-        io.value_decode_preparation(payload, crate::wire::ErrorCode::Storage)?,
-    ))
+    match io {
+        Some(io) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            io.check_json_byte_bound(&payload, acyclic_stream::MAX_RECORD_BYTES as u64)?;
+            Ok(crate::filesystem::retain_decoded(
+                io.value_decode_preparation(&payload, crate::wire::ErrorCode::Storage)?,
+            ))
+        }
+        None => serde_json::from_value(payload)
+            .map_err(|cause| Error::Invalid(format!("invalid stock command: {cause}"))),
+    }
 }
 
 pub(super) fn reconciled(io: Option<&PreparationIo>) -> Result<TaskCommandProgress> {
     require_native_observer(io)?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
-        let custody = io.take_native_custody(0)?;
         return Ok(TaskCommandProgress::ReadyWithNativeCustody {
             value: Value::Null,
-            custody,
+            custody: io.take_native_custody(0)?,
         });
     }
     Ok(TaskCommandProgress::Ready(Value::Null))
@@ -102,17 +95,13 @@ where
                 .task_host()
                 .send_mail(task, fence, input.recipient, message, input.payload, io)
                 .await?;
-            ready(Outcome::Succeeded(Value::Null), io)
-        } else {
-            let input: MailReceiveTaskCommand = decode_command(payload, io)?;
-            let Some(item) = self.inbox(task, input.after, io).await?.into_iter().next() else {
-                return if select_only {
-                    ready(Outcome::Succeeded(Value::Null), io)
-                } else {
-                    Ok(TaskCommandProgress::Pending)
-                };
-            };
-            ready(Outcome::Succeeded(item), io)
+            return ready(Outcome::Succeeded(Value::Null), io);
+        }
+        let input: MailReceiveTaskCommand = decode_command(payload, io)?;
+        match self.inbox(task, input.after, io).await?.into_iter().next() {
+            Some(item) => ready(Outcome::Succeeded(item), io),
+            None if select_only => ready(Outcome::Succeeded(Value::Null), io),
+            None => Ok(TaskCommandProgress::Pending),
         }
     }
 
