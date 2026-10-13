@@ -111,10 +111,7 @@ impl ForkSeed {
         clippy::too_many_lines,
         reason = "validates the complete fork seed contract"
     )]
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         let mut work = CodecQuota::observed(work)?;
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
             || self.resources.len().saturating_add(self.omissions.len()) as u64

@@ -3,6 +3,7 @@
 use crate::contract::capability;
 use crate::contract::next_revision;
 use crate::store::history::HistoryIo;
+use crate::wire_codec::CodecQuota;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId, Result,
     conversation::{
@@ -73,5 +74,3 @@ pub(in crate::core) use records::{
 };
 pub use reducer::Reducer;
 pub(in crate::core) use registry::ExtensionBinding;
-
-pub(in crate::core) use crate::executor::json::json_value_logical_owned_bytes;
