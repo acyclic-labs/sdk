@@ -233,7 +233,11 @@ async fn native_policy_approval_keeps_exact_binding_and_paid_utf8_prompt() -> Re
         Limits::default(),
     )?;
     let (identity, custody) = policy.identity_with_native_work(&work)?;
-    validate_policy_identity_with_native_work(&identity, &custody, &work)?;
+    check_policy_metadata(&identity, &custody, &work)?;
+    validate_policy_identity(
+        &identity,
+        Some(&crate::executor::PreparationIo::from_native_work(&work)?),
+    )?;
     drop((identity, custody));
     let (decision, custody) = policy
         .evaluate_with_native_work(&invocation, &scope, &work)?

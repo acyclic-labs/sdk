@@ -280,9 +280,8 @@ impl TaskContext {
             Some(work) => {
                 policy.supports_native_policy(work)?;
                 let (value, custody) = policy.identity_with_native_work(work)?;
-                let paid = (value, Some(custody));
-                validate_native_policy_identity(&paid, work)?;
-                paid
+                check_policy_metadata(&value, &custody, work)?;
+                (value, Some(custody))
             }
             _ => (policy.identity(), None),
         };
@@ -319,9 +318,8 @@ impl TaskContext {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 let (value, custody) = policy.identity_with_native_work(work)?;
-                let paid = (value, Some(custody));
-                validate_native_policy_identity(&paid, work)?;
-                paid
+                check_policy_metadata(&value, &custody, work)?;
+                (value, Some(custody))
             }
             _ => (policy.identity(), None),
         };

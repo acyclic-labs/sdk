@@ -198,7 +198,7 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
                     PublicationPermit::Unrestricted,
                     &original,
                     &cancellation,
-                    &mut deny,
+                    deny,
                 )
                 .await
                 .map(|_| ())
