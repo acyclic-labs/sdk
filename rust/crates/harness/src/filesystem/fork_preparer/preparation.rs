@@ -6,7 +6,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     pub(super) async fn prepare(&self, request: ForkRequest) -> Result<ForkReport> {
         let preparer = self.preparer;
         let host = &preparer.host;
-        let io = self.io.as_ref();
+        let io = self.io;
         let task = self.task_preparation;
         let invalid = |reason| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason);
         if request.authorized_source.is_some() && task.is_none() {

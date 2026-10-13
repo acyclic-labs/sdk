@@ -25,8 +25,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let io = match io {
             Some(io) => Some(io),
             None => {
-                attempt = self.attempt(self.task_preparation.as_ref())?;
-                attempt.io.as_ref()
+                attempt = self.preparation_io(self.task_preparation.as_ref())?;
+                attempt.as_ref()
             }
         };
         self.check_request(request, io, self.task_preparation.as_deref())?;
