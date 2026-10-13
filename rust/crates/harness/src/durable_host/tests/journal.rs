@@ -73,7 +73,7 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
     wrong.initial.state = json!(1);
     assert!(workflow.admit(wrong).await.is_err());
     assert_eq!(workflow.admit(admission.clone()).await?, admission);
-    DurableWorkflowHost::open(f.machines.clone(), admission.initial, workflow.clone())
+    DurableWorkflowHost::open(f.host.machines.clone(), admission.initial, workflow.clone())
         .await?
         .step(
             OperationId::from_bytes([2; 16]),
@@ -119,7 +119,7 @@ async fn b15_replacement_rejects_stale_publications() -> Result<()> {
     let admission = old.workflow_admission().clone();
     let workflow = f.workflow(f.owner(1).await?)?;
     workflow.admit(admission.clone()).await?;
-    DurableWorkflowHost::open(f.machines.clone(), admission.initial, workflow.clone())
+    DurableWorkflowHost::open(f.host.machines.clone(), admission.initial, workflow.clone())
         .await?
         .step(
             OperationId::from_bytes([2; 16]),
