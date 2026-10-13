@@ -170,7 +170,7 @@ async fn sealed_summary_preparation(
     let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary root lease missing".into()));
     };
-    host.start_task(&root_lease, None).await?;
+    host.start_task(&root_lease, &mut None).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let proofs = preparer.creation_allocations(fork, prep_task, None)?;
@@ -199,7 +199,7 @@ read_authorization: fork.authorized_source.clone(),
     let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
-    host.start_task(&lease, None).await?;
+    host.start_task(&lease, &mut None).await?;
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, &((&lease.reservation).into()), None).await?
         .with_invocation_cancellation(&invocation.0));
