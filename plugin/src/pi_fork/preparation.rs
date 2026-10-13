@@ -386,13 +386,13 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .harness()
-            .registered_child_admission_with_native_work(
+            .registered_admission(
                 operations.child,
                 "acyclic.pi",
                 "1",
                 input,
-                owner.task_id(),
-                context.scope(),
+                Some((owner.task_id(), context.scope())),
+                None,
                 work,
             )?;
         let mut child_grants = Capabilities::new_with_native_work(
@@ -476,13 +476,13 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .harness()
-            .registered_child_admission_with_native_work(
+            .registered_admission(
                 operations.preparation,
                 "acyclic.fork_preparation",
                 "1",
                 input,
-                owner.task_id(),
-                context.scope(),
+                Some((owner.task_id(), context.scope())),
+                None,
                 work,
             )?;
         request_custody.absorb(&mut prepared_request.1)?;

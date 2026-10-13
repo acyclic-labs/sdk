@@ -9,8 +9,6 @@ type Provider = crate::test_stream::LostSessionAck<MemoryStream>;
 async fn open_history(
     client: &Arc<Provider>,
     authority: Authority,
-    verifier: AuthorityVerifier,
-    schemas: SchemaRegistry,
     revision: Option<u64>,
     limits: HistoryReadLimits,
     budget: WorkBudget,
@@ -25,8 +23,8 @@ async fn open_history(
         StreamAggregate::open(
             client,
             authority,
-            verifier,
-            schemas,
+            issuer().verifier(&mut None).expect("verifier copy"),
+            schemas(),
             None,
             limits,
             DEFAULT_TERMINAL_EFFECTS,

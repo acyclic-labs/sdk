@@ -12,8 +12,6 @@ use crate::workflow::{MachineStatus, MachineTransition, ResumableMachine};
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 
 pub(crate) type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
-pub(crate) type NativeCustomerRuntime =
-    FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 
 pub(crate) struct OriginalRootFilesystemBirth {
     pub(crate) volume: VolumeRef,
@@ -40,12 +38,6 @@ pub(crate) struct CreationFixture {
     machine: MachineIdentity,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeCustomerFixture {
-    pub(crate) creation: CreationFixture,
-    pub(crate) runtime: NativeCustomerRuntime,
-}
-
 pub(crate) struct PreparedFilesystemChild {
     pub(crate) request: ResourcePreparationRequest,
     pub(crate) private: VolumeRef,
@@ -59,7 +51,6 @@ pub(crate) struct PreparedFilesystemChild {
 
 mod fixture;
 mod fork;
-mod machine;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod roots;

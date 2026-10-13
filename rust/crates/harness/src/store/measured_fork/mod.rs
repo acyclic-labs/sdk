@@ -345,19 +345,5 @@ fn guarded_publication_budget() -> WorkBudget {
     }
 }
 
-fn projection_codec_budget() -> WorkBudget {
-    WorkBudget {
-        items_examined: 1_048_576,
-        allocation_operations: 1_048_576,
-        peak_allocation_bytes: 16 * 1_048_576,
-        bytes_copied: 16 * 1_048_576,
-        bytes_encoded: 16 * 1_048_576,
-        bytes_hashed: 16 * 1_048_576,
-        output_bytes: 16 * 1_048_576,
-        ..publication_budget()
-    }
-}
-
-mod projections;
 mod publication;
 mod roots;

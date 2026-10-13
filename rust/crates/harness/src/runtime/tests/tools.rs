@@ -80,25 +80,13 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
             &cancellation,
         )
         .expect("native policy source ledger");
-        struct OpaqueCommandRouter;
-        #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-        #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-        impl InteractionRouter for OpaqueCommandRouter {
-            async fn route(
-                &self,
-                _: OperationId,
-                _: Interaction,
-            ) -> Result<InteractionOutcome> {
-                panic!("ordinary command route must not run");
-            }
-        }
         assert!(matches!(
             narrowed
                 .authorize_tool_policies(
                     &definition,
                     &invocation,
                     Some(&work),
-                    Some(&OpaqueCommandRouter),
+                    Some(&super::native::OpaqueRouter),
                     &narrowed.scope,
                 )
                 .await,
@@ -151,28 +139,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         }
         impl ToolPolicy for ChangingPolicy {
             fn identity(&self) -> ComponentIdentity {
-                let mut identity = self.original.clone();
-                if self.changed.load(Ordering::SeqCst) {
-                    identity.digest[0] ^= 1;
-                }
-                identity
-            }
-            fn evaluate<'a>(
-                &'a self,
-                _: &'a ToolInvocation,
-                scope: &'a RuntimeScope,
-            ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
-                Box::pin(async move {
-                    assert!(!scope.grants().contains("tool:call:test.echo"));
-                    self.changed.store(true, Ordering::SeqCst);
-                    Ok(ToolPolicyDecision::Allow)
-                })
-            }
-            fn supports_native_policy(
-                &self,
-                _: &acyclic_fs::NativeMaterializationWork,
-            ) -> Result<()> {
-                Ok(())
+                panic!("native policy must not use ordinary identity")
             }
             fn identity_with_native_work(
                 &self,
@@ -184,22 +151,24 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
                 }
                 Ok((identity, custody))
             }
-            fn evaluate_with_native_work<'a>(
+            fn evaluate<'a>(
                 &'a self,
                 _: &'a ToolInvocation,
                 scope: &'a RuntimeScope,
-                work: &'a acyclic_fs::NativeMaterializationWork,
+                io: Option<&'a crate::executor::PreparationIo>,
             ) -> Result<
-                crate::NativeFutureBundle<'a, (ToolPolicyDecision, acyclic_fs::NativeAllocation)>,
+                crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
             > {
+                let work = task_original_work(io)?.expect("native policy ledger");
                 crate::NativeFutureBundle::new(work, || async move {
                     assert!(!scope.grants().contains("tool:call:test.echo"));
                     self.changed.store(true, Ordering::SeqCst);
                     Ok((
                         ToolPolicyDecision::Allow,
-                        work.claim(0, 0, acyclic_fs::WorkCounters::default())?,
+                        Some(work.claim(0, 0, acyclic_fs::WorkCounters::default())?),
                     ))
                 })
+                .map(crate::store::HistoryContentFuture::Native)
             }
         }
         let effective = narrowed.scope.narrow(

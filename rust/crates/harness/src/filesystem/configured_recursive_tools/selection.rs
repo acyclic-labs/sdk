@@ -107,6 +107,9 @@ where
         }
         child.grants = Capabilities(grants);
         let scoped = Capabilities(scoped);
+        let scoped_hold = io
+            .map(|io| io.guard_owned(scoped.logical_owned_bytes()?))
+            .transpose()?;
         let scope = crate::executor::with_history_io(io, |work| {
             allocation.child.issuer.issue(
                 allocation.child.scope.id(),
@@ -116,15 +119,7 @@ where
                 work,
             )
         })?;
-        let temporary = if io.is_some() {
-            scoped.logical_owned_bytes()?
-        } else {
-            0
-        };
-        drop(scoped);
-        if let Some(io) = io {
-            io.release(temporary)?;
-        }
+        drop((scoped, scoped_hold));
         crate::executor::with_history_io(io, |work| child.validate(work))?;
         Ok((child, scope))
     }
@@ -139,14 +134,7 @@ where
         use crate::executor::stock_boundary as failure;
         use crate::wire::ErrorCode;
         let caller = self
-            .authenticate(
-                context,
-                arguments
-                    .source
-                    .is_none_or(|source| Some(source) == context.durable_task_id()),
-                cancellation,
-                io,
-            )
+            .authenticate(context, None, true, cancellation, io)
             .await?;
         let allocation = self.allocation(caller.task, arguments, io)?;
         let parent = self.open(&caller.owner, None, io).await?;
@@ -231,27 +219,6 @@ where
                 "fork source is not the admitted caller agent",
             ));
         }
-        // Authentication already checked Private and the current caller's Project.
-        if io.is_none() && selected != caller.task {
-            let read = caller
-                .project
-                .capability(VolumeOperation::Read, &mut None)?;
-            if !context.scope().grants().contains(&read) {
-                return Err(failure(
-                    None,
-                    ErrorCode::Unauthorized,
-                    "caller lacks its source read",
-                ));
-            }
-            ContentGrant::authorize_volume(
-                &verifier(&caller.owner)?,
-                &caller.owner.scope,
-                &caller.project,
-                VolumeOperation::Read,
-                u64::MAX,
-                &mut None,
-            )?;
-        }
         let config = crate::executor::with_history_io(io, |work| {
             Ok::<_, Error>(RecursiveForkConfig {
                 child: match work.as_deref_mut() {
@@ -272,24 +239,6 @@ where
                 history_limits: self.config.history_limits,
             })
         })?;
-        if let Some(source_read) = &source_read {
-            let authorization = source_read.authorization();
-            if authorization.caller_task != caller.task {
-                return Err(failure(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "selected source approval belongs to another caller",
-                ));
-            }
-            source_read.require_selection(
-                context.operation_id(),
-                selected,
-                &authorization.project,
-                &authorization.generation,
-                authorization.native_snapshot.as_ref(),
-                None,
-            )?;
-        }
         check_cancellation(cancellation, io)?;
         let authorization = source_read
             .as_ref()

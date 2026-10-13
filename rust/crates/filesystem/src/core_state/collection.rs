@@ -8,27 +8,9 @@ impl LocalCoreStateStore {
         self.transaction(|namespace| {
             let namespace = &namespace;
             let family = <crate::LazyShadow as LazyNode>::FAMILY;
-            let entries = match std::fs::read_dir(namespace.family(family)) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(Vec::new());
-                }
-                Err(error) => return Err(error.into()),
-            };
-            let mut addresses = std::collections::BTreeSet::new();
-            for entry in entries {
-                let name = entry?.file_name();
-                let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
-                    continue;
-                };
-                let stem = stem.strip_suffix(".previous").unwrap_or(stem);
-                if let Some(address) = hex::decode(stem)
-                    .ok()
-                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-                {
-                    addresses.insert(address);
-                }
-            }
+            let addresses = family_stems(namespace, family, &[".previous.json", ".json"])?
+                .into_iter()
+                .filter_map(|stem| <[u8; 32]>::try_from(stem).ok());
             let mut records = Vec::new();
             for address in addresses {
                 if let Some(crate::LazyShadow::Node { record, .. }) =
@@ -62,7 +44,7 @@ impl LocalCoreStateStore {
                     .into_iter()
                     .collect::<BTreeSet<_>>();
                 for family in [LINEAGE_FAMILY, LAZY_WORKSPACE_FAMILY, GIT_COMPAT_NAMESPACE] {
-                    for stem in family_stems(root, family)? {
+                    for stem in family_stems(root, family, RECORD_SUFFIXES)? {
                         if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
                             workspaces.insert(WorkspaceId::from_bytes(bytes));
                         }
@@ -132,7 +114,7 @@ impl LocalCoreStateStore {
                     })
                     .into_iter()
                     .collect::<BTreeSet<_>>();
-                for stem in family_stems(root, LAZY_WORKSPACE_FAMILY)? {
+                for stem in family_stems(root, LAZY_WORKSPACE_FAMILY, RECORD_SUFFIXES)? {
                     if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
                         workspaces.insert(WorkspaceId::from_bytes(bytes));
                     }
@@ -189,10 +171,13 @@ impl LocalCoreStateStore {
     }
 }
 
-/// The distinct record keys one family holds, whatever recovery copies accompany them.
+pub(super) const RECORD_SUFFIXES: &[&str] = &[".previous.json", ".next.json", ".json", ".lock"];
+
+/// Distinct record keys with the selected file suffixes.
 pub(super) fn family_stems(
     root: &Namespace,
     family: &str,
+    suffixes: &[&str],
 ) -> Result<BTreeSet<Vec<u8>>, LocalCoreStateStoreError> {
     let entries = match std::fs::read_dir(root.family(family)) {
         Ok(entries) => entries,
@@ -203,11 +188,7 @@ pub(super) fn family_stems(
     for entry in entries {
         let name = entry?.file_name();
         let Some(name) = name.to_str() else { continue };
-        let stem = name
-            .strip_suffix(".previous.json")
-            .or_else(|| name.strip_suffix(".next.json"))
-            .or_else(|| name.strip_suffix(".json"))
-            .or_else(|| name.strip_suffix(".lock"));
+        let stem = suffixes.iter().find_map(|suffix| name.strip_suffix(suffix));
         if let Some(bytes) = stem.and_then(|stem| hex::decode(stem).ok()) {
             stems.insert(bytes);
         }
@@ -243,7 +224,7 @@ pub(super) fn sweep_nodes<T: LazyNode>(
     id: impl Fn([u8; 32]) -> T::Id,
 ) -> Result<u64, LocalCoreStateStoreError> {
     let mut removed = 0;
-    for stem in family_stems(root, T::FAMILY)? {
+    for stem in family_stems(root, T::FAMILY, RECORD_SUFFIXES)? {
         let Ok(address) = <[u8; 32]>::try_from(stem.as_slice()) else {
             continue;
         };

@@ -146,21 +146,11 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
             };
         unix_name(name.as_os_str(), work, |name, work| {
             let file = open_unix(parent.as_raw_fd(), name, flags, work)?;
-            loop {
-                match fstat(file.as_raw_fd(), c"", work) {
-                    Ok(stat)
-                        if stat.st_mode & libc::S_IFMT as libc::mode_t
-                            == libc::S_IFREG as libc::mode_t =>
-                    {
-                        return Ok(file);
-                    }
-                    Ok(_) => return Err(W::invalid_request()),
-                    Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
+            let stat = fstat(file.as_raw_fd(), c"", work)?;
+            if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+                return Err(W::invalid_request());
             }
+            Ok(file)
         })
     }
 }

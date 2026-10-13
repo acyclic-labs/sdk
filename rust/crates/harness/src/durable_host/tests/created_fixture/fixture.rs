@@ -106,11 +106,11 @@ impl CreationFixture {
         )?;
         let schema = serde_json::json!({"type":"object"});
         let (task, machine, tasks, machines) = test_registries(
-            Arc::new(super::machine::CreatedControlMachine {
+            Arc::new(super::super::fixture::FixtureMachine {
                 identity: MachineIdentity {
                     name: "test.created".into(),
                     version: "1".into(),
-                    digest: *blake3::hash(include_str!("machine.rs").as_bytes()).as_bytes(),
+                    digest: [83; 32],
                 },
                 schema: schema.clone(),
             }),
@@ -130,7 +130,7 @@ impl CreationFixture {
         };
         #[cfg(target_arch = "wasm32")]
         let filesystem_creator = Arc::new(creator);
-        let runtime = NativeCustomerRuntime::open(
+        let runtime = FilesystemTaskRuntime::open(
             stream.clone(),
             filesystem.clone(),
             &payload,
@@ -220,46 +220,6 @@ impl CreationFixture {
             extensions: None,
             execution: None,
         }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeCustomerFixture {
-    pub(crate) async fn new_with_grants(
-        grants: &[&str],
-        tools: crate::tool::ToolRegistry,
-    ) -> Result<Self> {
-        let creation = CreationFixture::new_with_grants(grants).await?;
-        let runtime = creation.runtime(tools)?;
-        Ok(Self { creation, runtime })
-    }
-}
-
-impl CreationFixture {
-    pub(super) fn runtime(
-        &self,
-        tools: crate::tool::ToolRegistry,
-    ) -> Result<NativeCustomerRuntime> {
-        let volume = VolumeRef::new(
-            self.filesystem_provider.clone(),
-            "scheduler".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
-            &mut None,
-        )?;
-        NativeCustomerRuntime::from_host(
-            self.stream.clone(),
-            self.harness.clone(),
-            self.host.clone(),
-            self.filesystem.clone(),
-            volume,
-            self.host.verifier.clone(),
-            self.host.owner_scope.clone(),
-            tools,
-            self.root_scope.limits().file_bytes,
-            None,
-            None,
-        )
     }
 }
 

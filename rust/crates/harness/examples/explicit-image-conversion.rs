@@ -82,7 +82,7 @@ impl ImageConversion {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
         self.authorize_with_context(&context, &invocation)?;
         let input = Self::input(&invocation)?;
-        let mut bytes = context.read_file(&input.source, None).await?;
+        let mut bytes = context.read_file(&input.source, None).await?.to_vec();
         let count = bytes
             .get(4..8)
             .and_then(|count| <[u8; 4]>::try_from(count).ok())
@@ -98,7 +98,16 @@ impl ImageConversion {
             *pixel ^= input.mask;
         }
         let derived = context
-            .stage_file_once(invocation.operation_id, &input.destination, &bytes, MIME, "converted.img1", None).await.map(|(file, _)| file)?;
+            .stage_file_once(
+                invocation.operation_id,
+                &input.destination,
+                &bytes,
+                MIME,
+                "converted.img1",
+                None,
+            )
+            .await
+            .map(|(file, _)| file)?;
         Ok(ToolResult {
             value: serde_json::to_value(ConvertedImage {
                 source: input.source,
@@ -136,32 +145,44 @@ impl ToolExecutor for ImageConversion {
         self.write.authorize_with_context(context, &write)
     }
 
-
-
-    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
-let Some(context) = context else { return Box::pin(async {
-            Err(Error::Unsupported(
-                "conversion needs its original task context".into(),
-            ))
-        }); };
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "conversion needs its original task context".into(),
+                ))
+            });
+        };
         Box::pin(self.run(context, invocation))
     }
 
-
-
-    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-let Some(context) = context else { return Box::pin(async {
-            Err(Error::Unsupported(
-                "conversion needs its original task context".into(),
-            ))
-        }); };
+    fn reconcile<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "conversion needs its original task context".into(),
+                ))
+            });
+        };
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
     }
 }
 
 impl ToolProjection for ImageConversion {
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+    fn project(
+        &self,
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
         let input = Self::input(invocation)?;
         let output = ConvertedImage::deserialize(&result.value)

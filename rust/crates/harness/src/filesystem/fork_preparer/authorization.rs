@@ -1,19 +1,22 @@
 //! Original-parent and preparation-task authority checks.
 use super::*;
+use crate::executor::{stock_boundary, with_history_io};
+use crate::wire::ErrorCode::{Conflict, Invalid, Unauthorized, Unsupported};
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkPreparer<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn require_native_projection_work(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        work.remaining().map_err(Error::from)?;
-        if !self
+        work.remaining()?;
+        if self
             .native
             .as_ref()
-            .is_some_and(|custody| custody.work().shares_allocation_context(work))
+            .is_none_or(|custody| !custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
+                code: Unauthorized,
                 reason: "fork projection belongs to another original resource",
             });
         }
@@ -28,27 +31,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         io: Option<&PreparationIo>,
         task: Option<&'a TaskResourcePreparation>,
     ) -> Result<&'a ContentGrant> {
-        let authorization = request.authorized_source.as_ref().ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "fork source has no sealed project read",
-            )
-        })?;
+        let reject = |reason| stock_boundary(io, Unauthorized, reason);
+        let authorization = request
+            .authorized_source
+            .as_ref()
+            .ok_or_else(|| reject("fork source has no sealed project read"))?;
         let handle = task
             .and_then(TaskResourcePreparation::project_source)
             .or(self.project_source.as_ref())
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "fork source descriptor has no sealed project read",
-                )
-            })?;
+            .ok_or_else(|| reject("fork source descriptor has no sealed project read"))?;
         if handle.authorization() != authorization {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
+            return Err(reject(
                 "fork source descriptor differs from its sealed project read",
             ));
         }
@@ -58,7 +51,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         {
             return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unsupported,
+                Unsupported,
                 "foreign workspace source cannot inherit conversation history",
             ));
         }
@@ -99,24 +92,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
             match task {
                 Some(task) => io
-                    .ok_or_else(|| {
-                        reject(
-                            crate::wire::ErrorCode::Invalid,
-                            "task preparation lacks its IO ledger",
-                        )
-                    })?
+                    .ok_or_else(|| reject(Invalid, "task preparation lacks its IO ledger"))?
                     .contains_capability(&task.origin().source_grants, volume, "volume:read:"),
                 None => Ok(true),
             }
         };
-        let mut history = io;
-        let mut observer = history
-            .as_mut()
-            .map(|history| history as &mut dyn crate::store::history::HistoryIo);
-        request.validate(&mut observer)?;
+        with_history_io(io, |work| request.validate(work))?;
         if !self.scope.capabilities().contains(capability::FORK_PUBLISH) {
             return Err(reject(
-                crate::wire::ErrorCode::Unauthorized,
+                Unauthorized,
                 "parent project operation is not granted",
             ));
         }
@@ -124,29 +108,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             || request.parent_revision != self.parent.revision()
         {
             return Err(reject(
-                crate::wire::ErrorCode::Conflict,
+                Conflict,
                 "fork request differs from its original parent revision",
             ));
         }
         if request.boundary.is_some() {
             return Err(reject(
-                crate::wire::ErrorCode::Unsupported,
+                Unsupported,
                 "this preparer cannot attest a cross-provider boundary",
             ));
         }
         if self.scope.agent() == Some(request.child_agent) {
             return Err(reject(
-                crate::wire::ErrorCode::Invalid,
+                Invalid,
                 "fork child must have a distinct agent identity",
             ));
         }
-        for volume in creation_volumes(request) {
-            if volume.provider() != &self.host.provider {
-                return Err(reject(
-                    crate::wire::ErrorCode::Invalid,
-                    "fork resource belongs to another provider",
-                ));
-            }
+        if creation_volumes(request).any(|volume| volume.provider() != &self.host.provider) {
+            return Err(reject(Invalid, "fork resource belongs to another provider"));
         }
         for selection in &request.selections {
             match &selection.revision {
@@ -154,7 +133,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     if reference.as_resource().provider() != &self.stream_provider =>
                 {
                     return Err(reject(
-                        crate::wire::ErrorCode::Invalid,
+                        Invalid,
                         "fork history belongs to another Stream provider",
                     ));
                 }
@@ -164,7 +143,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             .require(volume, VolumeOperation::Read, io)?;
                     } else if !read_granted(volume)? {
                         return Err(reject(
-                            crate::wire::ErrorCode::Unauthorized,
+                            Unauthorized,
                             "selected project source-read is not granted",
                         ));
                     }
@@ -178,7 +157,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         || !read_granted(volume)?
                     {
                         return Err(reject(
-                            crate::wire::ErrorCode::Unauthorized,
+                            Unauthorized,
                             "scratch source-read is outside the direct parent",
                         ));
                     }
@@ -186,32 +165,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 _ => {}
             }
         }
-        drop(observer);
         if let Some(task) = task {
-            let io = io.ok_or_else(|| {
-                reject(
-                    crate::wire::ErrorCode::Invalid,
-                    "task preparation lacks its IO ledger",
-                )
-            })?;
+            let io = io.ok_or_else(|| reject(Invalid, "task preparation lacks its IO ledger"))?;
             let bound = task.request();
             if task.origin().intended_child != bound.child.operation_id
                 || bound.child.parent != Some(task.origin().parent_task)
             {
                 return Err(reject(
-                    crate::wire::ErrorCode::Unauthorized,
+                    Unauthorized,
                     "fork preparation differs from its genuine immutable owner admission",
                 ));
             }
-            if let Some(original) = self.task_preparation.as_deref() {
-                if original.request() != bound
+            if self.task_preparation.as_deref().is_some_and(|original| {
+                original.request() != bound
                     || !same_task_origin(Some(original.origin()), Some(task.origin()))
-                {
-                    return Err(reject(
-                        crate::wire::ErrorCode::Unauthorized,
-                        "fork preparer belongs to another genuine preparation task",
-                    ));
-                }
+            }) {
+                return Err(reject(
+                    Unauthorized,
+                    "fork preparer belongs to another genuine preparation task",
+                ));
             }
             if bound.provider != self.host.provider
                 || bound.creation_grant != capability::FORK_PUBLISH
@@ -220,40 +192,37 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 || bound.resources().count() != creation_volumes(request).count()
             {
                 return Err(reject(
-                    crate::wire::ErrorCode::Unauthorized,
+                    Unauthorized,
                     "fork differs from its admitted preparation boundary",
                 ));
             }
-            let request_hold;
-            let encoded = io.encode(request, bound.maximum_bytes, true)?;
-            request_hold = io.guard_bytes(&encoded)?;
-            let payload_hold;
-            let payload = io.encode(&bound.payload, bound.maximum_bytes, true)?;
-            payload_hold = io.guard_bytes(&payload)?;
-            if encoded != payload {
-                return Err(reject(
-                    crate::wire::ErrorCode::Unauthorized,
-                    "fork request differs from its admitted preparation",
-                ));
+            {
+                let encoded = io.encode(request, bound.maximum_bytes, true)?;
+                let encoded_hold = io.guard_bytes(&encoded)?;
+                let payload = io.encode(&bound.payload, bound.maximum_bytes, true)?;
+                let payload_hold = io.guard_bytes(&payload)?;
+                if encoded != payload {
+                    return Err(reject(
+                        Unauthorized,
+                        "fork request differs from its admitted preparation",
+                    ));
+                }
+                drop((payload, encoded));
+                drop((payload_hold, encoded_hold));
             }
-            drop(payload);
-            drop(payload_hold);
-            drop(encoded);
-            drop(request_hold);
             for (resource, volume) in bound.resources().zip(creation_volumes(request)) {
                 let before = io.owned_bytes()?;
-                let resource_hold;
                 let actual = bounded_io::content_workspace(&self.host.provider, volume, Some(io))?
                     .into_resource();
-                resource_hold = io.guard_owned(io.owned_bytes()? - before)?;
+                let hold = io.guard_owned(io.owned_bytes()? - before)?;
                 if resource != &actual {
                     return Err(reject(
-                        crate::wire::ErrorCode::Unauthorized,
+                        Unauthorized,
                         "fork allocations differ from their admitted preparation",
                     ));
                 }
                 drop(actual);
-                drop(resource_hold);
+                drop(hold);
             }
             match (&request.authorized_source, task.project_source()) {
                 (Some(authorization), Some(handle))
@@ -263,7 +232,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 (None, None) => {}
                 _ => {
                     return Err(reject(
-                        crate::wire::ErrorCode::Unauthorized,
+                        Unauthorized,
                         "fork preparation lacks its original owner's project source",
                     ));
                 }
@@ -272,7 +241,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(history) = &self.history {
             if history.through_sequence() != request.preparation.inherited_through_sequence {
                 return Err(reject(
-                    crate::wire::ErrorCode::Conflict,
+                    Conflict,
                     "fork archive differs from its selected logical cut",
                 ));
             }
@@ -281,22 +250,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 && request.preparation.inherited_through_sequence > 0
         }) {
             return Err(reject(
-                crate::wire::ErrorCode::Invalid,
+                Invalid,
                 "archived fork requires its authenticated history capture",
             ));
         }
         if let Some(selection) = &request.preparation.summary {
             #[cfg(not(target_arch = "wasm32"))]
             if self.native.is_some() != io.and_then(PreparationIo::original_native_work).is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "summary preparation requires its original native work",
-                });
+                return Err(reject(
+                    Unauthorized,
+                    "summary preparation requires its original native work",
+                ));
             }
-            let summary = self.summary.as_ref().ok_or(reject(
-                crate::wire::ErrorCode::Unsupported,
-                "summary fork owner-bound checkpoint provider is not installed",
-            ))?;
+            let summary = self.summary.as_ref().ok_or_else(|| {
+                reject(
+                    Unsupported,
+                    "summary fork owner-bound checkpoint provider is not installed",
+                )
+            })?;
             if summary.prepared.selection() != selection
                 || summary.prepared.through_sequence()
                     != request.preparation.inherited_through_sequence
@@ -307,7 +278,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     != request.preparation.inherited_through_sequence
             {
                 return Err(reject(
-                    crate::wire::ErrorCode::Conflict,
+                    Conflict,
                     "summary fork differs from its original capture",
                 ));
             }
@@ -315,5 +286,3 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         Ok(())
     }
 }
-
-use crate::executor::stock_boundary;

@@ -279,64 +279,20 @@ struct TaskJournalMailbox<P: StreamProvider> {
 }
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
-    fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.owner.as_ref().require_mail_scope(scope, None)
+    fn validate_scope(&self, scope: &RuntimeScope, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(|io| io.original_native_work()) {
+            if !self.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "mailbox metadata differs from original work",
+                });
+            }
+        }
+        self.owner.as_ref().require_mail_scope(scope, io)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
-    }
-    fn matches_task_binding(&self, task: TaskId, fence: &LeaseFence) -> bool {
-        self.owner.as_ref().matches_task_binding(task, fence)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn validate_scope_with_native_work(
-        &self,
-        scope: &RuntimeScope,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        if !self
-            .native_custody
-            .as_ref()
-            .is_some_and(|custody| custody.work().shares_allocation_context(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "mailbox metadata differs from original work",
-            });
-        }
-        self.owner.as_ref().require_mail_scope(
-            scope,
-            Some(&crate::executor::PreparationIo::from_native_work(work)?),
-        )
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn send_with_native_work<'a>(
-        &'a self,
-        recipient: TaskId,
-        operation: OperationId,
-        payload: &'a crate::conversation::FileRef,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>,
-    > {
-        native_mailbox::send(self, recipient, operation, payload, work)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn inbox_with_native_work<'a>(
-        &'a self,
-        after: u64,
-        maximum: usize,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<
-            'a,
-            (
-                Vec<crate::scheduler::InboxItem>,
-                acyclic_fs::NativeAllocation,
-            ),
-        >,
-    > {
-        native_mailbox::inbox(self, after, maximum, work)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn read_received_with_native_work<'a>(
@@ -433,7 +389,7 @@ where
                 });
             }
             if let Some(policy) = &policy {
-                policy.supports_native_policy(work)?;
+                policy.identity_with_native_work(work)?;
             }
             let payloads = FilesystemContentPublisher::new(
                 filesystem.clone(),
@@ -819,7 +775,6 @@ where
         let identity = match io {
             Some(io) => {
                 let work = io.original_native_work().expect("native approval IO");
-                policy.supports_native_policy(work)?;
                 let (identity, custody) = policy.identity_with_native_work(work)?;
                 io.absorb_native_custody(custody)?;
                 identity
@@ -1545,7 +1500,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let owner = match io.and_then(super::PreparationIo::original_native_work) {
             Some(work) => {
-                let (_, fence) = context.task().owned_task_binding_with_native_work(work)?;
+                let (_, fence) = context.task().owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
                 self.host
                     .journal_owner(
                         task,
@@ -1556,14 +1511,14 @@ where
             }
             None => {
                 self.host
-                    .journal_owner(task, &(context.task().owned_task_fence()?), None)
+                    .journal_owner(task, context.task().owned_task_binding(None)?.1, None)
                     .await?
             }
         };
         #[cfg(target_arch = "wasm32")]
         let owner = self
             .host
-            .journal_owner(task, &(context.task().owned_task_fence()?), None)
+            .journal_owner(task, context.task().owned_task_binding(None)?.1, None)
             .await?;
         let owner = owner
             .for_tool_workflow(context, tool, invocation, cancellation, io)
