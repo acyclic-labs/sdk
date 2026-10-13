@@ -45,7 +45,7 @@ pub(crate) fn reserve<T>(
             crate::WorkError::Overflow,
         ))? as u64;
     let capacity_result = if actual > bytes {
-        let (mut excess, result) = work.record_completed_allocation(actual - bytes, None);
+        let (mut excess, result) = work.record_completed_allocation(actual - bytes);
         held.absorb(&mut excess)?;
         result
     } else if actual < bytes {
