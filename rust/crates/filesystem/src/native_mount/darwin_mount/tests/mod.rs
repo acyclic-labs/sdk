@@ -123,7 +123,7 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
         || source.create_file(&path, FileMetadata::default(), None, &work),
         &work,
     )?;
-    let created = context.open(&path, context.ledger.latest(), &work)?;
+    let created = context.open(&path, context.completed.load(Ordering::Acquire), &work)?;
     let before = epoch()?;
     context.flush_on_close(created, &work)?;
     assert_ne!(epoch()?, before);
@@ -170,7 +170,7 @@ fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
         || source.create_file(&path, FileMetadata::default(), None, &work),
         &work,
     )?;
-    let created = context.open(&path, context.ledger.latest(), &work)?;
+    let created = context.open(&path, context.completed.load(Ordering::Acquire), &work)?;
     context.mutate_file(
         &path,
         created,
@@ -331,21 +331,20 @@ fn a_barrier_waits_only_for_callbacks_that_began_before_it() -> TestResult {
 }
 
 #[test]
-fn nfs_read_answers_short_reads_as_eof_in_place() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_read_reply() }, 0);
-}
-
-#[test]
-fn nfs_fileids_name_nodes_so_hard_links_share_one() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_node_identity() }, 0);
-}
-
-#[test]
-fn nfs_durable_writes_are_stable_without_a_sync() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_durable_writes() }, 0);
+fn nfs_wire_protocol_preserves_file_semantics() {
+    let checks: [unsafe extern "C" fn() -> c_int; 7] = [
+        nfs4_test_read_reply,
+        nfs4_test_node_identity,
+        nfs4_test_durable_writes,
+        nfs4_test_change_attribute,
+        nfs4_test_access_rights,
+        nfs4_test_verify_attributes,
+        nfs4_test_release_open_files,
+    ];
+    for check in checks {
+        // SAFETY: each transport check owns all callback state.
+        assert_eq!(unsafe { check() }, 0);
+    }
 }
 
 #[test]
@@ -382,7 +381,7 @@ fn handles_keep_the_node_they_opened() -> TestResult {
     let read = context.open(&path, 0, &work)?;
     let bytes = context
         .file_target(&path, read, &work)?
-        .file
+        .0
         .0
         .read_up_to(0, 16)?;
     assert_eq!(bytes.as_ref(), b"kept");
@@ -426,7 +425,7 @@ fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
     assert_eq!(rename_over(c"/missing"), -libc::ENOENT);
     assert_eq!(rename_over(c"/replacement"), 0);
     let target = context.file_target(&replaced, handle, &work)?;
-    let file = &target.file.0;
+    let file = &target.0.0;
     assert_eq!(file.lookup()?.node.file_id, original.node.file_id);
     assert_eq!(file.read_up_to(0, 16)?.as_ref(), b"original");
     Ok(())
@@ -459,30 +458,6 @@ fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult
     assert!(context.may_have_named_attributes(&path, &work)?);
     assert_eq!(probe(), 6);
     Ok(())
-}
-
-#[test]
-fn nfs_change_attribute_travels_with_its_attributes() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_change_attribute() }, 0);
-}
-
-#[test]
-fn nfs_access_applies_the_callers_identity_to_mode_bits() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_access_rights() }, 0);
-}
-
-#[test]
-fn nfs_verify_compares_current_attribute_values() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_verify_attributes() }, 0);
-}
-
-#[test]
-fn nfs_teardown_releases_every_open_handle_once() {
-    // SAFETY: the test hook owns all callback state.
-    assert_eq!(unsafe { nfs4_test_release_open_files() }, 0);
 }
 
 #[test]
@@ -833,7 +808,6 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
     assert!(root.is_current(&context, &work)?);
     assert!(directory.is_current(&context, &work)?);
     assert!(!rebound.is_current(&context, &work)?);
-    assert!(directory.epochs.is_some());
 
     source.create_file(
         &MountPath::root().child(b"sibling".to_vec()),
@@ -862,7 +836,6 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
 
     let epochless = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), None, None);
     assert!(!epochless.is_current(&context, &work)?);
-    assert!(!epochless.epochs.is_some());
     Ok(())
 }
 

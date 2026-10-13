@@ -2,7 +2,6 @@ use super::*;
 
 #[napi]
 impl NativeCheckout {
-    /// Creates one regular file in the private COW overlay.
     #[napi]
     pub async fn create_file(&self, path: String, bytes: Buffer) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
@@ -17,7 +16,6 @@ impl NativeCheckout {
         encode_created_mutation(&receipt)
     }
 
-    /// Creates one empty directory in the private COW overlay.
     #[napi]
     pub async fn create_directory(&self, path: String) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
@@ -31,7 +29,6 @@ impl NativeCheckout {
         encode_created_mutation(&receipt)
     }
 
-    /// Creates one symbolic link with exact opaque target bytes.
     #[napi]
     pub async fn create_symbolic_link(
         &self,
@@ -50,7 +47,6 @@ impl NativeCheckout {
         encode_created_mutation(&receipt)
     }
 
-    /// Creates an exact empty FIFO, socket, or mounted-volume boundary.
     #[napi]
     pub async fn create_special(&self, path: String, kind: String) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
@@ -66,7 +62,6 @@ impl NativeCheckout {
         encode_created_mutation(&receipt)
     }
 
-    /// Creates an exact POSIX character or block device identity.
     #[napi]
     pub async fn create_device(
         &self,
@@ -92,7 +87,6 @@ impl NativeCheckout {
         encode_created_mutation(&receipt)
     }
 
-    /// Creates an opaque exact Windows reparse-point payload.
     #[napi]
     pub async fn create_reparse_point(
         &self,
@@ -111,7 +105,6 @@ impl NativeCheckout {
         encode_created_mutation(&receipt)
     }
 
-    /// Removes one namespace binding.
     #[napi]
     pub async fn remove(
         &self,
@@ -136,7 +129,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Atomically renames one binding within the volume.
     #[napi]
     pub async fn rename(
         &self,
@@ -157,7 +149,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Creates one hard link within the volume.
     #[napi]
     pub async fn hard_link(
         &self,

@@ -415,19 +415,16 @@ mod tests {
         })).await;
         assert!(panic.is_err());
         assert_eq!(owner.retained_bytes(), 0, "frames are not proof DATA adoption");
-        let prefix = owner.pending_data_work();
+        let prefix = owner.take_completed_data_work();
         assert_eq!(prefix.allocation_operations, 2);
         assert_eq!(prefix.bytes_copied, 3);
         assert_eq!(prefix.peak_allocation_bytes,
             crate::foundation::usize_to_u64(std::mem::size_of::<PanicDataFuture<'_>>()) + 3);
-        assert_eq!(owner.take_completed_data_work(), prefix);
-        assert_eq!(owner.pending_data_work(), WorkCounters::default());
-        assert_eq!(owner.completed_data_work(), prefix);
 
         // A later segment must not inherit the retired frame's live bytes.
         owner.record_data_work(WorkCounters {
             allocation_operations: 1, peak_allocation_bytes: 1, ..WorkCounters::default()
         }).expect("later actual DATA");
-        assert_eq!(owner.pending_data_work().peak_allocation_bytes, 1);
+        assert_eq!(owner.take_completed_data_work().peak_allocation_bytes, 1);
     }
 }

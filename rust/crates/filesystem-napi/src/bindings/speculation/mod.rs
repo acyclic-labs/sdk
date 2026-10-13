@@ -3,166 +3,113 @@ use super::*;
 /// Native speculation admission status emitted by the Rust engine.
 #[napi(string_enum = "kebab-case")]
 pub enum NativeResidencyStatus {
-    /// The residency request was admitted.
     Admitted,
-    /// The residency request was rejected by the Rust policy.
     Rejected,
 }
 
 /// Native promotion admission status emitted by the Rust engine.
 #[napi(string_enum = "kebab-case")]
 pub enum NativePromotionStatus {
-    /// The object is already satisfied at the requested destination.
     Satisfied,
-    /// The promotion was planned and has an operation identity.
     Planned,
-    /// The promotion was rejected by the Rust policy.
     Rejected,
 }
 
 /// Hard policy for native local-residency prediction.
 #[napi(object)]
 pub struct NativeResidencySpeculationOptions {
-    /// Maximum concurrently admitted residency operations.
     pub maximum_active_operations: NapiU32,
-    /// Maximum bytes reserved by active residency operations.
     pub maximum_active_bytes: BigInt,
-    /// Number of terminal outcomes retained for usefulness control.
     pub outcome_window: NapiU32,
-    /// Number of foreground/speculative traffic samples retained.
     pub traffic_window: NapiU32,
-    /// Maximum speculative share of observed foreground traffic.
     pub speculative_cost_basis_points: NapiU32,
-    /// Terminal sample count required before usefulness rejection.
     pub minimum_usefulness_samples: NapiU32,
-    /// Minimum useful terminal outcome ratio after the sample floor.
     pub minimum_usefulness_basis_points: NapiU32,
 }
 
 /// Hard policy for native cross-location promotion planning.
 #[napi(object)]
 pub struct NativePromotionSpeculationOptions {
-    /// Maximum concurrently admitted promotion operations.
     pub maximum_active_operations: NapiU32,
-    /// Maximum object bytes reserved by active promotions.
     pub maximum_active_bytes: BigInt,
-    /// Maximum estimated cost reserved by active promotions.
     pub maximum_active_cost_units: BigInt,
-    /// Maximum exact object-location facts accepted per plan.
     pub maximum_residency_facts: NapiU32,
-    /// Maximum destination capabilities accepted per plan.
     pub maximum_destinations: NapiU32,
-    /// Maximum acceptable storage tiers supplied per plan.
     pub maximum_accepted_tiers: NapiU32,
-    /// Number of terminal outcomes retained for usefulness control.
     pub outcome_window: NapiU32,
-    /// Terminal sample count required before usefulness rejection.
     pub minimum_usefulness_samples: NapiU32,
-    /// Minimum useful terminal outcome ratio after the sample floor.
     pub minimum_usefulness_basis_points: NapiU32,
 }
 
 /// Complete policy for both native speculation engines.
 #[napi(object)]
 pub struct NativeSpeculationOptions {
-    /// Local authenticated-object residency policy.
     pub residency: NativeResidencySpeculationOptions,
-    /// Cross-location immutable-object promotion policy.
     pub promotion: NativePromotionSpeculationOptions,
 }
 
 /// One authenticated foreground successor supplied to native speculation.
 #[napi(object)]
 pub struct NativeResidencyObservation {
-    /// Stable idempotency identity for the speculative operation.
     pub operation_id: Buffer,
-    /// Volume whose immutable generation is being observed.
     pub volume_id: Buffer,
-    /// Generation fence under which the hint was derived.
     pub generation_id: Buffer,
-    /// Foreground bytes observed before this candidate.
     pub foreground_bytes: BigInt,
-    /// Canonical immutable-object identity to warm.
     pub object_id: Buffer,
-    /// Maximum bytes the candidate may consume.
     pub maximum_bytes: BigInt,
-    /// Exact structural reason for predicting the object.
     pub reason: String,
 }
 
 /// Native residency admission result.
 #[napi(object)]
 pub struct NativeResidencyAdmission {
-    /// `admitted` or `rejected`.
     pub status: NativeResidencyStatus,
-    /// Typed rejection reason when status is `rejected`.
     pub rejection: Option<String>,
 }
 
 /// Completed native residency execution.
 #[napi(object)]
 pub struct NativeResidencyExecution {
-    /// Canonical object bytes admitted into authenticated residency.
     pub object_bytes: BigInt,
-    /// Serialized exact work counters for the bounded execution.
     pub work_json: String,
 }
 
 /// Caller-observed exact object location used by native promotion planning.
 #[napi(object)]
 pub struct NativeObjectResidency {
-    /// Canonical immutable-object identity.
     pub object_id: Buffer,
-    /// Stable identity of the location currently holding the object.
     pub location_id: Buffer,
-    /// Storage tier of the observed location.
     pub tier: String,
-    /// Deterministic source preference; lower values are preferred.
     pub source_priority: NapiU32,
 }
 
 /// Writable native promotion destination capability.
 #[napi(object)]
 pub struct NativePromotionDestination {
-    /// Stable identity of the candidate destination.
     pub location_id: Buffer,
-    /// Storage tier offered by the destination.
     pub tier: String,
-    /// Whether immutable-object publication is currently allowed.
     pub writable: bool,
-    /// Largest canonical object accepted by the destination.
     pub maximum_object_bytes: BigInt,
-    /// Deterministic destination preference; lower values are preferred.
     pub priority: NapiU32,
-    /// Exact estimated cost per canonical byte.
     pub cost_units_per_byte: BigInt,
 }
 
 /// Bounded native promotion planning result.
 #[napi(object)]
 pub struct NativePromotionAdmission {
-    /// `satisfied`, `planned`, or `rejected`.
     pub status: NativePromotionStatus,
-    /// Typed rejection reason when status is `rejected`.
     pub rejection: Option<String>,
-    /// Admitted or duplicate operation identity.
     pub operation_id: Option<Buffer>,
-    /// Canonical immutable object selected for movement.
     pub object_id: Option<Buffer>,
-    /// Deterministically selected source location.
     pub source_location_id: Option<Buffer>,
-    /// Deterministically selected destination location.
     pub destination_location_id: Option<Buffer>,
-    /// Reserved estimated cost for the admitted promotion.
     pub estimated_cost_units: Option<BigInt>,
 }
 
 /// Identities terminalized by native preemption or generation replacement.
 #[napi(object)]
 pub struct NativeSpeculationPreemption {
-    /// Residency operations terminalized by the transition.
     pub residency_operation_ids: Vec<Buffer>,
-    /// Promotion operations terminalized by the transition.
     pub promotion_operation_ids: Vec<Buffer>,
 }
 
@@ -176,7 +123,6 @@ pub struct NativeSpeculation {
 
 #[napi]
 impl NativeSpeculation {
-    /// Records foreground demand and admits one exact authenticated successor.
     #[napi]
     pub async fn observe(
         &self,
@@ -221,7 +167,6 @@ impl NativeSpeculation {
         })
     }
 
-    /// Executes one active prediction through the owning filesystem's exact
     #[napi]
     pub async fn execute_residency(
         &self,
@@ -248,7 +193,6 @@ impl NativeSpeculation {
         })
     }
 
-    /// Records exact terminal local-residency usefulness.
     #[napi]
     pub async fn finish_residency(&self, operation_id: Buffer, useful: bool) -> Result<()> {
         self.controller
@@ -258,7 +202,6 @@ impl NativeSpeculation {
             .map_err(napi_error)
     }
 
-    /// Plans at most one cross-location promotion from an active residency
     #[napi]
     pub async fn plan_promotion(
         &self,
@@ -290,7 +233,6 @@ impl NativeSpeculation {
         Ok(native_promotion_admission(admission))
     }
 
-    /// Records exact terminal promotion usefulness.
     #[napi]
     pub async fn finish_promotion(&self, operation_id: Buffer, useful: bool) -> Result<()> {
         self.controller
@@ -300,7 +242,6 @@ impl NativeSpeculation {
             .map_err(napi_error)
     }
 
-    /// Atomically preempts both engines before recording foreground bytes.
     #[napi]
     pub async fn preempt_for_foreground(
         &self,
@@ -315,7 +256,6 @@ impl NativeSpeculation {
         Ok(native_speculation_preemption(preemption))
     }
 
-    /// Atomically fences both engines onto one new immutable generation.
     #[napi]
     pub async fn replace_generation(
         &self,
@@ -334,7 +274,6 @@ impl NativeSpeculation {
         Ok(native_speculation_preemption(preemption))
     }
 
-    /// Returns payload-free exact metrics for both engines.
     #[napi]
     pub async fn metrics_json(&self) -> Result<String> {
         let metrics = self.controller.lock().await.metrics();
@@ -345,7 +284,6 @@ impl NativeSpeculation {
         .map_err(napi_error)
     }
 
-    /// Cooperatively cancels future residency execution owned by this handle.
     #[napi]
     pub fn cancel(&self) {
         self.cancellation.cancel();

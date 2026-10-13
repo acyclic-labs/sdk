@@ -1077,7 +1077,7 @@ impl PiNativeLaunchIntent {
                 "Pi launch input requires its actual durable child content binding",
             ));
         }
-        let bytes = context.read_file_with_native_work(reference, work).await?;
+        let bytes = context.read_file(reference, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)).await?;
         let maximum = context
             .scope()
             .limits()
@@ -1171,16 +1171,20 @@ impl PiNativeLaunchIntent {
                 "Pi session publication requires its admitted child",
             ));
         }
-        context
-            .stage_file_once_with_native_work(
-                operation,
-                &self.session_path,
-                self.session_bytes.as_bytes(),
-                "application/x-ndjson",
-                "Pi child session",
-                work,
-            )
-            .await
+        {
+            let publication_io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+            context
+                .stage_file_once(
+                    operation,
+                    &self.session_path,
+                    self.session_bytes.as_bytes(),
+                    "application/x-ndjson",
+                    "Pi child session",
+                    Some(&publication_io),
+                )
+                .await
+                .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+        }
     }
 }
 
@@ -1282,9 +1286,20 @@ async fn stage_context_artifact(
     let length = writer.position() as usize;
     let path = std::str::from_utf8(&buffer[..length])
         .map_err(|_| invalid("Pi native artifact locator is not UTF-8"))?;
-    let result = context
-        .stage_file_once_with_native_work(operation, path, &encoded.0, media_type, role, work)
-        .await;
+    let result = {
+        let publication_io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        context
+            .stage_file_once(
+                operation,
+                path,
+                &encoded.0,
+                media_type,
+                role,
+                Some(&publication_io),
+            )
+            .await
+            .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+    };
     drop(encoded);
     result
 }
@@ -1520,7 +1535,7 @@ impl PiNativeRoot {
             owner.require_volume_grant(&self.scratch, operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))?;
         }
         let bytes = shared
-            .read_file_with_native_work(session, meter)
+            .read_file(session, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?))
             .await?;
         if bytes.as_ref() != intent.session_bytes.as_bytes() {
             return Err(Error::NativeBoundary {
@@ -1690,7 +1705,7 @@ impl PiNativeRoot {
             ));
         }
         let callback_guard = shared
-            .volume_callback_guard_with_native_work(owner, meter)
+            .volume_callback_guard(owner, meter)
             .await?;
         let actual = filesystem
             .open_volume_with_native_work(volume, original_volume_work)
@@ -1714,8 +1729,7 @@ impl PiNativeRoot {
             }
             .publication(acyclic_fs::MountPublication::Manual);
             let source_guard = callback_guard
-                .for_volume(owner, volume, writable, original_volume_work)?
-                .0;
+                .for_volume(owner, volume, writable, original_volume_work)?;
             let mut allocation = original_volume_work.claim(
                 std::mem::size_of::<crate::LocalSingleMount>() as u64,
                 1,

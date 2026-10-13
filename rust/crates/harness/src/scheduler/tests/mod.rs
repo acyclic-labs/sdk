@@ -162,6 +162,26 @@ fn cpu(amount: u64) -> ResourceRequest {
     ResourceRequest(BTreeMap::from([("cpu".into(), amount)]))
 }
 
+fn session(root: OperationSpec, limits: SessionLimits) -> Result<Scheduler> {
+    let operation_id = root.operation_id;
+    let mut scheduler = Scheduler::new();
+    scheduler.apply(&scheduler.declare(root)?, &mut None)?;
+    scheduler.apply(
+        &SchedulerEvent::SessionConfigured {
+            operation_id,
+            limits,
+        },
+        &mut None,
+    )?;
+    Ok(scheduler)
+}
+
+fn rejected(scheduler: &mut Scheduler, event: &SchedulerEvent) {
+    let before = scheduler.clone();
+    assert!(scheduler.apply(event, &mut None).is_err());
+    assert_eq!(*scheduler, before);
+}
+
 fn claim(op: u8, lease: u8, attempt: u8, step: u8, digest: u8) -> SchedulerEvent {
     SchedulerEvent::ModelDispatchClaimed {
         operation_id: id(op),

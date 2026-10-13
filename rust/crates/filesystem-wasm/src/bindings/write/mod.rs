@@ -2,7 +2,6 @@ use super::*;
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Replaces one logical file range in the private COW overlay.
     #[wasm_bindgen(js_name = writeFile)]
     pub async fn write_file(
         &mut self,
@@ -26,7 +25,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Replaces one logical range by stable file identity.
     #[wasm_bindgen(js_name = writeFileById)]
     pub async fn write_file_by_id(
         &mut self,
@@ -50,7 +48,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Changes one regular file's logical length.
     #[wasm_bindgen(js_name = resizeFile)]
     pub async fn resize_file(
         &mut self,
@@ -71,7 +68,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Changes logical length by stable file identity.
     #[wasm_bindgen(js_name = resizeFileById)]
     pub async fn resize_file_by_id(
         &mut self,
@@ -92,7 +88,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Punches a hole or records physically allocated zeros.
     #[wasm_bindgen(js_name = zeroFileRange)]
     pub async fn zero_file_range(
         &mut self,
@@ -118,7 +113,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Punches a hole or records allocated zero by stable file identity.
     #[wasm_bindgen(js_name = zeroFileRangeById)]
     pub async fn zero_file_range_by_id(
         &mut self,
@@ -144,7 +138,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Allocates sparse holes without replacing existing content.
     #[wasm_bindgen(js_name = preallocateFile)]
     pub async fn preallocate_file(
         &mut self,
@@ -168,7 +161,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Allocates sparse holes by stable file identity.
     #[wasm_bindgen(js_name = preallocateFileById)]
     pub async fn preallocate_file_by_id(
         &mut self,
@@ -192,7 +184,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Clones one logical range by immutable extent reference.
     #[wasm_bindgen(js_name = cloneFileRange)]
     pub async fn clone_file_range(
         &mut self,
@@ -225,7 +216,6 @@ impl BrowserCheckout {
         mutation_value(receipt.work)
     }
 
-    /// Clones one logical range between stable file identities.
     #[wasm_bindgen(js_name = cloneFileRangeById)]
     pub async fn clone_file_range_by_id(
         &mut self,

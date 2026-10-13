@@ -27,10 +27,9 @@ schema!(MODEL_EVENT, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" 
 schema!(MODEL_REQUEST, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);
 schema!(MODEL_CONTENT_PART, "kind", ["tool_call" => 1, "tool_result" => 2], ["arguments" => ROOT : 1, "content" => TOOL_RESULT_CONTENT : 2], []);
 schema!(TOOL_RESULT_CONTENT, "kind", ["json" => 1], ["value" => ROOT : 1], []);
-schema!(WORKFLOW_RECORD, "", [], ["input" => ROOT : 0, "prior" => STATE_RECORD : 0, "next" => STATE_RECORD : 0, "transition" => TRANSITION : 0], []);
+schema!(WORKFLOW_RECORD, "", [], ["input" => ROOT : 0, "prior" => STATE_RECORD : 0, "transition" => TRANSITION : 0], []);
 schema!(WORKFLOW_ADMISSION, "", [], ["initial" => STATE_RECORD : 0], []);
 schema!(MACHINE_CHECKPOINT, "", [], ["state" => ROOT : 0], []);
-schema!(PROJECTED_TOOL_INVOCATION, "", [], ["arguments" => ROOT : 0], []);
 schema!(RESOURCE_PREPARATION_REQUEST, "", [], ["payload" => ROOT : 0, "child" => TASK_ADMISSION_RECORD : 0, "read_authorization" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
 schema!(SCHEDULER_EVENT, "kind", ["declared" => 1, "orchestrated" => 2], ["spec" => OPERATION_SPEC : 1, "reducer" => ENTRYPOINT_REF : 2], []);
 schema!(INTERACTION_RESPONSE, "type", ["question" => 1, "form" => 1], ["value" => ROOT : 1], []);
@@ -137,7 +136,6 @@ impl JsonValueSchema {
             Self::WorkflowRecord => &WORKFLOW_RECORD,
             Self::WorkflowAdmission => &WORKFLOW_ADMISSION,
             Self::MachineCheckpoint => &MACHINE_CHECKPOINT,
-            Self::ProjectedToolInvocation => &PROJECTED_TOOL_INVOCATION,
             Self::ToolResultContent => &TOOL_RESULT_CONTENT,
             Self::ResourcePreparationRequest => &RESOURCE_PREPARATION_REQUEST,
             Self::SchedulerEvent => &SCHEDULER_EVENT,

@@ -24,11 +24,11 @@ pub use records::{
 };
 pub(crate) use records::{validate_workflow_commit, validate_workflow_next};
 
-use crate::executor::{PreparationIo, with_history_io};
+use crate::executor::{PreparationIo, stock_boundary, with_history_io};
 use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unsupported};
 use crate::{Error, IdempotencyKey, NativeCustody, OperationId, Result, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use io::{error, next_revision, validate_key};
+use io::{next_revision, validate_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

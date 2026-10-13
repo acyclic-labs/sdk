@@ -144,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx)?;
+        self.validate_snapshot(cut, ctx).await?;
         let mut checkout = self
             .checkout(
                 crate::model::GenerationSelector::Exact(cut.authored_generation),

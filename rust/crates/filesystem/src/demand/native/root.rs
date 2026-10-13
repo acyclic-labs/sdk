@@ -339,7 +339,7 @@ impl NativeDemandSource {
         #[cfg(unix)]
         let result = self.inner.root.stat(&relative, context);
         #[cfg(windows)]
-        let result = self.inner.root.stat_wide(&relative, context);
+        let result = self.inner.root.stat(&relative, context);
         drop(relative);
         context.release(allocation)?;
         match result {

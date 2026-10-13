@@ -52,11 +52,17 @@ impl ControlPlane {
             let parent_route = (parent_agent != self.state.root_agent_id)
                 .then(|| self.state.routes.get(parent_agent).cloned())
                 .flatten();
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            };
             let mut deletions = BTreeMap::new();
             for (root_id, root) in &plan.roots {
                 let view = self.lazy_workspace_root(&route, *root_id).await?;
-                let tombstones = view
-                    .source_tombstones(MAXIMUM_SOURCE_DELETIONS)
+                let (tombstones, _custody) = view
+                    .source_tombstones(MAXIMUM_SOURCE_DELETIONS, &mut accounting)
                     .await
                     .map_err(display)?;
                 if tombstones.is_empty() {
@@ -75,7 +81,7 @@ impl ControlPlane {
                 for (path, deleted) in tombstones {
                     let beneath = format!("{path}/");
                     if child_head.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok()
-                        || view.current_source_version(&path).await.map_err(display)? != Some(deleted)
+                        || view.current_source_version(&path, &mut accounting).await.map_err(display)? != Some(deleted)
                         || changed
                             .range(beneath.clone()..)
                             .next()
@@ -83,13 +89,18 @@ impl ControlPlane {
                     {
                         continue;
                     }
-                    if let Some(parent_view) = &parent_view
-                        && !matches!(
-                            parent_view.lookup(&path).await,
-                            Ok(acyclic_fs::LazyLookup::Source(ref node)) if node.version == deleted
-                        )
-                    {
-                        continue;
+                    if let Some(parent_view) = &parent_view {
+                        let lookup = parent_view.lookup(&path, &mut accounting).await;
+                        let same_version = matches!(
+                            &lookup,
+                            Ok((acyclic_fs::LazyLookup::Source { node, .. }, _)) if node.version == deleted
+                        );
+                        if let Ok(lookup) = lookup {
+                            parent_view.retire_lookup(lookup, &mut accounting).map_err(display)?;
+                        }
+                        if !same_version {
+                            continue;
+                        }
                     }
                     paths.push(path);
                 }
@@ -168,6 +179,12 @@ impl ControlPlane {
             deletions: BTreeMap<WorkspaceRootId, Vec<String>>,
         ) -> Result<(), String> {
             self.state.require_created_roots()?;
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            };
             let root_parent = parent == self.state.root_agent_id;
             for (root_id, paths) in deletions {
                 if paths.is_empty() {
@@ -200,7 +217,7 @@ impl ControlPlane {
                         .ok_or_else(|| "parent route is unavailable".to_owned())?;
                     let view = self.lazy_workspace_root(&parent_route, root_id).await?;
                     for path in &paths {
-                        match view.remove(path).await {
+                        match view.remove(path, None, &mut accounting).await {
                             Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
                             Err(error) => return Err(format!("cannot delete {path}: {error}")),
                         }

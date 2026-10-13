@@ -343,7 +343,8 @@ pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitReque
     })
 }
 
-pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
+/// Converts a domain commit request to its wire form, without a deadline.
+pub fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
     wire::CommitRequest {
         conditions: value
             .conditions

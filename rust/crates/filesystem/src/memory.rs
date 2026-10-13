@@ -850,10 +850,6 @@ impl From<(AuthorityStoreError, WorkCounters)> for AuthorityFailure {
     }
 }
 
-fn authority_fs_failure((error, work): (AuthorityStoreError, WorkCounters)) -> crate::performance::OperationFailure<crate::FsError> {
-    crate::performance::OperationFailure::new(error.into(), work)
-}
-
 /// Funding for the common authority producer.
 enum AuthorityAccounting<'a> {
     Ordinary {
