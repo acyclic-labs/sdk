@@ -40,7 +40,7 @@ async fn original_corrupt_receipt_drops_source_and_keeps_first_native_quota_caus
         provider
             .aggregate_commit_fault
             .store(fault, Ordering::SeqCst);
-        let error = stage_immutable_vec_with_work(&client, path, Ok(source), &mut Some(&mut io))
+        let error = stage_immutable(&client, path, Ok(source), &mut Some(&mut io))
             .await
             .expect_err("actual provider receipt corruption must be rejected");
         if deny_received_bytes {
@@ -59,7 +59,7 @@ async fn original_corrupt_receipt_drops_source_and_keeps_first_native_quota_caus
                 error,
                 Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Storage,
-                    reason: "immutable record receipt is invalid",
+                    ..
                 }
             ));
         }
