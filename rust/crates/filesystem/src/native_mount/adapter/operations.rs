@@ -5,14 +5,9 @@ where
 {
     fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
         Some(super::NativeMountSourceLineage {
-            owner: self.checkout.clone(),
-            root: &self.root,
-            native_original: self.native_io_original.as_ref(),
             lazy_owner: None,
             lazy_root: None,
-            limits: self.limits,
             capture_gate: &self.capture_gate,
-            capture_cancellation: &self.cancellation,
         })
     }
 

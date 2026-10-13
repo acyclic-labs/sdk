@@ -68,7 +68,10 @@ impl LockWait<'_, '_> {
         }
         .map_err(super::lazy::mount_wait_error)?;
         let cleanup = wait.cleanup_items();
-        self.waits[index] = Some(wait);
+        *self
+            .waits
+            .get_mut(index)
+            .ok_or(MountSourceError::Work(WorkError::Overflow))? = Some(wait);
         if native.is_none() {
             self.carrier
                 .with_work(|work| {
@@ -156,15 +159,15 @@ pub(super) async fn await_lock<F: Future>(
             if token.is_cancelled() {
                 return Poll::Ready(Err(error));
             }
-            if waits.waits[index].is_none()
+            if waits.waits.get(index).is_none_or(Option::is_none)
                 && let Err(error) = waits.prepare(index, token)
             {
                 return Poll::Ready(Err(error));
             }
-            if Pin::new(waits.waits[index].as_mut().expect("prepared cancellation"))
-                .poll(context)
-                .is_ready()
-            {
+            let Some(wait) = waits.waits.get_mut(index).and_then(Option::as_mut) else {
+                return Poll::Ready(Err(MountSourceError::Work(WorkError::Overflow)));
+            };
+            if Pin::new(wait).poll(context).is_ready() {
                 return Poll::Ready(Err(error));
             }
         }

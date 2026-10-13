@@ -197,10 +197,7 @@ where
             receipt
                 .custody
                 .work()
-                .charge(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })
+                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                 .map_err(MaterializeError::from)?;
             if previous <= path {
                 break;
@@ -210,11 +207,10 @@ where
         receipt
             .custody
             .work()
-            .charge(WorkCounters {
-                bytes_copied: ((selected_paths.len() - insertion + 1)
-                    * std::mem::size_of::<&NamespacePath>()) as u64,
-                ..WorkCounters::UNCHARGED
-            })
+            .charge(crate::materializer::NativeResourceCredit::Copy.delta(
+                ((selected_paths.len() - insertion + 1) * std::mem::size_of::<&NamespacePath>())
+                    as u64,
+            ))
             .map_err(MaterializeError::from)?;
         selected_paths.insert(insertion, path);
     }
@@ -222,10 +218,7 @@ where
         receipt
             .custody
             .work()
-            .charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })
+            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
             .map_err(MaterializeError::from)?;
         if matches!(pair, [ancestor, path] if path.is_within(ancestor)) {
             return Err(MaterializeError::OverlappingPaths.into());
@@ -247,7 +240,8 @@ where
         let host_path = materialize_host_path(None, path.components(), &mut receipt)?;
         if path.is_root() {
             let namespace = clone_namespace(path, None, limits, &mut receipt)?;
-            let bytes = namespace.retained_bytes() as usize;
+            let bytes = usize::try_from(namespace.retained_bytes())
+                .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
             let namespace = receipt.owned_arc(namespace, bytes)?;
             receipt.push(&mut pending, (namespace.clone(), host_path.clone()))?;
             receipt.push(&mut deferred_directory_metadata, (namespace, host_path))?;
@@ -304,7 +298,8 @@ where
         .await?;
         let directory = if record.kind == FileKind::Directory {
             let namespace = clone_namespace(path, None, limits, &mut receipt)?;
-            let bytes = namespace.retained_bytes() as usize;
+            let bytes = usize::try_from(namespace.retained_bytes())
+                .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
             let namespace = receipt.owned_arc(namespace, bytes)?;
             receipt.push(
                 &mut deferred_directory_metadata,
@@ -395,7 +390,8 @@ where
                     std::slice::from_ref(&entry.name),
                     &mut receipt,
                 )?;
-                let child_bytes = child.retained_bytes() as usize;
+                let child_bytes = usize::try_from(child.retained_bytes())
+                    .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
                 let mut owned_child = Some(child);
                 let selected_directory = if entry.record.kind == FileKind::Directory {
                     let child = receipt.owned_arc(
@@ -556,10 +552,7 @@ pub(super) fn generation_namespace_from_host(
         receipt
             .custody
             .work()
-            .charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })
+            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
             .map_err(MaterializeError::from)?;
         if !matches!(component, std::path::Component::Normal(_)) {
             return Err(MaterializeError::InvalidPath);
@@ -597,7 +590,7 @@ pub(super) fn generation_namespace_from_host(
         names.push(logical);
     }
     let path = NamespacePath::new(names, limits).map_err(|_| MaterializeError::InvalidPath)?;
-    let retained = path.retained_bytes() as usize;
+    let retained = usize::try_from(path.retained_bytes()).map_err(|_| WorkError::Overflow)?;
     Ok((
         path,
         receipt

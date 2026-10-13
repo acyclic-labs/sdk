@@ -60,14 +60,10 @@ impl ProjFsSession {
             ));
         }
         let physical = work.allocation_work();
-        let stop = physical.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let worker_close = physical.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
+        let stop = physical
+            .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
+        let worker_close = physical
+            .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
         let (root, mut allocation) = work.path(&request.destination, None)?;
         let bytes = size_of::<Runtime>()
             + size_of::<Projector>()
@@ -240,10 +236,7 @@ impl ProjFsSession {
                 .as_mut()
                 .ok_or(NativeMountError::ControlPending)?;
             credit.started_io(
-                crate::WorkCounters {
-                    backend_write_operations: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                },
+                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
                 None,
             )?;
             // SAFETY: the projection loop has drained; SDK stop drains every callback.
@@ -258,18 +251,14 @@ impl ProjFsSession {
                     let result = delete_through(&directory, || {
                         credit
                             .started_io(
-                                crate::WorkCounters {
-                                    backend_write_operations: 1,
-                                    ..crate::WorkCounters::UNCHARGED
-                                },
+                                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
                                 None,
                             )
                             .map_err(NativeMountError::from)
                     });
-                    credit.started_drop_io(crate::WorkCounters {
-                        backend_write_operations: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    });
+                    credit.started_drop_io(
+                        crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                    );
                     drop(directory);
                     result.err()
                 });
