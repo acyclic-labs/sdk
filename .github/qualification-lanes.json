@@ -31,8 +31,8 @@
   },
   {
     "lane": "linux",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
+    "runner": "blacksmith-16vcpu-ubuntu-2404",
+    "workers": 16,
     "artifact": "packages-linux",
     "artifact_path": "packages",
     "inputs": "repository",

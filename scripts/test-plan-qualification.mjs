@@ -753,3 +753,27 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(macos.runner));
 });
+
+
+test("Linux package qualification uses sixteen workers without changing publication inputs", () => {
+  const matrix = chooseLanes(lanes, {
+    mainPush: false, force: true, marker: () => null, retained: () => "",
+  }).matrix;
+  const linux = matrix.find(lane => lane.lane === "linux") ?? assert.fail("missing Linux lane");
+  assert.equal(linux.runner, "blacksmith-16vcpu-ubuntu-2404");
+  assert.equal(linux.workers, 16);
+  assert.equal(linux.scope, "full");
+  assert.equal(linux.source_bound, true);
+  assert.equal(linux.inputs, "repository");
+  assert.equal(linux.artifact, "packages-linux");
+  assert.equal(linux.artifact_path, "packages");
+  const runtime = matrix.find(lane => lane.lane === "linux-runtime") ?? assert.fail("missing runtime lane");
+  assert.equal(runtime.runner, "blacksmith-4vcpu-ubuntu-2404");
+  assert.equal(runtime.workers, 4);
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
+  for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
+    assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
+  assert.ok(workflow.includes("MAKEFLAGS: -j${{ matrix.workers }}"));
+  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
+});
