@@ -28,7 +28,7 @@ impl InheritedConversationPrefix {
         through_sequence: u64,
         attached_agents: &[AgentId],
         conversation: &crate::conversation::ConversationState,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         let mut owned = CodecQuota::observed(work)?;
         let parent_agent = conversation
@@ -121,7 +121,7 @@ impl PreparedForkHistory {
     pub(crate) fn verify(
         &self,
         verifier: &crate::core::AuthorityVerifier,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         verifier.verify_audience(&self.parent, work)?;
         let digest = self
@@ -136,18 +136,10 @@ impl PreparedForkHistory {
                 work,
             )?
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work
-                .as_ref()
-                .is_some_and(|work| work.original_native_work().is_some())
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "fork archive belongs to another issuer",
-                });
-            }
-            return Err(Error::Unauthorized(
-                "fork archive belongs to another issuer".into(),
+            return Err(boundary_error(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "fork archive belongs to another issuer",
             ));
         }
         Ok(())

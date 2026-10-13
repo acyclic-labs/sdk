@@ -80,7 +80,7 @@ impl CompositeForkVerifier {
     pub(crate) async fn activate(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<ObservedForkPublicationGuard> {
         seed.validate(work)?;
         let private = self.provider(
@@ -108,7 +108,7 @@ impl CompositeForkVerifier {
     pub async fn release_private_fence(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         seed.validate(work)?;
         let private = self.provider(
@@ -127,7 +127,7 @@ impl CompositeForkVerifier {
     pub async fn verify(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         seed.validate(work)?;
         let mut owned = CodecQuota::observed(work)?;

@@ -184,7 +184,7 @@ impl Reducer {
             work,
         )?;
         let revision = next_revision(self.revision)?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let payload = self.transition_with_work(&command.action, archived_effect, &mut quota)?;
         let mut event = Event {
             revision,
