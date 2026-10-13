@@ -12,12 +12,16 @@ fn bounded_envelope_rejects_unknown_fields_and_oversized_bodies() {
         .is_err()
     );
     assert!(
-        decode::<PiMailEnvelope>(&vec![b' '; MAXIMUM_PI_MAIL_BYTES as usize + 1], &native).is_err()
+        decode::<PiMailEnvelope>(
+            &vec![b' '; usize::try_from(MAXIMUM_PI_MAIL_BYTES).unwrap() + 1],
+            &native
+        )
+        .is_err()
     );
     assert!(
         validate_envelope(&PiMailEnvelope {
             kind: PiMailKind::Message,
-            message: "x".repeat(MAXIMUM_PI_MAIL_BYTES as usize)
+            message: "x".repeat(usize::try_from(MAXIMUM_PI_MAIL_BYTES).unwrap())
         })
         .is_err()
     );

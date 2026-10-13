@@ -127,8 +127,14 @@ fn generation(
     let mut digest = [0; 32];
     hex::decode_to_slice(file.version(), &mut digest)
         .map_err(|_| Error::Invalid("Pi session lacks its exact immutable generation".into()))?;
-    GenerationRef::new(file.volume().provider(), &digest, None, Some(work))
-        .map(|(reference, custody)| (reference, custody.expect("native generation custody")))
+    GenerationRef::new(file.volume().provider(), &digest, None, Some(work)).and_then(
+        |(reference, custody)| {
+            Ok((
+                reference,
+                custody.ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?,
+            ))
+        },
+    )
 }
 
 fn history_limits(context: &TaskContext) -> Result<HistoryReadLimits> {
@@ -193,7 +199,10 @@ fn view_volume_share(budget: WorkBudget, volumes: u64) -> Result<WorkBudget> {
 fn native_construction(
     (cause, work): (acyclic_fs::NativeTreeMaterializationError, WorkCounters),
 ) -> Error {
-    Error::NativeConstruction { cause, work: Box::new(work) }
+    Error::NativeConstruction {
+        cause,
+        work: Box::new(work),
+    }
 }
 fn unauthorized(reason: &'static str) -> Error {
     Error::NativeBoundary {

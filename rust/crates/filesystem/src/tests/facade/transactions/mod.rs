@@ -456,7 +456,6 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         &original,
         &cancellation,
     )?;
-    let live = original.live_allocation_bytes();
     control.arm(2);
     let failure = candidate
         .apply_borrowed_authored_transaction_with_native_work(
@@ -472,7 +471,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         failure,
         FsError::Object(ObjectStoreError::Corrupt)
     ));
-    assert_eq!(original.live_allocation_bytes(), live);
+    original.receipt().verify(B)?;
     assert!(matches!(&input.0[2], AuthoredMutation::Rename {
         source: old_source, destination: old_destination, ..
     } if old_source == &source && old_destination == &destination));

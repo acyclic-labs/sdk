@@ -35,8 +35,7 @@ where
                     .suspend_workflow(
                         task,
                         fence,
-                        revision,
-                        Some(command),
+                        (revision, Some(command)),
                         None,
                         None,
                         &mut Some(
@@ -54,7 +53,14 @@ where
                 .await
         } else {
             self.host
-                .suspend_workflow(task, fence, revision, Some(command), None, None, &mut None)
+                .suspend_workflow(
+                    task,
+                    fence,
+                    (revision, Some(command)),
+                    None,
+                    None,
+                    &mut None,
+                )
                 .await
         }
     }
@@ -174,7 +180,7 @@ where
                 let _transition_custody;
                 #[cfg(not(target_arch = "wasm32"))]
                 let mut transition = if let Some(io) = io {
-                    let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                    let _work = io.original_native_work().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "native transition requires original observer",
                     })?;
@@ -281,8 +287,7 @@ where
                             .suspend_workflow(
                                 task,
                                 fence,
-                                revision,
-                                None,
+                                (revision, None),
                                 None,
                                 None,
                                 &mut observed::history(io)?
@@ -297,8 +302,7 @@ where
                         .suspend_workflow(
                             task,
                             fence,
-                            revision,
-                            None,
+                            (revision, None),
                             None,
                             None,
                             &mut observed::history(io)?

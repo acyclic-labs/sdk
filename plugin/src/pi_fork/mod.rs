@@ -67,7 +67,9 @@ pub(crate) fn project_snapshot(
         slot,
         [
             native.1,
-            generation.1.expect("native generation custody"),
+            generation
+                .1
+                .ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?,
             io.into_custody()?,
         ],
     );
@@ -103,11 +105,11 @@ pub(crate) fn original_operation(
     hash.update(&caller.into_bytes());
     hash.update(&(sdk_tool_call_id.len() as u64).to_le_bytes());
     hash.update(sdk_tool_call_id.as_bytes());
-    Ok(OperationId::from_bytes(
-        hash.finalize().as_bytes()[..16]
-            .try_into()
-            .expect("fixed digest prefix"),
-    ))
+    let mut id = [0; 16];
+    for (target, byte) in id.iter_mut().zip(hash.finalize().as_bytes()) {
+        *target = *byte;
+    }
+    Ok(OperationId::from_bytes(id))
 }
 
 pub(crate) fn derived(
@@ -131,11 +133,11 @@ pub(crate) fn derived(
     hash.update(&original.into_bytes());
     hash.update(&(role.len() as u64).to_le_bytes());
     hash.update(role.as_bytes());
-    Ok(OperationId::from_bytes(
-        hash.finalize().as_bytes()[..16]
-            .try_into()
-            .expect("fixed digest prefix"),
-    ))
+    let mut id = [0; 16];
+    for (target, byte) in id.iter_mut().zip(hash.finalize().as_bytes()) {
+        *target = *byte;
+    }
+    Ok(OperationId::from_bytes(id))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -196,7 +198,7 @@ impl PartialEq for PiForkPlan {
 impl PiForkPlan {
     fn history_limits(&self) -> HistoryReadLimits {
         HistoryReadLimits {
-            maximum_events: self.request.maximum_work.min(u64::from(u32::MAX)) as u32,
+            maximum_events: u32::try_from(self.request.maximum_work).unwrap_or(u32::MAX),
             maximum_bytes: self.request.maximum_bytes,
         }
     }
@@ -288,7 +290,10 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    Error::NativeWorkspace { source: Box::new(source), custody }
+    Error::NativeWorkspace {
+        source: Box::new(source),
+        custody,
+    }
 }
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {

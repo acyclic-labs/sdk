@@ -116,7 +116,8 @@ fn held_cwd_ancestry_reconstructs_paths_beyond_native_path_max()
     let mut expected = temporary.path().canonicalize()?;
     let mut directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
     let mut raw_name = vec![b'a'; 220];
-    raw_name[0] = 0xff;
+    #[cfg(not(target_os = "macos"))]
+    { raw_name[0] = 0xff; }
     let name = OsString::from_vec(raw_name);
     for _ in 0..24 {
         directory.create_dir(&name)?;

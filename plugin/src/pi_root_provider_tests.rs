@@ -41,9 +41,10 @@ impl Fixture {
         std::fs::write(native.join("untouched.txt"), b"original native bytes").unwrap();
         let native = native.canonicalize().unwrap();
         let data = directory.path().join("service");
-        let (lock, configured, private, startup) = crate::tests::configured_test_service_bootstrap(&data)
-            .await
-            .unwrap();
+        let (lock, configured, private, startup) =
+            crate::tests::configured_test_service_bootstrap(&data)
+                .await
+                .unwrap();
         let (resources, _) = ServiceResources::open(data, configured, private, &startup)
             .await
             .unwrap();
@@ -226,8 +227,10 @@ impl Fixture {
         };
         let fence = LeaseFence::from(&lease.reservation);
         let preparation = PiRootPreparation::load(
-            &resources.data,
-            session.strip_prefix(&resources.data).unwrap(),
+            (
+                &resources.data,
+                session.strip_prefix(&resources.data).unwrap(),
+            ),
             &runtime,
             &filesystem,
             &request.binding,
@@ -243,9 +246,10 @@ impl Fixture {
             .journal_owner(
                 task,
                 &fence,
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(
-                    &startup,
-                ).unwrap()),
+                Some(
+                    &acyclic_harness::filesystem::PreparationIo::from_native_work(&startup)
+                        .unwrap(),
+                ),
             )
             .await
             .unwrap();
@@ -300,7 +304,8 @@ impl Fixture {
                 self.provider.preparation.command.operation_id,
                 &self.provider.preparation.plan,
                 Some(&self.startup),
-             false)
+                false,
+            )
             .await
     }
 
@@ -337,8 +342,10 @@ impl Fixture {
         .unwrap();
         let fence = LeaseFence::from(&self.lease.reservation);
         let preparation = PiRootPreparation::load(
-            &self.resources.data,
-            self.session.strip_prefix(&self.resources.data).unwrap(),
+            (
+                &self.resources.data,
+                self.session.strip_prefix(&self.resources.data).unwrap(),
+            ),
             &self.runtime,
             &self.filesystem,
             &self.request.binding,
@@ -355,9 +362,10 @@ impl Fixture {
             .journal_owner(
                 self.request.binding.task_id,
                 &fence,
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(
-                    &self.startup,
-                ).unwrap()),
+                Some(
+                    &acyclic_harness::filesystem::PreparationIo::from_native_work(&self.startup)
+                        .unwrap(),
+                ),
             )
             .await
             .unwrap();
@@ -443,12 +451,21 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
             let mut invalid = value.clone();
             match mutation {
                 0 if fixture.request.binding.project_volumes.is_empty() => continue,
-                0 => invalid["roots"].as_object_mut().unwrap().clear(),
+                0 => invalid
+                    .pointer_mut("/roots")
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .clear(),
                 1 => {
-                    invalid["scratch"]["generation"]["provider"]["namespace"] =
-                        serde_json::json!("foreign");
+                    *invalid
+                        .pointer_mut("/scratch/generation/provider/namespace")
+                        .unwrap() = serde_json::json!("foreign");
                 }
-                2 => invalid["scratch"]["workspace_id"] = serde_json::json!(vec![0u8; 16]),
+                2 => {
+                    *invalid.pointer_mut("/scratch/workspace_id").unwrap() =
+                        serde_json::json!(vec![0u8; 16])
+                }
                 _ => {
                     invalid
                         .as_object_mut()
@@ -476,17 +493,23 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
         for (key, handle) in fixture.provider.take_created_handles().await {
             assert_eq!(
                 handle.workspace.workspace().id().into_bytes(),
-                observed.0.roots[&key].repository_workspace_id
+                observed.0.roots.get(&key).unwrap().repository_workspace_id
             );
             assert_eq!(
                 handle
                     .workspace
-                    .read("/untouched.txt", 64, &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                        work: &fixture.startup, cancellation: fixture.startup.cancellation(),
-                    })
+                    .read(
+                        "/untouched.txt",
+                        64,
+                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work: &fixture.startup,
+                            cancellation: fixture.startup.cancellation(),
+                        }
+                    )
                     .await
                     .unwrap()
-                    .bytes.as_ref(),
+                    .bytes
+                    .as_ref(),
                 b"original native bytes"
             );
         }
@@ -835,7 +858,7 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
         .unwrap();
     for mutation in 0..6 {
         let mut candidate = snapshot;
-        let mut volume = &fixture.request.binding.project_volumes[key];
+        let mut volume = fixture.request.binding.project_volumes.get(key).unwrap();
         let mut budget = allocation_budget();
         if mutation == 1 {
             candidate.workspace_id = acyclic_fs::WorkspaceId::from_bytes([130; 16]);
@@ -930,8 +953,7 @@ async fn conversation_and_unsettled_scratch_cannot_authorize_creation() {
         }
         let bound = crate::pi_conversation::bind_task_conversation(
             &fixture.stream,
-            authority.0,
-            authority.1,
+            (authority.0, authority.1),
             fixture.provider.execution_owner().unwrap(),
             &fixture.request.binding.scratch.volume,
             acyclic_fs::OperationId::from_bytes([125; 16]),
@@ -1124,7 +1146,8 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
         VolumeOperation::Write,
         fixture.owner.policy().maximum_payload_bytes,
         &mut Some(&mut io),
-    ).unwrap();
+    )
+    .unwrap();
     fixture
         .filesystem
         .put_content(

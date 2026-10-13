@@ -183,7 +183,12 @@ impl ConcurrentServiceControl {
                                 pi_root_provider::allocation_budget(),
                                 &cancellation,
                             )
-                            .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?,
+                            .map_err(|(cause, work)| {
+                                Error::NativeConstruction {
+                                    cause,
+                                    work: Box::new(work),
+                                }
+                            })?,
                         );
                     }
                     let work =
@@ -240,7 +245,11 @@ impl ConcurrentServiceControl {
                         .await
                         .map(|value| (value, None))
                         .map_err(Error::Storage);
-                    Ok((SessionController::HostManaged(Box::new(control)), opened, (self.resources.clone(), None)))
+                    Ok((
+                        SessionController::HostManaged(Box::new(control)),
+                        opened,
+                        (self.resources.clone(), None),
+                    ))
                 }
             }
             .await;
@@ -294,7 +303,7 @@ impl ConcurrentServiceControl {
             let output = match opened {
                 Ok(output) => output,
                 Err(error) => {
-                    let cleanup = if let Some(handle) = &handle {
+                    let _cleanup = if let Some(handle) = &handle {
                         let cleanup = handle.shutdown(true, original_native_work).await;
                         if cleanup
                             .as_ref()
@@ -309,10 +318,7 @@ impl ConcurrentServiceControl {
                         Ok(SessionCloseState::Closed)
                     };
                     let _ = complete.send(true);
-                    return match cleanup {
-                        Ok(_) => Err(error),
-                        Err(_) => Err(error),
-                    };
+                    return Err(error);
                 }
             };
             let handle =

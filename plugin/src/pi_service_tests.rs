@@ -5,9 +5,7 @@ use crate::{
     PluginTaskBinding, RootAllocation, RootBinding, ServiceResources, SessionController, Survives,
     load_saved_state, save_state,
 };
-use acyclic_harness::{
-    distributed::{WorkPull, Worker},
-};
+use acyclic_harness::distributed::{WorkPull, Worker};
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::fs;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -250,10 +248,14 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
     let _ = service.shutdown().await.unwrap();
     assert!(!load_saved_state(&session).unwrap().active);
     let configured = ServiceResources::configure(directory.path()).await.unwrap();
-    let (resources, sessions) =
-        ServiceResources::open(directory.path().into(), configured, directory.path().into(), &work())
-            .await
-            .unwrap();
+    let (resources, sessions) = ServiceResources::open(
+        directory.path().into(),
+        configured,
+        directory.path().into(),
+        &work(),
+    )
+    .await
+    .unwrap();
     assert!(sessions.is_empty());
     let mut controller = SessionController::open(session, &resources, &work())
         .await
@@ -262,9 +264,9 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
         .dispatch(request(directory.path(), ControlCommand::Agents), &mut None)
         .await
         .unwrap();
-    assert_eq!(status.0["tasks"][0]["state"], "unresolved");
+    assert_eq!(*status.0.pointer("/tasks/0/state").unwrap(), "unresolved");
     assert_eq!(
-        status.0["tasks"][0]["task"],
+        *status.0.pointer("/tasks/0/task").unwrap(),
         serde_json::to_value(binding.task_id).unwrap()
     );
     assert!(!state.roots.values().next().unwrap().path.exists());
@@ -368,10 +370,10 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
         .await
         .unwrap();
     assert_eq!(
-        status.0["tasks"][0]["task"],
+        *status.0.pointer("/tasks/0/task").unwrap(),
         serde_json::to_value(binding.task_id).unwrap()
     );
-    assert_eq!(status.0["tasks"][0]["state"], "reserved");
+    assert_eq!(*status.0.pointer("/tasks/0/state").unwrap(), "reserved");
     resources.shared_roots.collection.stop().await;
     foreign.shared_roots.collection.stop().await;
 }
@@ -476,7 +478,7 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
         .start_session("registered", "pi", project.clone(), json!({}), &mut None)
         .await
         .unwrap();
-    assert_eq!(status.0["tasks"][0]["state"], "pending");
+    assert_eq!(*status.0.pointer("/tasks/0/state").unwrap(), "pending");
     assert!(
         service
             .fs
@@ -501,8 +503,8 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
             .await
             .is_err()
     );
-    let cancelled = first.dispatch(ControlRequest { version: 1, command: ControlCommand::Hook, cwd: project.clone(), argv: Vec::new(), name: "pi:TaskCancel".into(), arguments: json!({"session_id":"registered","task":binding.task_id,"caller":status.0["caller"]}) }, &mut None).await.unwrap();
-    assert_eq!(cancelled.0["tasks"][0]["state"], "outcome");
+    let cancelled = first.dispatch(ControlRequest { version: 1, command: ControlCommand::Hook, cwd: project.clone(), argv: Vec::new(), name: "pi:TaskCancel".into(), arguments: json!({"session_id":"registered","task":binding.task_id,"caller":*status.0.pointer("/caller").unwrap()}) }, &mut None).await.unwrap();
+    assert_eq!(*cancelled.0.pointer("/tasks/0/state").unwrap(), "outcome");
     assert_eq!(fs::read(owner).unwrap(), bytes);
     assert_eq!(
         fs::read(project.join("user.txt")).unwrap(),
@@ -543,19 +545,25 @@ fn scoped_response_reuses_original_identity_and_exhausted_quota() {
             )
         }
         .unwrap();
-        assert_eq!(response.0["session"], "root-original");
-        assert_eq!(response.0["native_session"], "native-original");
+        assert_eq!(*response.0.pointer("/session").unwrap(), "root-original");
         assert_eq!(
-            response.0["caller_task"],
+            *response.0.pointer("/native_session").unwrap(),
+            "native-original"
+        );
+        assert_eq!(
+            *response.0.pointer("/caller_task").unwrap(),
             serde_json::to_value(caller).unwrap()
         );
         let body = if acknowledgement {
-            &response.0["acknowledgement"]
+            response.0.pointer("/acknowledgement").unwrap()
         } else {
             &response.0
         };
-        assert_eq!(body["files"], json!(["selected/a", "selected/b"]));
-        assert_eq!(body["operation"], "sdk-original");
+        assert_eq!(
+            *body.pointer("/files").unwrap(),
+            json!(["selected/a", "selected/b"])
+        );
+        assert_eq!(body.pointer("/operation").unwrap(), "sdk-original");
         assert!(response.0.get("tasks").is_none());
     }
     let original = crate::pi_root_provider::guarded_pi_value(

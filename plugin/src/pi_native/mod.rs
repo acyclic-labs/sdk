@@ -52,7 +52,7 @@ mod root;
 pub(crate) use root::*;
 
 fn result_schema() -> Result<&'static serde_json::value::RawValue> {
-    serde_json::from_str(r#"{"type":"object","additionalProperties":false,"required":["success","exit_code","stdout","stderr","stop"],"properties":{"success":{"type":"boolean"},"exit_code":{"type":["integer","null"]},"stdout":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stderr":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stop":{"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["kind","message","cleanup_completed"],"properties":{"kind":{"enum":["output_limit","timeout","control_stopped","capture_failed"]},"message":{"type":"string"},"cleanup_completed":{"type":"boolean"}}}]}}}"#).map_err(decode_error)
+    serde_json::from_str(r#"{"type":"object","additionalProperties":false,"required":["success","exit_code","stdout","stderr","stop"],"properties":{"success":{"type":"boolean"},"exit_code":{"type":["integer","null"]},"stdout":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stderr":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stop":{"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["kind","message","cleanup_completed"],"properties":{"kind":{"enum":["output_limit","timeout","control_stopped","capture_failed"]},"message":{"type":"string"},"cleanup_completed":{"type":"boolean"}}}]}}}"#).map_err(|error| invalid(&error.to_string()))
 }
 
 fn pi_native_string(
@@ -61,7 +61,7 @@ fn pi_native_string(
 ) -> Result<(String, acyclic_fs::NativeAllocation)> {
     let (bytes, custody) = work.copy_bytes(value.as_bytes())?;
     Ok((
-        String::from_utf8(bytes).expect("SDK copied the UTF-8 source unchanged"),
+        String::from_utf8(bytes).map_err(|_| invalid("SDK copy is not UTF-8"))?,
         custody,
     ))
 }
@@ -116,9 +116,6 @@ fn has_parent(path: &Path) -> bool {
 }
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.to_owned())
-}
-fn decode_error(error: serde_json::Error) -> Error {
-    invalid(&error.to_string())
 }
 
 #[cfg(test)]

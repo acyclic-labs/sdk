@@ -82,10 +82,12 @@ pub(crate) async fn stage_operator_command(
 }
 
 pub(crate) async fn inspect_operator(
-    runtime: &PiTaskRuntime,
-    filesystem: &Arc<PiNativeFilesystem>,
-    stream: &std::sync::Arc<LocalStream>,
-    resources: &crate::ServiceResources,
+    runtime_filesystem_stream_resources: (
+        &PiTaskRuntime,
+        &Arc<PiNativeFilesystem>,
+        &std::sync::Arc<LocalStream>,
+        &crate::ServiceResources,
+    ),
     protected: &PiOwnerConfig,
     session: &str,
     retained: &crate::AdapterState,
@@ -93,6 +95,7 @@ pub(crate) async fn inspect_operator(
     request: &PiOperatorRequest,
     work: &NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    let (runtime, filesystem, stream, resources) = runtime_filesystem_stream_resources;
     let PiOperatorBody::Inspect {
         operation,
         project_files,
@@ -140,11 +143,11 @@ pub(crate) async fn inspect_operator(
                     || cursor.path != evidence.path
                     || prepared.command.root.as_deref() != Some(cursor.root.as_str())
                     || cursor.generation != prepared.imported)
-                {
-                    return Err(denied(
-                        "file evidence cursor changed its original operation, Root, path or generation",
-                    ));
-                }
+            {
+                return Err(denied(
+                    "file evidence cursor changed its original operation, Root, path or generation",
+                ));
+            }
         }
         let projection = crate::pi_operator::evidence::read_imported_selected_files(
             protected,
