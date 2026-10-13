@@ -26,7 +26,7 @@ pub(crate) enum SessionCloseState {
 
 /// Readonly service metadata, never a native allocation or authority proof.
 pub(crate) enum SessionSnapshot {
-    HostManaged(AdapterState),
+    HostManaged(Box<AdapterState>),
     Pi {
         routes: usize,
         leases: usize,
@@ -43,7 +43,7 @@ impl SessionSnapshot {
                 leases: state.leases.len(),
                 pending_recovery: !state.pending_discards.is_empty() || !state.pending.is_empty(),
             },
-            _ => Self::HostManaged(state.clone()),
+            _ => Self::HostManaged(Box::new(state.clone())),
         }
     }
 }
@@ -158,7 +158,10 @@ impl SessionHandle {
                                         &cancellation,
                                     )
                                     .map_err(
-                                        |(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) },
+                                        |(cause, work)| Error::NativeConstruction {
+                                            cause,
+                                            work: Box::new(work),
+                                        },
                                     )?,
                                 );
                             }
@@ -212,7 +215,9 @@ impl SessionHandle {
                                             .0
                                             .open_session_directory(directory.0)
                                             .await
-                                            .map(|control| SessionController::HostManaged(Box::new(control)))
+                                            .map(|control| {
+                                                SessionController::HostManaged(Box::new(control))
+                                            })
                                             .map_err(Error::Storage),
                                     };
                                     if let Ok(recovered) = recovered {
@@ -252,9 +257,10 @@ impl SessionHandle {
                             *snapshot = next;
                         }
                         if let Err((Err(error), _)) = response.send((result, original_native_work))
-                            && undelivered_close_failure.is_none() {
-                                undelivered_close_failure = Some(error);
-                            }
+                            && undelivered_close_failure.is_none()
+                        {
+                            undelivered_close_failure = Some(error);
+                        }
                     }
                     #[cfg(test)]
                     SessionCommand::Pause { entered, resume } => {

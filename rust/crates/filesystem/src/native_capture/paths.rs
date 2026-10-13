@@ -31,7 +31,7 @@ pub(super) fn clone_capture_prefix(
     limits: crate::model::VolumeLimits,
     meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
-    let names = path.components().get(..depth).ok_or(CaptureError::Kernel(
+    let names = path.components().get(..depth).ok_or(CaptureError::from(
         crate::kernel::NamespacePathError::TooDeep.into(),
     ))?;
     NamespacePath::validate_component_lengths(

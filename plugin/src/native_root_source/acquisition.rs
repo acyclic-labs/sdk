@@ -251,15 +251,14 @@ where
     .await
     .map_err(native_source_error)?;
     let excluded = native_reserved_paths(work)?;
-    let source = source.exclude(excluded.0, work, work.cancellation())
+    let source = source
+        .exclude(excluded.0, work, work.cancellation())
         .map_err(native_source_error)?;
     drop(excluded.1);
     let source = Arc::new(source);
     registration.pending_source = Some(Arc::clone(&source));
     authenticate(work, &mut guard, expected).await?;
-    if source.root_identity() != expected
-        || source.reference().identity != reference.identity
-    {
+    if source.root_identity() != expected || source.reference().identity != reference.identity {
         return Err(rejection(ROOT_IDENTITY));
     }
     if matches!(admission, SharedRootAdmission::Resume(_)) {
@@ -349,7 +348,7 @@ pub(crate) fn native_watch_error(source: acyclic_fs::NativeWatchError) -> RootEr
             native_work_error(acyclic_fs::NativeTreeMaterializationError::Cancelled)
         }
         acyclic_fs::NativeWatchError::NativeWork(cause) => native_work_error(cause),
-        source => native_source_error(acyclic_fs::DemandError::Observation(source)),
+        source => native_source_error(acyclic_fs::DemandError::from(source)),
     }
 }
 

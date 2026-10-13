@@ -59,11 +59,11 @@ pub enum DemandError {
     /// Demand-driven native observation could not be admitted exactly.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[error(transparent)]
-    Observation(#[from] crate::watch::NativeWatchError),
+    Observation(Box<crate::watch::NativeWatchError>),
     /// Canonical mounted-source delivery failed with its original typed cause.
     #[cfg(feature = "native-mount")]
     #[error(transparent)]
-    Mount(#[from] crate::native_mount::MountSourceError),
+    Mount(Box<crate::native_mount::MountSourceError>),
     /// A held native metadata mutation failed with its typed cause.
     #[cfg(all(
         any(target_os = "linux", target_os = "macos", windows),
@@ -369,4 +369,18 @@ pub(crate) fn merge_source_work(
         .ok_or(DemandError::NativeWorkUnavailable)?;
     *work = work.with_backend(completed, allocations.live_bytes())?;
     Ok(work.verify(budget)?)
+}
+
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+impl From<crate::watch::NativeWatchError> for DemandError {
+    fn from(error: crate::watch::NativeWatchError) -> Self {
+        Self::Observation(Box::new(error))
+    }
+}
+
+#[cfg(feature = "native-mount")]
+impl From<crate::native_mount::MountSourceError> for DemandError {
+    fn from(error: crate::native_mount::MountSourceError) -> Self {
+        Self::Mount(Box::new(error))
+    }
 }

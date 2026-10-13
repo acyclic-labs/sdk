@@ -80,7 +80,7 @@ pub(crate) enum PiOperatorBody {
         file_evidence: Option<PiOperatorFileEvidence>,
     },
     Approval {
-        prepared: PiPreparedApproval,
+        prepared: Box<PiPreparedApproval>,
         digest: String,
         decision: PiOperatorDecision,
     },
@@ -560,7 +560,10 @@ pub(crate) async fn run_cli(
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &cancellation)
         .map_err(|(cause, work)| {
-            ControlRequestError::NativeWork(Error::NativeConstruction { cause, work: Box::new(work) })
+            ControlRequestError::NativeWork(Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            })
         })?;
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;
     let directory = crate::service::session_directory(data, &cli.session);
@@ -610,7 +613,7 @@ pub(crate) async fn run_cli(
     }
     let body = if let Some((digest, decision)) = cli.approval {
         PiOperatorBody::Approval {
-            prepared,
+            prepared: Box::new(prepared),
             digest,
             decision,
         }
