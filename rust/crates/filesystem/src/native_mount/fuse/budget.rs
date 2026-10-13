@@ -1,41 +1,25 @@
 use super::{MountPath, NativeMountError};
 use crate::demand::NativeMountAllocationCustody;
 use crate::materializer::NativeResourceCredit::{Copy, Items};
-use crate::{NativeAllocation, NativeMaterializationWork, WorkCounters, WorkError};
+use crate::{NativeMaterializationWork, WorkCounters, WorkError};
 
 pub(super) struct FuseOwned<T> {
-    value: Option<T>,
-    legacy: Option<(std::sync::Arc<NativeMountAllocationCustody>, u64)>,
-    allocation: Option<NativeAllocation>,
+    value: T,
+    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
 }
 
 impl<T> FuseOwned<T> {
     pub(super) fn empty(value: T) -> Self {
         Self {
-            value: Some(value),
-            legacy: None,
-            allocation: None,
+            value,
+            custody: None,
         }
     }
 
-    pub(super) fn map<U>(mut self, map: impl FnOnce(T) -> U) -> FuseOwned<U> {
+    pub(super) fn map<U>(self, map: impl FnOnce(T) -> U) -> FuseOwned<U> {
         FuseOwned {
-            value: Some(map(self.value.take().expect("owned FUSE payload"))),
-            legacy: self.legacy.take(),
-            allocation: self.allocation.take(),
-        }
-    }
-
-    fn absorb(
-        &mut self,
-        mut allocation: NativeAllocation,
-    ) -> Result<(), crate::NativeTreeMaterializationError> {
-        match &mut self.allocation {
-            Some(owned) => owned.absorb(&mut allocation),
-            None => {
-                self.allocation = Some(allocation);
-                Ok(())
-            }
+            value: map(self.value),
+            custody: self.custody,
         }
     }
 
@@ -43,12 +27,21 @@ impl<T> FuseOwned<T> {
         &mut self,
         bytes: u64,
         work: &NativeMaterializationWork,
-    ) -> Result<(), crate::NativeTreeMaterializationError> {
-        work.admit(WorkCounters::UNCHARGED)?;
+    ) -> Result<(), crate::native_mount::NativeMountStartupAdmissionError> {
+        work.with_original_leaf(|original| original.check())?;
         if bytes == 0 {
             return Ok(());
         }
-        self.absorb(work.claim(bytes, 1, WorkCounters::UNCHARGED)?)
+        if self.custody.is_none() {
+            self.custody = Some(NativeMountAllocationCustody::new(&mut work.clone())?);
+        }
+        work.with_original_leaf(|original| {
+            self.custody
+                .as_ref()
+                .expect("admitted owner")
+                .claim(bytes, original)
+        })
+        .map_err(Into::into)
     }
 
     pub(super) fn adopt(
@@ -61,28 +54,23 @@ impl<T> FuseOwned<T> {
             return Ok(Self::empty(value));
         }
         let admitted = (|| {
-            let custody = NativeMountAllocationCustody::new(
-                &mut crate::NativeMaterializationWork::clone(work),
-            )?;
+            let custody = NativeMountAllocationCustody::new(&mut work.clone())?;
             work.with_original_leaf(|work| {
-                work.check().and_then(|()| {
-                    custody
-                        .retain(bytes, work)
-                        .map_err(crate::DemandError::from)
-                })
+                work.check()?;
+                custody.retain(bytes, work)?;
+                Ok::<_, crate::DemandError>(())
             })?;
-            Ok::<_, crate::native_mount::NativeMountStartupAdmissionError>(custody)
+            Ok::<_, crate::DemandError>(custody)
         })();
         match admitted {
             Ok(custody) => Ok(Self {
-                value: Some(value),
-                legacy: Some((custody, bytes)),
-                allocation: None,
+                value,
+                custody: Some(custody),
             }),
             Err(error) => {
                 drop(value);
                 work.with_original_leaf(|work| work.release(bytes))?;
-                Err(error)
+                Err(error.into())
             }
         }
     }
@@ -91,20 +79,12 @@ impl<T> FuseOwned<T> {
 impl<T> std::ops::Deref for FuseOwned<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        self.value.as_ref().expect("owned FUSE payload")
+        &self.value
     }
 }
 impl<T> std::ops::DerefMut for FuseOwned<T> {
     fn deref_mut(&mut self) -> &mut T {
-        self.value.as_mut().expect("owned FUSE payload")
-    }
-}
-impl<T> Drop for FuseOwned<T> {
-    fn drop(&mut self) {
-        drop(self.value.take());
-        if let Some((custody, bytes)) = self.legacy.take() {
-            custody.retire(bytes).expect("dropped FUSE payload");
-        }
+        &mut self.value
     }
 }
 impl<T: std::hash::Hash> std::hash::Hash for FuseOwned<T> {
@@ -123,14 +103,9 @@ impl<T: std::fmt::Debug> std::fmt::Debug for FuseOwned<T> {
         (**self).fmt(formatter)
     }
 }
-impl<T> Default for FuseOwned<Vec<T>> {
+impl<T: Default> Default for FuseOwned<T> {
     fn default() -> Self {
-        Self::empty(Vec::new())
-    }
-}
-impl<T> Default for FuseOwned<std::vec::IntoIter<T>> {
-    fn default() -> Self {
-        Self::empty(Vec::new().into_iter())
+        Self::empty(T::default())
     }
 }
 impl std::borrow::Borrow<MountPath> for FuseOwned<MountPath> {
@@ -159,28 +134,10 @@ pub(super) fn fuse_vec<T>(
     capacity: usize,
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<Vec<T>>, NativeMountError> {
-    let bytes = capacity
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(WorkError::Overflow)? as u64;
-    let mut owned = FuseOwned::empty(Vec::new());
-    owned.claim(bytes, work)?;
-    if bytes != 0 {
-        owned
-            .try_reserve_exact(capacity)
-            .map_err(NativeMountError::Allocation)?;
-    }
-    let actual = owned
-        .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(WorkError::Overflow)? as u64;
-    if actual != bytes {
-        owned
-            .allocation
-            .as_mut()
-            .expect("admitted vector guard")
-            .reconcile_capacity(actual)?;
-    }
-    Ok(owned)
+    let (values, bytes) = work
+        .with_original_leaf(|work| crate::native_host::buffer(capacity, work))
+        .map_err(crate::materializer::native_materialization_work_error)?;
+    FuseOwned::adopt(values, bytes, work).map_err(Into::into)
 }
 
 pub(super) fn fuse_reserve<T>(
@@ -213,9 +170,9 @@ pub(super) fn fuse_copy_bytes(
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<Vec<u8>>, NativeMountError> {
     work.admit(Copy.delta(bytes.len() as u64))?;
-    let (bytes, allocation) = work.copy_bytes(bytes)?;
-    let mut copied = FuseOwned::empty(bytes);
-    copied.allocation = Some(allocation);
+    let mut copied = fuse_vec(bytes.len(), work)?;
+    copied.extend_from_slice(bytes);
+    work.record_admitted(Copy.delta(bytes.len() as u64))?;
     Ok(copied)
 }
 
@@ -223,15 +180,11 @@ pub(super) fn fuse_source_chunk(
     bytes: &[u8],
     work: &NativeMaterializationWork,
 ) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
-    let mut copied = fuse_copy_bytes(bytes, work)?;
-    let logical_owned_bytes = copied
-        .allocation
-        .as_ref()
-        .expect("copied buffer guard")
-        .bytes();
-    let owned = acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
-        copied.value.as_mut().expect("copied buffer"),
-        &mut copied.allocation,
+    let copied = fuse_copy_bytes(bytes, work)?;
+    let logical_owned_bytes = copied.capacity() as u64;
+    let owned = acyclic_stream::OwnedBytes::from_vec_with_guard(
+        copied.value,
+        copied.custody,
         work.runtime_meter(),
     )
     .map_err(|error| NativeMountError::from(work.runtime_error(error)))?;
@@ -253,11 +206,22 @@ pub(super) fn fuse_path<'a>(
             .checked_add(std::mem::size_of::<Vec<u8>>() as u64)
             .ok_or(WorkError::Overflow)?;
         work.admit(Copy.delta(copied_bytes))?;
-        let mut copied = fuse_copy_bytes(component, work)?;
-        if let Some(allocation) = copied.allocation.take() {
-            path.absorb(allocation)?;
+        let (mut copied, bytes) = work
+            .with_original_leaf(|work| crate::native_host::buffer::<u8, _>(component.len(), work))
+            .map_err(crate::materializer::native_materialization_work_error)?;
+        let retained = work.with_original_leaf(|work| {
+            path.custody
+                .as_ref()
+                .expect("path capacity custody")
+                .retain(bytes, work)
+        });
+        if let Err(error) = retained {
+            drop(copied);
+            work.with_original_leaf(|work| work.release(bytes))?;
+            return Err(error.into());
         }
-        let copied = copied.value.take().expect("owned native path component");
+        copied.extend_from_slice(component);
+        work.record_admitted(Copy.delta(component.len() as u64))?;
         path.push(copied);
         work.record_admitted(Copy.delta(std::mem::size_of::<Vec<u8>>() as u64))?;
     }
@@ -302,21 +266,8 @@ pub(super) fn fuse_parent(
     };
     fuse_path(parent.len(), parent.iter().map(Vec::as_slice), work).map(Some)
 }
-pub(super) fn fuse_has_prefix(
-    value: &MountPath,
-    prefix: &MountPath,
-    work: &NativeMaterializationWork,
-) -> Result<bool, NativeMountError> {
-    if value.components().len() < prefix.components().len() {
-        return Ok(false);
-    }
-    for (component, expected) in value.components().iter().zip(prefix.components()) {
-        work.charge(Items.delta(1))?;
-        if component != expected {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+pub(super) fn has_prefix(path: &MountPath, prefix: &MountPath) -> bool {
+    path.components().starts_with(prefix.components())
 }
 pub(super) fn fuse_replace_prefix(
     value: &MountPath,
@@ -324,7 +275,7 @@ pub(super) fn fuse_replace_prefix(
     destination: &MountPath,
     work: &NativeMaterializationWork,
 ) -> Result<Option<FuseOwned<MountPath>>, NativeMountError> {
-    if !fuse_has_prefix(value, source, work)? {
+    if !has_prefix(value, source) {
         return Ok(None);
     }
     let suffix = &value.components()[source.components().len()..];

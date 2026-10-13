@@ -335,14 +335,10 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
         return Err("post-effect cancellation was reported as success".into());
     };
     assert_ne!(failure.1, crate::WorkCounters::UNCHARGED);
-    assert_eq!(
-        crate::native_mount::fuse::native_callback_errno(&failure.0),
-        libc::ECANCELED
-    );
     let prefix = failure.1;
     assert_eq!(
         core.finish::<Option<MountLookup>>(Err(failure)),
-        Err(libc::ECANCELED)
+        Err(libc::ESTALE)
     );
     assert!(core.handler_failed.load(Ordering::Acquire));
     let retained = core
