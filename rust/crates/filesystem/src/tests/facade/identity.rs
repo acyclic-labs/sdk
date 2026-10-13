@@ -246,14 +246,14 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     )?;
     assert!(
         checkout
-            .read_named_attribute_by_id(id, &attribute, B, &cancel)
+            .read_named_attribute(id, &attribute, B, &cancel)
             .await?
             .value
             .is_none()
     );
     assert!(
         checkout
-            .list_named_attributes_by_id(id, None, 8, B, &cancel)
+            .list_named_attributes(id, None, 8, B, &cancel)
             .await?
             .value
             .entries
@@ -264,7 +264,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
         (b"second".as_slice(), NamedAttributeWriteMode::Replace),
     ] {
         checkout
-            .change_named_attribute_by_id(
+            .change_named_attribute(
                 id,
                 &attribute,
                 Some((&OwnedBytes::copy_from_slice(bytes), mode)),
@@ -274,7 +274,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
             .await?;
         assert_eq!(
             checkout
-                .read_named_attribute_by_id(id, &attribute, B, &cancel)
+                .read_named_attribute(id, &attribute, B, &cancel)
                 .await?
                 .value
                 .unwrap()
@@ -284,7 +284,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
         );
         assert_eq!(
             checkout
-                .list_named_attributes_by_id(id, None, 8, B, &cancel)
+                .list_named_attributes(id, None, 8, B, &cancel)
                 .await?
                 .value
                 .entries
@@ -363,11 +363,11 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
         b"....abcd\0\0gh\0\0\0\0"
     );
     checkout
-        .change_named_attribute_by_id(id, &attribute, None, B, &cancel)
+        .change_named_attribute(id, &attribute, None, B, &cancel)
         .await?;
     assert!(
         checkout
-            .read_named_attribute_by_id(id, &attribute, B, &cancel)
+            .read_named_attribute(id, &attribute, B, &cancel)
             .await?
             .value
             .is_none()
