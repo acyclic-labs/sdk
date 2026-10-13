@@ -7,8 +7,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
     handle: u64,
     result: *mut NativeStat,
 ) -> c_int {
-    let span = callback_span!(TRACE, getattr, fh = handle);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         let attributes = context.attributes(&*mount_path(path, work)?, handle, work)?;
         // SAFETY: the bridge supplies a writable NativeStat.
         work.charge(copy_work(std::mem::size_of::<NativeStat>() as u64))?;
@@ -24,10 +23,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_open(
     flags: c_int,
     handle: *mut u64,
 ) -> c_int {
-    let span = callback_span!(TRACE, open);
     ffi(
         address,
-        &span,
         flags & libc::O_ACCMODE != libc::O_RDONLY,
         |context, work| {
             let opened = context.open(&*mount_path(path, work)?, 0, work)?;
@@ -49,8 +46,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
     _flags: c_int,
     handle: *mut u64,
 ) -> c_int {
-    let span = callback_span!(DEBUG, create);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let path = mount_path(path, work)?;
         context.mutate(
             || {
@@ -77,8 +73,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_release(
     _path: *const c_char,
     handle: u64,
 ) -> c_int {
-    let span = callback_span!(DEBUG, release, fh = handle);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         if handle != 0 {
             let mut files = context.files.write().map_err(|_| driver_errno(libc::EIO))?;
 
@@ -99,8 +94,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_read(
     length: usize,
     offset: i64,
 ) -> c_int {
-    let span = callback_span!(TRACE, read, fh = handle, offset = offset, len = length);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         let maximum = bounded_length(length).map_err(driver_errno)?;
         let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
         let target = context.file_target(&*mount_path(path, work)?, handle, work)?;
@@ -128,8 +122,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     length: usize,
     offset: i64,
 ) -> c_int {
-    let span = callback_span!(TRACE, write, fh = handle, offset = offset, len = length);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let length = bounded_length(length).map_err(driver_errno)?;
         let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
         // SAFETY: the bridge retains this readable length-byte input through the callback.
@@ -156,8 +149,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
     handle: u64,
     length: i64,
 ) -> c_int {
-    let span = callback_span!(TRACE, truncate, fh = handle);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let length = u64::try_from(length).map_err(|_| driver_errno(libc::EINVAL))?;
         context.mutate_file(
             &*mount_path(path, work)?,
@@ -174,8 +166,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_flush(
     address: usize,
     handle: u64,
 ) -> c_int {
-    let span = callback_span!(TRACE, flush, fh = handle);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         context.flush_on_close(handle, work)?;
         Ok(0)
     })
@@ -183,8 +174,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_flush(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
-    let span = callback_span!(TRACE, fsync);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         context.sync(work)?;
         Ok(0)
     })
@@ -192,8 +182,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) ->
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(address: usize) -> c_int {
-    let span = callback_span!(TRACE, durable_writes);
-    ffi(address, &span, false, |context, _| {
+    ffi(address, false, |context, _| {
         Ok(i32::from(!context.source.flush_publishes()))
     })
 }
