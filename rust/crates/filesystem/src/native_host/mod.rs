@@ -50,8 +50,8 @@ mod unix_path;
 #[cfg(unix)]
 pub(crate) use unix_path::*;
 mod open;
-pub(crate) use open::*;
 pub use open::file_transfer;
+pub(crate) use open::*;
 mod mutation;
 pub(crate) use mutation::*;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
@@ -70,7 +70,6 @@ mod unix_metadata;
 #[cfg(unix)]
 pub(crate) use unix_metadata::*;
 mod links;
-pub(crate) use links::*;
 mod unix_stat;
 pub(crate) use unix_stat::*;
 #[cfg(windows)]

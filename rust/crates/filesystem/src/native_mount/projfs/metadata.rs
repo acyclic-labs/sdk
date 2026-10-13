@@ -68,7 +68,11 @@ pub(super) fn host_windows_metadata(
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
-    let metadata = crate::native_host::with_wide_path(&host_relative_path(path)?, &mut &*work, |path, work| root.stat(path, work))?;
+    let metadata = crate::native_host::with_wide_path(
+        &host_relative_path(path)?,
+        &mut &*work,
+        |path, work| root.stat(path, work),
+    )?;
     Ok(HostWindowsMetadata {
         identity: crate::NativeRootIdentity {
             device: u64::from(metadata.volume_serial_number),
@@ -77,9 +81,9 @@ pub(super) fn host_windows_metadata(
         links: Some(metadata.nlink() as u32),
         size: metadata.len(),
         attributes: metadata.raw.FileAttributes,
-        created: i64::try_from((metadata.raw.CreationTime as u64))
+        created: i64::try_from(metadata.raw.CreationTime as u64)
             .map_err(|_| MountSourceError::Invalid("Windows creation time exceeds i64".into()))?,
-        modified: i64::try_from((metadata.raw.LastWriteTime as u64))
+        modified: i64::try_from(metadata.raw.LastWriteTime as u64)
             .map_err(|_| MountSourceError::Invalid("Windows write time exceeds i64".into()))?,
     })
 }

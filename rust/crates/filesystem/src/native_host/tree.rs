@@ -85,7 +85,7 @@ impl HostRoot {
         remove_windows_leaf(
             &self.directory,
             name,
-            (stat.file_type() == crate::demand::SourceNodeKind::Directory),
+            stat.file_type() == crate::demand::SourceNodeKind::Directory,
             Some(expected),
             work,
         )

@@ -58,8 +58,9 @@ fn transfer_in_place(
         let handle = file.as_raw_handle();
         // SAFETY: zero is the documented initial OVERLAPPED state.
         let mut overlapped: OVERLAPPED = unsafe { zeroed() };
-        overlapped.Anonymous.Anonymous.Offset = offset as u32;
-        overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
+        let [a, b, c, d, e, f, g, h] = offset.to_le_bytes();
+        overlapped.Anonymous.Anonymous.Offset = u32::from_le_bytes([a, b, c, d]);
+        overlapped.Anonymous.Anonymous.OffsetHigh = u32::from_le_bytes([e, f, g, h]);
         // The low bit excludes this synchronous wait from completion-port delivery.
         overlapped.hEvent = event.as_raw_handle().map_addr(|address| address | 1);
         let mut bytes = match meter {
@@ -79,6 +80,7 @@ fn transfer_in_place(
         let issue = || {
             let issued = issue(handle, &raw mut overlapped);
             // Capture the OS error before a meter callback can change last-error state.
+            // SAFETY: GetLastError reads only this thread's error state.
             (issued, (issued == 0).then(|| unsafe { GetLastError() }))
         };
         let ((_, error), issue_charge) = match operations.as_mut() {
@@ -93,7 +95,9 @@ fn transfer_in_place(
             }
             Some(code) => {
                 issue_charge?;
-                return Err(io::Error::from_raw_os_error(code as i32));
+                return Err(io::Error::from_raw_os_error(i32::from_ne_bytes(
+                    code.to_ne_bytes(),
+                )));
             }
         }
         let mut transferred = 0;
@@ -119,7 +123,9 @@ fn transfer_in_place(
         issue_charge?;
         completion_charge?;
         match completed {
-            Err(error) if error.raw_os_error() != Some(ERROR_HANDLE_EOF as i32) => Err(error),
+            Err(error) if error.raw_os_error() != i32::try_from(ERROR_HANDLE_EOF).ok() => {
+                Err(error)
+            }
             _ => Ok(transferred as usize),
         }
     })
@@ -170,13 +176,16 @@ pub(super) fn overlapped_range(offset: u64, length: usize) -> io::Result<u32> {
 pub(super) fn is_overlapped(file: &File) -> bool {
     let mut status = IO_STATUS_BLOCK::default();
     let mut mode = FILE_MODE_INFORMATION::default();
+    let Ok(length) = u32::try_from(std::mem::size_of::<FILE_MODE_INFORMATION>()) else {
+        return false;
+    };
     // SAFETY: the live handle and initialized output buffers outlive the mode query.
     (unsafe {
         NtQueryInformationFile(
             file.as_raw_handle(),
             &raw mut status,
             (&raw mut mode).cast(),
-            std::mem::size_of::<FILE_MODE_INFORMATION>() as u32,
+            length,
             FileModeInformation,
         )
     }) >= 0
@@ -379,7 +388,7 @@ fn write_all_in_place(file: &File, mut offset: u64, mut bytes: &[u8]) -> io::Res
             return Err(io::Error::other("write completion exceeded buffer"));
         }
         offset += count as u64;
-        bytes = &bytes[count..];
+        bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
     }
     Ok(())
 }
@@ -407,7 +416,8 @@ pub(crate) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
             file.as_raw_handle(),
             FileEndOfFileInfo,
             (&raw const info).cast(),
-            std::mem::size_of::<FILE_END_OF_FILE_INFO>() as u32,
+            u32::try_from(std::mem::size_of::<FILE_END_OF_FILE_INFO>())
+                .map_err(|_| io::ErrorKind::InvalidInput)?,
         )
     } == 0
     {
@@ -435,7 +445,8 @@ pub(crate) fn file_identity(file: &File) -> io::Result<crate::FileIdentity> {
             file.as_raw_handle(),
             FileIdInfo,
             (&raw mut info).cast(),
-            std::mem::size_of::<FILE_ID_INFO>() as u32,
+            u32::try_from(std::mem::size_of::<FILE_ID_INFO>())
+                .map_err(|_| io::ErrorKind::InvalidInput)?,
         )
     } == 0
     {

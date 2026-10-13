@@ -360,13 +360,13 @@ impl NativeRecoveryState {
         Ok(())
     }
 
-    fn retire(&mut self, original: &crate::NativeMaterializationWork) {
+    fn retire(&mut self, _original: &crate::NativeMaterializationWork) {
         // Retirement keeps the actual fence through every pending native control.
         while self.control.controls_pending() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
-                    self.control.retire_controls(original)
+                    self.control.retire_controls(_original)
                 }
                 #[cfg(windows)]
                 {
@@ -374,7 +374,7 @@ impl NativeRecoveryState {
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 {
-                    self.control.retire_controls_with_work(original)
+                    self.control.retire_controls_with_work(_original)
                 }
             })) {
                 Ok(Ok(())) if !self.control.controls_pending() => break,

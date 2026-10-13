@@ -155,11 +155,11 @@ pub(crate) fn poll_submission_with(
         return Poll::Ready(Ok(()));
     };
     let meter = job.meter().cloned();
-    if let Some(meter) = &meter {
-        if let Err(error) = meter.check() {
-            remove_capacity_waiter(workers, waiter.take());
-            return Poll::Ready(Err(error));
-        }
+    if let Some(meter) = &meter
+        && let Err(error) = meter.check()
+    {
+        remove_capacity_waiter(workers, waiter.take());
+        return Poll::Ready(Err(error));
     }
     let mut admission = workers
         .admission
