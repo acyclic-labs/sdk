@@ -99,8 +99,8 @@ where
                         crate::filesystem::PreparationIo::from_native_work(work)?,
                     ))).await;
         }
-        if settlement { self.host.verify_execution_owner(task, fence.clone()).await }
-        else { self.host.verify_dispatch_owner(task, fence.clone()).await }
+        if settlement { self.host.verify_execution_owner(task, &fence, None)?.await }
+        else { self.host.verify_dispatch_owner(task, &fence, None)?.await }
     }
 
 }

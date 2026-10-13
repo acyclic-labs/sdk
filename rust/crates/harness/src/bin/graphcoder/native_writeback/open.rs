@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::runtime::DurableTaskHost as _;
+use acyclic_harness::runtime::TaskStateProvider as _;
 
 impl NativeSession {
     pub async fn publication(
@@ -11,7 +11,7 @@ impl NativeSession {
         let host = self.runtime.task_host();
         let fence = LeaseFence::from(&request.caller_lease.reservation);
         if command == "/publication-open" {
-            host.verify_dispatch_owner(binding.caller, fence.clone())
+            host.verify_dispatch_owner(binding.caller, &fence, None)?
                 .await?;
         }
         let (journal, interactions) = self.publication_journal(binding, request).await?;
@@ -83,7 +83,7 @@ impl NativeSession {
                 journal
                     .verify(interaction_id(binding), binding.operation_id, digest)
                     .await?;
-                host.verify_dispatch_owner(binding.caller, fence.clone())
+                host.verify_dispatch_owner(binding.caller, &fence, None)?
                     .await?;
                 if original.phase == MaterializationPhase::Applied {
                     return Ok(observed);
@@ -107,7 +107,7 @@ impl NativeSession {
             .map(String::as_str)
             .collect::<Vec<_>>();
         let options = publication_options(binding);
-        host.verify_dispatch_owner(binding.caller, fence.clone())
+        host.verify_dispatch_owner(binding.caller, &fence, None)?
             .await?;
         let result = if command == "/publication-open" {
             acyclic_fs::prepare_native_generation_transition(

@@ -78,10 +78,10 @@ impl TaskContext {
     }
 
     /// Revalidates the original issued execution owner before a native SDK read.
-    pub fn verify_original_execution_owner_with_native_work<'a>(
-        &'a self,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, ()>> {
+    pub async fn verify_original_execution_owner(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
         self.require_original_native_dispatch(work)?;
         let (task, fence) = self.owned_task_binding_with_native_work(work)?;
         let host = self.harness.host.as_ref().ok_or_else(|| {
@@ -91,7 +91,12 @@ impl TaskContext {
             )
         })?;
         self.harness.assert_durable_policy_bindings(Some(work))?;
-        host.verify_dispatch_owner_with_native_work(task, fence, work)
+        host.verify_dispatch_owner(
+            task,
+            fence,
+            Some(&crate::executor::PreparationIo::from_native_work(work)?),
+        )?
+        .await
     }
 
     /// Checks stock scope restrictions against the issued source before copying metadata or constructing a callback.
@@ -134,13 +139,6 @@ impl TaskContext {
         volume: &crate::conversation::VolumeRef,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
-        if !self.native_metadata_matches(work) {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "task context has no original shared metadata custody",
-            ));
-        }
-
         self.require_original_native_work(work)?;
         let purpose = self
             .native_purpose
@@ -161,22 +159,11 @@ impl TaskContext {
                     "output volume has no authenticated created writer",
                 )
             })?;
-        let mut permission_io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        );
-        let permission = volume.capability(
-            crate::conversation::VolumeOperation::Write,
-            &mut Some(&mut permission_io),
+        self.bound_content_writer(
+            Some(binding),
+            &self.scope,
+            Some(&crate::executor::PreparationIo::from_native_work(work)?),
         )?;
-        let allowed = self.scope.grants().contains(&permission);
-        drop(permission);
-        drop(permission_io);
-        if !allowed {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "original task scope cannot write the selected output volume",
-            ));
-        }
         let (task, fence) = self.owned_task_binding_with_native_work(work)?;
         let host = self.harness.host.as_ref().ok_or_else(|| {
             boundary(
@@ -187,12 +174,20 @@ impl TaskContext {
         self.harness.assert_durable_policy_bindings(Some(work))?;
         match purpose {
             IssuedContextPurpose::Dispatch => {
-                host.verify_dispatch_owner_with_native_work(task, fence, work)?
-                    .await?;
+                host.verify_dispatch_owner(
+                    task,
+                    fence,
+                    Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                )?
+                .await?;
             }
             IssuedContextPurpose::Reconciliation => {
-                host.verify_execution_owner_with_native_work(task, fence, work)?
-                    .await?;
+                host.verify_execution_owner(
+                    task,
+                    fence,
+                    Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                )?
+                .await?;
             }
             IssuedContextPurpose::Read => unreachable!("readonly projection rejected"),
         }
@@ -204,33 +199,13 @@ impl TaskContext {
         )?;
         let (scope, scope_custody) = self.scope.clone_with_native_work(work)?;
         io.absorb_native_custody(scope_custody)?;
-        let policy_overrides = {
-            let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-            let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
-            let copied = crate::core::copy_vector(
-                &self.policy_overrides,
-                &mut quota,
-                |(identity, policy), quota| {
-                    Ok((
-                        crate::registry::ComponentIdentity {
-                            name: crate::core::copy_text(&identity.name, quota)?,
-                            version: crate::core::copy_text(&identity.version, quota)?,
-                            digest: identity.digest,
-                        },
-                        Arc::clone(policy),
-                    ))
-                },
-            )?;
-            quota.transfer();
-            copied
-        };
         let mut context = TaskContext {
             harness: Arc::clone(&self.harness),
             task_id: self.task_id,
             durable_task: self.durable_task,
             descendants: self.descendants.clone(),
             scope,
-            policy_overrides,
+            policy_overrides: Vec::new(),
             owned_interactions: self.owned_interactions.clone(),
             owned_mailbox: self.owned_mailbox.clone(),
             output_content: Some(binding.clone()),
@@ -312,9 +287,7 @@ impl ToolContext {
             )
         })?;
         NativeFutureBundle::new(work, || async move {
-            context
-                .verify_original_execution_owner_with_native_work(work)?
-                .await?;
+            context.verify_original_execution_owner(work).await?;
             let observed = host.observe_admission_with_native_work(task, work)?.await?;
             if observed.0.operation_id != context.task_id {
                 return Err(boundary(
@@ -322,9 +295,7 @@ impl ToolContext {
                     "observed input differs from the original issued task",
                 ));
             }
-            context
-                .verify_original_execution_owner_with_native_work(work)?
-                .await?;
+            context.verify_original_execution_owner(work).await?;
             Ok(observed)
         })
     }
