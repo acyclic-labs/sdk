@@ -345,7 +345,7 @@ impl PiSession {
                 .await?;
         }
         self.spawn_save_created(commit, operations, &prepared, &work)?;
-        native.register_prepared(prepared).await?;
+        native.register_prepared(prepared)?;
         let job = super::pi_lifecycle_session::spawn_native_job(&work, || async move {
             native.run_child(task).await
         })?;

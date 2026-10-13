@@ -45,13 +45,12 @@ impl crate::pi_host::PiControlHost<'_> {
             .get(&input.root_key)
             .ok_or_else(|| invalid("Pi observed root has no actual lazy producer"))?;
         let observed = if let Some(decoded) =
-            crate::pi_root_provider::read_pi_input_with_native_work::<ObservedSource>(
+            crate::pi_root_provider::read_pi_input::<ObservedSource>(
                 &self.protected,
                 &self.filesystem,
                 command.operation_id,
                 "root-source-observation",
                 self.protected.policy().maximum_payload_bytes,
-                acyclic_harness::JsonValueSchema::None,
                 OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES,
                 context,
                 work,

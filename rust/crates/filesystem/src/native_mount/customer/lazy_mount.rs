@@ -23,6 +23,15 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    /// Returns this mount's original finite callback allowance.
+    pub fn native_work(&self) -> Result<NativeMaterializationWork, MountLifecycleError> {
+        self.source
+            .native_original_work()?
+            .ok_or(MountLifecycleError::NativePolicy(
+                "mounted volume has no original native work",
+            ))
+    }
+
     /// Accepts physical I/O on the mounted source's retirement gate.
     pub fn native_source_io_lease(
         &self,
@@ -88,7 +97,11 @@ where
         before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
+        E: From<MountLifecycleError>
+            + From<MountSourceError>
+            + From<crate::FsError>
+            + Send
+            + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -143,7 +156,11 @@ where
         before_publication: F,
     ) -> impl Future<Output = Result<crate::LazySnapshotRef, E>> + Send + 'a
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
+        E: From<MountLifecycleError>
+            + From<MountSourceError>
+            + From<crate::FsError>
+            + Send
+            + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {

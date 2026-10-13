@@ -43,7 +43,15 @@ where
         }
         let work = work.with_source_io_lease(self.native_source_io_lease()?)?;
         self.validate_for_presentation(&work).await?;
-        let result = file_io::run(self, path, write, parents, &work, operation);
+        let result = file_io::native_file_io(
+            &self.source_root,
+            self.source_identity,
+            path,
+            write,
+            parents,
+            &work,
+            operation,
+        );
         self.validate_for_presentation(&work).await?;
         result.map_err(Into::into)
     }
@@ -52,7 +60,9 @@ where
     pub fn native_source_io_lease(
         &self,
     ) -> Result<super::super::adapter::NativeSourceIoLease, NativeMountError> {
-        self.source.native_source_io_lease(self.source.clone()).map_err(Into::into)
+        self.source
+            .native_source_io_lease(self.source.clone())
+            .map_err(Into::into)
     }
 
     /// Revalidates the selected root and generation before presentation.
@@ -142,7 +152,11 @@ where
         mut before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
+        E: From<MountLifecycleError>
+            + From<MountSourceError>
+            + From<crate::FsError>
+            + Send
+            + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -177,10 +191,18 @@ where
             self.capture_host_subtree(&MountPath::root(), work)
                 .await
                 .map_err(|cause| (E::from(cause), None))?;
-            self.source.shared_checkout().publish(
-                permit, work, cancellation, Some(self.source.cancellation()),
-                &mut before_publication, Some(self.snapshot_context()), &mut acknowledged,
-            ).await?;
+            self.source
+                .shared_checkout()
+                .publish(
+                    permit,
+                    work,
+                    cancellation,
+                    Some(self.source.cancellation()),
+                    &mut before_publication,
+                    Some(self.snapshot_context()),
+                    &mut acknowledged,
+                )
+                .await?;
             acknowledged.ok_or_else(|| (E::from(MountSourceError::Indeterminate), None))
         }
         .await;
@@ -216,7 +238,11 @@ where
         work.cancellation()
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
-        Ok(crate::NativePublicationSnapshot { context: self.snapshot_context(), operation: None, generation: self.expected_generation })
+        Ok(crate::NativePublicationSnapshot {
+            context: self.snapshot_context(),
+            operation: None,
+            generation: self.expected_generation,
+        })
     }
 
     fn snapshot_context(&self) -> crate::lazy_workspace::NativeSnapshotContext {
@@ -253,13 +279,23 @@ pub(super) fn validate_native_working_set_root(
     if expected.is_some_and(|identity| identity != root.identity()) {
         return Err(MountSourceError::Stale.into());
     }
-    if !{ #[cfg(unix)] { root.stat(selected_root, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(selected_root, &mut &*work, |path, work| root.stat(path, work)) } }?.is_dir() {
+    if !{
+        #[cfg(unix)]
+        {
+            root.stat(selected_root, &mut &*work)
+        }
+        #[cfg(windows)]
+        {
+            crate::native_host::with_wide_path(selected_root, &mut &*work, |path, work| {
+                root.stat(path, work)
+            })
+        }
+    }?
+    .is_dir()
+    {
         return Err(MountLifecycleError::NativePolicy(
             "selected native working-set directory is absent",
         ));
     }
     Ok(root.identity())
 }
-
-#[path = "file_io.rs"]
-mod file_io;

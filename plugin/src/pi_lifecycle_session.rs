@@ -63,7 +63,7 @@ impl PiSession {
                 "Pi native lifetime has no original root binding".to_owned(),
             ));
         };
-        protected.validate_root(root, work)?;
+        protected.validate_root(root)?;
         self.runtime
             .verify_owner_with_native_work(&protected, work)?;
         let host = pi_native_host::PiNativeCommandHost::new(
@@ -322,7 +322,7 @@ impl PiSession {
                         )
                     })?;
                 validate_created_native_report(route, &observed)?;
-                native.register_prepared(observed).await?;
+                native.register_prepared(observed)?;
                 let workspace = native.live_workspace(task).ok_or_else(|| {
                     Error::Invalid("Pi observed child lost its actual creator workspace".to_owned())
                 })?;

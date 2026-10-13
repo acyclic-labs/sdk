@@ -315,6 +315,7 @@ where
                 path,
                 writable: *writable,
                 namespace: &NativeVolumeNamespace::MaterializedDirectory,
+                mounted: None,
                 verifier: &verifier,
                 scope: &scope,
                 publication: PublicationPermit::Unrestricted,

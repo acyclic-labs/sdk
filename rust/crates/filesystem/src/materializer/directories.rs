@@ -77,8 +77,12 @@ impl NativeTreeMaterializationBackend {
         Ok((result, allocation))
     }
     /// Requires empty original checkout and recovery allocations.
-    pub fn require_initial_empty(&self) -> Result<(), NativeTreeMaterializationError> {
-        for root in [&self.held_root, &self.held_target, &self.held_backup] {
+    pub fn require_initial_empty(
+        &self,
+        preserved: &[&str],
+    ) -> Result<(), NativeTreeMaterializationError> {
+        self.require_selected_root(&[], preserved)?;
+        for root in [&self.held_target, &self.held_backup] {
             let (mut reader, _cursor) = host_path(Path::new(""), &mut &self.work, |path, work| {
                 root.read_dir_stats(path, work)
             })?;

@@ -61,7 +61,8 @@ impl<'a> PiForkCoordinator<'a> {
                 .invocation
                 .environment
                 .retain(|key, _| !crate::pi_caller::is_environment_key(key));
-            if let Some(plan) = self.load_plan(context, original).await? {
+            self.require_input_read(context)?;
+            if let Some(plan) = self.load_original_plan(original).await? {
                 self.validate_plan(&plan, owner.task_id())?;
                 if plan.commit != commit {
                     return Err(Error::NativeBoundary {
@@ -272,8 +273,8 @@ impl<'a> PiForkCoordinator<'a> {
             )?;
             let stream_provider = (provider, provider_io.into_custody()?);
             let authorized_source = source_read.as_ref().map(|pair| {
-            self.native_copy::<acyclic_harness::source_authorization::ProjectSourceAuthorization, _>(
-                pair.0.authorization(), acyclic_harness::JsonValueSchema::None, work,
+            self.decode_input_value::<acyclic_harness::source_authorization::ProjectSourceAuthorization>(
+                pair.0.authorization(), acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
             )
         }).transpose()?;
             let mut request_io =
@@ -495,10 +496,10 @@ impl<'a> PiForkCoordinator<'a> {
                 kind: command_kind.0,
                 payload: fork_input.0,
             };
-            let mut checkpoint_copy = self.native_copy::<FileRef, _>(
+            let mut checkpoint_copy = self.decode_input_value::<FileRef>(
                 &checkpoint.0,
                 acyclic_harness::JsonValueSchema::None,
-                work,
+                FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
             )?;
             drop(checkpoint);
             let io = PreparationIo::from_native_work(work)?;

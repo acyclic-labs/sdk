@@ -134,7 +134,7 @@ impl PiTaskRuntime {
         let super::PluginTaskBinding::Pi(root) = &state.task_binding else {
             return Err(invalid("Pi runtime requires a Pi root binding"));
         };
-        owner.validate_root(root, work)?;
+        owner.validate_root(root)?;
         let runtime = Self::open_with_native_work(
             stream,
             filesystem,
@@ -244,11 +244,10 @@ impl PiTaskRuntime {
         preparation: &acyclic_harness::workflow::WorkflowCommand,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Admission<TaskId>, acyclic_fs::NativeAllocation)> {
-        binding.validate_with_native_work(
+        binding.validate(
             None,
-            binding.project_volumes.keys().map(String::as_str),
+            binding.project_volumes.keys().map(|key| key.as_str()),
             true,
-            work,
         )?;
         root.validate(binding, work)?;
         let authority = &self.authority;

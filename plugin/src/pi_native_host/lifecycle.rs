@@ -27,20 +27,11 @@ impl PiNativeCommandHost {
         let original = effect
             .as_ref()
             .map(|effect| Arc::clone(&effect.owner))
-            .or_else(|| {
-                handles
-                    .preparation_owner
-                    .as_ref()
-                    .map(|(owner, _, _)| Arc::clone(owner))
-            });
+            .or_else(|| handles.preparation_owner.as_ref().map(Arc::clone));
         if let Some(owner) = original {
-            handles
-                .project_gate
-                .release(&owner, work, work.cancellation())
+            release_publication(&mut handles.project_gate, &owner, work, work.cancellation())
                 .await?;
-            handles
-                .scratch_gate
-                .release(&owner, work, work.cancellation())
+            release_publication(&mut handles.scratch_gate, &owner, work, work.cancellation())
                 .await?;
         }
         handles.project = None;

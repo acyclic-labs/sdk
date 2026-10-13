@@ -113,7 +113,7 @@ pub use mailbox_machine::MailboxModelMachine;
 pub(crate) use native_execution::journal::preparation_owner;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativePreparationRoot, NativeViewPublicationError,
+    BorrowedNativeVolumeBinding, NativePreparationRoot, NativeViewPublicationError, NativeMountedVolume,
     NativeVolumeView,
 };
 pub use recursive::{

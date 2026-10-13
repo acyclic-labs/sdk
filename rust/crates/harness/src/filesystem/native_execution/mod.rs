@@ -22,11 +22,13 @@ use std::{
 mod allocation;
 mod completion;
 pub(super) mod journal;
+mod mounted;
 mod preparation;
 mod preparation_record;
 mod publication;
 pub use allocation::NativePreparationRoot;
 pub(crate) use completion::NativePreparationCompletionTemplate;
+pub use mounted::NativeMountedVolume;
 pub use publication::NativeViewPublicationError;
 
 /// Selection of one exact generation and publication permit.
@@ -39,6 +41,8 @@ pub struct BorrowedNativeVolumeBinding<'a, A, O> {
     pub generation: &'a GenerationRef,
     /// Declared namespace.
     pub namespace: &'a NativeVolumeNamespace,
+    /// Existing owner when this binding selects a demand-backed mount.
+    pub mounted: Option<&'a Arc<dyn NativeMountedVolume>>,
     /// Relative directory below the namespace root.
     pub path: &'a str,
     /// Whether edits may publish.
@@ -52,10 +56,18 @@ pub struct BorrowedNativeVolumeBinding<'a, A, O> {
 }
 
 struct PreparedVolume<A, O> {
-    view: NativeWorkingSet<A, O>,
+    view: VolumeView<A, O>,
     publication: PublicationPermit,
     work: NativeMaterializationWork,
     callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
+}
+
+enum VolumeView<A, O> {
+    Directory(NativeWorkingSet<A, O>),
+    Mounted {
+        owner: Arc<dyn NativeMountedVolume>,
+        _work_scope: acyclic_fs::native_mount::NativeMountWorkScope,
+    },
 }
 
 /// SDK namespace and its protected original preparation.
@@ -82,19 +94,21 @@ where
 
     /// Returns the original publication permit for an authorized writable volume.
     pub fn publication_permit(&self, volume: &VolumeRef) -> Option<PublicationPermit> {
-        self.manifest().volumes.iter().zip(&self.volumes)
+        self.manifest()
+            .volumes
+            .iter()
+            .zip(&self.volumes)
             .find(|(mapping, _)| &mapping.volume == volume && mapping.writable)
             .map(|(_, prepared)| prepared.publication)
     }
 
-    /// Selects a working volume under its original owner and operation grant.
-    pub async fn working_volume<P: StreamProvider>(
+    async fn require_volume<P: StreamProvider>(
         &self,
         owner: &TaskJournalOwner<P>,
         volume: &VolumeRef,
         operation: VolumeOperation,
         work: &NativeMaterializationWork,
-    ) -> Result<&NativeWorkingSet<A, O>> {
+    ) -> Result<usize> {
         let io = PreparationIo::from_native_work(work)?;
         if !self.work().shares_ledger(work)
             || !owner.native_shared_work_matches(work)
@@ -107,11 +121,17 @@ where
         }
         owner.verify(false, &mut Some(&mut &io)).await?;
         owner.require_volume_grant(volume, operation, &mut Some(&mut &io))?;
-        for (mapping, prepared) in self.manifest().volumes.iter().zip(&self.volumes) {
+        for (index, (mapping, prepared)) in self
+            .manifest()
+            .volumes
+            .iter()
+            .zip(&self.volumes)
+            .enumerate()
+        {
             if &mapping.volume == volume && (operation == VolumeOperation::Read || mapping.writable)
             {
                 prepared.callback.check(work)?.await?;
-                return Ok(&prepared.view);
+                return Ok(index);
             }
         }
         Err(Error::NativeBoundary {
@@ -120,11 +140,65 @@ where
         })
     }
 
+    /// Runs bounded physical I/O through the selected volume's original owner.
+    pub async fn file_io<P: StreamProvider, T>(
+        &self,
+        owner: &TaskJournalOwner<P>,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        path: &Path,
+        write: bool,
+        parents: bool,
+        work: &NativeMaterializationWork,
+        io: impl FnOnce(
+            &mut std::fs::File,
+            &NativeMaterializationWork,
+        ) -> std::result::Result<T, acyclic_fs::NativeTreeMaterializationError>
+        + Send,
+    ) -> Result<T> {
+        if write && operation != VolumeOperation::Write {
+            return Err(preparation_record::invalid());
+        }
+        let index = self.require_volume(owner, volume, operation, work).await?;
+        let volume_work = &self.volumes[index].work;
+        let result = match &self.volumes[index].view {
+            VolumeView::Directory(view) => view
+                .file_io(path, write, parents, volume_work, io)
+                .await
+                .map_err(Error::from),
+            VolumeView::Mounted { owner: mount, .. } => {
+                let work = volume_work.with_source_io_lease(mount.io_lease()?)?;
+                acyclic_fs::native_mount::native_file_io(
+                    mount.path(),
+                    mount.identity()?,
+                    path,
+                    write,
+                    parents,
+                    &work,
+                    io,
+                )
+                .map_err(Error::from)
+            }
+        };
+        self.require_volume(owner, volume, operation, work).await?;
+        result
+    }
+
     /// Rechecks the physical views and immutable source selections.
     pub async fn validate_for_dispatch(&self) -> Result<()> {
-        for volume in &self.volumes {
-            volume.view.validate_for_presentation(&volume.work).await?;
-            volume.view.verify_unchanged(&volume.work).await?;
+        for (volume, mapping) in self.volumes.iter().zip(&self.manifest().volumes) {
+            volume.callback.check(&volume.work)?.await?;
+            match &volume.view {
+                VolumeView::Directory(view) => {
+                    view.validate_for_presentation(&volume.work).await?;
+                    view.verify_unchanged(&volume.work).await?;
+                }
+                VolumeView::Mounted { owner, .. } => {
+                    mounted::verify_snapshot(owner.as_ref(), &mapping.namespace, &volume.work)
+                        .await?;
+                }
+            }
+            volume.callback.check(&volume.work)?.await?;
         }
         Ok(())
     }
@@ -171,9 +245,27 @@ where
                             .await
                             .map_err(failure)?;
                         let callback = Arc::clone(&volume.callback);
-                        volume
-                                .view
-                                .sync_with_permit(
+                        match &volume.view {
+                            VolumeView::Mounted { owner, .. } => {
+                                mounted::require_root(owner.as_ref(), &volume.work)
+                                    .map_err(failure)?;
+                                let snapshot = owner
+                                    .publish(volume.publication, callback, &volume.work)
+                                    .map_err(failure)?
+                                    .await
+                                    .map_err(failure)??;
+                                mounted::require_root(owner.as_ref(), &volume.work).map_err(
+                                    |cause| NativeMountPublicationFailure {
+                                        cause,
+                                        accounting_failure: None,
+                                        source_acknowledged: true,
+                                        publication: Some(snapshot),
+                                    },
+                                )?;
+                                snapshot
+                            }
+                            VolumeView::Directory(view) => {
+                                view.sync_with_permit(
                                     volume.publication,
                                     &volume.work,
                                     move |actual: &NativeMaterializationWork| {
@@ -185,12 +277,33 @@ where
                                     },
                                 )
                                 .await?
+                            }
+                        }
                     } else {
-                        volume
-                            .view
-                            .verify_unchanged(&volume.work)
-                            .await
-                            .map_err(|cause| failure(cause.into()))?
+                        match &volume.view {
+                            VolumeView::Directory(view) => view
+                                .verify_unchanged(&volume.work)
+                                .await
+                                .map_err(|cause| failure(cause.into()))?,
+                            VolumeView::Mounted { owner, .. } => {
+                                mounted::require_root(owner.as_ref(), &volume.work)
+                                    .map_err(failure)?;
+                                let snapshot = owner
+                                    .snapshot(&volume.work)
+                                    .map_err(failure)?
+                                    .await
+                                    .map_err(failure)??;
+                                mounted::require_snapshot(
+                                    &snapshot,
+                                    &self.manifest().volumes[index].namespace,
+                                    &volume.work,
+                                )
+                                .map_err(failure)?;
+                                mounted::require_root(owner.as_ref(), &volume.work)
+                                    .map_err(failure)?;
+                                snapshot
+                            }
+                        }
                     };
                     published.push((index, snapshot));
                 }
