@@ -474,10 +474,18 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
         &work,
     )
     .unwrap();
+    let mut startup = None;
     let (first, status) = service
-        .start_session("registered", "pi", project.clone(), json!({}), &mut None)
+        .start_session("registered", "pi", project.clone(), json!({}), &mut startup)
         .await
-        .unwrap();
+        .unwrap_or_else(|error| {
+            panic!(
+                "startup failed: {error:?}; work: {:?}",
+                startup
+                    .as_ref()
+                    .map(acyclic_fs::NativeMaterializationWork::receipt)
+            )
+        });
     assert_eq!(*status.0.pointer("/tasks/0/state").unwrap(), "pending");
     assert!(
         service
