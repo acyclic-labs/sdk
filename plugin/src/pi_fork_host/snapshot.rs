@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl crate::pi_host::PiControlHost<'_> {
     pub(crate) async fn freeze_root_source(
@@ -44,9 +45,7 @@ impl crate::pi_host::PiControlHost<'_> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             provider
@@ -55,9 +54,7 @@ impl crate::pi_host::PiControlHost<'_> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await
         };
@@ -124,30 +121,34 @@ pub(crate) async fn freeze_child_source(
     owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
-    let checkpoint = view
-        .checkpoint_projects_with_native_work(owner, work)?
-        .await?;
+    let checkpoint = view.publish(owner).await?;
     owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
-    let snapshot = match checkpoint.0.as_slice() {
-        [(_, snapshot)] if snapshot.workspace_id == source.workspace().id() => *snapshot,
-        _ => {
-            return Err(denied(
-                "Pi checkpoint must name its unique selected workspace",
-            ));
-        }
-    };
+    let mut selected = checkpoint
+        .0
+        .iter()
+        .filter(|(_, snapshot)| snapshot.workspace_id() == source.workspace().id());
+    let snapshot = selected
+        .next()
+        .ok_or_else(|| denied("Pi checkpoint lost its selected workspace"))?
+        .1;
+    if selected.next().is_some() {
+        return Err(denied("Pi checkpoint repeats its selected workspace"));
+    }
+    let snapshot = snapshot
+        .lazy_snapshot(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        })
+        .map_err(Error::from)?
+        .ok_or_else(|| denied("Pi checkpoint lost its lazy source"))?;
     drop(checkpoint.0);
     Ok((snapshot, checkpoint.1))
 }

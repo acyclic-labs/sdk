@@ -111,7 +111,6 @@ impl NativeGate {
 
 pub(super) struct BoundEffect {
     pub(super) staged: Option<WorkflowCommand>,
-    pub(super) plan: (TaskEffectPlan, NativeAllocation),
     pub(super) provider:
         Arc<NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>>,
     pub(super) work: NativeMaterializationWork,
@@ -120,15 +119,26 @@ pub(super) struct BoundEffect {
     pub(super) journal: Arc<Journal>,
     pub(super) context: Arc<TaskContext>,
     pub(super) command: OperationId,
+    pub(super) plan: (TaskEffectPlan, NativeAllocation),
 }
 
-#[derive(serde::Serialize)]
-pub(super) struct BorrowedEffectPlan<'a> {
-    pub(super) provider: &'a str,
-    pub(super) guarantee: &'a acyclic_harness::core::EffectGuarantee,
-    pub(super) effect_kind: &'a str,
-    pub(super) request: &'a acyclic_harness::conversation::FileRef,
-    pub(super) result_schema: &'a acyclic_harness::conversation::FileRef,
+pub(super) fn effect_plan(
+    provider: &str,
+    guarantee: acyclic_harness::core::EffectGuarantee,
+    effect_kind: &str,
+    request: &acyclic_harness::conversation::FileRef,
+    result_schema: &acyclic_harness::conversation::FileRef,
+    work: &NativeMaterializationWork,
+) -> Result<(TaskEffectPlan, NativeAllocation)> {
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let plan = TaskEffectPlan {
+        provider: io.clone_text(provider)?,
+        guarantee,
+        effect_kind: io.clone_text(effect_kind)?,
+        request: request.copy(&mut Some(&mut io))?,
+        result_schema: result_schema.copy(&mut Some(&mut io))?,
+    };
+    Ok((plan, io.into_custody()?))
 }
 
 #[derive(Default)]
@@ -154,7 +164,6 @@ pub(super) struct LiveHandles {
 
 pub(super) struct NativeEntry {
     pub(super) prepared: RwLock<Option<Arc<PreparedPiFork>>>,
-    pub(super) observed: RwLock<Option<Arc<PreparedPiFork>>>,
     pub(super) view: RwLock<Option<Arc<PiNativeLiveView>>>,
     pub(super) cold: RwLock<Option<Arc<PiNativeColdLocator>>>,
     pub(super) handles: tokio::sync::Mutex<LiveHandles>,
@@ -175,7 +184,6 @@ impl NativeEntry {
         )?;
         Ok(Self {
             prepared: RwLock::new(None),
-            observed: RwLock::new(None),
             view: RwLock::new(None),
             cold: RwLock::new(None),
             handles: tokio::sync::Mutex::new(LiveHandles::default()),
@@ -227,19 +235,6 @@ impl PiNativeCommandHost {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         prepared
-    }
-
-    pub(super) fn source_prepared(&self, task: TaskId) -> Option<Arc<PreparedPiFork>> {
-        if let Some(prepared) = self.prepared(task) {
-            return Some(prepared);
-        }
-        let entry = self.find_entry(task)?;
-        let observed = entry
-            .observed
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        observed
     }
 
     pub(super) async fn bind_invocation_work(

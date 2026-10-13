@@ -1,4 +1,5 @@
 //! Host-only Pi operator transport. Signing material never enters a native caller scope.
+use acyclic_harness::filesystem::PreparationIo;
 pub(crate) mod evidence;
 use crate::{
     ControlCommand, ControlRequest, pi_owner::PiOwnerConfig, pi_root_provider,
@@ -269,9 +270,7 @@ pub(crate) fn verify_request(
 ) -> Result<()> {
     owner.authority(work)?.verifier.verify(
         &request.operator,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )),
+        &mut Some(&mut &PreparationIo::from_native_work(work)?),
     )?;
     let hash_custody = body_hash(&request.body, work)?;
     let hash = &hash_custody.0;

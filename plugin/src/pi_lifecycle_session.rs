@@ -1,6 +1,7 @@
 //! Native lifetime ownership in the existing session actor and task journals.
 
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::store::HistoryIo;
 use acyclic_harness::{Error, Result as RootResult};
@@ -130,7 +131,7 @@ impl PiSession {
             self.runtime
                 .runtime
                 .task_host()
-                .cancel(target, Some(&work))
+                .cancel(target)
                 .await
                 .map(|_| ()),
         );
@@ -175,7 +176,7 @@ impl PiSession {
             if !self.native_jobs.contains_key(task) {
                 match async {
                     let mut io = acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                        PreparationIo::from_native_work(&work)?,
                     );
                     HistoryIo::retain_owned(
                         &mut io,
@@ -314,7 +315,7 @@ impl PiSession {
                         )
                     })?;
                 validate_created_native_report(route, &observed)?;
-                native.register_observed_source(observed).await?;
+                native.register_prepared(observed).await?;
                 let workspace = native.live_workspace(task).ok_or_else(|| {
                     Error::Invalid("Pi observed child lost its actual creator workspace".to_owned())
                 })?;
@@ -344,7 +345,7 @@ impl PiSession {
             }
             let observed = {
                 let mut io = acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(query_work)?,
+                    PreparationIo::from_native_work(query_work)?,
                 );
                 HistoryIo::retain_owned(
                     &mut io,
@@ -701,9 +702,8 @@ async fn original_native_first_dispatch_pending(
         ));
     }
     let reservation = {
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         HistoryIo::retain_owned(
             &mut io,
             std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
@@ -716,10 +716,7 @@ async fn original_native_first_dispatch_pending(
     }
     let outcome = host.outcome_with_native_work(task, work)?.await?;
     if host
-        .cancellation_requested(
-            task,
-            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-        )
+        .cancellation_requested(task, Some(&PreparationIo::from_native_work(work)?))
         .await?
         || outcome.0.is_some()
     {
@@ -742,15 +739,12 @@ async fn original_native_first_dispatch_pending(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let value = conversation.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody()?)
     };
-    let mut io = acyclic_harness::store::HistoryWork::new(
-        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-    );
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
     let history = acyclic_harness::store::HistoryReader::new(
         stream,
         &conversation.0.0,
@@ -761,9 +755,7 @@ async fn original_native_first_dispatch_pending(
     let effect = acyclic_harness::effect_host::task_effect_id(
         task,
         pi_fork::derived(plan.original, "native-effect", &work)?,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )),
+        &mut Some(&mut &PreparationIo::from_native_work(work)?),
     )?;
     let observed = history.effect(&pin, effect, limits, Some(&mut io)).await?;
     Ok(observed.is_none())

@@ -1,6 +1,7 @@
 //! Native caller authentication using the original coordinator's signed scope.
 
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::{Capabilities, TaskId, core::Scope};
 
 pub(crate) const CALLER_ENVIRONMENT: &str = "ACYCLIC_PI_CALLER";
@@ -78,9 +79,7 @@ pub(crate) fn issue(
         }
     };
     let capabilities = Capabilities::copy([CALLER_CAPABILITY], work)?;
-    let mut io = acyclic_harness::store::HistoryWork::new(
-        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-    );
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
     let value = authority.issuer.issue(
         identity_text,
         &capabilities.0,
@@ -150,9 +149,7 @@ pub(crate) fn verify<'a>(
     let authority = owner.authority(work)?;
     let verified = authority.verifier.verify(
         scope,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )),
+        &mut Some(&mut &PreparationIo::from_native_work(work)?),
     );
     drop(authority);
     verified?;

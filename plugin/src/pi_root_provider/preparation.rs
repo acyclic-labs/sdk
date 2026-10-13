@@ -1,5 +1,6 @@
 //! Original allocation, scratch and conversation observations.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 /// Root output is its genuinely created private scratch, never the protected bootstrap journal.
 #[allow(
@@ -32,16 +33,12 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     current_owner.require_volume_grant(
         &binding.scratch.volume,
         VolumeOperation::Write,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )),
+        &mut Some(&mut &PreparationIo::from_native_work(work)?),
     )?;
     current_owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     let preparation = load_original_preparation_with_native_work(
@@ -86,9 +83,6 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         work,
     )
     .await?;
-    if current_owner.authenticated_binding_agent_with_native_work(work)? != Some(binding.agent_id) {
-        return Err(invalid());
-    }
     let generation = observer
         .creation_with_native_work(
             effect,
@@ -111,9 +105,8 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody()?)
     };
@@ -242,19 +235,18 @@ impl PiRootProvider {
         let operation =
             self.creation_operation_with_native_work(effect, attempt, resource, work)?;
         let name = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        self.fs
-            .workspace_for_creation_operation(&name.0, config, operation, work, work.cancellation())
-            .await
-            .map_err(|source| Error::NativeWorkspace {
-                source,
-                custody: None,
-            })
+        let io = PreparationIo::from_native_work(work)?;
+        let (generation, recorded) = self
+            .fs
+            .workspace_for_creation_operation(name.0, config, operation, &io, io.cancellation())
+            .await;
+        recorded?;
+        generation.map_err(Error::from)
     }
 
     pub(super) fn scratch_creation_with_native_work(

@@ -5,6 +5,7 @@ use super::{
     pi_root_allocation::PiRootAllocation,
 };
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
+use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId, conversation::FileRef, core::EffectGuarantee,
     effect_host::TaskEffectPlan, filesystem::EFFECT_TASK_COMMAND_KIND, workflow::WorkflowCommand,
@@ -55,7 +56,7 @@ impl PiRootPreparation {
         let context = match context {
             Some(context) => context,
             None => {
-                let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+                let io = PreparationIo::from_native_work(work)?;
                 runtime
                     .runtime
                     .harness()
@@ -79,9 +80,7 @@ impl PiRootPreparation {
                 "Pi root preparation requires its original host admission",
             ));
         };
-        preparation.validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )))?;
+        preparation.validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?;
         if preparation.kind != EFFECT_TASK_COMMAND_KIND
             || preparation.operation_id != preparation_operation(owner.policy().root_task, work)?
         {

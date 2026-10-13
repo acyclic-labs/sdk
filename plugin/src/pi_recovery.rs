@@ -7,7 +7,7 @@ use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
 };
 use acyclic_harness::filesystem::TaskWorkerAttempt;
-use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::runtime::{TaskSpawner, TaskStateProvider};
 use acyclic_harness::store::HistoryIo;
 use acyclic_harness::{
     Error, Outcome, Result, TaskId,
@@ -211,7 +211,7 @@ where
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
         Some(
             std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new())
-                .definition()?,
+                .definition::<serde_json::Value, serde_json::Value>()?,
         )
     } else {
         None
@@ -260,9 +260,9 @@ where
             .await?;
             let retained = runtime
                 .task_host()
-                .reconcile_admission_with_native_work(request.0.child.operation_id, work)
+                .reconcile_admission(request.0.child.operation_id)
                 .await?;
-            match &retained.0 {
+            match &retained {
                 None => continue,
                 Some((task_id, admitted))
                     if *task_id == task.binding.task_id
@@ -421,13 +421,15 @@ where
                 "Pi original native intent exceeds its retained input boundary",
             ));
         }
-        let bytes = runtime
-            .task_host()
-            .read_recipient_file_with_native_work(task, &launch.payload, work)
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let reader = runtime
+            .harness()
+            .durable_context(task, operation, Some(&io))
             .await?;
+        let bytes = reader.read_file(&launch.payload, Some(&io)).await?;
         let intent =
             super::pi_root_provider::guarded_pi_decode::<super::pi_native::PiNativeLaunchIntent>(
-                &bytes.0,
+                bytes.as_ref(),
                 super::MAXIMUM_ADAPTER_STATE_BYTES,
                 std::mem::size_of::<super::pi_native::PiNativeLaunchIntent>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid,

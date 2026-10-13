@@ -1,5 +1,6 @@
 //! Same-session project source authorization.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
     fn verify<'a>(
@@ -33,9 +34,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             self.caller_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             if self.caller_context.durable_task_id() != Some(self.caller_owner.task_id())
@@ -79,9 +78,9 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 .values()
                 .any(|volume| volume == &snapshot.project)
                 || snapshot.project.storage_name(&mut Some(
-                    &mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    ),
+                    &mut acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(
+                        work,
+                    )?),
                 ))? != self.source.workspace().name().as_str()
             {
                 return Err(Error::NativeBoundary {
@@ -92,9 +91,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             self.caller_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             self.source
@@ -110,9 +107,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             self.caller_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             if !context.created_project_authenticated {
@@ -131,9 +126,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 self.caller_owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                        )),
+                        &mut Some(&mut &PreparationIo::from_native_work(work)?),
                     )
                     .await?;
                 let actual_source = coordinator
@@ -143,15 +136,13 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                     .durable_context(
                         context.source.task_id(),
                         OperationId::from_bytes(context.source.task_id().into_bytes()),
-                        Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+                        Some(&PreparationIo::from_native_work(work)?),
                     )
                     .await?;
                 self.caller_owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                        )),
+                        &mut Some(&mut &PreparationIo::from_native_work(work)?),
                     )
                     .await?;
                 crate::pi_root_provider::prove_root_project_source_with_native_work(
@@ -170,9 +161,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 self.caller_owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                        )),
+                        &mut Some(&mut &PreparationIo::from_native_work(work)?),
                     )
                     .await?;
             }

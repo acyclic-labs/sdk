@@ -1,5 +1,6 @@
 //! Authority of the original Pi fork.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl<'a> PiForkCoordinator<'a> {
     pub(super) async fn authenticate(
@@ -16,9 +17,7 @@ impl<'a> PiForkCoordinator<'a> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
             let (value, allocation) = host
@@ -28,9 +27,7 @@ impl<'a> PiForkCoordinator<'a> {
         };
         if context.durable_task_id() != Some(owner.task_id())
             || context
-                .owned_task_binding(Some(
-                    &acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
-                ))?
+                .owned_task_binding(Some(&PreparationIo::from_native_work(&self.work)?))?
                 .1
                 != fence
             || admission.0.grants != *context.scope().grants()
@@ -96,9 +93,8 @@ impl<'a> PiForkCoordinator<'a> {
         )?;
         let mut project = None;
         for volume in original.0.binding.project_volumes.values() {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             if volume.storage_name(&mut Some(&mut io))? == source.workspace().name().as_str() {
                 project = Some(volume);
                 break;
@@ -126,7 +122,7 @@ impl<'a> PiForkCoordinator<'a> {
             caller_owner: owner,
             native_snapshot,
         };
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let io = PreparationIo::from_native_work(work)?;
         let handle = owner
             .authorize_project_source(
                 context,
@@ -244,9 +240,8 @@ impl<'a> PiForkCoordinator<'a> {
         acyclic_harness::resources::GenerationRef,
         acyclic_fs::NativeAllocation,
     )> {
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         owner.require_volume_grant(
             volume,
             acyclic_harness::conversation::VolumeOperation::Read,
@@ -265,9 +260,8 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         let name = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -280,9 +274,7 @@ impl<'a> PiForkCoordinator<'a> {
         (owner)
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
             )
             .await?;
         let head = workspace
@@ -292,9 +284,7 @@ impl<'a> PiForkCoordinator<'a> {
         (owner)
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
             )
             .await?;
         acyclic_harness::resources::GenerationRef::new(
@@ -304,39 +294,5 @@ impl<'a> PiForkCoordinator<'a> {
             Some(work),
         )
         .map(|(reference, custody)| (reference, custody.expect("native generation custody")))
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "exact caller snapshot descriptors remain borrowed"
-    )]
-    pub(super) fn native_source_snapshot(
-        &self,
-        task: TaskId,
-        project: &VolumeRef,
-        project_generation: &acyclic_harness::resources::GenerationRef,
-        private_volume: &VolumeRef,
-        private_generation: &acyclic_harness::resources::GenerationRef,
-        work: &NativeMaterializationWork,
-    ) -> Result<(RecursiveSourceSnapshot, acyclic_fs::NativeAllocation)> {
-        #[derive(Serialize)]
-        struct Source<'a> {
-            task: TaskId,
-            project: &'a VolumeRef,
-            project_generation: &'a acyclic_harness::resources::GenerationRef,
-            private_volume: &'a VolumeRef,
-            private_generation: &'a acyclic_harness::resources::GenerationRef,
-        }
-        self.native_copy(
-            &Source {
-                task,
-                project,
-                project_generation,
-                private_volume,
-                private_generation,
-            },
-            acyclic_harness::JsonValueSchema::None,
-            work,
-        )
     }
 }

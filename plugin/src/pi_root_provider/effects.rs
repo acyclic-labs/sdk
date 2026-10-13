@@ -1,5 +1,6 @@
 //! Dispatch and reconciliation of the original allocation effect.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl PiRootProvider {
     pub(crate) async fn dispatch_native(
@@ -28,9 +29,7 @@ impl PiRootProvider {
         self.execution_owner()?
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
             )
             .await?;
         if let Some(observation) = self
@@ -60,9 +59,7 @@ impl PiRootProvider {
         self.execution_owner()?
             .verify(
                 true,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
             )
             .await?;
         let original = self
@@ -85,9 +82,7 @@ impl PiRootProvider {
             .execution_owner()?
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
             )
             .await
         {
@@ -265,9 +260,8 @@ impl PiRootProvider {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
         let verifier = self.owner.effect_verifier_with_native_work(work)?;
-        let mut reader_io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut reader_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let reader = HistoryReader::new(
             &self.stream,
             verifier.0.audience(),
@@ -275,9 +269,8 @@ impl PiRootProvider {
             &mut Some(&mut reader_io),
         )?;
         let cursor = reader.pin(0, Some(&mut reader_io)).await?;
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let value = reader
             .effect(
                 &cursor,
@@ -385,9 +378,7 @@ impl PiRootProvider {
         acyclic_harness::effect_host::task_effect_id(
             self.owner.policy().root_task,
             self.preparation.command.operation_id,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
     }
 

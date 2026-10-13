@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 pub(crate) struct PiNativeRoot {
     pub(crate) view: Option<Arc<crate::pi_native_host::PiNativeLiveView>>,
@@ -35,7 +36,7 @@ impl PiNativeRoot {
         >],
         meter: &NativeMaterializationWork,
     ) -> Result<()> {
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?;
+        let io = PreparationIo::from_native_work(meter)?;
         let mut history = &io;
         owner.verify(false, &mut Some(&mut history)).await?;
         if owner.task_id() != self.task
@@ -136,9 +137,7 @@ impl PiNativeRoot {
         owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(meter)?),
             )
             .await?;
         if owner.task_id() != self.task
@@ -164,16 +163,12 @@ impl PiNativeRoot {
                 volume,
                 operation,
                 context.scope().limits().file_bytes,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(meter)?),
             )?;
             owner.require_volume_grant(
                 volume,
                 operation,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(meter)?),
             )?;
         }
         let allocation = self.witnessed_allocation()?;
@@ -186,9 +181,8 @@ impl PiNativeRoot {
         }
         let callback_guard =
             shared.volume_callback(owner, volume, writable, original_volume_work)?;
-        let mut volume_io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-        );
+        let mut volume_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(meter)?);
         if volume.storage_name(&mut Some(&mut volume_io))? != workspace.workspace().name().as_str()
         {
             return Err(invalid(
@@ -260,9 +254,7 @@ impl PiNativeRoot {
         owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(meter)?),
             )
             .await?;
         let authority_revision = native_digest(
@@ -274,9 +266,8 @@ impl PiNativeRoot {
                 .min(crate::MAXIMUM_ADAPTER_STATE_BYTES),
             meter,
         )?;
-        let mut volume_io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-        );
+        let mut volume_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(meter)?);
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
         let mut volume_copy = (volume_copy, volume_io.into_custody()?);
         let reference = original_generation.as_resource();
@@ -321,9 +312,7 @@ impl PiNativeRoot {
         owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(meter)?),
             )
             .await?;
         let allocation = self.witnessed_allocation()?;
@@ -352,9 +341,7 @@ impl PiNativeRoot {
         owner
             .verify(
                 false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(meter)?),
             )
             .await?;
         meter.charge(WorkCounters {
@@ -437,9 +424,8 @@ pub(crate) async fn native_root<'a>(
         reason: "Pi native view has no original task namespace",
     })?;
     let mut operation_root = meter.path(task_directory, Some(Path::new("preparation")))?;
-    let mut scratch_io = acyclic_harness::store::HistoryWork::new(
-        acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?,
-    );
+    let mut scratch_io =
+        acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(meter)?);
     let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
     let mut scratch = (scratch, scratch_io.into_custody()?);
     let mut view_root = meter.path(&options.root, None)?;

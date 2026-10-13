@@ -21,10 +21,7 @@ use acyclic_harness::{
     core::{AggregateKind, Authority, Reducer, SchemaRegistry, Snapshot},
     distributed::{WorkPull, Worker},
     durable_host::TaskJournalOwner,
-    filesystem::{
-        FORK_PREPARE_TASK_COMMAND_KIND, ForkPreparationLimits, RecursiveForkConfig,
-        RecursiveSourceSnapshot,
-    },
+    filesystem::{FORK_PREPARE_TASK_COMMAND_KIND, ForkPreparationLimits},
     fork::{ForkReport, ForkRequest},
     resource_preparation::ResourcePreparationRequest,
     runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
@@ -182,9 +179,7 @@ pub(crate) struct PiForkPlan {
     pub(crate) commit: RetainedSpawnCommit,
     pub(crate) preparation: TaskAdmissionRecord,
     pub(crate) request: ResourcePreparationRequest,
-    pub(crate) source: RecursiveSourceSnapshot,
     pub(crate) frozen: LazySnapshotRef,
-    pub(crate) project_creation: acyclic_fs::OperationId,
     #[serde(skip)]
     _input_allocations: Option<acyclic_fs::NativeAllocation>,
 }
@@ -195,9 +190,7 @@ impl PartialEq for PiForkPlan {
             && self.commit == other.commit
             && self.preparation == other.preparation
             && self.request == other.request
-            && self.source == other.source
             && self.frozen == other.frozen
-            && self.project_creation == other.project_creation
     }
 }
 

@@ -1,6 +1,7 @@
 //! Pi task binding contracts and retained selection validation.
 
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::{
     AgentId, TaskId,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
@@ -100,11 +101,9 @@ impl PiScratchCreation {
     ) -> acyclic_harness::Result<()> {
         binding_validation_step(work, 1)?;
         match work {
-            Some(work) => {
-                self.generation
-                    .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?
-            }
+            Some(work) => self
+                .generation
+                .validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?,
             None => self.generation.validate(&mut None)?,
         }
         if self.workspace_id == [0; 16]
@@ -337,8 +336,7 @@ fn validate_pi_provider(
     work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> acyclic_harness::Result<()> {
     match work {
-        Some(work) => provider.validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
+        Some(work) => provider.validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?,
         None => provider.validate(&mut None)?,
     }
     if [provider.namespace(), provider.family(), provider.version()]

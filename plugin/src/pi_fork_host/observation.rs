@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl crate::pi_host::PiControlHost<'_> {
     pub(crate) async fn observe_source(
@@ -86,9 +87,7 @@ impl crate::pi_host::PiControlHost<'_> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(&work)?),
                 )
                 .await?;
             let observed = ObservedSource {
@@ -109,9 +108,7 @@ impl crate::pi_host::PiControlHost<'_> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
-                    )),
+                    &mut Some(&mut &PreparationIo::from_native_work(&work)?),
                 )
                 .await?;
             (observed, frozen.1)

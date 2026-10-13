@@ -171,8 +171,10 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .admit_owned_with_native_work(request, fence, work)?
+            .admit_owned(request.0, fence.0)
             .await?;
+        drop(request.1);
+        drop(fence.1);
         drop(admitted);
         Ok(())
     }

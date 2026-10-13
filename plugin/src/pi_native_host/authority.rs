@@ -1,5 +1,6 @@
 //! Authenticated admissions and original effect bindings.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
 impl PiNativeCommandHost {
     pub(super) async fn child_admission(
@@ -111,19 +112,13 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner(
-                task,
-                fence,
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-            )
+            .journal_owner(task, fence, Some(&PreparationIo::from_native_work(work)?))
             .await?
             .into_native_shared(work)?;
         owner
             .verify(
                 recovery,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
+                &mut Some(&mut &PreparationIo::from_native_work(work)?),
             )
             .await?;
         Ok(((admitted.1, admitted.2), owner, original))
@@ -158,9 +153,8 @@ impl PiNativeCommandHost {
             work,
         )?;
         let interaction_verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -178,7 +172,7 @@ impl PiNativeCommandHost {
                 context
                     .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
                     .1,
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+                Some(&PreparationIo::from_native_work(work)?),
             )
             .await?;
         let io = PreparationIo::from_native_work(work)?;
@@ -221,23 +215,19 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
         Ok(NativeProcessAuthority {
             verifier: verifier.0,
-            history_limits: history_limits(context)?,
-            // Both stock artifacts and their results use the original unmounted RESULT binding.
-            content: bindings.reader.clone(),
-            result_content: bindings.reader,
+            schemas: SchemaRegistry::new(),
+            content: bindings.reader,
             results: bindings
                 .writer
                 .ok_or_else(|| unauthorized("Pi sealed result has no original publisher"))?,
             approvals: journal,
-            authority_custody: Some(verifier.1),
         })
     }
 
@@ -288,15 +278,13 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
+            let mut io =
+                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let mut reader_io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut reader_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let history = HistoryReader::new(
             &self.stream,
             &conversation.0.0,
@@ -307,13 +295,10 @@ impl PiNativeCommandHost {
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id,
             command,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )?;
-        let mut io = acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let effect = history
             .effect(&cursor, effect, history_limits(context)?, Some(&mut io))
             .await?;
@@ -330,26 +315,12 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
         let context = shared.as_ref();
-        let borrowed = BorrowedEffectPlan {
-            provider: &effect.provider,
-            guarantee: &effect.guarantee,
-            effect_kind: &effect.effect_kind,
-            request: &effect.request,
-            result_schema: &effect.result_schema,
-        };
-        let maximum = self
-            .protected
-            .policy()
-            .maximum_payload_bytes
-            .min(context.scope().limits().file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value(&borrowed, maximum, work)?;
-        let plan = crate::pi_root_provider::guarded_pi_decode::<TaskEffectPlan>(
-            &bytes.0,
-            maximum,
-            self.protected.policy().maximum_payload_bytes,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            JsonValueSchema::None,
-            crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,
+        let mut plan = effect_plan(
+            &effect.provider,
+            effect.guarantee,
+            &effect.effect_kind,
+            &effect.request,
+            &effect.result_schema,
             work,
         )?;
         if plan.0.provider != pi_native::PI_NATIVE_PROVIDER {
@@ -359,22 +330,40 @@ impl PiNativeCommandHost {
         }
         let journal = self.journal(&owner, context, input, command, work).await?;
         let authority = self.authority(context, input, journal.clone(), work)?;
-        let provider = NativeProcessProvider::recover(
-            owner.clone(),
-            command,
-            &plan.0,
-            task_interaction_id(
-                input.binding.task_id,
-                command,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
-            )?,
-            authority,
+        let mut provider_plan = effect_plan(
+            &plan.0.provider,
+            plan.0.guarantee,
+            &plan.0.effect_kind,
+            &plan.0.request,
+            &plan.0.result_schema,
             work,
-        )
-        .await?
-        .into_arc_with_native_work(work)?;
+        )?;
+        plan.1.absorb(&mut provider_plan.1)?;
+        plan.1.absorb(&mut work.claim(
+            std::mem::size_of::<
+                NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
+            >() as u64,
+            1,
+            WorkCounters {
+                allocation_operations: 1,
+                ..WorkCounters::UNCHARGED
+            },
+        )?)?;
+        let provider = Arc::new(
+            NativeProcessProvider::new(
+                owner.clone(),
+                command,
+                provider_plan.0,
+                None,
+                task_interaction_id(
+                    input.binding.task_id,
+                    command,
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
+                )?,
+                authority,
+            )
+            .await?,
+        );
         let effects = self.effects(context, input, &provider, work)?;
         let bound = Arc::new(BoundEffect {
             provider,

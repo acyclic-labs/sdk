@@ -295,9 +295,7 @@ pub(crate) async fn approve_command(
     owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     let native_capability = "effect:provider:acyclic.pi.native";
@@ -332,9 +330,7 @@ pub(crate) async fn approve_command(
     let approval = task_interaction_id(
         owner.task_id(),
         command,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-            PreparationIo::from_native_work(work)?,
-        )),
+        &mut Some(&mut &PreparationIo::from_native_work(work)?),
     )?;
     let title = native_fixed_text(format_args!(
         "Run pinned Pi child {}",
@@ -358,9 +354,7 @@ pub(crate) async fn approve_command(
     owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
@@ -400,9 +394,7 @@ pub(crate) async fn approve_command(
     owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     Ok(approval)

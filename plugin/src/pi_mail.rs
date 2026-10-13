@@ -7,6 +7,7 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters,
 };
+use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Error, OperationId, Outcome, Result, TaskId,
@@ -76,9 +77,7 @@ async fn authenticate<P: StreamProvider>(
     owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     Ok(owner.task_id())
@@ -119,9 +118,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     owner
         .verify(
             false,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            )),
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
     Ok((command.0, command.1))
@@ -221,7 +218,7 @@ where
     let bytes = context
         .read_file(
             &command.payload,
-            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            Some(&PreparationIo::from_native_work(work)?),
         )
         .await?;
     let payload = decode::<MailSendTaskCommand>(bytes.as_ref(), work)?;
@@ -302,11 +299,17 @@ where
             reason: "Pi mailbox payload exceeds bounded decode",
         });
     }
-    let bytes = runtime
-        .task_host()
-        .read_recipient_file_with_native_work(caller.task_id, &item.payload, work)
+    let io = PreparationIo::from_native_work(work)?;
+    let reader = runtime
+        .harness()
+        .durable_context(
+            caller.task_id,
+            OperationId::from_bytes(caller.task_id.into_bytes()),
+            Some(&io),
+        )
         .await?;
-    let mut payload = decode::<PiMailPayload>(&bytes.0, work)?;
+    let bytes = reader.read_file(&item.payload, Some(&io)).await?;
+    let mut payload = decode::<PiMailPayload>(bytes.as_ref(), work)?;
     drop(bytes);
     if let Err(cause) = items.1.absorb(&mut payload.1) {
         drop(payload);
